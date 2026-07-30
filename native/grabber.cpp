@@ -80,20 +80,34 @@ int main(int argc, char **argv) {
   int jpegQuality = 80;
   bool wantColor = true;
   std::string pipelineName = "cl";
+  std::string logLevel = "warning";
 
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     if (a == "--no-color") wantColor = false;
     else if (a == "--pipeline" && i + 1 < argc) pipelineName = argv[++i];
     else if (a == "--quality" && i + 1 < argc) jpegQuality = std::atoi(argv[++i]);
+    else if (a == "--log" && i + 1 < argc) logLevel = argv[++i];
     else if (a == "--help") {
       std::fprintf(stderr,
-        "usage: grabber [--pipeline cl|cpu] [--no-color] [--quality 1-100]\n");
+        "usage: grabber [--pipeline cl|cpu] [--no-color] [--quality 1-100]\n"
+        "               [--log none|error|warning|info|debug]\n"
+        "\n"
+        "  --log debug surfaces libfreenect2's per-packet USB diagnostics,\n"
+        "  including 'not all subsequences received' - the dropped-isochronous-\n"
+        "  packet counter you want when tuning LIBFREENECT2_IR_TRANSFERS.\n");
       return 0;
     }
   }
 
-  libfreenect2::setGlobalLogger(new StderrLogger(libfreenect2::Logger::Warning));
+  // Debug is genuinely noisy - one line per incomplete depth frame - so it stays
+  // opt-in rather than being the default the server spawns with.
+  libfreenect2::Logger::Level level = libfreenect2::Logger::Warning;
+  if (logLevel == "none") level = libfreenect2::Logger::None;
+  else if (logLevel == "error") level = libfreenect2::Logger::Error;
+  else if (logLevel == "info") level = libfreenect2::Logger::Info;
+  else if (logLevel == "debug") level = libfreenect2::Logger::Debug;
+  libfreenect2::setGlobalLogger(new StderrLogger(level));
 
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
