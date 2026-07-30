@@ -137,8 +137,9 @@ cmake -S native -B native/build && cmake --build native/build -j8
 
 Needs `brew install libusb jpeg-turbo cmake`. OpenGL is off deliberately — it only
 drives libfreenect2's own viewer, which we don't use, and it's the most deprecated
-path on macOS. Depth runs through OpenCL on the GPU; the CPU pipeline loses its
-SSE/AVX paths on Apple Silicon and can't hold 30fps.
+path on macOS. Depth runs through OpenCL on the GPU; the CPU pipeline is plain
+scalar C++ — libfreenect2 ships no hand-written SIMD for depth on any
+architecture — and a single core can't hold 30fps over ten phase images.
 
 ## Wire format
 
@@ -155,9 +156,12 @@ type 2  frame  [u32 depthBytes][u32 colorBytes][u64 timestampMs]
                [JPEG of the registered 512x424 colour image]
 ```
 
-Roughly 500KB per frame, so ~15MB/s at 30fps. The grabber writes frames to stdout
-and every log line to stderr — a single stray log line on stdout would desync the
-stream permanently.
+Measured over `captures/sample.knct`: 434,176 bytes of depth plus a 49–59KB JPEG,
+486KB per frame all in. At 30fps that is 14.6MB/s, or 117Mbit/s per connected
+browser. Fine over ethernet, right at the practical ceiling of Wi-Fi.
+
+The grabber writes frames to stdout and every log line to stderr — a single stray
+log line on stdout would desync the stream permanently.
 
 The browser needs `fx/fy/cx/cy` from the hello message to unproject; hardcoded
 intrinsics skew the cloud in a way that is hard to spot and hard to attribute.
@@ -173,6 +177,14 @@ Intel USB3 HUB → VIA USB3.1 Hub → VIA USB3.0 Hub → NuiSensor Adaptor → X
 
 libfreenect2 reports continuous `not all subsequences received` — isochronous USB
 packets are being dropped, so most depth frames arrive incomplete and get discarded.
+
+The sensor is greedy in a way that hubs handle badly. Depth arrives as ten raw
+11-bit phase images per frame, `512*424*11/8 * 10` = 2.98MB, so 90MB/s (716Mbit/s)
+of payload at 30fps before colour. Worse, the depth endpoint declares a max iso
+packet size of `0x8400` = 33,792 bytes per 125µs microframe, which *reserves*
+2.16Gbit/s of the link whether or not it is used. Anything sharing that controller
+is competing for what is left.
+
 Measurements:
 
 | Setup | Result |
