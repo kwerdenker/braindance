@@ -3,25 +3,62 @@ project(kinect_grabber CXX)
 
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_BUILD_TYPE Release)
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
 
-set(PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/../vendor/prefix")
-set(TURBOJPEG_ROOT "/opt/homebrew/opt/jpeg-turbo")
+# libfreenect2 is built from source into a prefix rather than installed system
+# wide, because the vendored tree carries our patches. vendor/prefix is where the
+# macOS build lands; -DFREENECT2_ROOT=... points at any other one - the Pi's is
+# ~/freenect2. Its own freenect2Config.cmake is not used: it bakes the install
+# path in with NO_DEFAULT_PATH, so it would ignore the override.
+set(FREENECT2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../vendor/prefix"
+    CACHE PATH "libfreenect2 install prefix")
+
+find_path(FREENECT2_INCLUDE_DIR libfreenect2/libfreenect2.hpp
+          HINTS "${FREENECT2_ROOT}/include")
+find_library(FREENECT2_LIBRARY freenect2
+             HINTS "${FREENECT2_ROOT}/lib")
+
+if(NOT FREENECT2_INCLUDE_DIR OR NOT FREENECT2_LIBRARY)
+  message(FATAL_ERROR "libfreenect2 not found under ${FREENECT2_ROOT} - build it there or pass -DFREENECT2_ROOT=")
+endif()
+
+# turbojpeg is an ordinary system package on Linux but keg-only under Homebrew,
+# so it is off the default search path on macOS and needs an explicit hint.
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(PC_TURBOJPEG QUIET libturbojpeg)
+endif()
+
+find_path(TURBOJPEG_INCLUDE_DIR turbojpeg.h
+          HINTS ${PC_TURBOJPEG_INCLUDE_DIRS}
+                /opt/homebrew/opt/jpeg-turbo/include
+                /usr/local/opt/jpeg-turbo/include)
+find_library(TURBOJPEG_LIBRARY turbojpeg
+             HINTS ${PC_TURBOJPEG_LIBRARY_DIRS}
+                   /opt/homebrew/opt/jpeg-turbo/lib
+                   /usr/local/opt/jpeg-turbo/lib)
+
+if(NOT TURBOJPEG_INCLUDE_DIR OR NOT TURBOJPEG_LIBRARY)
+  message(FATAL_ERROR "turbojpeg not found - install libturbojpeg0-dev or brew install jpeg-turbo")
+endif()
 
 add_executable(grabber grabber.cpp)
 
 target_include_directories(grabber PRIVATE
-  "${PREFIX}/include"
-  "${TURBOJPEG_ROOT}/include"
+  "${FREENECT2_INCLUDE_DIR}"
+  "${TURBOJPEG_INCLUDE_DIR}"
 )
 
 target_link_libraries(grabber PRIVATE
-  "${PREFIX}/lib/libfreenect2.dylib"
-  "${TURBOJPEG_ROOT}/lib/libturbojpeg.dylib"
+  "${FREENECT2_LIBRARY}"
+  "${TURBOJPEG_LIBRARY}"
 )
 
-# Let the binary find libfreenect2.dylib without DYLD_LIBRARY_PATH
+# Let the binary find libfreenect2 without DYLD_LIBRARY_PATH or LD_LIBRARY_PATH
+get_filename_component(FREENECT2_LIBDIR "${FREENECT2_LIBRARY}" DIRECTORY)
 set_target_properties(grabber PROPERTIES
-  BUILD_RPATH "${PREFIX}/lib"
-  INSTALL_RPATH "${PREFIX}/lib"
+  BUILD_RPATH "${FREENECT2_LIBDIR}"
+  INSTALL_RPATH "${FREENECT2_LIBDIR}"
 )

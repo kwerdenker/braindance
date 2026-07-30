@@ -22,7 +22,13 @@ const has = (name) => args.includes(name);
 const PORT = Number(flag('--port', '8080'));
 const REPLAY = flag('--replay');
 const RECORD = flag('--record');
-const PIPELINE = flag('--pipeline', 'cl');
+// No fallback on purpose. Which depth processors exist is a property of the
+// libfreenect2 this grabber was built against - macOS has OpenCL and no OpenGL,
+// the Pi's V3D the reverse - and the grabber already picks the fastest one its
+// own build contains. Defaulting to 'cl' here would hand the Pi a processor that
+// is not compiled in, which the grabber now rejects rather than silently falling
+// back, so the capture node would never start.
+const PIPELINE = flag('--pipeline');
 const NO_COLOR = has('--no-color');
 
 // A browser that falls behind must never build a queue - a stale point cloud
@@ -160,7 +166,7 @@ const RESTART_DELAYS = [1000, 2000, 4000, 8000];
 function startLive() {
   const bin = join(ROOT, 'native/build/grabber');
   const buildArgs = () => {
-    const a = ['--pipeline', PIPELINE];
+    const a = PIPELINE ? ['--pipeline', PIPELINE] : [];
     if (!camera.color) a.push('--no-color');
     if (!camera.lowLight) a.push('--no-low-light');
     return a;

@@ -21,6 +21,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 
+#include <libfreenect2/config.h>
 #include <libfreenect2/libfreenect2.hpp>
 #include <libfreenect2/frame_listener_impl.h>
 #include <libfreenect2/registration.h>
@@ -77,6 +78,14 @@ static uint64_t now_ms() {
   return (uint64_t)duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
+// The serial segments of the frame loop are single-digit milliseconds each and
+// the payload memcpy is well under one, so profiling needs microseconds - a
+// millisecond clock would quantise half the breakdown to zero.
+static uint64_t now_us() {
+  using namespace std::chrono;
+  return (uint64_t)duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
 // Low light on is the sensor's own behaviour: it lengthens integration until the
 // image is properly exposed, which drops the colour camera to 15fps. Off pins the
 // exposure to a single mains-flicker period - 16.667 pseudo-ms resolves to 10ms
@@ -113,8 +122,19 @@ static void pollCommands(libfreenect2::Freenect2Device *dev, std::string &pendin
 int main(int argc, char **argv) {
   int jpegQuality = 80;
   bool wantColor = true;
+  // No libfreenect2 build has every processor: the macOS one has OpenCL and no
+  // OpenGL, the Pi's V3D has OpenGL and no OpenCL at all. So the default is the
+  // fastest processor this build actually contains, and asking for one that was
+  // not compiled in is an error rather than a silent fall-through.
+#if defined(LIBFREENECT2_WITH_OPENCL_SUPPORT)
   std::string pipelineName = "cl";
+#elif defined(LIBFREENECT2_WITH_OPENGL_SUPPORT)
+  std::string pipelineName = "gl";
+#else
+  std::string pipelineName = "cpu";
+#endif
   std::string logLevel = "warning";
+  bool profile = false;
   // libfreenect2 clips depth on the GPU before we ever see it, and its 0.5-4.5
   // defaults are Microsoft's published range, not the sensor's limit. Measured
   // by walking a hand into the lens: readings stay coherent at 99% right down to
@@ -142,19 +162,37 @@ int main(int argc, char **argv) {
     else if (a == "--min-depth" && i + 1 < argc) minDepth = (float)std::atof(argv[++i]);
     else if (a == "--max-depth" && i + 1 < argc) maxDepth = (float)std::atof(argv[++i]);
     else if (a == "--no-low-light") lowLight = false;
+    else if (a == "--profile") profile = true;
     else if (a == "--help") {
       std::fprintf(stderr,
-        "usage: grabber [--pipeline cl|cpu] [--no-color] [--quality 1-100]\n"
-        "               [--log none|error|warning|info|debug]\n"
+        "usage: grabber [--pipeline gl|cl|cpu] [--no-color] [--quality 1-100]\n"
+        "               [--log none|error|warning|info|debug] [--profile]\n"
         "               [--min-depth m] [--max-depth m] [--no-low-light]\n"
+        "\n"
+        "  --pipeline picks the depth processor. Only the ones this libfreenect2\n"
+        "  was built with are available: this build offers"
+#ifdef LIBFREENECT2_WITH_OPENGL_SUPPORT
+        " gl"
+#endif
+#ifdef LIBFREENECT2_WITH_OPENCL_SUPPORT
+        " cl"
+#endif
+        " cpu, and defaults to %s.\n"
         "\n"
         "  --log debug surfaces libfreenect2's per-packet USB diagnostics,\n"
         "  including 'not all subsequences received' - the dropped-isochronous-\n"
         "  packet counter you want when tuning LIBFREENECT2_IR_TRANSFERS.\n"
         "\n"
+        "  --profile times the serial half of the frame loop - registration,\n"
+        "  depth conversion, JPEG encode, payload assembly and the write - plus\n"
+        "  the time spent blocked waiting for the next depth frame, which is the\n"
+        "  headroom left over. One CSV row per frame, all of them written to\n"
+        "  stderr at exit so the reporting stays out of the loop being measured.\n"
+        "\n"
         "  --min-depth/--max-depth clip on the GPU before the frame is built, so\n"
         "  they decide what exists at all - the viewer's own clip only hides what\n"
-        "  these let through. Defaults 0.5 and 4.5 are libfreenect2's.\n"
+        "  these let through. Defaults are 0.05 and 9.0, wider than\n"
+        "  libfreenect2's own 0.5 and 4.5.\n"
         "\n"
         "  --no-low-light caps the colour exposure to one flicker period, which\n"
         "  holds the colour camera at 30fps in a dim room at the cost of a darker\n"
@@ -162,7 +200,8 @@ int main(int argc, char **argv) {
         "  Depth is unaffected either way - the two streams are decoupled.\n"
         "\n"
         "stdin commands, newline terminated, applied live:\n"
-        "  low-light on|off\n");
+        "  low-light on|off\n",
+        pipelineName.c_str());
       return 0;
     }
   }
@@ -188,8 +227,28 @@ int main(int argc, char **argv) {
   std::string serial = freenect2.getDefaultDeviceSerialNumber();
 
   libfreenect2::PacketPipeline *pipeline = nullptr;
-  if (pipelineName == "cpu") pipeline = new libfreenect2::CpuPacketPipeline();
-  else pipeline = new libfreenect2::OpenCLPacketPipeline();
+  if (pipelineName == "cpu") {
+    pipeline = new libfreenect2::CpuPacketPipeline();
+  } else if (pipelineName == "gl") {
+#ifdef LIBFREENECT2_WITH_OPENGL_SUPPORT
+    // The GL processor opens its own window, so a Wayland or X session has to be
+    // reachable - XDG_RUNTIME_DIR and WAYLAND_DISPLAY on a headless login shell.
+    pipeline = new libfreenect2::OpenGLPacketPipeline();
+#else
+    std::fprintf(stderr, "[grabber] this libfreenect2 was built without OpenGL support\n");
+    return 1;
+#endif
+  } else if (pipelineName == "cl") {
+#ifdef LIBFREENECT2_WITH_OPENCL_SUPPORT
+    pipeline = new libfreenect2::OpenCLPacketPipeline();
+#else
+    std::fprintf(stderr, "[grabber] this libfreenect2 was built without OpenCL support\n");
+    return 1;
+#endif
+  } else {
+    std::fprintf(stderr, "[grabber] unknown pipeline '%s' (want gl, cl or cpu)\n", pipelineName.c_str());
+    return 1;
+  }
 
   libfreenect2::Freenect2Device *dev = freenect2.openDevice(serial, pipeline);
   if (!dev) {
@@ -256,24 +315,37 @@ int main(int argc, char **argv) {
   uint64_t frameCount = 0;
   uint64_t colorCount = 0;
 
+  // Records are buffered and dumped at exit rather than printed per frame, so
+  // the profiling I/O cannot land inside the loop it is measuring.
+  struct ProfRecord {
+    uint64_t arrival;
+    uint32_t newColor, wait, acq, reg, conv, enc, asm_, write, jpegBytes;
+  };
+  std::vector<ProfRecord> prof;
+  if (profile) prof.reserve(1 << 17); // ~an hour at 30fps, so no realloc mid-loop
+
   while (!g_stop) {
+    uint64_t tWaitStart = now_us();
     if (!depthListener.waitForNewFrame(depthFrames, 10 * 1000)) {
       std::fprintf(stderr, "[grabber] timeout waiting for frame\n");
       break;
     }
+    uint64_t tArrived = now_us();
 
     pollCommands(dev, pendingCommands, wantColor);
 
     // Take a new colour frame only if one is already waiting; never block on it.
     // The previous one is released first so at most one is held outside the pool.
+    bool newColor = false;
     if (wantColor && colorListener.hasNewFrame()) {
       if (haveColor) colorListener.release(colorFrames);
       haveColor = colorListener.waitForNewFrame(colorFrames, 1000);
-      if (haveColor) colorCount++;
+      if (haveColor) { colorCount++; newColor = true; }
     }
 
     libfreenect2::Frame *depth = depthFrames[libfreenect2::Frame::Depth];
     libfreenect2::Frame *rgb = haveColor ? colorFrames[libfreenect2::Frame::Color] : nullptr;
+    uint64_t tAcquired = now_us();
 
     const float *depthSrc;
     if (rgb) {
@@ -285,22 +357,34 @@ int main(int argc, char **argv) {
       registration.undistortDepth(depth, &undistorted);
       depthSrc = (const float *)undistorted.data;
     }
+    uint64_t tRegistered = now_us();
 
     uint16_t *d16 = (uint16_t *)depthOut.data();
     for (size_t i = 0; i < DEPTH_PIXELS; i++) {
       float mm = depthSrc[i];
       d16[i] = (mm > 0.0f && mm < 65535.0f) ? (uint16_t)mm : 0;
     }
+    uint64_t tConverted = now_us();
 
-    jpegSize = 0;
+    // registered is BGRX, already aligned 1:1 with the depth pixels. jpegSize is
+    // an input as well as an output: TurboJPEG reuses the buffer it allocated on
+    // the previous call and reads jpegSize as that buffer's capacity, so zeroing
+    // it beforehand claims a zero-length buffer and the encode runs off the end.
+    // libjpeg-turbo 3 on macOS absorbs that; 2.1.5 on Debian aarch64 corrupts the
+    // heap and the grabber dies inside tjCompress2 within a few frames.
+    // Because jpegSize now survives the call, a failed encode would leave the
+    // previous frame's length behind and we would ship stale bytes as fresh ones.
+    uint32_t colorBytes = 0;
     if (rgb) {
-      // registered is BGRX, already aligned 1:1 with the depth pixels
-      tjCompress2(jpegCompressor, (unsigned char *)registered.data, DW, 0, DH,
-                  TJPF_BGRX, &jpegBuf, &jpegSize, TJSAMP_420, jpegQuality, TJFLAG_FASTDCT);
+      if (tjCompress2(jpegCompressor, (unsigned char *)registered.data, DW, 0, DH,
+                      TJPF_BGRX, &jpegBuf, &jpegSize, TJSAMP_420, jpegQuality, TJFLAG_FASTDCT) == 0)
+        colorBytes = (uint32_t)jpegSize;
+      else
+        std::fprintf(stderr, "[grabber] jpeg encode failed: %s\n", tjGetErrorStr());
     }
+    uint64_t tEncoded = now_us();
 
     uint32_t depthBytes = (uint32_t)depthOut.size();
-    uint32_t colorBytes = (uint32_t)jpegSize;
     uint64_t ts = now_ms();
 
     payload.resize(4 + 4 + 8 + depthBytes + colorBytes);
@@ -310,9 +394,27 @@ int main(int argc, char **argv) {
     std::memcpy(p, &ts, 8);         p += 8;
     std::memcpy(p, depthOut.data(), depthBytes); p += depthBytes;
     if (colorBytes) std::memcpy(p, jpegBuf, colorBytes);
+    uint64_t tAssembled = now_us();
 
     bool ok = write_message(STDOUT_FILENO, TYPE_FRAME, payload.data(), (uint32_t)payload.size());
+    uint64_t tWritten = now_us();
     depthListener.release(depthFrames);
+
+    if (profile) {
+      ProfRecord r;
+      r.arrival   = tArrived; // absolute, so delivered rate over any window is exact
+      r.newColor  = newColor ? 1 : 0;
+      r.wait      = (uint32_t)(tArrived - tWaitStart);
+      r.acq       = (uint32_t)(tAcquired - tArrived);
+      r.reg       = (uint32_t)(tRegistered - tAcquired);
+      r.conv      = (uint32_t)(tConverted - tRegistered);
+      r.enc       = (uint32_t)(tEncoded - tConverted);
+      r.asm_      = (uint32_t)(tAssembled - tEncoded);
+      r.write     = (uint32_t)(tWritten - tAssembled);
+      r.jpegBytes = colorBytes;
+      prof.push_back(r);
+    }
+
     if (!ok) break; // consumer closed the pipe
 
     // Colour lagging depth is normal in dim light and is the one number that
@@ -323,6 +425,17 @@ int main(int argc, char **argv) {
   }
 
   if (haveColor) colorListener.release(colorFrames);
+
+  if (profile) {
+    std::fprintf(stderr, "[prof] n,arrival_us,newColor,wait_us,acq_us,reg_us,conv_us,enc_us,asm_us,write_us,jpeg_bytes\n");
+    for (size_t i = 0; i < prof.size(); i++) {
+      const ProfRecord &r = prof[i];
+      std::fprintf(stderr, "[prof] %zu,%llu,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+                   i, (unsigned long long)r.arrival,
+                   r.newColor, r.wait, r.acq, r.reg, r.conv, r.enc, r.asm_, r.write, r.jpegBytes);
+    }
+    std::fflush(stderr);
+  }
 
   if (jpegBuf) tjFree(jpegBuf);
   if (jpegCompressor) tjDestroy(jpegCompressor);
