@@ -19,6 +19,7 @@
 #include <vector>
 #include <chrono>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include <libfreenect2/libfreenect2.hpp>
 #include <libfreenect2/frame_listener_impl.h>
@@ -76,11 +77,49 @@ static uint64_t now_ms() {
   return (uint64_t)duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
+// Low light on is the sensor's own behaviour: it lengthens integration until the
+// image is properly exposed, which drops the colour camera to 15fps. Off pins the
+// exposure to a single mains-flicker period - 16.667 pseudo-ms resolves to 10ms
+// at 50Hz or 8.3ms at 60Hz, whichever the room is - so colour holds 30fps and the
+// gain compensates as far as it can. Depth never changes either way.
+static void applyLowLight(libfreenect2::Freenect2Device *dev, bool on) {
+  if (on) dev->setColorAutoExposure(0.0f);
+  else dev->setColorSemiAutoExposure(16.667f);
+  std::fprintf(stderr, "[grabber] low light %s\n", on ? "on" : "off");
+}
+
+// Commands arrive newline terminated on stdin so the server can retune a running
+// grabber. Restarting instead would cost a multi-second blackout, because closing
+// the device on macOS sleeps 4s inside libfreenect2.
+static void pollCommands(libfreenect2::Freenect2Device *dev, std::string &pending, bool wantColor) {
+  char buf[256];
+  ssize_t n;
+  while ((n = ::read(STDIN_FILENO, buf, sizeof(buf))) > 0) pending.append(buf, (size_t)n);
+
+  size_t nl;
+  while ((nl = pending.find('\n')) != std::string::npos) {
+    std::string line = pending.substr(0, nl);
+    pending.erase(0, nl + 1);
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+
+    if (line == "low-light on" || line == "low-light off") {
+      if (wantColor) applyLowLight(dev, line == "low-light on");
+    } else if (!line.empty()) {
+      std::fprintf(stderr, "[grabber] unknown command: %s\n", line.c_str());
+    }
+  }
+}
+
 int main(int argc, char **argv) {
   int jpegQuality = 80;
   bool wantColor = true;
   std::string pipelineName = "cl";
   std::string logLevel = "warning";
+  // libfreenect2 clips depth on the GPU before we ever see it, and its defaults
+  // are Microsoft's conservative published range rather than the sensor's limit.
+  float minDepth = 0.5f;
+  float maxDepth = 4.5f;
+  bool lowLight = true;
 
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -88,14 +127,30 @@ int main(int argc, char **argv) {
     else if (a == "--pipeline" && i + 1 < argc) pipelineName = argv[++i];
     else if (a == "--quality" && i + 1 < argc) jpegQuality = std::atoi(argv[++i]);
     else if (a == "--log" && i + 1 < argc) logLevel = argv[++i];
+    else if (a == "--min-depth" && i + 1 < argc) minDepth = (float)std::atof(argv[++i]);
+    else if (a == "--max-depth" && i + 1 < argc) maxDepth = (float)std::atof(argv[++i]);
+    else if (a == "--no-low-light") lowLight = false;
     else if (a == "--help") {
       std::fprintf(stderr,
         "usage: grabber [--pipeline cl|cpu] [--no-color] [--quality 1-100]\n"
         "               [--log none|error|warning|info|debug]\n"
+        "               [--min-depth m] [--max-depth m] [--no-low-light]\n"
         "\n"
         "  --log debug surfaces libfreenect2's per-packet USB diagnostics,\n"
         "  including 'not all subsequences received' - the dropped-isochronous-\n"
-        "  packet counter you want when tuning LIBFREENECT2_IR_TRANSFERS.\n");
+        "  packet counter you want when tuning LIBFREENECT2_IR_TRANSFERS.\n"
+        "\n"
+        "  --min-depth/--max-depth clip on the GPU before the frame is built, so\n"
+        "  they decide what exists at all - the viewer's own clip only hides what\n"
+        "  these let through. Defaults 0.5 and 4.5 are libfreenect2's.\n"
+        "\n"
+        "  --no-low-light caps the colour exposure to one flicker period, which\n"
+        "  holds the colour camera at 30fps in a dim room at the cost of a darker\n"
+        "  image. Left on, the camera lengthens its exposure and falls to 15fps.\n"
+        "  Depth is unaffected either way - the two streams are decoupled.\n"
+        "\n"
+        "stdin commands, newline terminated, applied live:\n"
+        "  low-light on|off\n");
       return 0;
     }
   }
@@ -141,11 +196,23 @@ int main(int argc, char **argv) {
   dev->setIrAndDepthFrameListener(&depthListener);
   if (wantColor) dev->setColorFrameListener(&colorListener);
 
+  libfreenect2::Freenect2Device::Config config;
+  config.MinDepth = minDepth;
+  config.MaxDepth = maxDepth;
+  dev->setConfiguration(config);
+
   if (wantColor) {
     if (!dev->start()) { std::fprintf(stderr, "[grabber] device start failed\n"); return 1; }
   } else {
     if (!dev->startStreams(false, true)) { std::fprintf(stderr, "[grabber] device start failed\n"); return 1; }
   }
+
+  if (wantColor) applyLowLight(dev, lowLight);
+
+  // Non-blocking so the capture loop never stalls waiting on a command that may
+  // never come - the server usually has nothing to say.
+  ::fcntl(STDIN_FILENO, F_SETFL, O_NONBLOCK);
+  std::string pendingCommands;
 
   libfreenect2::Freenect2Device::IrCameraParams ir = dev->getIrCameraParams();
   libfreenect2::Freenect2Device::ColorCameraParams cp = dev->getColorCameraParams();
@@ -156,9 +223,11 @@ int main(int argc, char **argv) {
   char hello[512];
   int helloLen = std::snprintf(hello, sizeof(hello),
     "{\"serial\":\"%s\",\"firmware\":\"%s\",\"width\":%d,\"height\":%d,"
-    "\"fx\":%.6f,\"fy\":%.6f,\"cx\":%.6f,\"cy\":%.6f,\"color\":%s}",
+    "\"fx\":%.6f,\"fy\":%.6f,\"cx\":%.6f,\"cy\":%.6f,\"color\":%s,"
+    "\"minDepth\":%.3f,\"maxDepth\":%.3f,\"lowLight\":%s}",
     serial.c_str(), dev->getFirmwareVersion().c_str(), DW, DH,
-    ir.fx, ir.fy, ir.cx, ir.cy, wantColor ? "true" : "false");
+    ir.fx, ir.fy, ir.cx, ir.cy, wantColor ? "true" : "false",
+    minDepth, maxDepth, (wantColor && lowLight) ? "true" : "false");
   if (!write_message(STDOUT_FILENO, TYPE_HELLO, hello, (uint32_t)helloLen)) return 1;
   std::fprintf(stderr, "[grabber] streaming %s (fx=%.2f fy=%.2f cx=%.2f cy=%.2f)\n",
                serial.c_str(), ir.fx, ir.fy, ir.cx, ir.cy);
@@ -180,6 +249,8 @@ int main(int argc, char **argv) {
       std::fprintf(stderr, "[grabber] timeout waiting for frame\n");
       break;
     }
+
+    pollCommands(dev, pendingCommands, wantColor);
 
     // Take a new colour frame only if one is already waiting; never block on it.
     // The previous one is released first so at most one is held outside the pool.

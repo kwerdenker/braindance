@@ -89,12 +89,36 @@ function setSensorState(state) {
   broadcastText(JSON.stringify({ status: state }));
 }
 
+// Live camera settings the viewer can change. Colour on/off has to restart the
+// grabber because it decides which streams the device is told to open at all;
+// low light is a command the running grabber applies in place.
+const camera = { color: !NO_COLOR, lowLight: true };
+let applyCamera = null; // wired up by startLive; absent in replay
+
 wss.on('connection', (ws) => {
   ws.binaryType = 'nodebuffer';
   console.log(`[server] client connected (${wss.clients.size} total)`);
   if (helloJson) ws.send(helloJson);
   ws.send(JSON.stringify({ status: sensorState }));
+  ws.send(JSON.stringify({ camera }));
   ws.on('error', (err) => console.error('[server] socket error:', err.message));
+
+  ws.on('message', (raw) => {
+    let msg;
+    try {
+      msg = JSON.parse(raw.toString('utf8'));
+    } catch {
+      return; // a client sending junk is not the server's problem
+    }
+    if (!msg || typeof msg.camera !== 'object' || !msg.camera) return;
+    if (!applyCamera) return;
+
+    const next = {
+      color: typeof msg.camera.color === 'boolean' ? msg.camera.color : camera.color,
+      lowLight: typeof msg.camera.lowLight === 'boolean' ? msg.camera.lowLight : camera.lowLight,
+    };
+    applyCamera(next);
+  });
 });
 
 function broadcastFrame(payload) {
@@ -135,8 +159,12 @@ const RESTART_DELAYS = [1000, 2000, 4000, 8000];
 
 function startLive() {
   const bin = join(ROOT, 'native/build/grabber');
-  const grabberArgs = ['--pipeline', PIPELINE];
-  if (NO_COLOR) grabberArgs.push('--no-color');
+  const buildArgs = () => {
+    const a = ['--pipeline', PIPELINE];
+    if (!camera.color) a.push('--no-color');
+    if (!camera.lowLight) a.push('--no-low-light');
+    return a;
+  };
 
   const recorder = RECORD ? createWriteStream(RECORD) : null;
   if (recorder) console.log(`[server] recording to ${RECORD}`);
@@ -144,13 +172,18 @@ function startLive() {
   let child = null;
   let attempt = 0;
   let shuttingDown = false;
+  let restarting = false;
 
   const spawnGrabber = () => {
+    const grabberArgs = buildArgs();
     console.log(`[server] starting grabber: ${bin} ${grabberArgs.join(' ')}`);
     setSensorState('starting');
 
     const parser = new MessageParser();
-    child = spawn(bin, grabberArgs, { stdio: ['ignore', 'pipe', 'inherit'] });
+    // stdin is a pipe so settings that do not need a restart can be sent to the
+    // running grabber instead of costing a multi-second device reopen.
+    child = spawn(bin, grabberArgs, { stdio: ['pipe', 'pipe', 'inherit'] });
+    child.stdin.on('error', () => { /* the grabber can exit mid-write */ });
 
     child.stdout.on('data', (chunk) => {
       if (recorder) recorder.write(chunk);
@@ -172,12 +205,41 @@ function startLive() {
     child.on('exit', (code, signal) => {
       console.error(`[server] grabber exited (code=${code} signal=${signal})`);
       if (shuttingDown) return;
+      if (restarting) {
+        // Asked for, not a failure - so it does not count toward the backoff.
+        restarting = false;
+        setTimeout(spawnGrabber, 250);
+        return;
+      }
       setSensorState('lost');
       const delay = RESTART_DELAYS[Math.min(attempt, RESTART_DELAYS.length - 1)];
       attempt++;
       console.log(`[server] restarting grabber in ${delay}ms (attempt ${attempt})`);
       setTimeout(spawnGrabber, delay);
     });
+  };
+
+  applyCamera = (next) => {
+    const needsRestart = next.color !== camera.color;
+    const lowLightChanged = next.lowLight !== camera.lowLight;
+    if (!needsRestart && !lowLightChanged) return;
+
+    Object.assign(camera, next);
+    broadcastText(JSON.stringify({ camera }));
+
+    if (needsRestart) {
+      console.log(`[server] colour camera ${camera.color ? 'on' : 'off'} - restarting grabber`);
+      restarting = true;
+      attempt = 0;
+      child?.kill('SIGTERM');
+      return;
+    }
+    // Colour off means there is no exposure to set, but the flag is still worth
+    // remembering so it takes effect when colour comes back.
+    if (camera.color) {
+      console.log(`[server] low light ${camera.lowLight ? 'on' : 'off'}`);
+      child?.stdin.write(`low-light ${camera.lowLight ? 'on' : 'off'}\n`);
+    }
   };
 
   spawnGrabber();

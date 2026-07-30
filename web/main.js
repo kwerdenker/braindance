@@ -828,9 +828,33 @@ function handleFrame(buffer) {
   }
 }
 
+// Camera settings live on the sensor, not in the shader, so the server owns them
+// and the checkboxes only mirror what it reports back. Toggling colour restarts
+// the grabber; low light is applied to the running one.
+const colorCamEl = document.getElementById('colorCam');
+const lowLightEl = document.getElementById('lowLight');
+let socket = null;
+
+function sendCamera(patch) {
+  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ camera: patch }));
+}
+
+function showCamera(state) {
+  colorCamEl.checked = state.color;
+  lowLightEl.checked = state.lowLight;
+  // Exposure is meaningless with the colour camera off, so the control says so
+  // rather than silently doing nothing.
+  lowLightEl.disabled = !state.color;
+  lowLightEl.parentElement.classList.toggle('disabled', !state.color);
+}
+
+colorCamEl.addEventListener('change', () => sendCamera({ color: colorCamEl.checked }));
+lowLightEl.addEventListener('change', () => sendCamera({ lowLight: lowLightEl.checked }));
+
 function connect() {
   const ws = new WebSocket(`ws://${location.host}`);
   ws.binaryType = 'arraybuffer';
+  socket = ws;
 
   ws.onopen = () => { sensorLabel = 'waiting for sensor…'; setStatus(); };
 
@@ -842,6 +866,11 @@ function connect() {
         sensorState = { live: '', starting: 'sensor starting…', lost: 'sensor lost — restarting' }[msg.status] ?? msg.status;
         if (msg.status !== 'live') fps = 0;
         setStatus();
+        return;
+      }
+
+      if (msg.camera) {
+        showCamera(msg.camera);
         return;
       }
 

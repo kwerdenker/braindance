@@ -50,6 +50,10 @@
   .check input { accent-color: var(--accent); margin: 0; }
 
   #hint { position: fixed; bottom: 14px; left: 16px; color: var(--dim); z-index: 10; }
+
+  #camNote { color: var(--dim); font-size: 10px; line-height: 1.45; opacity: 0.75; margin-top: 2px; }
+  .check input:disabled { opacity: 0.4; }
+  .check.disabled { opacity: 0.45; cursor: default; }
 </style>
 </head>
 <body>
@@ -86,6 +90,13 @@
       <label>Smoothing</label>
       <label class="check"><input id="interpolate" type="checkbox" checked> interpolate frames</label>
       <div class="row"><span>snap mm</span><input id="snapDelta" type="range" min="20" max="1200" step="10" value="250"><output>250</output></div>
+    </div>
+
+    <div class="group">
+      <label>Colour camera</label>
+      <label class="check"><input id="colorCam" type="checkbox" checked> colour camera on</label>
+      <label class="check"><input id="lowLight" type="checkbox" checked> low light mode</label>
+      <div id="camNote">low light lets the colour camera drop to 15fps for a brighter image. Depth stays at 30 either way.</div>
     </div>
 
     <div class="group">
