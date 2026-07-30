@@ -43,11 +43,55 @@ Drag to orbit, scroll to zoom, right-drag to pan, `H` hides the panel.
 | Depth | cool-to-warm ramp across the clip range |
 | Ghost | luminance shell that glows along depth discontinuities |
 | Contour | topographic bands sweeping through depth |
+| Blackwall | crimson containment volume, cyan scan sweep, torn datastream bands |
+
+Blackwall is a pipeline preset rather than just a shader branch: selecting it
+switches the points to additive blending and drives the whole post chain (bloom,
+trails, RGB split, scanlines, grain, glitch). Leaving it restores a neutral view.
+Every value stays on its own slider afterwards, so the preset is a starting point.
 
 `turbulence` displaces points with a time-varying noise field. The `near`/`far`
 depth clip is the most useful control for isolating a person from the room.
 `cull speckle` drops points whose neighbours disagree, which cleans up the noise
-that dropped USB packets leave behind.
+that dropped USB packets leave behind. `render %` scales the drawing buffer and is
+the one control that reliably buys back frame time on a large display.
+
+## Frame interpolation
+
+The sensor delivers 8–15fps while the display runs at 120Hz, so the vertex shader
+blends between the last two depth frames rather than holding each one until the
+next arrives. Two details make this an improvement rather than a regression:
+
+- **Blend time comes from measured arrival spacing**, kept as an EMA, not an
+  assumed 30fps. The stream is irregular, and guessing the interval wrong stutters
+  worse than not blending at all. The blend clamps at 1.0 so a late frame holds on
+  the newest data instead of extrapolating past it.
+- **Discontinuities snap instead of lerping.** A hand crossing in front of a wall
+  jumps metres between frames, and interpolating that draws a smear through empty
+  space for the whole interval. Above the `snap mm` threshold the point jumps to
+  the new depth.
+
+## Rendering cost
+
+Measured on an M2 Max at a 2.28M-pixel drawing buffer, by rendering N times per
+frame so fixed overhead amortises out — a plain rAF counter only measures the
+120Hz vsync ceiling, not the work.
+
+| Configuration | Cost per frame |
+| --- | --- |
+| Points only, before optimisation | 1.44 ms |
+| Points only, after early-out | 0.71 ms |
+| Full Blackwall chain (trails + bloom + grade) | 2.44 ms |
+| Budget at 120Hz | 8.33 ms |
+
+The halving came from one change: the vertex shader returns on `mm <= 0.0` before
+the four neighbour `texelFetch` calls. A large share of every frame is empty, and
+those pixels are culled regardless of what their neighbours say.
+
+Removing the fragment `discard` in favour of additive alpha falloff was measured
+separately and made no difference here (0.71 vs 0.74 ms), so it is kept for the
+look rather than for speed. Bloom runs at half the buffer resolution because it is
+the most expensive pass in the chain.
 
 ## Building the native side
 

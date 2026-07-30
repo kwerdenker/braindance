@@ -10,6 +10,7 @@
     --dim: #7d8794;
     --line: rgba(255, 255, 255, 0.1);
     --accent: #5ad1c4;
+    --red: #ff3b4e;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; background: #05070a; color: var(--ink);
@@ -17,9 +18,10 @@
   canvas { display: block; }
 
   #panel {
-    position: fixed; top: 16px; left: 16px; width: 250px; max-height: calc(100vh - 32px);
+    position: fixed; top: 16px; left: 16px; width: 252px; max-height: calc(100vh - 32px);
     overflow-y: auto; padding: 14px; border: 1px solid var(--line); border-radius: 10px;
     background: rgba(8, 11, 16, 0.82); backdrop-filter: blur(12px); z-index: 10;
+    scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.2) transparent;
   }
   #panel h1 { margin: 0 0 2px; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; }
   #status { color: var(--dim); margin-bottom: 12px; }
@@ -41,6 +43,8 @@
   }
   .modes button:hover { border-color: rgba(255,255,255,0.28); color: var(--ink); }
   .modes button[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: #04231f; }
+  .modes button.wide { grid-column: 1 / -1; }
+  .modes button.wide[aria-pressed=true] { background: var(--red); border-color: var(--red); color: #17000a; }
 
   .check { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; cursor: pointer; }
   .check input { accent-color: var(--accent); margin: 0; }
@@ -60,14 +64,16 @@
         <button data-mode="1" aria-pressed="false">Depth</button>
         <button data-mode="2" aria-pressed="false">Ghost</button>
         <button data-mode="3" aria-pressed="false">Contour</button>
+        <button data-mode="4" aria-pressed="false" class="wide">BLACKWALL</button>
       </div>
     </div>
 
     <div class="group">
       <label>Points</label>
-      <div class="row"><span>size</span><input id="pointSize" type="range" min="0.5" max="14" step="0.1" value="4"><output>4</output></div>
+      <div class="row"><span>size</span><input id="pointSize" type="range" min="0.5" max="20" step="0.1" value="5"><output>5</output></div>
       <div class="row"><span>opacity</span><input id="opacity" type="range" min="0.05" max="1" step="0.01" value="1"><output>1</output></div>
       <div class="row"><span>brightness</span><input id="exposure" type="range" min="0.2" max="3" step="0.05" value="1.15"><output>1.15</output></div>
+      <label class="check"><input id="additive" type="checkbox"> additive glow</label>
     </div>
 
     <div class="group">
@@ -77,16 +83,33 @@
     </div>
 
     <div class="group">
+      <label>Smoothing</label>
+      <label class="check"><input id="interpolate" type="checkbox" checked> interpolate frames</label>
+      <div class="row"><span>snap mm</span><input id="snapDelta" type="range" min="20" max="1200" step="10" value="250"><output>250</output></div>
+    </div>
+
+    <div class="group">
       <label>Motion</label>
       <div class="row"><span>turbulence</span><input id="warp" type="range" min="0" max="0.25" step="0.002" value="0"><output>0</output></div>
       <div class="row"><span>speed</span><input id="warpSpeed" type="range" min="0" max="3" step="0.05" value="0.7"><output>0.7</output></div>
+      <div class="row"><span>glitch</span><input id="glitch" type="range" min="0" max="1" step="0.01" value="0"><output>0</output></div>
       <label class="check"><input id="spin" type="checkbox"> auto-orbit</label>
     </div>
 
     <div class="group">
-      <label>Cleanup</label>
+      <label>Post</label>
+      <div class="row"><span>bloom</span><input id="bloom" type="range" min="0" max="3" step="0.05" value="0"><output>0</output></div>
+      <div class="row"><span>trails</span><input id="trails" type="range" min="0" max="0.97" step="0.01" value="0"><output>0</output></div>
+      <div class="row"><span>rgb split</span><input id="rgbSplit" type="range" min="0" max="6" step="0.05" value="0"><output>0</output></div>
+      <div class="row"><span>scanlines</span><input id="scanlines" type="range" min="0" max="1" step="0.01" value="0"><output>0</output></div>
+      <div class="row"><span>grain</span><input id="grain" type="range" min="0" max="1" step="0.01" value="0"><output>0</output></div>
+    </div>
+
+    <div class="group">
+      <label>Cleanup &amp; perf</label>
       <label class="check"><input id="denoise" type="checkbox" checked> cull speckle</label>
       <div class="row"><span>edge tol</span><input id="edgeTol" type="range" min="10" max="400" step="5" value="120"><output>120</output></div>
+      <div class="row"><span>render %</span><input id="renderScale" type="range" min="40" max="200" step="5" value="100"><output>100</output></div>
     </div>
   </div>
 
