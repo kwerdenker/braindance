@@ -24,7 +24,7 @@ Options pass through to the grabber:
 
 ```bash
 node server/index.js --pipeline cpu     # CPU depth instead of OpenCL
-node server/index.js --no-color         # depth only, roughly half the USB bandwidth
+node server/index.js --no-color         # depth only, no colour stream
 node server/index.js --port 9000
 node server/index.js --record captures/session.knct
 node server/index.js --replay captures/session.knct
@@ -68,20 +68,23 @@ thing to reach for if the look feels blown out:
 
 `turbulence` displaces points with a time-varying noise field. The `near`/`far`
 depth clip is the most useful control for isolating a person from the room.
-`cull speckle` drops points whose neighbours disagree, which cleans up the noise
-that dropped USB packets leave behind. `render %` scales the drawing buffer and is
+`cull speckle` drops points whose neighbours disagree, which cleans up the
+sensor's own edge noise — measured at sigma ~= 3.5 + 1.3*d mm, so 4.6mm at 0.75m
+rising to 10mm at 4.25m. `render %` scales the drawing buffer and is
 the one control that reliably buys back frame time on a large display.
 
 ## Frame interpolation
 
-The sensor delivers 8–15fps while the display runs at 120Hz, so the vertex shader
-blends between the last two depth frames rather than holding each one until the
-next arrives. Two details make this an improvement rather than a regression:
+The sensor delivers 30fps on a healthy USB topology, and far less on a bad one,
+while the display runs at 120Hz — so the vertex shader blends between the last
+two depth frames rather than holding each one until the next arrives. Two details make this an improvement rather than a regression:
 
 - **Blend time comes from measured arrival spacing**, kept as an EMA, not an
-  assumed 30fps. The stream is irregular, and guessing the interval wrong stutters
-  worse than not blending at all. The blend clamps at 1.0 so a late frame holds on
-  the newest data instead of extrapolating past it.
+  assumed 30fps. On a healthy link arrivals are a clean 33ms apart and the EMA is
+  nearly a constant; on a degraded one they ran p50 64ms against p90 222ms, and
+  guessing that interval wrong stutters worse than not blending at all. The blend
+  clamps at 1.0 so a late frame holds on the newest data rather than
+  extrapolating past it.
 - **Discontinuities snap instead of lerping.** A hand crossing in front of a wall
   jumps metres between frames, and interpolating that draws a smear through empty
   space for the whole interval. Above the `snap mm` threshold the point jumps to
@@ -182,10 +185,14 @@ measurement`) and never fetched by the OpenCL kernel.
 So frames were being thrown away over ~300KB of data that nothing reads.
 Measured: 6.8% of all discarded frames were missing nothing but sub-image 9.
 
-Accepting them is worth **+12.9%** on delivered frame rate — 12.82fps to
+Accepting them was worth **+12.9%** on the degraded topology — 12.82fps to
 14.48fps, measured as an interleaved A/B (old, new, old, new, old, new) with
 both paths in one binary behind a temporary switch. Every new-path run beat
-every old-path run. Depth output is unchanged, because the bytes the patch stops
+every old-path run.
+
+On a healthy topology nothing is dropped, so the patch is inert. It stays as
+insurance: it costs nothing and it keeps a marginal link from throwing away
+frames it did not need to. Depth output is unchanged, because the bytes the patch stops
 waiting for were never an input to the solve.
 
 The interleaving matters: a first pass comparing four runs before against three
@@ -195,11 +202,32 @@ the difference. Sequential before/after is not trustworthy on this rig.
 The patch lives in `patches/` rather than in the tree because `vendor/` is
 gitignored. `docs/performance-investigation.md` has the full measurements.
 
-## Known issue: USB bandwidth
+## Resolved: USB topology was the whole bottleneck
 
-The sensor runs at **12–15fps instead of 30**, because it is connected through a
-chain of hubs on a Thunderbolt dock. `ioreg` shows the sensor is a *sibling* of
-the last hub, sharing its parent with the machine's network interface:
+The sensor ran at 12–15fps for a long time, with ~1000 discarded depth frames a
+minute. It was the hub chain, and nothing else. Moving it from three hubs deep on
+a Thunderbolt dock to a single hub on its own controller took it to **a flat
+30.00fps with zero drops** — 1200 frames in 40 seconds, three runs, identical:
+
+| topology | fps | drops/min |
+| --- | --- | --- |
+| 3 hubs deep on the dock | 12.82 | ~1000 |
+| ditto, with the sub-9 patch | 14.48 | ~950 |
+| **1 hub, own controller** | **30.00** | **0** |
+
+Check the link is actually SuperSpeed before measuring anything — a USB 2.0 cable
+enumerates fine and then fails to stream:
+
+```bash
+ioreg -p IOUSB -w0 -l | grep -A 40 "Xbox NUI Sensor@" | grep "Device Speed"
+```
+
+`"Device Speed" = 3` is SuperSpeed and works. `= 2` is High Speed, and the Kinect
+v2 cannot stream on it — libfreenect2 fails at `failed to claim interface with
+IrInterfaceId(=1)`, which reads like a permissions problem and is not one.
+
+The old topology, kept because it is a good example of what to avoid — the sensor
+was a *sibling* of the last hub, sharing its parent with the network interface:
 
 ```
 AppleT8112USBXHCI@00000000
@@ -228,9 +256,9 @@ Measurements:
 | OpenCL depth, through the dock | ~1000 drops/min, ~0 lost to processing — GPU keeps up fine |
 | Replay from file | a steady 29fps — the browser and GPU path are not the bottleneck |
 
-The fix is physical: plug the Kinect adapter straight into a Mac port with a plain
-passive USB-A→USB-C adapter, no hub in between. The Kinect v2 needs sustained
-isochronous USB3 bandwidth and is well known for refusing to share a hub chain.
+The Kinect v2 needs sustained isochronous USB3 bandwidth — it reserves
+2.16Gbit/s of the link whether it uses it or not — and it will not tolerate a
+hub chain. One hub is fine; three was not.
 
 Two workarounds that sound plausible and were measured **not** to work, so nobody
 re-derives them:

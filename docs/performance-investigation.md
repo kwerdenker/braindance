@@ -262,3 +262,38 @@ the ~7ms headroom.
 
 Size the wake from a look parameter (wake length in metres), never from
 velocity x interval, or it will visibly shorten when the frame rate improves.
+
+## Resolution: it was the hub chain, entirely
+
+After the investigation above, the sensor was moved off the Thunderbolt dock's
+three-hub chain onto a single hub on its own controller. The result settles every
+open question in this document:
+
+| topology | fps | drops/min | skipped |
+| --- | --- | --- | --- |
+| 3 hubs deep on the dock | 12.82 | ~1000 | 0 |
+| ditto, with the sub-9 patch | 14.48 | ~950 | 0 |
+| **1 hub, own controller** | **30.00** | **0** | **0** |
+
+1200 frames in 40 seconds, three consecutive runs, byte-identical counts. Zero
+discarded frames — not "few", zero. Verified end to end: the server fans out
+29.0fps at 13.9MB/s with `dropped=0`, and the browser reports 30fps in.
+
+**What this retires.** The two-frequency solve is unnecessary and should not be
+built: it existed solely to recover discarded frames, and there are none. The
+sub-9 patch is now inert, and stays only as cheap insurance for a marginal link.
+The NIC-contention question is moot. The 80.1%-recoverable figure and the 24–25fps
+projection were correct arithmetic on a problem that no longer exists.
+
+**What survives.** The validity flicker (3.14% of pixels toggling per frame pair)
+is a property of the depth solve's confidence gating, not of delivery, so the
+alpha cross-fade work stands unchanged. The replay pacer fix stands. The shedding
+wake stands — it was always a look rather than error correction, which is exactly
+why it is unaffected.
+
+**Watch the link speed, not just the topology.** An intermediate attempt put the
+sensor on a hub where it enumerated at High Speed. libfreenect2 then failed with
+`failed to claim interface with IrInterfaceId(=1)! LIBUSB_ERROR_ACCESS`, which
+reads like a permissions problem and is not one — it is a USB 2.0 link. Check
+`"Device Speed"` in `ioreg`: 3 is SuperSpeed and works, 2 is High Speed and
+cannot stream.
