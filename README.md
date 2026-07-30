@@ -31,7 +31,11 @@ node server/index.js --replay captures/session.knct
 ```
 
 `--replay` is the one to reach for when iterating on shaders: it loops a recorded
-capture at a full 30fps so you can work on the visuals with the sensor unplugged.
+capture so you can work on the visuals with the sensor unplugged. It replays the
+*recorded* arrival spacing, not a uniform 30fps — a live stream runs p50 64ms
+against p90 222ms, and pacing every frame evenly would hand the viewer the one
+cadence that never happens, so smoothing tuned against replay would look right
+there and stutter on the sensor.
 
 ## Viewer controls
 

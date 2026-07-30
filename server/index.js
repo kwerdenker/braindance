@@ -199,7 +199,7 @@ function startReplay() {
     return;
   }
 
-  console.log(`[server] replaying ${REPLAY} (looping at 30fps)`);
+  console.log(`[server] replaying ${REPLAY}`);
   const parser = new MessageParser();
   const messages = [];
   for (const msg of parser.push(raw)) {
@@ -214,13 +214,27 @@ function startReplay() {
     console.error('[server] replay file contains no frames');
     return;
   }
-  console.log(`[server] ${frames.length} frames loaded`);
+  // Replay the recorded arrival spacing rather than a uniform 30fps. A live
+  // stream is deeply irregular - measured p50 64ms against p90 222ms - and
+  // pacing every frame 33ms apart hands the viewer the one cadence that never
+  // happens, so interpolation tuned against replay looks right here and stutters
+  // on the sensor. Frame 0 anchors the loop; the gap after the last frame reuses
+  // the median so the wrap does not stall.
+  const stamps = frames.map((f) => Number(f.payload.readBigUInt64LE(8)));
+  const gaps = stamps.slice(1).map((t, i) => t - stamps[i]).filter((g) => g > 0 && g < 2000);
+  const median = gaps.length ? gaps.slice().sort((a, b) => a - b)[gaps.length >> 1] : 33;
+  gaps.push(median);
+
+  console.log(`[server] ${frames.length} frames loaded, median gap ${median}ms`);
 
   let i = 0;
-  setInterval(() => {
+  const tick = () => {
     handleMessage(frames[i % frames.length]);
+    const gap = gaps[i % gaps.length];
     i++;
-  }, 1000 / 30);
+    setTimeout(tick, gap);
+  };
+  tick();
 }
 
 httpServer.listen(PORT, () => {
