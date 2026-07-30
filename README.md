@@ -73,25 +73,38 @@ next arrives. Two details make this an improvement rather than a regression:
 
 ## Rendering cost
 
-Measured on an M2 Max at a 2.28M-pixel drawing buffer, by rendering N times per
-frame so fixed overhead amortises out — a plain rAF counter only measures the
-120Hz vsync ceiling, not the work.
+Measured on an M2 Max by rendering N times per frame so fixed overhead amortises
+out. A plain rAF counter only measures the 120Hz vsync ceiling, not the work —
+every configuration reads as "120fps" until you amplify it.
 
-| Configuration | Cost per frame |
-| --- | --- |
-| Points only, before optimisation | 1.44 ms |
-| Points only, after early-out | 0.71 ms |
-| Full Blackwall chain (trails + bloom + grade) | 2.44 ms |
-| Budget at 120Hz | 8.33 ms |
+The point pass does not scale with resolution; the post chain does:
 
-The halving came from one change: the vertex shader returns on `mm <= 0.0` before
-the four neighbour `texelFetch` calls. A large share of every frame is empty, and
-those pixels are culled regardless of what their neighbours say.
+| Drawing buffer | Points only | With full Blackwall chain |
+| --- | --- | --- |
+| 0.92 Mpx | 0.83 ms | 0.87 ms |
+| 2.07 Mpx | 0.83 ms | 1.17 ms |
+| 3.69 Mpx | 0.83 ms | 1.57 ms |
+
+So the 217k points are bound by vertex work and texture fetches, not fill rate —
+resolution is nearly free for them. The post chain costs roughly 0.2 ms per
+megapixel on top, which is what the `render %` slider exists to control on a large
+display. At 120Hz the budget is 8.33 ms per frame.
+
+The one optimisation that mattered was returning early on `mm <= 0.0` before the
+four neighbour `texelFetch` calls, which cut the point pass from 1.44 ms to
+0.71 ms at 2.28 Mpx. A large share of every frame is empty, and those pixels are
+culled regardless of what their neighbours say.
 
 Removing the fragment `discard` in favour of additive alpha falloff was measured
 separately and made no difference here (0.71 vs 0.74 ms), so it is kept for the
 look rather than for speed. Bloom runs at half the buffer resolution because it is
 the most expensive pass in the chain.
+
+Interpolation's two branches are verified against synthetic depth planes rendered
+to an offscreen target: a 1200 mm jump lands exactly on the new depth rather than
+the lerp midpoint, and a 100 mm drift interpolates to the midpoint. Worth
+re-checking against a capture with real motion — `captures/sample.knct` is nearly
+static, with only 0.06% of pixels exceeding the snap threshold between frames.
 
 ## Building the native side
 
