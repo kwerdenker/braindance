@@ -6,6 +6,7 @@ import { AfterimagePass } from 'three/addons/postprocessing/AfterimagePass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 
 const DW = 512;
 const DH = 424;
@@ -65,18 +66,126 @@ const makeColorTexture = () => {
 let colorPrev = makeColorTexture();
 let colorCurr = makeColorTexture();
 
+// ------------------------------------------------------------- surface memory
+
+// A ray that lands on a different surface between two frames is a death and a
+// birth. Today the point simply teleports, which is the loudest artifact in the
+// viewer: 3.14% of pixels flip valid/zero every frame pair with no fade at all,
+// 44x more pixels than the snap threshold ever touches.
+//
+// Remembering where the ray used to be turns that into a cross-fade, and the
+// same memory is what a wake needs - so both come from one pass, one per
+// arriving frame rather than one per display frame.
+//
+//   .r  depth the ray had before the swap, mm - where the ghost stays
+//   .g  seconds since that swap
+//   .b  how hard the swap was, 0..1
+//   .a  depth at the previous arrival, mm - the swap detector itself
+const stateType = renderer.getContext().getExtension('EXT_color_buffer_float')
+  ? THREE.FloatType
+  : THREE.HalfFloatType;
+
+const makeStateTarget = () => new THREE.WebGLRenderTarget(DW, DH, {
+  type: stateType,
+  minFilter: THREE.NearestFilter,
+  magFilter: THREE.NearestFilter,
+  depthBuffer: false,
+  stencilBuffer: false,
+  generateMipmaps: false,
+});
+
+let statePrev = makeStateTarget();
+let stateNext = makeStateTarget();
+
+const MAX_AGE = 4.0;
+
+const stateUniforms = {
+  depthCurr: { value: depthCurr },
+  statePrev: { value: statePrev.texture },
+  resolution: { value: new THREE.Vector2(DW, DH) },
+  dt: { value: 1 / 30 },
+  snapDelta: { value: 250 },
+};
+
+const stateQuad = new FullScreenQuad(new THREE.RawShaderMaterial({
+  glslVersion: THREE.GLSL3,
+  uniforms: stateUniforms,
+  vertexShader: /* glsl */ `
+    in vec3 position;
+    void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }
+  `,
+  fragmentShader: /* glsl */ `
+    precision highp float;
+    precision highp usampler2D;
+
+    uniform usampler2D depthCurr;
+    uniform sampler2D statePrev;
+    uniform vec2 resolution;
+    uniform float dt, snapDelta;
+
+    out vec4 outState;
+
+    void main() {
+      ivec2 px = ivec2(gl_FragCoord.xy);
+      float cur = float(texelFetch(depthCurr, px, 0).r);
+      vec4 s = texelFetch(statePrev, px, 0);
+      float last = s.a;
+
+      bool wasValid = last > 0.0;
+      bool isValid = cur > 0.0;
+      float jump = (wasValid && isValid) ? abs(cur - last) : 0.0;
+      bool swapped = (wasValid != isValid) || jump > snapDelta;
+
+      if (!swapped) {
+        // Clamped so age cannot grow without bound across a long session, and so
+        // it never reaches the magnitude where a float stops absorbing a 33ms step.
+        outState = vec4(s.r, min(s.g + dt, ${MAX_AGE.toFixed(1)}), s.b, cur);
+        return;
+      }
+
+      // A pixel blinking in the middle of a flat wall is the depth solve's
+      // confidence gate chattering, not motion. Keying strength off the local
+      // depth spread separates the two: noise sits on a smooth surface and gets
+      // only the brief cross-fade, while a silhouette crossing sheds a full wake.
+      float ref = isValid ? cur : last;
+      float edge = 0.0;
+      for (int i = 0; i < 4; i++) {
+        ivec2 o = i == 0 ? ivec2(1, 0) : i == 1 ? ivec2(-1, 0) : i == 2 ? ivec2(0, 1) : ivec2(0, -1);
+        float n = float(texelFetch(depthCurr, clamp(px + o, ivec2(0), ivec2(resolution) - 1), 0).r);
+        if (n > 0.0) edge = max(edge, abs(n - ref));
+      }
+
+      float strength = (wasValid && isValid)
+        ? clamp(jump / (snapDelta * 3.0), 0.0, 1.0)
+        : clamp(edge / snapDelta, 0.0, 1.0);
+
+      outState = vec4(wasValid ? last : 0.0, 0.0, strength, cur);
+    }
+  `,
+}));
+
 // ---------------------------------------------------------------- point cloud
 
+// Two vertices per depth pixel: one for the live point, one for the ghost it
+// leaves behind. Shedding needs both on screen at once. The ghost half is left
+// out of the draw range entirely when nothing can be shed, so it costs nothing.
 const geometry = new THREE.BufferGeometry();
-const pixelCoords = new Float32Array(POINTS * 3);
-for (let row = 0, i = 0; row < DH; row++) {
-  for (let col = 0; col < DW; col++, i++) {
-    pixelCoords[i * 3] = col;
-    pixelCoords[i * 3 + 1] = row;
-    pixelCoords[i * 3 + 2] = 0;
+const pixelCoords = new Float32Array(POINTS * 2 * 3);
+const slotAttr = new Float32Array(POINTS * 2);
+for (let slot = 0; slot < 2; slot++) {
+  for (let row = 0, i = 0; row < DH; row++) {
+    for (let col = 0; col < DW; col++, i++) {
+      const k = slot * POINTS + i;
+      pixelCoords[k * 3] = col;
+      pixelCoords[k * 3 + 1] = row;
+      pixelCoords[k * 3 + 2] = 0;
+      slotAttr[k] = slot;
+    }
   }
 }
 geometry.setAttribute('position', new THREE.BufferAttribute(pixelCoords, 3));
+geometry.setAttribute('aSlot', new THREE.BufferAttribute(slotAttr, 1));
+geometry.setDrawRange(0, POINTS);
 geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, -3), 12);
 
 const uniforms = {
@@ -106,6 +215,10 @@ const uniforms = {
   softEdge: { value: 1 },
   scanAmount: { value: 0 },
   rimAmount: { value: 0.55 },
+  stateTex: { value: statePrev.texture },
+  fadeTime: { value: 0.12 },
+  wakeTime: { value: 0 },
+  sinceFrameSec: { value: 0 },
 };
 
 const vertexShader = /* glsl */ `
@@ -113,16 +226,22 @@ precision highp float;
 precision highp usampler2D;
 
 uniform usampler2D depthPrev, depthCurr;
+uniform sampler2D stateTex;
 uniform vec2 focal, center, resolution;
 uniform float pointSize, nearClip, farClip, warp, warpSpeed, time, edgeTol;
 uniform float mixT, snapDelta, glitch;
+uniform float fadeTime, wakeTime, sinceFrameSec;
 uniform int denoise, interpolate;
+
+in float aSlot;
 
 out vec2 vUv;
 out float vDepth;
 out float vEdge;
 out float vGlitch;
 out float vSize;
+out float vGhost;
+out float vFade;
 
 float depthAt(usampler2D tex, ivec2 p) {
   return float(texelFetch(tex, p, 0).r);
@@ -142,43 +261,80 @@ vec3 unproject(vec2 pixel, float z) {
 
 void main() {
   ivec2 px = ivec2(position.xy);
-  float mmC = depthAt(depthCurr, px);
 
-  // Early-out before the neighbour fetches: a large share of the frame is empty,
-  // and those pixels are culled regardless of what their neighbours say.
-  if (mmC <= 0.0) {
-    gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
-    gl_PointSize = 0.0;
-    return;
-  }
+  // Age advances continuously between arrivals, so a 30fps stream still fades on
+  // a 120Hz display instead of stepping once per frame.
+  vec4 st = texelFetch(stateTex, px, 0);
+  float age = st.g + sinceFrameSec;
 
-  float mm = mmC;
-  if (interpolate == 1) {
-    float mmP = depthAt(depthPrev, px);
-    // Lerping across a depth discontinuity smears a point through empty space for
-    // the whole inter-frame interval, so only blend when the two agree closely.
-    if (mmP > 0.0 && abs(mmC - mmP) < snapDelta) mm = mix(mmP, mmC, mixT);
-  }
+  float z;
+  vEdge = 0.0;
+  vGhost = 0.0;
+  vFade = 1.0;
 
-  float z = mm * 0.001;
-
-  // Neighbour spread doubles as a speckle test and an edge signal: isolated
-  // points from dropped USB packets have no depth-consistent neighbours.
-  float maxDiff = 0.0;
-  int valid = 0;
-  for (int i = 0; i < 4; i++) {
-    ivec2 o = i == 0 ? ivec2(1, 0) : i == 1 ? ivec2(-1, 0) : i == 2 ? ivec2(0, 1) : ivec2(0, -1);
-    ivec2 q = clamp(px + o, ivec2(0), ivec2(resolution) - 1);
-    float n = depthAt(depthCurr, q);
-    if (n > 0.0) {
-      valid++;
-      maxDiff = max(maxDiff, abs(n - mmC));
+  if (aSlot > 0.5) {
+    // The ghost: what the ray used to be looking at. A hard swap earns a longer
+    // wake than a soft one, which is what keeps a static scene from shedding.
+    float life = fadeTime + wakeTime * st.b;
+    if (st.r <= 0.0 || life <= 0.0 || age >= life) {
+      gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+      gl_PointSize = 0.0;
+      return;
     }
-  }
-  vEdge = clamp(maxDiff / edgeTol, 0.0, 1.0);
+    float k = 1.0 - age / life;
+    vGhost = st.b;
+    vFade = k * k; // eased so it thins out rather than stepping off
+    z = st.r * 0.001;
+    // vEdge stays 0: it drives the rim term, and a shed point burning at full rim
+    // is the white blowout this look already had to be pulled back from once.
+  } else {
+    float mmC = depthAt(depthCurr, px);
 
-  bool speckle = denoise == 1 && (valid < 3 || maxDiff > edgeTol * 3.0);
-  if (z < nearClip || z > farClip || speckle) {
+    // Early-out before the neighbour fetches: a large share of the frame is empty,
+    // and those pixels are culled regardless of what their neighbours say.
+    if (mmC <= 0.0) {
+      gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+      gl_PointSize = 0.0;
+      return;
+    }
+
+    float mm = mmC;
+    if (interpolate == 1) {
+      float mmP = depthAt(depthPrev, px);
+      // Lerping across a depth discontinuity smears a point through empty space for
+      // the whole inter-frame interval, so only blend when the two agree closely.
+      if (mmP > 0.0 && abs(mmC - mmP) < snapDelta) mm = mix(mmP, mmC, mixT);
+    }
+
+    z = mm * 0.001;
+
+    // Neighbour spread doubles as a speckle test and an edge signal: isolated
+    // points from dropped USB packets have no depth-consistent neighbours.
+    float maxDiff = 0.0;
+    int valid = 0;
+    for (int i = 0; i < 4; i++) {
+      ivec2 o = i == 0 ? ivec2(1, 0) : i == 1 ? ivec2(-1, 0) : i == 2 ? ivec2(0, 1) : ivec2(0, -1);
+      ivec2 q = clamp(px + o, ivec2(0), ivec2(resolution) - 1);
+      float n = depthAt(depthCurr, q);
+      if (n > 0.0) {
+        valid++;
+        maxDiff = max(maxDiff, abs(n - mmC));
+      }
+    }
+    vEdge = clamp(maxDiff / edgeTol, 0.0, 1.0);
+
+    bool speckle = denoise == 1 && (valid < 3 || maxDiff > edgeTol * 3.0);
+    if (speckle) {
+      gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+      gl_PointSize = 0.0;
+      return;
+    }
+
+    // Born points ramp in over the same window their predecessor fades out.
+    vFade = fadeTime > 0.0 ? clamp(age / fadeTime, 0.0, 1.0) : 1.0;
+  }
+
+  if (z < nearClip || z > farClip) {
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
     gl_PointSize = 0.0;
     return;
@@ -232,6 +388,8 @@ in float vDepth;
 in float vEdge;
 in float vGlitch;
 in float vSize;
+in float vGhost;
+in float vFade;
 
 out vec4 fragColor;
 
@@ -304,7 +462,17 @@ void main() {
 
     col *= 0.55 + 0.75 * lum;
     alpha *= 0.30 + 0.70 * rim * rimAmount + 0.45 * scan * scanAmount;
+
+    // Shed points run hotter than the surface they left, so a wake reads as the
+    // wall having noticed something rather than as leftover geometry.
+    col = mix(col, vec3(1.00, 0.42, 0.20), vGhost * 0.55);
   }
+
+  // Cross-fade. A dying point thins out where it stood instead of blinking off,
+  // and its replacement comes up over the same window.
+  alpha *= vFade;
+  // Ghosts sit under the live cloud so they read as afterglow, never as surface.
+  if (vGhost > 0.0) alpha *= 0.5;
 
   // Additive contributions sum, and near points get both larger sprites and more
   // overlap, so a splat's energy is normalised against its area. Without this the
@@ -471,6 +639,17 @@ bindUniform('snapDelta', 'snapDelta');
 bindUniform('scan', 'scanAmount');
 bindUniform('rim', 'rimAmount');
 
+// Both drive the same memory: fade is the honest cross-fade, wake is how much
+// longer a hard transition lingers on top of it. Sized in seconds rather than in
+// frame intervals, so improving the frame rate does not shorten the look.
+bind('fade', (v) => { uniforms.fadeTime.value = v / 1000; updateDrawRange(); });
+bind('wake', (v) => { uniforms.wakeTime.value = v / 1000; updateDrawRange(); });
+
+function updateDrawRange() {
+  const shedding = uniforms.fadeTime.value > 0 || uniforms.wakeTime.value > 0;
+  geometry.setDrawRange(0, shedding ? POINTS * 2 : POINTS);
+}
+
 bind('bloom', (v) => { bloom.strength = v; bloom.enabled = v > 0; });
 bind('trails', (v) => { afterimage.uniforms.damp.value = v; afterimage.enabled = v > 0; });
 bind('rgbSplit', (v) => { grade.uniforms.rgbSplit.value = v; grade.enabled = gradeNeeded(); });
@@ -504,8 +683,8 @@ const setSlider = (id, value) => {
 
 // The Blackwall look is a whole pipeline state, not a shader branch, so selecting
 // it drives the post chain too. Leaving it restores a neutral view.
-const BLACKWALL = { bloom: 0.5, trails: 0.5, rgbSplit: 1.6, scanlines: 0.35, grain: 0.22, glitch: 0.18, pointSize: 4.5, scan: 0.35, rim: 0.5 };
-const NEUTRAL = { bloom: 0, trails: 0, rgbSplit: 0, scanlines: 0, grain: 0, glitch: 0, pointSize: 5, scan: 0, rim: 0.55 };
+const BLACKWALL = { bloom: 0.5, trails: 0.5, rgbSplit: 1.6, scanlines: 0.35, grain: 0.22, glitch: 0.18, pointSize: 4.5, scan: 0.35, rim: 0.5, fade: 120, wake: 550 };
+const NEUTRAL = { bloom: 0, trails: 0, rgbSplit: 0, scanlines: 0, grain: 0, glitch: 0, pointSize: 5, scan: 0, rim: 0.55, fade: 120, wake: 0 };
 
 let currentMode = 0;
 function applyMode(mode) {
@@ -556,6 +735,8 @@ let retiringBitmap = null;
 let frameInterval = 1000 / 30;
 let lastFrameAt = 0;
 let sinceFrame = 0;
+let stateDirty = false;
+let arrivalDt = 1 / 30;
 
 function setStatus() {
   const rate = document.createElement('b');
@@ -619,13 +800,19 @@ function handleFrame(buffer) {
   uniforms.depthCurr.value = depthCurr;
 
   const now = performance.now();
+  let gap = frameInterval;
   if (lastFrameAt) {
-    const gap = now - lastFrameAt;
+    gap = now - lastFrameAt;
     // Clamped so one stall does not stretch the blend across the next second.
     if (gap > 5 && gap < 500) frameInterval = frameInterval * 0.8 + gap * 0.2;
   }
   lastFrameAt = now;
   sinceFrame = 0;
+
+  // The surface memory advances once per arrival, not once per display frame -
+  // it describes the sensor's timeline, not the display's.
+  arrivalDt = Math.min(0.5, Math.max(0.001, gap / 1000));
+  stateDirty = true;
 
   if (colorBytes > 0) {
     pendingColor = new Uint8Array(buffer, offset + depthBytes, colorBytes);
@@ -682,16 +869,41 @@ connect();
 
 // ---------------------------------------------------------------- render loop
 
+// One ping-pong step of the surface memory. Kept on the render loop rather than
+// inside the socket handler so all GL work stays on one code path, and so a burst
+// of arrivals inside one display interval collapses to a single update.
+function advanceSurfaceState() {
+  stateUniforms.depthCurr.value = depthCurr;
+  stateUniforms.statePrev.value = statePrev.texture;
+  stateUniforms.dt.value = arrivalDt;
+  stateUniforms.snapDelta.value = uniforms.snapDelta.value;
+
+  renderer.setRenderTarget(stateNext);
+  stateQuad.render(renderer);
+  renderer.setRenderTarget(null);
+
+  const swap = statePrev;
+  statePrev = stateNext;
+  stateNext = swap;
+  uniforms.stateTex.value = statePrev.texture;
+}
+
 const clock = new THREE.Clock();
 renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
   uniforms.time.value = clock.getElapsedTime();
   grade.uniforms.time.value = uniforms.time.value;
 
+  if (stateDirty) {
+    advanceSurfaceState();
+    stateDirty = false;
+  }
+
   // Walk toward the newest frame over one measured interval, then hold. Holding
   // rather than extrapolating keeps a late frame from overshooting into garbage.
   sinceFrame += dt * 1000;
   uniforms.mixT.value = Math.min(1, sinceFrame / Math.max(1, frameInterval));
+  uniforms.sinceFrameSec.value = sinceFrame / 1000;
 
   controls.update();
 
@@ -700,4 +912,25 @@ renderer.setAnimationLoop(() => {
 });
 
 // Handles for profiling and for poking at the scene from the console.
-globalThis.__kinect = { renderer, composer, scene, camera, controls, uniforms, material, bloom, afterimage, grade };
+globalThis.__kinect = {
+  renderer, composer, scene, camera, controls, uniforms, material, bloom, afterimage, grade, geometry,
+  // Reads the surface memory back off the GPU. Mostly useful for checking that a
+  // static scene sheds nothing: if it does, the swap detector is firing on sensor
+  // noise rather than on motion.
+  stateStats() {
+    const buf = new Float32Array(POINTS * 4);
+    renderer.readRenderTargetPixels(statePrev, 0, 0, DW, DH, buf);
+    let ghosts = 0, hard = 0, soft = 0, fresh = 0;
+    const life = uniforms.fadeTime.value + uniforms.wakeTime.value;
+    for (let i = 0; i < POINTS; i++) {
+      const ghost = buf[i * 4], age = buf[i * 4 + 1], strength = buf[i * 4 + 2];
+      if (ghost > 0 && age < uniforms.fadeTime.value + uniforms.wakeTime.value * strength) ghosts++;
+      if (age < 0.05) {
+        fresh++;
+        if (strength > 0.5) hard++; else soft++;
+      }
+    }
+    const pct = (n) => +((n / POINTS) * 100).toFixed(2);
+    return { ghostsDrawn: pct(ghosts), swappedLast50ms: pct(fresh), hard: pct(hard), soft: pct(soft), life };
+  },
+};
