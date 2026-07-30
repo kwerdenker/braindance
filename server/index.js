@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { createReadStream, createWriteStream, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, normalize, extname } from 'node:path';
+import { dirname, join, normalize, extname, sep } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { MessageParser, TYPE_HELLO, TYPE_FRAME } from './protocol.js';
 
@@ -36,19 +36,25 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
 };
 
+const WEB_DIR = join(ROOT, 'web');
+const THREE_DIR = join(ROOT, 'node_modules/three');
+
+// A bare startsWith would also match a sibling like `web-private`, so the
+// separator has to be part of the comparison.
+const isInside = (dir, candidate) => candidate === dir || candidate.startsWith(dir + sep);
+
 const httpServer = createServer((req, res) => {
   const urlPath = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
 
   let filePath;
   if (urlPath.startsWith('/vendor/three/')) {
-    filePath = join(ROOT, 'node_modules/three', urlPath.slice('/vendor/three/'.length));
+    filePath = join(THREE_DIR, urlPath.slice('/vendor/three/'.length));
   } else {
-    filePath = join(ROOT, 'web', urlPath === '/' ? 'index.html' : urlPath);
+    filePath = join(WEB_DIR, urlPath === '/' ? 'index.html' : urlPath);
   }
 
-  // Keep path traversal inside the two directories we intend to expose.
   const resolved = normalize(filePath);
-  if (!resolved.startsWith(join(ROOT, 'web')) && !resolved.startsWith(join(ROOT, 'node_modules/three'))) {
+  if (!isInside(WEB_DIR, resolved) && !isInside(THREE_DIR, resolved)) {
     res.writeHead(403).end('forbidden');
     return;
   }
@@ -145,10 +151,18 @@ function startLive() {
 }
 
 function startReplay() {
+  let raw;
+  try {
+    raw = readFileSync(REPLAY);
+  } catch {
+    console.error(`[server] no capture at ${REPLAY} — record one first: npm run record`);
+    return;
+  }
+
   console.log(`[server] replaying ${REPLAY} (looping at 30fps)`);
   const parser = new MessageParser();
   const messages = [];
-  for (const msg of parser.push(readFileSync(REPLAY))) {
+  for (const msg of parser.push(raw)) {
     // Detach from the parser's backing buffer so the array stays valid.
     messages.push({ type: msg.type, payload: Buffer.from(msg.payload) });
   }
