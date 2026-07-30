@@ -391,9 +391,6 @@ const GradeShader = {
       if (scanlines > 0.0) {
         float line = sin(vUv.y * resolution.y * 1.3 + time * 2.0) * 0.5 + 0.5;
         col *= 1.0 - scanlines * 0.35 * line;
-        // A brighter band crawling down the frame, like a refresh sweep.
-        float sweep = fract(vUv.y * 0.5 - time * 0.06);
-        col += vec3(0.35, 0.02, 0.06) * scanlines * smoothstep(0.985, 1.0, sweep);
       }
 
       if (grain > 0.0) {
