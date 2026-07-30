@@ -149,12 +149,28 @@ Patch: `patches/0001-accept-depth-frames-missing-only-the-unused-10th-sub-image.
 relaxes the gate from `current_subsequence_ == 0x3ff` to
 `(current_subsequence_ & 0x1ff) == 0x1ff`.
 
-| | runs | mean fps | range |
-| --- | --- | --- | --- |
-| before | 4 | 11.93 | 11.50–12.10 |
-| after | 3 | 14.72 | 14.10–15.60 |
+Measured as an **interleaved A/B** — old, new, old, new, old, new — with both
+paths compiled into one binary behind a temporary env switch that was removed
+afterwards:
 
-**+23%**, and the lowest post-patch run is above the highest pre-patch run.
+| run | old (require all 10) | new (ignore sub 9) |
+| --- | --- | --- |
+| 1 | 12.90 | 14.80 |
+| 2 | 12.95 | 13.57 |
+| 3 | 12.62 | 15.07 |
+| **mean** | **12.82** | **14.48** |
+
+**+12.9%**, all three paired deltas positive (+1.90, +0.62, +2.45), and no
+overlap between the two sets — the worst new run (13.57) beats the best old run
+(12.95).
+
+Interleaving was not fussiness. A first pass comparing four runs before the
+patch against three after gave **+23%**, and that was wrong: the sessions were
+separated in time and the PSU was swapped between them. Re-measuring the old
+path afterwards gave 12.82 rather than the 11.93 recorded earlier, so roughly
+half the apparent gain was drift. Sequential before/after does not survive on
+this rig; anything claimed here should be measured interleaved.
+
 Verified in the real viewer, not just the harness: the cloud is structurally
 coherent, walls stay planar, the depth ramp is smooth, and there is no confetti.
 That is expected — the patch stops waiting for bytes that were never an input to
@@ -195,3 +211,54 @@ Phase is cyclic, so a 33ms-stale phase on a *moving* pixel does not blur it, it
 relocates it to an arbitrary depth — and the existing speckle cull would not
 catch that, because a wrongly-unwrapped pixel can land in a locally consistent
 neighbourhood. Correct for a static scene, confetti on a moving subject.
+
+## Temporal reconstruction: what the stutter actually is
+
+Measured from the capture's own timestamps rather than assumed. Arrival gaps run
+p25 33ms, p50 64ms, p75 121ms, p90 222ms, p99 678ms — a 7x spread. The current
+`mixT` schedules against an EMA point estimate of that distribution, which is why
+it fails in both directions at once: gaps shorter than the estimate produce a
+jump, longer ones a freeze. Display frames sit frozen at `mixT == 1` **42.5%** of
+the time, and at each arrival `mixT` has only reached 0.743 on average, so a
+quarter of the interframe motion is skipped in a single display frame.
+
+The larger artifact is not interpolation at all. **3.14% of pixels toggle
+valid/zero per frame pair** — about 6,800 points appearing and vanishing with no
+fade, 44x more pixels than the snap threshold ever touches (0.071%). Treating
+those transitions as alpha cross-fades rather than position events is the highest
+value change in the viewer, and it needs no motion estimation.
+
+Optical flow was assessed and **rejected for correctness**. The mis-reconstructed
+band at a motion boundary is real and visible (~19 sprite widths at 25fps), but
+it sits exactly at occlusion boundaries, where brightness constancy fails outright
+— the surface on one side does not exist on the other. A wrong warp can look
+worse than a snap; a cross-fade cannot fail that way, and costs ~1/50th as much.
+
+**The frame-rate fix helps the stutter more than its mean suggests.** A long gap
+is a *run* of consecutively dropped exposures — the sensor keeps exposing on its
+fixed 33.3ms cadence underneath — so a 222ms gap is six or seven drops in a row.
+Recovering each independently at probability p makes a whole run survive at p^6,
+so the tail evaporates rather than shrinking. Modelled wall-clock time spent in
+gaps over 100ms: 63.9% at 9.3fps, 39.4% at 14fps, 1.2% at 25.8fps. Caveat: the
+model recovers slots independently, and real drops are plausibly bursty, which
+would make the 25.8fps tail worse than modelled.
+
+### The artistic direction worth building
+
+Rather than interpolating more accurately, spend the spare budget on a **shedding
+wake**. When a pixel's ray swaps surfaces, that is a death and a birth — and that
+occlusion mask is a free "where is motion happening" signal, landing exactly on
+the leading and trailing edges of a moving subject and nowhere on the static wall
+behind it. Instead of teleporting the point, let the old one persist at its old 3D
+position with decaying alpha while the new one fades in.
+
+Every moving silhouette sheds a wake; a static scene sheds nothing. Under
+Blackwall it compounds — the afterimage pass already integrates several frames, so
+shed points smear into a volumetric trail and bloom turns the dense parts into hot
+nodes. It reads as the wall *seeing* motion, which physically-exact interpolation
+never will. Cost is real: it needs the dying and newborn point on screen at once,
+so 434k points instead of 217k, roughly 1.7ms against the current 0.83ms — inside
+the ~7ms headroom.
+
+Size the wake from a look parameter (wake length in metres), never from
+velocity x interval, or it will visibly shorten when the frame rate improves.

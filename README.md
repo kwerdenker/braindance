@@ -181,10 +181,16 @@ measurement`) and never fetched by the OpenCL kernel.
 
 So frames were being thrown away over ~300KB of data that nothing reads.
 Measured: 6.8% of all discarded frames were missing nothing but sub-image 9.
-Accepting them lifted delivered frame rate from a 11.93fps mean (four baseline
-runs) to a 14.72fps mean (three runs) — **+23%**, with the lowest post-patch run
-above the highest pre-patch one. Depth output is unchanged, because the bytes
-the patch stops waiting for were never an input to the solve.
+
+Accepting them is worth **+12.9%** on delivered frame rate — 12.82fps to
+14.48fps, measured as an interleaved A/B (old, new, old, new, old, new) with
+both paths in one binary behind a temporary switch. Every new-path run beat
+every old-path run. Depth output is unchanged, because the bytes the patch stops
+waiting for were never an input to the solve.
+
+The interleaving matters: a first pass comparing four runs before against three
+after showed +23%, but drift between measurement sessions accounted for most of
+the difference. Sequential before/after is not trustworthy on this rig.
 
 The patch lives in `patches/` rather than in the tree because `vendor/` is
 gitignored. `docs/performance-investigation.md` has the full measurements.
