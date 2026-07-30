@@ -1,9 +1,14 @@
 # Performance investigation, 2026-07-30
 
-Measured on the M2 Max, sensor on its usual dock topology. Every number here
-comes from a fixed 40–45s window with a 6s warmup, load average recorded
-alongside. Where an earlier claim did not survive re-measurement, it is called
-out rather than quietly dropped.
+Measured on the M2 Max. Every number here comes from a fixed 40–45s window with
+a 6s warmup, load average recorded alongside. Where an earlier claim did not
+survive re-measurement, it is called out rather than quietly dropped.
+
+Everything up to "Resolution: it was the hub chain, entirely" was measured on
+the old dock topology, and the two sections from there on were measured after
+the sensor moved to a single hub on its own controller. Any number from the
+first group that depends on delivery rate has to be read against the topology it
+came from — which is what the resolution section is about.
 
 ## The headline: we discard 2.98MB frames over one missing tenth
 
@@ -116,9 +121,14 @@ controller and re-measure.
   filter, and it runs *serially* in the grabber's frame loop, so it lands
   directly on capture-to-wire latency. `enable_filter=false` is a one-argument
   change; the cost is colour bleed at silhouette edges.
-- **434KB of the 486KB frame is uncompressed depth.** RVL (a lossless codec
-  built for depth) or zstd-over-temporal-deltas would take 117 Mbit/s to
-  ~35–45. Irrelevant on localhost, decisive for Wi-Fi or multiple clients.
+- **434KB of the 486KB frame is uncompressed depth.** This entry originally
+  estimated that RVL or zstd-over-temporal-deltas would take 117 Mbit/s down to
+  ~35–45. Measured since against `captures/sample.knct`, that was optimistic:
+  per-frame zstd manages 1.75x on depth and 1.62x on the whole frame (72
+  Mbit/s), and an explicit u16 temporal delta plus zstd reaches 2.75x on depth
+  and 2.30x overall (51 Mbit/s). Colour compresses at exactly 1.00x, being
+  already JPEG, which floors the whole thing. Full table in
+  `recording-and-nle.md`.
 - **The 4-neighbour speckle classification re-runs at 120Hz** although it
   depends only on data that changes at 8–30Hz. Moving it to a sensor-rate
   precompute saves ~0.3ms today (invisible), but it is the enabler for a
@@ -297,3 +307,63 @@ sensor on a hub where it enumerated at High Speed. libfreenect2 then failed with
 reads like a permissions problem and is not one — it is a USB 2.0 link. Check
 `"Device Speed"` in `ioreg`: 3 is SuperSpeed and works, 2 is High Speed and
 cannot stream.
+
+## CPU depth costs 70ms/frame, measured on a healthy link
+
+Every earlier CPU-pipeline number in this document was taken through the dock,
+so it measured the hub chain and the solve together and could not separate them.
+The README then carried "a single core can't hold 30fps over ten phase images"
+as reasoning rather than as a measurement. Re-measured on the resolved topology,
+45s per run, colour on unless noted:
+
+| pipeline | fps | depth packets skipped | USB subsequence failures |
+| --- | --- | --- | --- |
+| OpenCL | 30.0 | 0 | 2 |
+| CPU | 14.4 | 638 | 2 |
+| CPU, `--no-color` | 15.0 | 664 | 1 |
+
+**Two subsequence failures in every row is the control.** USB delivered complete
+frames at sensor rate in all three runs, so the only variable is who solves
+depth. The CPU path discarded roughly one frame for every one it emitted — 638
+skips against 637 delivered — which puts the scalar solve at **~70ms per frame**
+against a 33ms budget. The claim is now attributable to compute rather than
+confounded with delivery.
+
+More cores do not help as the code stands. `packet_pipeline.cpp:87-91` runs the
+solve on a single `AsyncPacketProcessor` thread, and libfreenect2 ships no
+hand-written SIMD for depth on any architecture.
+
+**Colour is exonerated a second time.** Turning it off bought 4% (14.4 → 15.0),
+so TurboJPEG is not competing with the solve for CPU. This mirrors the earlier
+finding that `--no-color` does not reduce USB drops: colour is not implicated in
+either bottleneck.
+
+The gap between the two pipelines is the number that matters for porting. The
+OpenCL kernels benchmark at 0.75–0.85ms standalone against 70ms for the scalar
+path — the same solve, roughly **80x apart**. Against a 33ms budget the GPU
+version spends about 2.5% and the scalar version about 210%.
+
+**That ratio covers the depth solve alone, and the solve is not the grabber's
+whole per-frame cost.** The solve runs on its own `AsyncPacketProcessor` thread,
+so it overlaps with everything else, but `Registration::apply` costs 4.5ms/frame
+and runs *serially* in the grabber's frame loop, and TurboJPEG re-encodes the
+registered colour image on every frame even when the colour data is unchanged.
+Anyone sizing an accelerated depth port should budget those separately rather
+than assuming the depth ratio describes the frame.
+
+**What this means for a capture node on weaker hardware.** Any core slower than
+an M2 Max performance core cannot run the CPU depth path at usable rates, and no
+multiplier is needed to conclude that.
+
+Both halves have since been measured on a Raspberry Pi 5. The scalar path manages
+**5.92fps** there against 14.4fps here, so the single-core ratio is **2.43x** —
+better than the 3–4x this document declined to guess, and still nowhere near
+usable. libfreenect2's **OpenGL** depth path, however, sustains **30.20fps** on
+the Pi's V3D once colour is decoupled from depth, because its shaders are
+`#version 140` and V3D reports exactly OpenGL 3.1 with GLSL 1.40. There is no
+OpenCL on that hardware at all. Full results in `recording-and-nle.md`.
+
+Method: `./native/build/grabber --pipeline {cl,cpu} --log warning`, stdout to
+`/dev/null`, stderr captured, killed at 45s. Rates are derived against the
+sensor-capped 30.00fps of the OpenCL run, which puts device open and stream
+start at about 1s and makes the streaming window ~44s in all three.

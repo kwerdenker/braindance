@@ -176,9 +176,25 @@ cmake -S native -B native/build && cmake --build native/build -j8
 
 Needs `brew install libusb jpeg-turbo cmake`. OpenGL is off deliberately — it only
 drives libfreenect2's own viewer, which we don't use, and it's the most deprecated
-path on macOS. Depth runs through OpenCL on the GPU; the CPU pipeline is plain
-scalar C++ — libfreenect2 ships no hand-written SIMD for depth on any
-architecture — and a single core can't hold 30fps over ten phase images.
+path on macOS.
+
+Depth runs through OpenCL on the GPU, and `--pipeline cpu` exists for comparison
+rather than for use. Measured on a healthy link, the two differ by more than 2x:
+
+| pipeline | fps | depth packets skipped |
+| --- | --- | --- |
+| OpenCL | 30.0 | 0 |
+| CPU | 14.4 | 638 |
+
+Both runs saw the same two USB subsequence failures, so delivery was identical
+and the solve is the only variable. The CPU path is plain scalar C++ on a single
+`AsyncPacketProcessor` thread — libfreenect2 ships no hand-written SIMD for depth
+on any architecture — which puts it at roughly 70ms per frame against a 33ms
+budget. The OpenCL kernels run the same solve in 0.75–0.85ms, some 80x faster.
+
+That ratio is about the depth solve only. `Registration::apply` costs a further
+4.5ms/frame and runs serially in the grabber's frame loop, so it is the number
+to watch if the depth solve ever stops being the ceiling.
 
 ## Wire format
 
