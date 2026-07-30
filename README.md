@@ -124,6 +124,7 @@ Both builds are one-time. libfreenect2 installs into `vendor/prefix`:
 
 ```bash
 git clone --depth 1 https://github.com/OpenKinect/libfreenect2.git vendor/libfreenect2
+git -C vendor/libfreenect2 apply ../../patches/*.patch
 cmake -S vendor/libfreenect2 -B vendor/libfreenect2/build \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DCMAKE_INSTALL_PREFIX="$PWD/vendor/prefix" \
@@ -166,13 +167,37 @@ log line on stdout would desync the stream permanently.
 The browser needs `fx/fy/cx/cy` from the hello message to unproject; hardcoded
 intrinsics skew the cloud in a way that is hard to spot and hard to attribute.
 
+## The patch in `patches/`
+
+libfreenect2 assembles each depth frame from ten sub-images and discards the
+whole frame unless all ten arrive. But the depth solve reads only sub-images
+0–8 — nine measurements, three phase steps for each of three modulation
+frequencies. The tenth is commented out in the CPU processor (`// 10th
+measurement`) and never fetched by the OpenCL kernel.
+
+So frames were being thrown away over ~300KB of data that nothing reads.
+Measured: 6.8% of all discarded frames were missing nothing but sub-image 9.
+Accepting them lifted delivered frame rate from a 11.93fps mean (four baseline
+runs) to a 14.72fps mean (three runs) — **+23%**, with the lowest post-patch run
+above the highest pre-patch one. Depth output is unchanged, because the bytes
+the patch stops waiting for were never an input to the solve.
+
+The patch lives in `patches/` rather than in the tree because `vendor/` is
+gitignored. `docs/performance-investigation.md` has the full measurements.
+
 ## Known issue: USB bandwidth
 
-The sensor currently runs at **8–15fps instead of 30**, because it is connected
-through a chain of hubs on a Thunderbolt dock:
+The sensor runs at **12–15fps instead of 30**, because it is connected through a
+chain of hubs on a Thunderbolt dock. `ioreg` shows the sensor is a *sibling* of
+the last hub, sharing its parent with the machine's network interface:
 
 ```
-Intel USB3 HUB → VIA USB3.1 Hub → VIA USB3.0 Hub → NuiSensor Adaptor → Xbox NUI Sensor
+AppleT8112USBXHCI@00000000
+└─ USB3 HUB@00200000
+   └─ USB3.1 Hub@00240000
+      ├─ NuiSensor Adaptor@00242000 → Xbox NUI Sensor@00242100
+      └─ USB3.0 Hub@00241000
+         └─ USB 10/100/1000 LAN@00241400   (en26, the default route)
 ```
 
 libfreenect2 reports continuous `not all subsequences received` — isochronous USB
@@ -190,11 +215,23 @@ Measurements:
 | Setup | Result |
 | --- | --- |
 | CPU depth, through the dock | 597 USB drops, 206 frames lost to slow depth processing |
-| OpenCL depth, through the dock | 947 USB drops, 4 lost to processing — GPU keeps up fine |
-| OpenCL, `--no-color` | drop rate roughly halves, confirming bandwidth contention |
+| OpenCL depth, through the dock | ~1000 drops/min, ~0 lost to processing — GPU keeps up fine |
 | Replay from file | a steady 29fps — the browser and GPU path are not the bottleneck |
 
 The fix is physical: plug the Kinect adapter straight into a Mac port with a plain
 passive USB-A→USB-C adapter, no hub in between. The Kinect v2 needs sustained
 isochronous USB3 bandwidth and is well known for refusing to share a hub chain.
-`--no-color` is a partial workaround if the dock has to stay.
+
+Two workarounds that sound plausible and were measured **not** to work, so nobody
+re-derives them:
+
+- **`--no-color` does not halve the drop rate.** An earlier version of this file
+  claimed it did. Under a controlled 40s window drops went slightly *up*
+  (1046 → 1089/min). SuperSpeed isochronous bandwidth is reserved, so the bulk
+  colour stream cannot preempt the depth endpoint's allocation.
+- **Transfer-pool tuning does nothing.** libfreenect2 uses a different iso pool
+  on macOS (`ir_pkts_per_xfer=128, ir_num_xfers=4`) than elsewhere (`8`/`60`),
+  and all four knobs are env-overridable. Across 13 runs sweeping them, delivered
+  fps spanned 1.03fps while four runs of the *identical* baseline spanned
+  0.60fps — the effect of every knob is inside run-to-run noise, and the Linux
+  default was the worst of the set.

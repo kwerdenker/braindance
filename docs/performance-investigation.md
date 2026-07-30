@@ -139,3 +139,62 @@ every measurement here had to run serially on one machine. Load average was
 recorded per run and ranged 2.77–10.77 with no visible effect on fps, which is
 worth knowing given that an earlier session mistakenly attributed packet loss to
 hardware when the real cause was a load average of 417.
+
+## Implemented: accept frames missing only sub-image 9
+
+Confirmed from both processors that the depth solve reads sub-images 0–8 only.
+`processPixelStage1` in the OpenCL kernel decodes exactly nine measurements,
+grouped `v0={0,1,2}`, `v1={3,4,5}`, `v2={6,7,8}` — each triple dotted against one
+modulation frequency's three phase steps. The CPU processor has the tenth
+commented out with `// 10th measurement` and `// WTF?`.
+
+Patch: `patches/0001-accept-depth-frames-missing-only-the-unused-10th-sub-image.patch`
+relaxes the gate from `current_subsequence_ == 0x3ff` to
+`(current_subsequence_ & 0x1ff) == 0x1ff`.
+
+| | runs | mean fps | range |
+| --- | --- | --- | --- |
+| before | 4 | 11.93 | 11.50–12.10 |
+| after | 3 | 14.72 | 14.10–15.60 |
+
+**+23%**, and the lowest post-patch run is above the highest pre-patch run.
+Verified in the real viewer, not just the harness: the cloud is structurally
+coherent, walls stay planar, the depth ramp is smooth, and there is no confetti.
+That is expected — the patch stops waiting for bytes that were never an input to
+the solve, so the depth output is bit-identical to before.
+
+## Designed but not built: the two-frequency solve
+
+Because each group of three sub-images *is* one modulation frequency, losing a
+single sub-image kills exactly one frequency and leaves two fully intact and
+self-consistent. Re-cutting the same 45s window by that grouping:
+
+| | share of discards |
+| --- | --- |
+| only sub-image 9 missing (now recovered) | 6.8% |
+| exactly 1 frequency compromised, 2 intact | 73.3% |
+| 2 frequencies compromised, 1 intact | 18.2% |
+| all 3 compromised | 1.7% |
+
+So **80.1% of discards still retain two good frequencies.** Recovering them
+would take delivered fps to roughly 24–25.
+
+The dealiasing in `processPixelStage2` uses relative periods (3, 15, 2), and the
+unwrap interlocks all three, so this needs a new solve path per missing
+frequency plus plumbing the arrival bitmask through `DepthPacket`. The range
+math is favourable — with a 0.625m base unit the surviving pair gives:
+
+| frequency lost | surviving pair | unambiguous range |
+| --- | --- | --- |
+| ratio 2 (120MHz) | (3, 15) | 9.4m |
+| ratio 3 (80MHz) | (15, 2) | 18.75m |
+| ratio 15 (16MHz) | (3, 2) | 3.75m |
+
+Two of the three cases cover the full 0.5–4.5m clip range; the third covers
+3.75m of it. Pixels beyond the shortened range wrap and would need clamping.
+
+Rejected alternative: filling the missing frequency from the previous frame.
+Phase is cyclic, so a 33ms-stale phase on a *moving* pixel does not blur it, it
+relocates it to an arbitrary depth — and the existing speckle cull would not
+catch that, because a wrongly-unwrapped pixel can land in a locally consistent
+neighbourhood. Correct for a static scene, confetti on a moving subject.
