@@ -1,0 +1,577 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Study 03 · Editor</title>
+<link rel="stylesheet" href="tokens.css" />
+<style>
+/* Hallmark · surface: non-linear editor, one clip at a time
+ * tone: technical-austere · genre: atmospheric · anchor hue: teal 182
+ * page apparatus skipped: no nav, no footer, no hero — this is instrument chrome
+ * shape: inspector on the right, one viewport, and a timeline that shows only
+ * what is actually animated. Mode is a property of the clip, not a track.
+ * pre-emit critique: P5 H5 E5 S5 R5 V5
+ */
+
+* { box-sizing: border-box; }
+html, body {
+  height: 100%; margin: 0;
+  background: var(--color-paper); color: var(--color-ink);
+  font: var(--text-base)/1.45 var(--font-ui);
+  overflow: hidden;
+}
+body { display: flex; flex-direction: column; }
+
+.head {
+  flex: none; display: flex; align-items: baseline; gap: var(--space-4); flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-paper-1); border-bottom: var(--rule) solid var(--color-line);
+}
+.head h1 { margin: 0; font-size: var(--text-md); font-weight: 600; letter-spacing: var(--track-label); text-transform: uppercase; }
+.head .src { color: var(--color-dim); font-size: var(--text-2xs); }
+.head .src b { color: var(--color-ink); font-weight: 500; }
+.head .right { margin-left: auto; display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.stamp {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  padding: 3px var(--space-2);
+  border: var(--rule) solid var(--color-line); border-radius: var(--radius-sm);
+  background: var(--color-paper-2); font-size: var(--text-2xs); color: var(--color-dim); white-space: nowrap;
+}
+.stamp b { color: var(--color-ink); font-weight: 500; }
+.stamp.rev b { color: var(--color-accent); }
+
+.body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 296px; }
+.left { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+/* ── viewport ─────────────────────────────────────────────────────────────
+   One view, and the camera is moved by dragging it here. Composition is edited
+   in the world rather than as position curves, because where the camera flies
+   through the room is the thing a graph cannot show you. */
+.stage { position: relative; flex: 1; min-height: 0; background: var(--color-well); }
+.stage canvas#scene { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+.stage canvas#scene:active { cursor: grabbing; }
+.stage .tag {
+  position: absolute; top: 8px; left: 10px;
+  font-size: var(--text-2xs); letter-spacing: var(--track-label); text-transform: uppercase;
+  color: var(--color-dim); pointer-events: none;
+}
+.stage .tag b { color: var(--color-ink); font-weight: 500; letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; }
+.stage .foot {
+  position: absolute; bottom: 8px; left: 10px; right: 10px;
+  display: flex; justify-content: space-between; gap: var(--space-3);
+  font-size: var(--text-2xs); color: var(--color-faint); pointer-events: none;
+}
+/* Top-down, kept as a small inset rather than a second panel. It answers "where
+   is the camera in the room", which the main view cannot, without spending half
+   the screen on it. */
+.inset {
+  position: absolute; top: 8px; right: 8px; width: 176px; height: 118px;
+  border: var(--rule) solid var(--color-line-2); border-radius: var(--radius-sm);
+  overflow: hidden; background: var(--color-paper);
+}
+.inset canvas { display: block; width: 100%; height: 100%; }
+.inset span { position: absolute; bottom: 3px; left: 5px; font-size: var(--text-2xs); color: var(--color-faint); }
+
+/* ── timeline ─────────────────────────────────────────────────────────────── */
+.timeline { flex: none; background: var(--color-paper-1); border-top: var(--rule) solid var(--color-line); }
+.bar {
+  display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3); border-bottom: var(--rule) solid var(--color-line);
+}
+.play {
+  appearance: none; -webkit-appearance: none;
+  width: 34px; height: 34px; display: grid; place-items: center;
+  border: var(--rule) solid var(--color-line-2); border-radius: var(--radius-sm);
+  background: var(--color-paper-2); color: var(--color-ink); font-size: var(--text-md); cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+.play:hover, .play.is-hover { background: var(--color-paper-3); border-color: var(--color-line-3); }
+.play:focus-visible, .play.is-focus { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.play:active, .play.is-active { background: var(--color-paper-1); }
+.play:disabled { color: var(--color-faint); cursor: not-allowed; }
+
+.clocks { display: flex; gap: var(--space-4); align-items: baseline; }
+.clock small { display: block; font-size: var(--text-2xs); letter-spacing: var(--track-label); text-transform: uppercase; color: var(--color-faint); }
+.clock output { font-size: var(--text-lg); font-variant-numeric: tabular-nums; letter-spacing: var(--track-tight); }
+.clock.derived output { color: var(--color-dim); font-size: var(--text-base); }
+.readouts { margin-left: auto; display: flex; gap: var(--space-2); flex-wrap: wrap; }
+
+.lanes { display: grid; grid-template-columns: 138px minmax(0, 1fr); overflow-x: auto; }
+.rail { border-right: var(--rule) solid var(--color-line); }
+.bed { position: relative; min-width: 420px; }
+
+.lane { position: relative; height: 24px; border-bottom: var(--rule) solid var(--color-line); }
+.lane.ruler { height: 30px; }
+.lane.retime { height: 40px; }
+.rail .lane { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: 0 var(--space-2); }
+.rail .lane span { color: var(--color-dim); font-size: var(--text-2xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail .lane b { color: var(--color-ink); font-weight: 500; font-size: var(--text-2xs); font-variant-numeric: tabular-nums; }
+.rail .lane.head span { color: var(--color-faint); letter-spacing: var(--track-label); text-transform: uppercase; }
+
+.tick { position: absolute; top: 0; bottom: 0; width: var(--rule); background: var(--color-line); }
+.tick.major { background: var(--color-line-2); }
+.tick label { position: absolute; top: 2px; left: 4px; font-size: var(--text-2xs); color: var(--color-faint); font-variant-numeric: tabular-nums; }
+
+.preroll {
+  position: absolute; top: 0; bottom: 0;
+  background: repeating-linear-gradient(-45deg, var(--color-accent-low) 0 4px, transparent 4px 8px);
+  border-right: var(--rule) dashed var(--color-accent-mid);
+}
+.preroll small { position: absolute; bottom: 1px; right: 3px; font-size: var(--text-2xs); color: var(--color-accent-mid); white-space: nowrap; }
+
+.mark { position: absolute; top: 50%; width: 8px; height: 8px; margin: -4px 0 0 -4px; background: var(--color-accent); transform: rotate(45deg); }
+.key { position: absolute; top: 50%; width: 8px; height: 8px; margin: -4px 0 0 -4px; background: var(--color-dim); transform: rotate(45deg); transition: background-color var(--dur-fast) var(--ease-out); }
+.key:hover { background: var(--color-ink); }
+.key.sel { background: var(--color-accent); box-shadow: 0 0 0 3px var(--color-accent-low); }
+
+.retime svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.mute { position: absolute; top: 0; bottom: 0; background: var(--color-warn-band); border-left: var(--rule) solid var(--color-warn); border-right: var(--rule) solid var(--color-warn); }
+.mute small { position: absolute; top: 1px; left: 4px; font-size: var(--text-2xs); color: var(--color-warn); white-space: nowrap; }
+
+.playhead { position: absolute; top: 0; bottom: 0; width: var(--rule); background: var(--color-ink); z-index: var(--z-raised); pointer-events: none; }
+.playhead::before { content: ""; position: absolute; top: 0; left: -5px; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 7px solid var(--color-ink); }
+
+.caption { padding: var(--space-2) var(--space-3); border-top: var(--rule) solid var(--color-line); color: var(--color-faint); font-size: var(--text-2xs); line-height: 1.55; }
+.caption b { color: var(--color-dim); font-weight: 500; }
+
+/* ── inspector ────────────────────────────────────────────────────────────
+   Groups are the unit of expansion: a new mode or a new parameter is another
+   row in a group, or another group, and nothing else in the surface changes. */
+.inspector { border-left: var(--rule) solid var(--color-line); background: var(--color-paper-1); overflow-y: auto; }
+.group { border-bottom: var(--rule) solid var(--color-line); }
+.group > summary {
+  list-style: none; cursor: pointer;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-2xs); font-weight: 600; letter-spacing: var(--track-label);
+  text-transform: uppercase; color: var(--color-dim);
+  display: flex; align-items: center; gap: var(--space-2);
+}
+.group > summary::-webkit-details-marker { display: none; }
+.group > summary::before { content: "\25B8"; color: var(--color-faint); transition: transform var(--dur-fast) var(--ease-out); }
+.group[open] > summary::before { transform: rotate(90deg); }
+.group > summary:hover { color: var(--color-ink); }
+.group > summary:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
+.group .inner { padding: 0 var(--space-3) var(--space-3); display: flex; flex-direction: column; gap: 7px; }
+
+.row { display: grid; grid-template-columns: 62px minmax(0, 1fr) 44px 24px; gap: var(--space-2); align-items: center; }
+.row > label { color: var(--color-dim); font-size: var(--text-2xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row input[type=range] { width: 100%; min-width: 0; accent-color: var(--color-accent); height: 3px; }
+.row input[type=range]:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 3px; }
+.row output { font-size: var(--text-2xs); text-align: right; font-variant-numeric: tabular-nums; color: var(--color-ink); }
+
+/* The keyframe control, one per parameter — the Final Cut idiom. Hollow means
+   the parameter is static, outlined means it has keys elsewhere, filled means
+   there is a key here at the playhead. */
+.kf {
+  appearance: none; -webkit-appearance: none;
+  width: 24px; height: 24px; display: grid; place-items: center;
+  border: 0; background: transparent; cursor: pointer; padding: 0;
+}
+.kf:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; border-radius: var(--radius-sm); }
+.kf i { width: 8px; height: 8px; transform: rotate(45deg); border: var(--rule) solid var(--color-faint); background: transparent; }
+.kf:hover i { border-color: var(--color-ink); }
+.kf[data-kf="some"] i { border-color: var(--color-accent); }
+.kf[data-kf="here"] i { border-color: var(--color-accent); background: var(--color-accent); }
+.kf:disabled { cursor: not-allowed; }
+.kf:disabled i { border-color: var(--color-line-2); }
+
+select.pick {
+  appearance: none; -webkit-appearance: none;
+  width: 100%; height: 32px; padding: 0 24px 0 var(--space-2);
+  border: var(--rule) solid var(--color-line-2); border-radius: var(--radius-sm);
+  background: var(--color-paper-2); color: var(--color-ink);
+  font: var(--text-2xs)/1 var(--font-ui); cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--color-dim) 50%),
+                    linear-gradient(135deg, var(--color-dim) 50%, transparent 50%);
+  background-position: right 12px center, right 7px center;
+  background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
+}
+select.pick:hover { border-color: var(--color-line-3); }
+select.pick:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+select.pick:disabled { color: var(--color-faint); cursor: not-allowed; }
+.hintline { color: var(--color-faint); font-size: var(--text-2xs); line-height: 1.5; }
+
+@media (max-width: 900px) {
+  .body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(180px, 1fr) auto; }
+  .inspector { border-left: 0; border-top: var(--rule) solid var(--color-line); max-height: 42vh; }
+  .inset { width: 132px; height: 88px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
+}
+</style>
+</head>
+<body>
+
+<header class="head">
+  <h1>Hallway · pass 2</h1>
+  <div class="src">take-011 · <b>01:07</b> source · clip <b>12.0 s</b></div>
+  <div class="right">
+    <span class="stamp rev">preset <b>blackwall-mine @ 9f2a…</b></span>
+    <span class="stamp">out <b>1920 × 1080 · 30 fps</b></span>
+    <span class="stamp">undo <b>17</b></span>
+  </div>
+</header>
+
+<div class="body">
+  <div class="left">
+
+    <section class="stage">
+      <canvas id="scene"></canvas>
+      <div class="tag">program <b>00:06.400</b></div>
+      <div class="inset"><canvas id="plan"></canvas><span>top-down</span></div>
+      <div class="foot">
+        <span id="dragHint">drag the frame to move the camera</span>
+        <span>draft scrub 2.7 ms</span>
+      </div>
+    </section>
+
+    <section class="timeline">
+      <div class="bar">
+        <button class="play" type="button" aria-label="Play">&#9654;</button>
+        <div class="clocks">
+          <div class="clock"><small>program</small><output>00:06.400</output></div>
+          <div class="clock derived"><small>source · derived</small><output>00:05.350</output></div>
+        </div>
+        <div class="readouts">
+          <span class="stamp">speed <b>0.25×</b></span>
+          <span class="stamp">audio <b style="color: var(--color-warn)">muted</b></span>
+          <span class="stamp">pre-roll <b>29 frames · 0.97 s</b></span>
+        </div>
+      </div>
+
+      <div class="lanes">
+        <div class="rail">
+          <div class="lane ruler head"><span>program</span></div>
+          <div class="lane head"><span>marks</span><b>3</b></div>
+          <div class="lane retime"><span>retime</span><b>0.25×</b></div>
+          <div class="lane"><span>camera</span><b>4</b></div>
+          <div class="lane"><span>bloom</span><b>2.40</b></div>
+          <div class="lane"><span>wake</span><b>1 250</b></div>
+        </div>
+
+        <div class="bed">
+          <div class="lane ruler" id="ruler">
+            <div class="preroll" style="left: 45.2%; width: 8.1%"><small>pre-roll</small></div>
+          </div>
+
+          <div class="lane">
+            <div class="mark" style="left: 10.0%"></div>
+            <div class="mark" style="left: 38.5%"></div>
+            <div class="mark" style="left: 61.7%"></div>
+          </div>
+
+          <div class="lane retime">
+            <div class="mute" style="left: 34.5%; width: 51.5%"><small>audio muted</small></div>
+            <svg viewBox="0 0 1200 40" preserveAspectRatio="none" aria-hidden="true">
+              <line x1="0" y1="9" x2="1200" y2="9" stroke="var(--color-line)" stroke-width="1" vector-effect="non-scaling-stroke" stroke-dasharray="3 4"/>
+              <path d="M0 9 L400 9 C460 9 540 29 600 30 L900 30 C960 30 1000 10 1040 9 L1200 9"
+                    fill="none" stroke="var(--color-accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
+            </svg>
+            <div class="key" style="left: 33.3%; top: 22%"></div>
+            <div class="key sel" style="left: 50.0%; top: 75%"></div>
+            <div class="key" style="left: 75.0%; top: 75%"></div>
+            <div class="key" style="left: 86.7%; top: 22%"></div>
+          </div>
+
+          <div class="lane" id="camLane">
+            <div class="key" style="left: 4%"></div>
+            <div class="key" style="left: 31%"></div>
+            <div class="key" style="left: 68%"></div>
+            <div class="key" style="left: 95%"></div>
+          </div>
+
+          <div class="lane">
+            <div class="key" style="left: 12%"></div>
+            <div class="key sel" style="left: 53.3%"></div>
+            <div class="key" style="left: 88%"></div>
+          </div>
+
+          <div class="lane">
+            <div class="key" style="left: 27%"></div>
+            <div class="key" style="left: 71%"></div>
+          </div>
+
+          <div class="playhead" style="left: 53.3%"></div>
+        </div>
+      </div>
+
+      <p class="caption">
+        The ruler is <b>program time</b> and the retime lane is an ordinary track on it, so
+        source time is derived rather than edited. Marks are stamped in <b>source milliseconds</b>,
+        which is why they slide when you redraw the curve. Only parameters that actually carry
+        keys get a lane — everything else lives in the inspector as a single value.
+      </p>
+    </section>
+  </div>
+
+  <aside class="inspector" aria-label="Inspector">
+
+    <details class="group" open>
+      <summary>Clip</summary>
+      <div class="inner">
+        <div class="row" style="grid-template-columns: 62px minmax(0,1fr)">
+          <label for="mode">Mode</label>
+          <select class="pick" id="mode">
+            <option>Blackwall</option><option>RGB</option><option>Depth</option>
+            <option>Ghost</option><option>Contour</option>
+          </select>
+        </div>
+        <p class="hintline">One mode for the whole clip. Changing it sets the look's starting
+          point; it is not keyframed, so nothing on the timeline moves when you switch.</p>
+      </div>
+    </details>
+
+    <details class="group" open>
+      <summary>Camera</summary>
+      <div class="inner">
+        <div class="row"><label>x</label><input type="range" min="-2" max="2" step="0.01" value="0.05" disabled><output id="camX">0.05</output>
+          <button class="kf" data-kf="here" type="button" aria-label="Camera keyframe"><i></i></button></div>
+        <div class="row"><label>z</label><input type="range" min="0.4" max="3" step="0.01" value="1.47" disabled><output id="camZ">1.47</output><span></span></div>
+        <div class="row"><label>height</label><input type="range" min="-0.6" max="1.4" step="0.01" value="0.47" disabled><output id="camY">0.47</output><span></span></div>
+        <p class="hintline">Drag the frame to move the camera. With a key at the playhead the
+          drag rewrites that key, which is why these read out rather than take input.</p>
+      </div>
+    </details>
+
+    <details class="group" open>
+      <summary>Look</summary>
+      <div class="inner" id="lookRows"></div>
+    </details>
+
+    <details class="group">
+      <summary>Points</summary>
+      <div class="inner" id="pointRows"></div>
+    </details>
+
+    <details class="group">
+      <summary>Timing</summary>
+      <div class="inner">
+        <div class="row"><label>speed</label><input type="range" min="0.1" max="4" step="0.05" value="0.25"><output>0.25</output>
+          <button class="kf" data-kf="here" type="button" aria-label="Speed keyframe"><i></i></button></div>
+        <div class="row" style="grid-template-columns: 62px minmax(0,1fr)">
+          <label for="fps">out fps</label>
+          <select class="pick" id="fps"><option>30</option><option>24</option><option>60</option></select>
+        </div>
+      </div>
+    </details>
+
+  </aside>
+</div>
+
+<script>
+const rng = (s) => () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+// ── inspector rows, built from a registry so adding a parameter is one entry.
+const PARAMS = {
+  look: [
+    { id: 'bloom', label: 'bloom', min: 0, max: 6, step: 0.05, value: 2.40, kf: 'here' },
+    { id: 'wake', label: 'wake', min: 0, max: 4000, step: 10, value: 1250, kf: 'some' },
+    { id: 'grain', label: 'grain', min: 0, max: 1, step: 0.01, value: 0.18, kf: 'none' },
+    { id: 'rgbSplit', label: 'rgb split', min: 0, max: 6, step: 0.05, value: 1.05, kf: 'none' },
+    { id: 'scanlines', label: 'scanlines', min: 0, max: 1, step: 0.01, value: 0.22, kf: 'none' },
+  ],
+  points: [
+    { id: 'pointSize', label: 'size', min: 0.5, max: 64, step: 0.5, value: 7.5, kf: 'none' },
+    { id: 'opacity', label: 'opacity', min: 0.05, max: 1, step: 0.01, value: 0.92, kf: 'none' },
+    { id: 'exposure', label: 'brightness', min: 0.05, max: 6, step: 0.05, value: 1.15, kf: 'none' },
+  ],
+};
+const fmt = (v) => (Math.abs(v) >= 100 ? Math.round(v).toLocaleString('en-GB').replace(/,/g, ' ') : v.toFixed(2));
+
+for (const [key, target] of [['look', 'lookRows'], ['points', 'pointRows']]) {
+  const host = document.getElementById(target);
+  for (const p of PARAMS[key]) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `<label for="${p.id}">${p.label}</label>
+      <input type="range" id="${p.id}" min="${p.min}" max="${p.max}" step="${p.step}" value="${p.value}">
+      <output>${fmt(p.value)}</output>
+      <button class="kf" data-kf="${p.kf}" type="button" aria-label="${p.label} keyframe"><i></i></button>`;
+    host.appendChild(row);
+    const inp = row.querySelector('input'), out = row.querySelector('output'), kf = row.querySelector('.kf');
+    inp.addEventListener('input', () => {
+      out.textContent = fmt(Number(inp.value));
+      // Final Cut's rule: with keys on the track, changing a value at the
+      // playhead writes a key there rather than shifting the whole curve.
+      if (kf.dataset.kf === 'some') kf.dataset.kf = 'here';
+    });
+    kf.addEventListener('click', () => {
+      kf.dataset.kf = kf.dataset.kf === 'here' ? 'some' : 'here';
+    });
+  }
+}
+
+// ── scene
+function fit(cv) {
+  const r = Math.min(devicePixelRatio || 1, 2);
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (!w || !h) return null;
+  cv.width = Math.round(w * r); cv.height = Math.round(h * r);
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(r, 0, 0, r, 0, 0);
+  return { ctx, w, h };
+}
+
+function shell() {
+  const rand = rng(20260731), pts = [];
+  for (let i = 0; i < 2400; i++) pts.push([(rand() - 0.5) * 4.4, -1.05 + rand() * 0.02, 1.0 + rand() * 4.6]);
+  for (let i = 0; i < 800; i++)  pts.push([(rand() - 0.5) * 4.4, -1.05 + rand() * 2.7, 5.6 + rand() * 0.05]);
+  const seg = [[0, -0.02, 0.19, 0.30, 700], [0, 0.46, 0.12, 0.13, 340],
+               [-0.28, -0.04, 0.065, 0.28, 220], [0.29, -0.10, 0.065, 0.28, 220],
+               [-0.12, -0.66, 0.085, 0.38, 330], [0.12, -0.66, 0.085, 0.38, 330]];
+  for (const [cx, cy, rx, ry, n] of seg)
+    for (let i = 0; i < n; i++) {
+      const a = rand() * Math.PI * 2;
+      pts.push([cx + Math.cos(a) * rx * (0.72 + rand() * 0.28), cy + (rand() - 0.5) * 2 * ry, 2.42 - Math.sin(a) * rx * 0.85]);
+    }
+  return pts;
+}
+const PTS = shell();
+
+// Camera path keys, in program time. They stay in front of the subject: one
+// sensor records a shell from one viewpoint, so there is nothing behind it.
+// Roughly 2.0-2.6 m back from the subject at z = 2.42: close enough to fill the
+// frame, far enough that the shot reads as a shot rather than a close-up.
+const PATH = [[-1.30, 0.20, 0.15], [-0.55, 0.50, 0.55], [0.50, 0.35, 0.45], [1.25, 0.10, 0.10]];
+const T_NOW = 0.533;
+// Aimed at the subject's centre of mass, not its head. The figure runs y = -1.05
+// to +0.59, so a look-at up at 0.30 throws the feet outside a 28-degree half-FOV.
+const LOOK_AT = [0, -0.20, 2.42];
+
+function catmull(p, t) {
+  const n = p.length - 1, i = Math.min(Math.floor(t * n), n - 1), u = t * n - i;
+  const g = (k) => p[Math.max(0, Math.min(n, k))];
+  const [p0, p1, p2, p3] = [g(i - 1), g(i), g(i + 1), g(i + 2)];
+  return [0, 1, 2].map((d) => 0.5 * ((2 * p1[d]) + (-p0[d] + p2[d]) * u +
+    (2 * p0[d] - 5 * p1[d] + 4 * p2[d] - p3[d]) * u * u +
+    (-p0[d] + 3 * p1[d] - 3 * p2[d] + p3[d]) * u * u * u));
+}
+// The live camera. Dragging the frame moves it, and because the playhead sits on
+// a camera key the drag rewrites that key rather than making a new one.
+let cam = catmull(PATH, T_NOW);
+const KEY_AT_PLAYHEAD = 2;
+
+function readout() {
+  document.getElementById('camX').textContent = cam[0].toFixed(2);
+  document.getElementById('camY').textContent = cam[1].toFixed(2);
+  document.getElementById('camZ').textContent = cam[2].toFixed(2);
+}
+
+// The program view: what the camera sees. Dragging it moves the camera, so the
+// picture moves the opposite way, exactly like pushing the frame around.
+function drawScene() {
+  const cv = document.getElementById('scene');
+  const f0 = fit(cv); if (!f0) return;
+  const { ctx, w, h } = f0;
+  ctx.fillStyle = css('--color-well'); ctx.fillRect(0, 0, w, h);
+
+  const fwd = [0, 1, 2].map((d) => LOOK_AT[d] - cam[d]);
+  const len = Math.hypot(...fwd) || 1;
+  const yaw = Math.atan2(fwd[0], fwd[2]);
+  const pitch = Math.asin(fwd[1] / len);
+  const cy = Math.cos(-yaw), sy = Math.sin(-yaw);
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const f = h * 0.95;
+
+  const out = [];
+  for (const [x, y, z] of PTS) {
+    let X = x - cam[0], Y = y - cam[1], Z = z - cam[2];
+    let rx = X * cy + Z * sy, rz = -X * sy + Z * cy;
+    let ry = Y * cp - rz * sp; rz = Y * sp + rz * cp;
+    if (rz < 0.25) continue;
+    out.push([w / 2 + (rx * f) / rz, h / 2 - (ry * f) / rz, rz]);
+  }
+  out.sort((a, b) => b[2] - a[2]);
+  for (const [px, py, rz] of out) {
+    if (px < -3 || px > w + 3 || py < -3 || py > h + 3) continue;
+    ctx.globalAlpha = 0.14 + 0.62 * Math.max(0, Math.min(1, (5 - rz) / 4));
+    ctx.fillStyle = rz < 3 ? css('--color-ink') : css('--color-faint');
+    ctx.fillRect(px - 0.8, py - 0.8, 1.6, 1.6);
+  }
+  ctx.globalAlpha = 1;
+
+  // Title-safe guide, so the drag has a frame to compose against.
+  ctx.strokeStyle = css('--color-line'); ctx.lineWidth = 1;
+  ctx.strokeRect(w * 0.05, h * 0.05, w * 0.9, h * 0.9);
+}
+
+function drawPlan() {
+  const cv = document.getElementById('plan');
+  const f0 = fit(cv); if (!f0) return;
+  const { ctx, w, h } = f0;
+  ctx.fillStyle = css('--color-paper'); ctx.fillRect(0, 0, w, h);
+  const ox = w / 2, oy = h - 10, m = (h - 18) / 5.2;
+
+  ctx.strokeStyle = css('--color-line'); ctx.lineWidth = 1;
+  for (let d = 1; d <= 5; d++) { ctx.beginPath(); ctx.arc(ox, oy, d * m, -Math.PI * 0.86, -Math.PI * 0.14); ctx.stroke(); }
+
+  for (const [x, y, z] of PTS) {
+    if (z > 5.2 || y < -0.85) continue;
+    ctx.globalAlpha = z < 3.2 ? 0.6 : 0.14;
+    ctx.fillStyle = z < 3.2 ? css('--color-ink') : css('--color-faint');
+    ctx.fillRect(ox + x * m - 0.5, oy - z * m - 0.5, 1, 1);
+  }
+  ctx.globalAlpha = 1;
+
+  ctx.strokeStyle = css('--color-accent-mid'); ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  for (let i = 0; i <= 80; i++) {
+    const [x, , z] = catmull(PATH, i / 80);
+    const px = ox + x * m, py = oy - z * m;
+    i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+  }
+  ctx.stroke();
+
+  for (const [x, , z] of PATH) {
+    ctx.fillStyle = css('--color-paper'); ctx.strokeStyle = css('--color-accent'); ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.arc(ox + x * m, oy - z * m, 3, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  }
+  const px = ox + cam[0] * m, py = oy - cam[2] * m;
+  ctx.strokeStyle = css('--color-accent'); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(ox, oy - 2.42 * m); ctx.stroke();
+  ctx.fillStyle = css('--color-accent');
+  ctx.beginPath(); ctx.arc(px, py, 3.5, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = css('--color-ink'); ctx.fillRect(ox - 3, oy - 1.5, 6, 3);
+}
+
+// ── drag the frame to move the camera
+const scene = document.getElementById('scene');
+let drag = null;
+scene.addEventListener('pointerdown', (e) => {
+  drag = { x: e.clientX, y: e.clientY, cam: [...cam] };
+  scene.setPointerCapture(e.pointerId);
+  document.getElementById('dragHint').textContent = 'camera key 3 · rewritten by this drag';
+});
+scene.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  const r = scene.getBoundingClientRect();
+  // One to one with the hand, no easing. Pushing the frame right moves the
+  // camera left, which is what makes it feel like moving the camera.
+  cam[0] = Math.max(-2, Math.min(2, drag.cam[0] - ((e.clientX - drag.x) / r.width) * 3.0));
+  cam[1] = Math.max(-0.6, Math.min(1.4, drag.cam[1] + ((e.clientY - drag.y) / r.height) * 1.8));
+  PATH[KEY_AT_PLAYHEAD] = [cam[0], cam[1], cam[2]];
+  readout(); drawScene(); drawPlan();
+});
+for (const ev of ['pointerup', 'pointercancel']) scene.addEventListener(ev, () => { drag = null; });
+
+(function ruler() {
+  const el = document.getElementById('ruler');
+  for (let s = 0; s <= 12; s += 2) {
+    const t = document.createElement('div');
+    t.className = 'tick major';
+    t.style.left = (s / 12 * 100) + '%';
+    if (s < 12) t.innerHTML = '<label>' + String(s).padStart(2, '0') + 's</label>';
+    el.appendChild(t);
+  }
+})();
+
+function draw() { drawScene(); drawPlan(); readout(); }
+requestAnimationFrame(draw);
+addEventListener('resize', draw);
+</script>
+</body>
+</html>

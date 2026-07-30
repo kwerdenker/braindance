@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Study 01 · Recorder</title>
+<link rel="stylesheet" href="tokens.css" />
+<style>
+/* Hallmark · surface: recorder / capture-node monitor
+ * tone: technical-austere · genre: atmospheric · anchor hue: teal 182
+ * page apparatus skipped: no nav, no footer, no hero — this is instrument chrome
+ * target: the Pi's own 800x480 DSI panel first, a phone second. Nothing here may
+ * assume a pointer, and every control is at least 44px on its short axis.
+ * pre-emit critique: P5 H5 E5 S5 R5 V4
+ */
+
+* { box-sizing: border-box; }
+html, body {
+  height: 100%; margin: 0;
+  background: var(--color-paper); color: var(--color-ink);
+  font: var(--text-base)/1.4 var(--font-ui);
+  overflow: hidden;
+  -webkit-text-size-adjust: 100%;
+}
+body { display: flex; flex-direction: column; }
+
+/* ── plan strip ───────────────────────────────────────────────────────────
+   Distance runs left to right, because on a wide short strip the width is the
+   axis that answers the only question this view is asked: is the subject inside
+   the range I am previewing. The clip band is drawn on it, so moving the range
+   control moves a region you can see. */
+.plan { position: relative; height: 84px; flex: none; background: var(--color-well); }
+.plan canvas { display: block; width: 100%; height: 100%; }
+.plan .id {
+  position: absolute; top: 6px; right: 8px;
+  display: flex; gap: var(--space-3); align-items: baseline;
+  font-size: var(--text-2xs); color: var(--color-dim); pointer-events: none;
+}
+.plan .id b { color: var(--color-ink); font-weight: 500; font-variant-numeric: tabular-nums; }
+.plan .id b.warn { color: var(--color-warn); }
+
+/* ── main view ────────────────────────────────────────────────────────────
+   Drag anywhere to orbit. Pointer events rather than mouse events, so one code
+   path covers the panel's touch, a phone and a mouse. */
+.view { position: relative; flex: 1; min-height: 0; background: var(--color-well); }
+.view canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+.view canvas:active { cursor: grabbing; }
+.view .tag {
+  position: absolute; top: 8px; left: 10px;
+  font-size: var(--text-2xs); letter-spacing: var(--track-label);
+  text-transform: uppercase; color: var(--color-dim); pointer-events: none;
+}
+.view .hint {
+  position: absolute; bottom: 8px; left: 10px;
+  font-size: var(--text-2xs); color: var(--color-faint); pointer-events: none;
+}
+
+.reset {
+  position: absolute; top: 8px; right: 8px;
+  width: 44px; height: 44px; display: grid; place-items: center;
+  border: var(--rule) solid var(--color-line-2); border-radius: var(--radius-md);
+  background: var(--color-paper-1); color: var(--color-dim);
+  font: var(--text-lg)/1 var(--font-ui); cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out);
+}
+.reset:hover, .reset.is-hover { background: var(--color-paper-2); color: var(--color-ink); border-color: var(--color-line-3); }
+.reset:focus-visible, .reset.is-focus { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.reset:active, .reset.is-active { background: var(--color-paper-3); }
+.reset:disabled, .reset.is-disabled { color: var(--color-faint); cursor: not-allowed; }
+.reset[data-moved="false"] { opacity: 0.62; }
+
+/* ── settings bar ─────────────────────────────────────────────────────────── */
+.settings {
+  flex: none; display: grid; grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-4); align-items: center;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-paper-1);
+  border-top: var(--rule) solid var(--color-line);
+}
+.field { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.field > label {
+  font-size: var(--text-2xs); letter-spacing: var(--track-label);
+  text-transform: uppercase; color: var(--color-dim); white-space: nowrap;
+}
+
+select.look {
+  appearance: none; -webkit-appearance: none;
+  height: 44px; padding: 0 26px 0 var(--space-3);
+  border: var(--rule) solid var(--color-line-2); border-radius: var(--radius-md);
+  background: var(--color-paper-2); color: var(--color-ink);
+  font: var(--text-base)/1 var(--font-ui); cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--color-dim) 50%),
+                    linear-gradient(135deg, var(--color-dim) 50%, transparent 50%);
+  background-position: right 13px center, right 8px center;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+select.look:hover, select.look.is-hover { border-color: var(--color-line-3); }
+select.look:focus-visible, select.look.is-focus { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+select.look:disabled { color: var(--color-faint); cursor: not-allowed; }
+
+/* ── preview clip · dual range ────────────────────────────────────────────
+   Two thumbs on one track. This drives the viewer's own nearClip/farClip and
+   nothing else — the grabber's --min-depth/--max-depth decide what exists at
+   all, and this control must never be wired to them. */
+.clip { display: flex; align-items: center; gap: var(--space-3); min-width: 0; flex: 1; }
+.clip .track { position: relative; flex: 1; height: 44px; min-width: 90px; touch-action: none; }
+.clip .rail { position: absolute; top: 20px; left: 0; right: 0; height: 4px; border-radius: 2px; background: var(--color-paper-3); }
+.clip .band { position: absolute; top: 20px; height: 4px; border-radius: 2px; background: var(--color-accent-mid); }
+.clip .thumb {
+  position: absolute; top: 11px; width: 22px; height: 22px; margin-left: -11px;
+  border: 2px solid var(--color-accent); border-radius: 50%;
+  background: var(--color-paper); cursor: grab;
+}
+.clip .thumb:active { cursor: grabbing; }
+.clip .thumb:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.clip .vals { font-size: var(--text-2xs); color: var(--color-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.clip .vals b { color: var(--color-ink); font-weight: 500; }
+.clip .note { font-size: var(--text-2xs); color: var(--color-warn); white-space: nowrap; }
+
+/* ── transport ────────────────────────────────────────────────────────────── */
+.transport {
+  flex: none; display: grid;
+  grid-template-columns: auto auto auto minmax(0, 1fr);
+  gap: var(--space-3); align-items: center;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-paper-1);
+  border-top: var(--rule) solid var(--color-line);
+}
+.tc { display: flex; flex-direction: column; gap: 0; }
+.tc output { font-size: var(--text-xl); font-weight: 500; letter-spacing: var(--track-tight); font-variant-numeric: tabular-nums; line-height: 1.1; }
+.tc output .ms { font-size: var(--text-base); color: var(--color-dim); }
+.tc small { font-size: var(--text-2xs); color: var(--color-faint); font-variant-numeric: tabular-nums; }
+
+.btn {
+  appearance: none; -webkit-appearance: none;
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
+  padding: 0 var(--space-4); height: 48px;
+  border: var(--rule) solid var(--color-line-2); border-radius: var(--radius-md);
+  background: var(--color-paper-2); color: var(--color-ink);
+  font: 500 var(--text-md)/1 var(--font-ui);
+  letter-spacing: var(--track-label); text-transform: uppercase;
+  white-space: nowrap; cursor: pointer; touch-action: manipulation;
+  transition: background-color var(--dur-fast) var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out);
+}
+.btn:hover, .btn.is-hover { background: var(--color-paper-3); border-color: var(--color-line-3); }
+.btn:focus-visible, .btn.is-focus { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.btn:active, .btn.is-active { background: var(--color-paper-1); }
+.btn:disabled, .btn.is-disabled { color: var(--color-faint); border-color: var(--color-line); background: var(--color-paper-1); cursor: not-allowed; }
+.btn .dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; flex: none; }
+
+.btn-rec { min-width: 108px; }
+.btn-rec[data-state="recording"] { background: var(--color-rec); border-color: var(--color-rec); color: var(--color-on-rec); }
+.btn-rec[data-state="blocked"] { border-color: var(--color-warn); color: var(--color-warn); background: var(--color-warn-low); cursor: not-allowed; }
+.btn-mark { min-width: 92px; }
+
+/* The one continuous animation. Load-bearing: this is the "am I recording"
+   signal read from across a room. Opacity only, and it degrades to a solid dot
+   plus a filled button plus the word Stop. */
+@keyframes rec-breathe { from { opacity: 1; } to { opacity: 0.34; } }
+.btn-rec[data-state="recording"] .dot { animation: rec-breathe var(--dur-rec) var(--ease-in-out) infinite alternate; }
+
+.cap { display: flex; flex-direction: column; gap: 3px; min-width: 0; justify-self: end; width: 100%; max-width: 260px; }
+.cap .row { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-2); font-size: var(--text-2xs); }
+.cap .row span { color: var(--color-dim); }
+.cap .row b { font-weight: 500; font-variant-numeric: tabular-nums; color: var(--color-warn); }
+.cap .bar { position: relative; height: 4px; border-radius: 2px; background: var(--color-paper-3); overflow: hidden; }
+.cap .bar i { position: absolute; inset: 0 auto 0 0; background: var(--color-warn); }
+
+/* ── narrow · phone ───────────────────────────────────────────────────────── */
+@media (max-width: 560px) {
+  .settings { grid-template-columns: minmax(0, 1fr); gap: var(--space-2); }
+  .transport { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "tc cap" "rec mark"; }
+  .transport .tc { grid-area: tc; }
+  .transport .btn-rec { grid-area: rec; }
+  .transport .btn-mark { grid-area: mark; }
+  .transport .cap { grid-area: cap; }
+  .clip .note { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
+  .btn-rec[data-state="recording"] .dot { opacity: 1; animation: none; }
+}
+</style>
+</head>
+<body>
+
+<section class="plan" aria-label="Range strip, distance left to right">
+  <canvas id="plan"></canvas>
+  <div class="id">
+    <span>pi-01</span><span>depth <b>30.0</b></span><span>colour <b>15.0</b></span><span><b class="warn">1h 47m</b> left</span>
+  </div>
+</section>
+
+<section class="view" aria-label="Point cloud, drag to orbit">
+  <canvas id="cloud"></canvas>
+  <div class="tag">monitor</div>
+  <div class="hint" id="hint">drag to look around</div>
+  <button class="reset" id="reset" type="button" data-moved="false" aria-label="Reset view">&#8635;</button>
+</section>
+
+<section class="settings">
+  <div class="field">
+    <label for="look">Look</label>
+    <select class="look" id="look">
+      <option>blackwall-mine</option>
+      <option>hallway-cool</option>
+      <option>contour-dry</option>
+      <option>none</option>
+    </select>
+  </div>
+
+  <div class="clip">
+    <span class="vals"><label for="clipNear">Preview</label> <b id="nearOut">0.60</b>–<b id="farOut">4.20</b> m</span>
+    <div class="track" id="clipTrack">
+      <div class="rail"></div>
+      <div class="band" id="clipBand"></div>
+      <div class="thumb" id="clipNear" role="slider" tabindex="0"
+           aria-label="Preview clip near, metres" aria-valuemin="0.05" aria-valuemax="9" aria-valuenow="0.6"></div>
+      <div class="thumb" id="clipFar" role="slider" tabindex="0"
+           aria-label="Preview clip far, metres" aria-valuemin="0.05" aria-valuemax="9" aria-valuenow="4.2"></div>
+    </div>
+    <span class="note">preview only · capture keeps 0.05–9.0</span>
+  </div>
+</section>
+
+<footer class="transport">
+  <div class="tc">
+    <output>04:12<span class="ms">.340</span></output>
+    <small>7 570 frames · 3.4 GB</small>
+  </div>
+  <button class="btn btn-rec" id="rec" data-state="recording" type="button"><span class="dot"></span>Stop</button>
+  <button class="btn btn-mark" id="mark" type="button">Mark 5</button>
+  <div class="cap">
+    <div class="row"><span>remaining</span><b>1h 47m</b></div>
+    <div class="bar"><i style="inline-size: 43%"></i></div>
+    <div class="row"><span>94.1 GB free</span><span>475 KiB/frame</span></div>
+  </div>
+</footer>
+
+<script>
+// Deterministic — fixed seed, never Math.random, so the study renders the same
+// frame every time and two screenshots stay comparable.
+const rng = (s) => () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function fit(cv) {
+  const r = Math.min(devicePixelRatio || 1, 2);
+  const w = cv.clientWidth, h = cv.clientHeight;
+  cv.width = Math.max(1, Math.round(w * r));
+  cv.height = Math.max(1, Math.round(h * r));
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(r, 0, 0, r, 0, 0);
+  return { ctx, w, h };
+}
+
+// Sensor sits 1.05 m above the floor, so a standing figure runs y = -1.05 to
+// roughly +0.59 and its feet meet the floor plane.
+function shell() {
+  const rand = rng(20260731), pts = [];
+  for (let i = 0; i < 2200; i++) pts.push([(rand() - 0.5) * 4.4, -1.05 + rand() * 0.02, 1.0 + rand() * 4.6]);
+  for (let i = 0; i < 700; i++)  pts.push([(rand() - 0.5) * 4.4, -1.05 + rand() * 2.7, 5.6 + rand() * 0.05]);
+  const seg = [[0, -0.02, 0.19, 0.30, 700], [0, 0.46, 0.12, 0.13, 340],
+               [-0.28, -0.04, 0.065, 0.28, 220], [0.29, -0.10, 0.065, 0.28, 220],
+               [-0.12, -0.66, 0.085, 0.38, 330], [0.12, -0.66, 0.085, 0.38, 330]];
+  for (const [cx, cy, rx, ry, n] of seg)
+    for (let i = 0; i < n; i++) {
+      const a = rand() * Math.PI * 2;
+      pts.push([cx + Math.cos(a) * rx * (0.72 + rand() * 0.28), cy + (rand() - 0.5) * 2 * ry, 2.42 - Math.sin(a) * rx * 0.85]);
+    }
+  return pts;
+}
+const PTS = shell();
+
+// ── preview clip. These are the viewer's nearClip/farClip and nothing else.
+const clip = { near: 0.60, far: 4.20, MIN: 0.05, MAX: 9.0 };
+
+// ── view state. Orbit is the user's hand: written straight from the pointer.
+const view = { yaw: 0, pitch: 0 };
+const HOME = { yaw: 0, pitch: 0 };
+
+function drawCloud() {
+  const cv = document.getElementById('cloud');
+  const { ctx, w, h } = fit(cv);
+  ctx.fillStyle = css('--color-well'); ctx.fillRect(0, 0, w, h);
+  const f = h * 0.92, ox = w / 2, oy = h * 0.42;
+  const cy = Math.cos(view.yaw), sy = Math.sin(view.yaw);
+  const cp = Math.cos(view.pitch), sp = Math.sin(view.pitch);
+
+  const shown = [];
+  for (const [x, y, z] of PTS) {
+    const d = Math.hypot(x, y + 0.2, z);
+    if (d < clip.near || d > clip.far) continue;   // hides; never prunes
+    const zc = z - 2.42;
+    const rx = x * cy + zc * sy;
+    let rz = -x * sy + zc * cy + 2.42;
+    const ry = y * cp - rz * sp;
+    rz = y * sp + rz * cp;
+    if (rz < 0.2) continue;
+    shown.push([ox + (rx * f) / rz, oy - (ry * f) / rz, rz]);
+  }
+  shown.sort((a, b) => b[2] - a[2]);
+  for (const [px, py, rz] of shown) {
+    if (px < -4 || px > w + 4 || py < -4 || py > h + 4) continue;
+    const near = Math.max(0, Math.min(1, (5.4 - rz) / 4.6));
+    ctx.globalAlpha = 0.16 + near * 0.66;
+    ctx.fillStyle = rz < 3.2 ? css('--color-ink') : css('--color-faint');
+    ctx.fillRect(px - 0.8, py - 0.8, 1.6, 1.6);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// Range strip: distance left to right, lateral offset vertically.
+//
+// A literal top-down does not survive this shape. The room is about 4.4m across
+// and 7m deep, so a true plan wants aspect 0.6, and a strip on this panel is
+// aspect 9.5 — the field-of-view cone leaves the frame within a pixel of the
+// sensor and the range arcs flatten into lines. So the two axes carry different
+// scales, the cone and the arcs are dropped because they only mean anything
+// isotropically, and the compression is stated on the strip rather than hidden.
+// What is left is the question this view is actually asked: is the subject
+// inside the band I am previewing.
+function drawPlan() {
+  const cv = document.getElementById('plan');
+  const { ctx, w, h } = fit(cv);
+  ctx.fillStyle = css('--color-well'); ctx.fillRect(0, 0, w, h);
+  const ox = 18, oy = h / 2, MAXM = 7.0;
+  const mx = (w - 34) / MAXM;                    // px per metre, along the axis
+  const my = (h - 22) / 4.8;                     // px per metre, across it
+
+  ctx.fillStyle = css('--color-accent-low');                    // the preview band
+  ctx.fillRect(ox + clip.near * mx, 0, (clip.far - clip.near) * mx, h);
+  ctx.strokeStyle = css('--color-accent-mid'); ctx.lineWidth = 1;
+  for (const d of [clip.near, clip.far]) {
+    ctx.beginPath(); ctx.moveTo(ox + d * mx, 0); ctx.lineTo(ox + d * mx, h); ctx.stroke();
+  }
+
+  ctx.strokeStyle = css('--color-line');                         // distance grid
+  for (let d = 1; d <= 6; d++) {
+    ctx.beginPath(); ctx.moveTo(ox + d * mx, h - 12); ctx.lineTo(ox + d * mx, h - 7); ctx.stroke();
+  }
+  ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(w - 8, oy); ctx.stroke();
+
+  const bins = new Array(70).fill(0);
+  for (const [x, y, z] of PTS) {                                 // returns above the floor
+    if (z > MAXM || y < -0.85) continue;
+    bins[Math.min(69, Math.floor((z / MAXM) * 70))]++;
+    const inBand = z >= clip.near && z <= clip.far;
+    ctx.globalAlpha = inBand ? 0.9 : 0.14;
+    ctx.fillStyle = inBand ? css('--color-accent') : css('--color-faint');
+    ctx.fillRect(ox + z * mx - 0.6, oy + x * my - 0.6, 1.2, 1.2);
+  }
+  ctx.globalAlpha = 1;
+
+  const peak = Math.max(1, ...bins);                             // density along distance
+  ctx.strokeStyle = css('--color-dim'); ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 0; i < bins.length; i++) {
+    const px = ox + ((i + 0.5) / bins.length) * MAXM * mx;
+    const py = h - 12 - (bins[i] / peak) * (h * 0.34);
+    i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+  }
+  ctx.stroke();
+
+  ctx.fillStyle = css('--color-ink'); ctx.fillRect(ox - 3, oy - 6, 6, 12);
+  ctx.fillStyle = css('--color-faint'); ctx.font = '9px ' + css('--font-ui');
+  for (const d of [2, 4, 6]) ctx.fillText(d + ' m', ox + d * mx + 3, h - 3);
+  ctx.fillText('lateral ×' + (my / mx).toFixed(2), ox, 10);
+}
+
+function draw() { drawCloud(); drawPlan(); }
+
+// ── orbit. One pointer path covers the panel's touch, a phone and a mouse.
+const cloud = document.getElementById('cloud');
+const resetBtn = document.getElementById('reset');
+let drag = null;
+
+function markMoved() {
+  const moved = Math.abs(view.yaw - HOME.yaw) > 0.01 || Math.abs(view.pitch - HOME.pitch) > 0.01;
+  resetBtn.dataset.moved = String(moved);
+}
+cloud.addEventListener('pointerdown', (e) => {
+  drag = { x: e.clientX, y: e.clientY, yaw: view.yaw, pitch: view.pitch };
+  cloud.setPointerCapture(e.pointerId);
+  document.getElementById('hint').style.visibility = 'hidden';
+});
+cloud.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  // Written straight from the pointer — no easing, no smoothing. The view is the
+  // user's hand, and anything between the two is a lie about latency.
+  //
+  // Yaw is clamped to +/-40 degrees, and the reason is the sensor rather than the
+  // interaction. One Kinect records a depth shell from one viewpoint, so past
+  // roughly this angle the subject collapses into the edge of a card with a void
+  // behind it. That is true and worth seeing in the editor; on a monitor whose
+  // job is framing a shot it is just a broken-looking picture.
+  const LIMIT = 0.7;
+  view.yaw = Math.max(-LIMIT, Math.min(LIMIT, drag.yaw + (e.clientX - drag.x) * 0.006));
+  view.pitch = Math.max(-0.5, Math.min(0.5, drag.pitch + (e.clientY - drag.y) * 0.004));
+  markMoved(); drawCloud();
+});
+for (const ev of ['pointerup', 'pointercancel']) cloud.addEventListener(ev, () => { drag = null; });
+
+// The reset is the one new Animate case: a pose return is a state change with a
+// spatial relationship, not direct manipulation. Short, eased, and instant under
+// a reduce preference.
+resetBtn.addEventListener('click', () => {
+  const from = { ...view }, dur = 220;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    Object.assign(view, HOME); markMoved(); drawCloud(); return;
+  }
+  const t0 = performance.now();
+  (function step(now) {
+    const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+    view.yaw = from.yaw + (HOME.yaw - from.yaw) * e;
+    view.pitch = from.pitch + (HOME.pitch - from.pitch) * e;
+    drawCloud();
+    if (k < 1) requestAnimationFrame(step); else markMoved();
+  })(performance.now());
+});
+
+// ── preview clip range
+const track = document.getElementById('clipTrack');
+const bandEl = document.getElementById('clipBand');
+const nearEl = document.getElementById('clipNear');
+const farEl = document.getElementById('clipFar');
+const pct = (v) => ((v - clip.MIN) / (clip.MAX - clip.MIN)) * 100;
+
+function layoutClip() {
+  nearEl.style.left = pct(clip.near) + '%';
+  farEl.style.left = pct(clip.far) + '%';
+  bandEl.style.left = pct(clip.near) + '%';
+  bandEl.style.width = (pct(clip.far) - pct(clip.near)) + '%';
+  document.getElementById('nearOut').textContent = clip.near.toFixed(2);
+  document.getElementById('farOut').textContent = clip.far.toFixed(2);
+  nearEl.setAttribute('aria-valuenow', clip.near.toFixed(2));
+  farEl.setAttribute('aria-valuenow', clip.far.toFixed(2));
+}
+function setFromX(which, clientX) {
+  const r = track.getBoundingClientRect();
+  const t = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+  const v = clip.MIN + t * (clip.MAX - clip.MIN);
+  if (which === nearEl) clip.near = Math.min(v, clip.far - 0.1);
+  else clip.far = Math.max(v, clip.near + 0.1);
+  layoutClip(); draw();
+}
+for (const el of [nearEl, farEl]) {
+  el.addEventListener('pointerdown', (e) => { el.setPointerCapture(e.pointerId); el.dataset.drag = '1'; e.preventDefault(); });
+  el.addEventListener('pointermove', (e) => { if (el.dataset.drag) setFromX(el, e.clientX); });
+  for (const ev of ['pointerup', 'pointercancel']) el.addEventListener(ev, () => { delete el.dataset.drag; });
+  el.addEventListener('keydown', (e) => {
+    const d = e.key === 'ArrowLeft' ? -0.1 : e.key === 'ArrowRight' ? 0.1 : 0;
+    if (!d) return;
+    e.preventDefault();
+    if (el === nearEl) clip.near = Math.max(clip.MIN, Math.min(clip.near + d, clip.far - 0.1));
+    else clip.far = Math.min(clip.MAX, Math.max(clip.far + d, clip.near + 0.1));
+    layoutClip(); draw();
+  });
+}
+
+layoutClip();
+draw();
+addEventListener('resize', draw);
+</script>
+</body>
+</html>
