@@ -117,10 +117,17 @@ controller and re-measure.
 
 ## Smaller, real findings
 
-- **`Registration::apply` costs 4.5ms/frame**, of which 3.8ms is the occlusion
-  filter, and it runs *serially* in the grabber's frame loop, so it lands
-  directly on capture-to-wire latency. `enable_filter=false` is a one-argument
-  change; the cost is colour bleed at silhouette edges.
+- **`Registration::apply` costs 6.3ms/frame**, and it runs *serially* in the
+  grabber's frame loop, so it lands directly on capture-to-wire latency.
+  `enable_filter=false` is a one-argument change; the cost is colour bleed at
+  silhouette edges. This entry previously said 4.5ms with 3.8ms of that in the
+  occlusion filter. The total is now measured rather than inherited — the
+  grabber's own `--profile` over three runs on the same M2 Max, real sensor,
+  colour on, 60 warmup frames discarded, gives 6.05 / 6.33 / 6.53ms at p50 — so
+  the old figure was roughly 40% low. The filter's share has **not** been
+  re-measured here; on the Pi it was 83% of registration, and there is no reason
+  to assume the proportion differs, but it has not been checked on this machine
+  and should not be quoted as if it had.
 - **434KB of the 486KB frame is uncompressed depth.** This entry originally
   estimated that RVL or zstd-over-temporal-deltas would take 117 Mbit/s down to
   ~35–45. Measured since against `captures/sample.knct`, that was optimistic:
@@ -345,7 +352,7 @@ version spends about 2.5% and the scalar version about 210%.
 
 **That ratio covers the depth solve alone, and the solve is not the grabber's
 whole per-frame cost.** The solve runs on its own `AsyncPacketProcessor` thread,
-so it overlaps with everything else, but `Registration::apply` costs 4.5ms/frame
+so it overlaps with everything else, but `Registration::apply` costs 6.3ms/frame
 and runs *serially* in the grabber's frame loop, and TurboJPEG re-encodes the
 registered colour image on every frame even when the colour data is unchanged.
 Anyone sizing an accelerated depth port should budget those separately rather

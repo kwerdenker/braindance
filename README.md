@@ -193,8 +193,10 @@ on any architecture — which puts it at roughly 70ms per frame against a 33ms
 budget. The OpenCL kernels run the same solve in 0.75–0.85ms, some 80x faster.
 
 That ratio is about the depth solve only. `Registration::apply` costs a further
-4.5ms/frame and runs serially in the grabber's frame loop, so it is the number
-to watch if the depth solve ever stops being the ceiling.
+6.3ms/frame and runs serially in the grabber's frame loop, so it is the number
+to watch if the depth solve ever stops being the ceiling. The whole serial half
+of that loop measures 7.1ms against a 33ms budget, which `grabber --profile`
+will print per segment.
 
 ## Wire format
 

@@ -355,19 +355,34 @@ one object.
 Three interpolation kinds cover the surface:
 
 - **Scalar tracks** lerp, with ease handles. Most sliders.
-- **Step tracks** hold until the next key. Every checkbox, plus the mode
-  selector. Lerping a boolean is meaningless and lerping a mode index is worse.
+- **Step tracks** hold until the next key. Every checkbox. Lerping a boolean is
+  meaningless.
 - **Pose tracks** carry position, orientation and field of view together.
   Catmull-Rom on position reads far better than linear for a camera move.
 
-**Presets apply on user action only, never during timeline evaluation.**
-`applyMode` currently rewrites eleven other sliders when entering or leaving
+**The mode is a property of the clip, not a track of any kind.** An earlier
+version of this section made it a step track, on the reasoning that a mode index
+cannot be lerped so it must hold. That is true and beside the point: the question
+is whether the mode should be able to change *within* a clip at all, and for a
+first version it should not. One take, re-photographed, is one reading of it.
+
+That deletion is what resolves the problem the rest of this section was written
+to manage. `applyMode` rewrites eleven other sliders when entering or leaving
 Blackwall, plus the additive blending toggle and the fog colour
 (`web/main.js:686-704`), which makes mode-change and param-change the same
-operation. Under keyframes, a mode key silently stomping every other track
-is almost certainly not what anyone wants. Selecting Blackwall in the UI should
-write keys onto the affected tracks at the playhead, visibly, and then evaluation
-touches nothing but the tracks themselves.
+operation — and under keyframes, a mode key silently stomping every other track
+is almost certainly not what anyone wants. With one mode per clip there is no
+mode key to stomp anything: selecting Blackwall sets the look's starting point
+once, as a user action, and the tracks are ordinary tracks from then on.
+
+**Presets still apply on user action only, never during timeline evaluation.**
+That rule is unchanged and now stands alone, since the mode selector was the
+awkward case it had to cover.
+
+Multi-mode clips are not ruled out, only deferred. Should they ever be wanted,
+the mode becomes a step track and this paragraph is the thing to revisit — but
+the `applyMode` problem comes back with it and would need solving properly rather
+than by writing keys and hoping.
 
 ## The editor is braindance-shaped: camera in the world, look in tracks
 
@@ -377,6 +392,9 @@ Three parts of it are already decisions in this document under other names:
 
 - **Shading modes are layers.** RGB, Depth, Ghost, Contour and Blackwall are the
   same recording read different ways, which is exactly the layer-switching idiom.
+  Braindance switches layers live while the recording plays; here the mode is
+  chosen once per clip, so the idiom survives as *which reading am I working in*
+  rather than as something that changes under the playhead.
 - **Marks are hotspots.** Moments flagged in the room, surfaced on the timeline.
 - **The top-down orthographic is the path editor.** Specced for monitoring depth
   placement, and it is the natural surface for editing a camera move.
@@ -712,6 +730,40 @@ take it is watching, with no second control surface — and press **mark** on it
 which is the case that matters, since the person watching the monitor is the one
 who sees the moment worth flagging.
 
+### The recorder is a shooting surface, so it carries two look controls
+
+Record, mark and remaining time are the load-bearing four-fifths of it, but a
+monitor that cannot be made representative of the shot is a monitor people stop
+trusting. Two controls earn their place, and both are for the person in the room
+rather than for the footage:
+
+- **A look preset selector**, drawing on the same user-authored preset library the
+  editor uses. Shooting against the look you intend to grade towards is the whole
+  reason presets are a library rather than two hardcoded modes.
+- **A near and far preview range**, so the operator can cut the room away and see
+  the subject as the shot will frame them.
+
+**The preview range hides; it does not prune. This distinction is the one thing
+in the recorder that must not be got backwards.** The project has two clips that
+look alike and are not:
+
+| control | where | effect |
+| --- | --- | --- |
+| `nearClip` / `farClip` | viewer uniforms, `web/main.js:205-206` | hides points that already arrived |
+| `--min-depth` / `--max-depth` | grabber flags | clips on the GPU before the frame is built, so they decide what exists at all |
+
+The recorder's range drives the first and must never be wired to the second.
+Capturing wide is free — the depth payload is a fixed-size array whether 40% or
+90% of it is populated — so the grabber keeps taking everything the sensor can
+resolve while the operator frames against whatever subset is useful. Getting this
+backwards would silently destroy footage in exactly the situation where nobody is
+watching for it, which is why the control says **preview only** on its face rather
+than in a comment.
+
+The same two numbers should drive whatever range display the monitor shows, so
+that moving the control moves a region the operator can see rather than changing
+an abstract number.
+
 ## Compression is worth measuring before designing around
 
 Measured against `captures/sample.knct` — 284 frames, mean 424 KiB depth plus
@@ -762,6 +814,26 @@ least afford it.
 A manifest over a captures directory: poster frame, duration, frame count,
 capture date, and the content hash that project files reference. Import builds
 the index and the hash in one scan.
+
+**Takes are tiles you can skim, not rows you have to open.** Moving across a tile
+scrubs that take — the Final Cut idiom — and the take's marks sit on the scrub
+bar underneath, so the moments someone flagged in the room are visible before the
+take is opened at all. That is the payoff for putting marks in a sidecar on the
+take rather than inside a project: the gallery can show them without loading
+anything that knows about edits.
+
+**Skimming costs different amounts depending on where the take is, so it should
+look different.** A local take scrubs at the measured 2.7ms, which is smooth. A
+remote one goes through the decimation parameter at roughly 21ms a position over
+that 3.8 MB/s link, which is browsable but not smooth. A gallery that skims both
+identically is promising a responsiveness the architecture does not have, so
+remote tiles decimate visibly and say so. This is the same one mechanism, third
+use — monitor, editor, and now the gallery.
+
+**Skimming is a pointer affordance, so nothing may be gated behind it.** The
+library runs on the node's touch panel as well, where there is no hover at all.
+Download, open, reclaim and delete are buttons on the tile at all times; skimming
+is how you *find* the take you want, never how you act on it.
 
 **There is no proxy, and that is a deliberate deletion.** An earlier draft of
 this document called for a reduced-resolution depth pyramid built at import, on
@@ -817,6 +889,22 @@ worth keeping. Once a take is local, browsing and editing run at the measured
 stays there until someone explicitly removes it. For a tool whose entire premise
 is keeping the raw footage, silently evicting a recording is the one failure that
 cannot be undone, and no eviction policy is worth that risk.
+
+**Deletion is manual, and it is available from either machine.** The library runs
+on the node as well as on the editing machine, so the operator who just filled a
+card can clear space without walking to another computer. That makes the two
+deletions genuinely different actions rather than one action with two buttons:
+
+| action | when | weight |
+| --- | --- | --- |
+| **reclaim** | take is `both` | recoverable — a hash-verified copy exists elsewhere |
+| **delete** | take is `local` or `remote` only | the last copy, and unrecoverable |
+
+The second is the only irreversible action in this tool, and it gets a real
+confirm naming the take, its length, its size, its marks and which machines hold
+it. An optimistic delete with an Undo toast is the wrong pattern here: undo
+windows expire, and this is a raw-capture tool whose entire premise is that the
+footage survives.
 
 **That makes the low-space warning load-bearing rather than polish.** The node
 holds roughly 1.9 hours uncompressed, about 3.1 compressed, and with manual-only
@@ -1165,6 +1253,32 @@ That window predates the `tjCompress2` fix but ran the same `jpegSize` handling
 the fix adopts, and the finished binary reproduces it: 15.23ms p50 and 16.53ms
 p90 over a fresh 45s window.
 
+**The same binary was then run on the Mac with the sensor attached, which is what
+closes the gap the port left open.** The fix touches the primary platform's encode
+path, and until now macOS had only been compiled and linked. Three runs, 477 to
+660 frames each after discarding 60 of warmup: **720 frames captured with 704
+carrying colour, zero malformed** — every JPEG starts `ffd8` and ends `ffd9` at
+exactly its declared offset, every payload length agrees with its header, and an
+extracted block decodes as 512x424. Sustained 30.00fps with arrival spacing at
+p50 32ms and p90 34ms. The fix is now verified on both platforms rather than on
+the one that needed it.
+
+| serial segment | Mac p50 | Pi p50 | ratio |
+| --- | --- | --- | --- |
+| `Registration::apply` | 6.33 ms | 13.13 ms | 2.07x |
+| `tjCompress2` | 0.61 ms | 1.39 ms | 2.28x |
+| everything else | 0.17 ms | 0.51 ms | — |
+| **total serial** | **7.12 ms** | **15.05 ms** | **2.11x** |
+
+**That comparison corrected a figure this repo had been carrying unmeasured.**
+Registration was quoted at 4.5ms on the Mac, which made the Pi look 2.92x slower;
+profiled properly on the same M2 Max it is 6.3ms across three runs, so the real
+gap is **2.07x** — close to the 2.43x single-core depth-solve ratio rather than
+notably worse than it. The correction does not change any decision here, since
+15.05ms of a 33ms budget passes either way, but the old number was inherited
+rather than measured and is now fixed in `README.md` and
+`docs/performance-investigation.md` too.
+
 **The decoupling prediction holds exactly.** Our grabber sees **30.00fps depth
 alongside 15.00fps colour**, not the 14.97 Protonect's synced listener produced —
 half the depth frames reuse the previous colour, and none are discarded waiting
@@ -1172,12 +1286,16 @@ for it. Delivered rate over a two-minute recording to the card was 29.86fps for
 1.73 GB, with the median frame arriving 33.4ms after the last one, which is the
 sensor's own cadence.
 
-**The ~17ms estimate was 13% high, and both halves of it were wrong.**
-Registration scales worse than the 2.43x single-core ratio — 13.13ms here against
-the 4.5ms measured on the M2 Max is **2.92x** — while the encode lands at 1.39ms,
-far under what scaling it by that ratio would predict, because TurboJPEG has a
-NEON path on aarch64. Everything else in the loop adds 0.5ms and runs whether
-colour is present or not. The two errors happened to cancel.
+**The ~17ms estimate was 13% high, and the reason is not what it first looked
+like.** Read against the 4.5ms the repo then carried for the Mac, registration
+appeared to scale at 2.92x — worse than the 2.43x single-core depth ratio — and
+the encode appeared to scale far better than it, the two errors cancelling. With
+the Mac profiled properly the picture is duller and more consistent: registration
+scales **2.07x** and the encode **2.28x**, both a little better than the depth
+solve's 2.43x, and the encode's advantage is the NEON path TurboJPEG has on
+aarch64. Everything else in the loop adds 0.5ms and runs whether colour is
+present or not. The estimate was simply high, rather than wrong in two directions
+at once.
 
 **Both levers work, and neither is needed.** Measured as interleaved A/B against
 the baseline immediately preceding each variant, three rounds, all three paired
@@ -1191,8 +1309,10 @@ deltas positive in both cases:
 
 Each row is the mean of three 45s runs, which is why the baseline sits a little
 under the 117s window above rather than exactly on it. The occlusion filter is
-83% of registration (13.13ms falls to 2.14ms without it), which mirrors the
-3.8-of-4.5ms measured on the Mac.
+83% of registration on the Pi — 13.13ms falls to 2.14ms without it. The
+equivalent split has not been measured on the Mac: an earlier 3.8-of-4.5ms figure
+was quoted here, but the 4.5ms it rests on has since been shown to be 6.3ms, so
+the proportion is unverified rather than confirmed.
 
 The cache halves the encodes exactly as predicted — 100% of frames encoded down
 to 50%, mean encode 1.48ms to 0.72ms — but it is not the free win it looks like.

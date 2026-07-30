@@ -110,26 +110,23 @@ span carrying its own cost in frames and seconds.
 
 ---
 
-## Where the studies now disagree with the spec
+## Reconciled with the spec
 
-These follow from the redesign and are **not** yet folded into `docs/recording-and-nle.md`.
+The four points where these studies contradicted `docs/recording-and-nle.md` have been
+folded into it, so the spec and the studies now say the same thing:
 
-1. **Mode is no longer a step track.** `docs/recording-and-nle.md:355-359` lists step tracks
-   as covering "every checkbox, plus the mode selector", and `:363-370` argues that
-   selecting Blackwall should write keys onto the affected tracks at the playhead. One mode
-   per clip removes both. It also dissolves the tension that section was written to manage,
-   since a mode change can no longer stomp eleven other tracks.
-2. **The gallery skims.** The Gallery section (`:760-784`) argues against a proxy and settles
-   what a draft scrub costs, but never describes hover-scrubbing a tile. The costs it
-   records are what make the local-versus-remote difference above legible, so the section
-   needs extending rather than correcting.
-3. **Deletion happens on both devices.** `:816-819` says nothing on the node is ever deleted
-   automatically, which still holds — but it assumes deletion is initiated from the Mac.
-   The node's own panel can now delete too.
-4. **The recorder carries look and range controls.** The spec's recorder is record, mark and
-   remaining time. A preset selector and a preview-clip range are new, and the preview-only
-   distinction above is worth stating in the spec because it is the kind of thing a later
-   change could quietly get backwards.
+1. **Mode is a property of the clip**, not a step track, and the section that argued for
+   writing mode keys at the playhead now records why that problem disappears rather than
+   how to manage it. Multi-mode clips are deferred, not ruled out, and the paragraph names
+   what would have to be solved to get them.
+2. **The Gallery section describes skimming**, including why remote tiles decimate visibly
+   and why nothing may be gated behind a hover on a surface that also runs on a touch panel.
+3. **Deletion is documented on both machines**, split into reclaim and delete, with the
+   second named as the only irreversible action in the tool.
+4. **The recorder's look preset and preview range are specced**, with the preview-versus-
+   capture clip distinction written out as a table — it is the one control here that could
+   silently destroy footage if a later change wired it to the grabber's flags instead of the
+   viewer's uniforms.
 
 ---
 
