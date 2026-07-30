@@ -1,9 +1,12 @@
-node_modules/
-dist/
-vendor/libfreenect2/
-vendor/prefix/
-native/build/
-captures/
-.playwright-cli/
+# No trailing slashes on the directory names. A pattern ending in "/" matches
+# directories only, so it silently misses a symlink of the same name - and in a
+# git worktree the heavy shared artifacts are exactly what gets symlinked back to
+# the main checkout. Both vendor and node_modules showed up as untracked that way.
+node_modules
+dist
+vendor
+native/build
+captures
+.playwright-cli
 *.log
 .DS_Store
