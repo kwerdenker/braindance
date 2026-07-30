@@ -78,10 +78,22 @@ const wss = new WebSocketServer({ server: httpServer });
 let helloJson = null;
 const stats = { frames: 0, dropped: 0, bytes: 0, since: Date.now() };
 
+let sensorState = 'starting';
+
+function broadcastText(text) {
+  for (const ws of wss.clients) if (ws.readyState === ws.OPEN) ws.send(text);
+}
+
+function setSensorState(state) {
+  sensorState = state;
+  broadcastText(JSON.stringify({ status: state }));
+}
+
 wss.on('connection', (ws) => {
   ws.binaryType = 'nodebuffer';
   console.log(`[server] client connected (${wss.clients.size} total)`);
   if (helloJson) ws.send(helloJson);
+  ws.send(JSON.stringify({ status: sensorState }));
   ws.on('error', (err) => console.error('[server] socket error:', err.message));
 });
 
@@ -117,35 +129,63 @@ setInterval(() => {
   Object.assign(stats, { frames: 0, dropped: 0, bytes: 0, since: Date.now() });
 }, 5000);
 
+// The Kinect v2 drops off the bus under sustained load on a marginal USB link,
+// so a dead grabber is an expected condition, not a fatal one. Respawn it.
+const RESTART_DELAYS = [1000, 2000, 4000, 8000];
+
 function startLive() {
   const bin = join(ROOT, 'native/build/grabber');
   const grabberArgs = ['--pipeline', PIPELINE];
   if (NO_COLOR) grabberArgs.push('--no-color');
 
-  console.log(`[server] starting grabber: ${bin} ${grabberArgs.join(' ')}`);
-  const child = spawn(bin, grabberArgs, { stdio: ['ignore', 'pipe', 'inherit'] });
-
   const recorder = RECORD ? createWriteStream(RECORD) : null;
   if (recorder) console.log(`[server] recording to ${RECORD}`);
 
-  const parser = new MessageParser();
-  child.stdout.on('data', (chunk) => {
-    if (recorder) recorder.write(chunk);
-    try {
-      for (const msg of parser.push(chunk)) handleMessage(msg);
-    } catch (err) {
-      console.error('[server]', err.message);
-      child.kill('SIGTERM');
-    }
-  });
+  let child = null;
+  let attempt = 0;
+  let shuttingDown = false;
 
-  child.on('exit', (code, signal) => {
-    console.error(`[server] grabber exited (code=${code} signal=${signal})`);
-    recorder?.end();
-  });
+  const spawnGrabber = () => {
+    console.log(`[server] starting grabber: ${bin} ${grabberArgs.join(' ')}`);
+    setSensorState('starting');
+
+    const parser = new MessageParser();
+    child = spawn(bin, grabberArgs, { stdio: ['ignore', 'pipe', 'inherit'] });
+
+    child.stdout.on('data', (chunk) => {
+      if (recorder) recorder.write(chunk);
+      try {
+        for (const msg of parser.push(chunk)) {
+          handleMessage(msg);
+          if (msg.type === TYPE_HELLO) {
+            attempt = 0; // a clean handshake means the link is healthy again
+            setSensorState('live');
+          }
+        }
+      } catch (err) {
+        // A desynced stream is unrecoverable; restarting rebuilds the framing.
+        console.error('[server]', err.message);
+        child.kill('SIGTERM');
+      }
+    });
+
+    child.on('exit', (code, signal) => {
+      console.error(`[server] grabber exited (code=${code} signal=${signal})`);
+      if (shuttingDown) return;
+      setSensorState('lost');
+      const delay = RESTART_DELAYS[Math.min(attempt, RESTART_DELAYS.length - 1)];
+      attempt++;
+      console.log(`[server] restarting grabber in ${delay}ms (attempt ${attempt})`);
+      setTimeout(spawnGrabber, delay);
+    });
+  };
+
+  spawnGrabber();
 
   process.on('SIGINT', () => {
-    child.kill('SIGTERM');
+    shuttingDown = true;
+    child?.kill('SIGTERM');
+    recorder?.end();
     process.exit(0);
   });
 }

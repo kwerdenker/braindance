@@ -293,15 +293,24 @@ let decodeBusy = false;
 let pendingColor = null;
 let liveBitmap = null;
 
+let sensorState = '';
+
 function setStatus() {
   const rate = document.createElement('b');
   rate.textContent = fps.toFixed(0);
-  statusEl.replaceChildren(
+  const nodes = [
     document.createTextNode(sensorLabel),
     document.createElement('br'),
     rate,
     document.createTextNode(' fps'),
-  );
+  ];
+  if (sensorState) {
+    const note = document.createElement('span');
+    note.textContent = sensorState;
+    note.style.color = '#e8a33d';
+    nodes.push(document.createElement('br'), note);
+  }
+  statusEl.replaceChildren(...nodes);
 }
 
 // One decode in flight at a time; newer frames replace any queued one so the
@@ -363,7 +372,16 @@ function connect() {
 
   ws.onmessage = (event) => {
     if (typeof event.data === 'string') {
-      const hello = JSON.parse(event.data);
+      const msg = JSON.parse(event.data);
+
+      if (msg.status) {
+        sensorState = { live: '', starting: 'sensor starting…', lost: 'sensor lost — restarting' }[msg.status] ?? msg.status;
+        if (msg.status !== 'live') fps = 0;
+        setStatus();
+        return;
+      }
+
+      const hello = msg;
       uniforms.focal.value.set(hello.fx, hello.fy);
       uniforms.center.value.set(hello.cx, hello.cy);
       if (!hello.color) uniforms.hasColor.value = 0;
