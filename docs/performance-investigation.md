@@ -38,14 +38,11 @@ Recovery arithmetic, from the same window:
 | accept ≤1 missing | 1070 | 23.3 |
 | accept ≤2 missing | 1231 | 26.8 |
 
-**Unresolved risk, and it is the whole question.** Filling a missing sub-image
-from the previous frame is only free for pixels that did not move. The ten
-sub-images are phase measurements, and phase is cyclic, so mixing one
-33ms-stale phase into the unwrap does not blur a moving pixel — it can send it
-to a completely wrong depth. Static scene: exact. Moving subject: potentially
-severe localised artifacts, not gentle ones. This needs a visual check before it
-is called a win, and the honest fallback is to accept only ≤1 missing and mask
-reconstructed pixels.
+Those two rows are an upper bound on what recovery could yield, not a plan. How
+to actually reach them depends on what the ten sub-images *are*, which is
+resolved in the two sections at the end: one part of it turned out to be free
+and is now implemented, and the rest needs a new solve path rather than the
+naive substitution this table implies.
 
 ## What did not work, measured rather than assumed
 
