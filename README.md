@@ -46,9 +46,21 @@ Drag to orbit, scroll to zoom, right-drag to pan, `H` hides the panel.
 | Blackwall | crimson containment volume, cyan scan sweep, torn datastream bands |
 
 Blackwall is a pipeline preset rather than just a shader branch: selecting it
-switches the points to additive blending and drives the whole post chain (bloom,
-trails, RGB split, scanlines, grain, glitch). Leaving it restores a neutral view.
-Every value stays on its own slider afterwards, so the preset is a starting point.
+switches the points to additive blending and drives the whole post chain (scan,
+rim, bloom, trails, RGB split, scanlines, grain, glitch). Leaving it restores a
+neutral view. Every value stays on its own slider afterwards, so the preset is a
+starting point.
+
+Two controls decide how much white ends up on the geometry, which is the first
+thing to reach for if the look feels blown out:
+
+- **`scan`** is the plane sweeping through depth. Because it keys off distance
+  rather than screen position, it lands on an angled surface as a diagonal band
+  that drifts across it. Wide and hot, it reads as a light leak dragging over the
+  scene instead of something scanning it, so it is kept narrow and tinted cyan.
+- **`rim`** brightens depth discontinuities. It gives the subject its edge
+  definition, but under additive blending plus bloom it washes broad surfaces
+  toward white — turn it down before turning down bloom.
 
 `turbulence` displaces points with a time-varying noise field. The `near`/`far`
 depth clip is the most useful control for isolating a person from the room.

@@ -104,6 +104,8 @@ const uniforms = {
   edgeTol: { value: 120 },
   hasColor: { value: 0 },
   softEdge: { value: 1 },
+  scanAmount: { value: 0 },
+  rimAmount: { value: 0.55 },
 };
 
 const vertexShader = /* glsl */ `
@@ -222,6 +224,7 @@ precision highp float;
 
 uniform sampler2D colorPrev, colorCurr;
 uniform float opacity, exposure, nearClip, farClip, mixT, time;
+uniform float scanAmount, rimAmount;
 uniform int mode, hasColor, softEdge;
 
 in vec2 vUv;
@@ -287,18 +290,20 @@ void main() {
     col = mix(deep, hot, pow(1.0 - t, 1.6));
 
     float rim = pow(vEdge, 0.55);
-    col = mix(col, vec3(1.0, 0.42, 0.30), rim * 0.85);
+    col = mix(col, vec3(0.95, 0.34, 0.22), rim * rimAmount);
 
-    // A scan plane sweeping through depth, the ICE probing outward.
+    // A scan plane sweeping through depth, the ICE probing outward. Kept narrow
+    // and tinted rather than white - a wide hot band reads as a light leak
+    // dragging across the geometry instead of something scanning it.
     float sweep = fract(vDepth * 0.55 - time * 0.28);
-    float scan = smoothstep(0.965, 1.0, sweep);
-    col += vec3(0.15, 0.85, 0.95) * scan * 1.6;
+    float scan = smoothstep(0.988, 1.0, sweep);
+    col += vec3(0.10, 0.62, 0.78) * scan * scanAmount;
 
     // Torn bands flare cyan where the feed shears.
     col += vec3(0.2, 0.9, 1.0) * vGlitch;
 
     col *= 0.55 + 0.75 * lum;
-    alpha *= 0.30 + 0.70 * rim + 0.45 * scan;
+    alpha *= 0.30 + 0.70 * rim * rimAmount + 0.45 * scan * scanAmount;
   }
 
   // Additive contributions sum, and near points get both larger sprites and more
@@ -466,6 +471,8 @@ bindUniform('warpSpeed', 'warpSpeed');
 bindUniform('glitch', 'glitch');
 bindUniform('edgeTol', 'edgeTol');
 bindUniform('snapDelta', 'snapDelta');
+bindUniform('scan', 'scanAmount');
+bindUniform('rim', 'rimAmount');
 
 bind('bloom', (v) => { bloom.strength = v; bloom.enabled = v > 0; });
 bind('trails', (v) => { afterimage.uniforms.damp.value = v; afterimage.enabled = v > 0; });
@@ -500,8 +507,8 @@ const setSlider = (id, value) => {
 
 // The Blackwall look is a whole pipeline state, not a shader branch, so selecting
 // it drives the post chain too. Leaving it restores a neutral view.
-const BLACKWALL = { bloom: 0.55, trails: 0.55, rgbSplit: 1.6, scanlines: 0.4, grain: 0.22, glitch: 0.18, pointSize: 4.5 };
-const NEUTRAL = { bloom: 0, trails: 0, rgbSplit: 0, scanlines: 0, grain: 0, glitch: 0, pointSize: 5 };
+const BLACKWALL = { bloom: 0.5, trails: 0.5, rgbSplit: 1.6, scanlines: 0.35, grain: 0.22, glitch: 0.18, pointSize: 4.5, scan: 0.35, rim: 0.5 };
+const NEUTRAL = { bloom: 0, trails: 0, rgbSplit: 0, scanlines: 0, grain: 0, glitch: 0, pointSize: 5, scan: 0, rim: 0.55 };
 
 let currentMode = 0;
 function applyMode(mode) {
