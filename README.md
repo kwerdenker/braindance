@@ -8,9 +8,16 @@ them on the GPU using the sensor's own intrinsics.
 ```
 Kinect v2 ──USB3──▶ native/grabber ──framed stdout──▶ server/index.js ──WebSocket──▶ web/main.js
                     (libfreenect2 +                   (fan-out, drop-to-latest)     (GPU unprojection,
-                     OpenCL depth,                                                   217k points)
-                     TurboJPEG colour)
+                     OpenCL depth,                                                   217k points +
+                     TurboJPEG colour)                                               surface memory)
 ```
+
+Depth and colour are captured on separate listeners. The Kinect's colour camera
+halves to 15fps in dim light while depth stays at 30, and a single synced
+listener would throw away every other depth frame waiting for it — so depth runs
+at its own rate and reuses the most recent colour, at worst one interval stale.
+The grabber logs both counts (`600 frames (293 colour)`) because a lagging colour
+rate is the one thing that explains an image looking stale.
 
 ## Run it
 
@@ -48,6 +55,30 @@ Drag to orbit, scroll to zoom, right-drag to pan, `H` hides the panel.
 | Ghost | luminance shell that glows along depth discontinuities |
 | Contour | topographic bands sweeping through depth |
 | Blackwall | crimson containment volume, cyan scan sweep, torn datastream bands |
+
+## Persistence
+
+A ray landing on a different surface between frames is a death and a birth. The
+viewer used to teleport the point, which was the loudest artifact in the image —
+3.14% of pixels flip valid/zero every frame pair, 44x more than the snap
+threshold ever touches. A ping-pong float target now remembers where each ray
+used to be and how long ago it swapped, so:
+
+- **`fade`** cross-fades the transition: the new point ramps in over the same
+  window the old one thins out. 120ms by default. This is the correctness half.
+- **`wake`** lets a hard transition linger past the fade, shedding a trail from
+  moving silhouettes. 0 by default, 550ms under Blackwall.
+
+Wake length is keyed off the local depth spread, not the raw transition, and that
+is what keeps a static scene from shimmering. Measured live: of 2.56% of pixels
+swapping per 50ms, 2.36% classify soft — the depth solve's confidence gate
+chattering on a flat wall, which earns only the cross-fade — against 0.20% hard.
+
+Both are in milliseconds rather than frame intervals, so a better frame rate does
+not silently shorten the look. With both at zero the ghost half of the geometry
+leaves the draw range and the original 217088-point draw is restored exactly.
+`__kinect.stateStats()` reads the memory back if a static scene ever starts
+shedding.
 
 Blackwall is a pipeline preset rather than just a shader branch: selecting it
 switches the points to additive blending and drives the whole post chain (scan,

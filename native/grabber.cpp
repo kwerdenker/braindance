@@ -130,11 +130,16 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  unsigned int types = libfreenect2::Frame::Depth;
-  if (wantColor) types |= libfreenect2::Frame::Color;
-  libfreenect2::SyncMultiFrameListener listener(types);
-  dev->setColorFrameListener(&listener);
-  dev->setIrAndDepthFrameListener(&listener);
+  // Depth and colour are listened to separately on purpose. A single
+  // SyncMultiFrameListener releases a frame set only once *both* streams have
+  // delivered, and the Kinect's colour camera halves to 15fps in dim light while
+  // depth stays at 30 - so syncing them throws away every other depth frame for
+  // no reason. Decoupled, depth runs at its own rate and reuses the most recent
+  // colour, which is at worst one interval stale.
+  libfreenect2::SyncMultiFrameListener depthListener(libfreenect2::Frame::Depth);
+  libfreenect2::SyncMultiFrameListener colorListener(libfreenect2::Frame::Color);
+  dev->setIrAndDepthFrameListener(&depthListener);
+  if (wantColor) dev->setColorFrameListener(&colorListener);
 
   if (wantColor) {
     if (!dev->start()) { std::fprintf(stderr, "[grabber] device start failed\n"); return 1; }
@@ -165,24 +170,37 @@ int main(int argc, char **argv) {
   std::vector<uint8_t> depthOut(DEPTH_PIXELS * sizeof(uint16_t));
   std::vector<uint8_t> payload;
 
-  libfreenect2::FrameMap frames;
+  libfreenect2::FrameMap depthFrames, colorFrames;
+  bool haveColor = false;
   uint64_t frameCount = 0;
+  uint64_t colorCount = 0;
 
   while (!g_stop) {
-    if (!listener.waitForNewFrame(frames, 10 * 1000)) {
+    if (!depthListener.waitForNewFrame(depthFrames, 10 * 1000)) {
       std::fprintf(stderr, "[grabber] timeout waiting for frame\n");
       break;
     }
 
-    libfreenect2::Frame *depth = frames[libfreenect2::Frame::Depth];
-    libfreenect2::Frame *rgb = wantColor ? frames[libfreenect2::Frame::Color] : nullptr;
+    // Take a new colour frame only if one is already waiting; never block on it.
+    // The previous one is released first so at most one is held outside the pool.
+    if (wantColor && colorListener.hasNewFrame()) {
+      if (haveColor) colorListener.release(colorFrames);
+      haveColor = colorListener.waitForNewFrame(colorFrames, 1000);
+      if (haveColor) colorCount++;
+    }
+
+    libfreenect2::Frame *depth = depthFrames[libfreenect2::Frame::Depth];
+    libfreenect2::Frame *rgb = haveColor ? colorFrames[libfreenect2::Frame::Color] : nullptr;
 
     const float *depthSrc;
-    if (wantColor && rgb) {
+    if (rgb) {
       registration.apply(rgb, depth, &undistorted, &registered);
       depthSrc = (const float *)undistorted.data;
     } else {
-      depthSrc = (const float *)depth->data;
+      // Same undistortion the colour path applies, so geometry does not shift
+      // between the frames before the first colour arrives and the ones after.
+      registration.undistortDepth(depth, &undistorted);
+      depthSrc = (const float *)undistorted.data;
     }
 
     uint16_t *d16 = (uint16_t *)depthOut.data();
@@ -192,7 +210,7 @@ int main(int argc, char **argv) {
     }
 
     jpegSize = 0;
-    if (wantColor && rgb) {
+    if (rgb) {
       // registered is BGRX, already aligned 1:1 with the depth pixels
       tjCompress2(jpegCompressor, (unsigned char *)registered.data, DW, 0, DH,
                   TJPF_BGRX, &jpegBuf, &jpegSize, TJSAMP_420, jpegQuality, TJFLAG_FASTDCT);
@@ -211,12 +229,17 @@ int main(int argc, char **argv) {
     if (colorBytes) std::memcpy(p, jpegBuf, colorBytes);
 
     bool ok = write_message(STDOUT_FILENO, TYPE_FRAME, payload.data(), (uint32_t)payload.size());
-    listener.release(frames);
+    depthListener.release(depthFrames);
     if (!ok) break; // consumer closed the pipe
 
+    // Colour lagging depth is normal in dim light and is the one number that
+    // explains a washed-out or stale-looking image, so it is reported alongside.
     if (++frameCount % 150 == 0)
-      std::fprintf(stderr, "[grabber] %llu frames\n", (unsigned long long)frameCount);
+      std::fprintf(stderr, "[grabber] %llu frames (%llu colour)\n",
+                   (unsigned long long)frameCount, (unsigned long long)colorCount);
   }
+
+  if (haveColor) colorListener.release(colorFrames);
 
   if (jpegBuf) tjFree(jpegBuf);
   if (jpegCompressor) tjDestroy(jpegCompressor);
