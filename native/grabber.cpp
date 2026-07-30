@@ -122,8 +122,15 @@ int main(int argc, char **argv) {
   // 160mm to 128k at 40mm, which is 59% of the frame from one palm. There is no
   // saturation cliff and no phase wrap; a wrap would jump discontinuously rather
   // than track the hand smoothly. The sensor is limited by reach, not physics.
+  //
+  // These are deliberately wider than what looks good. Gating here destroys data
+  // the viewer can never get back, while the viewer's own near/far merely hides
+  // it - and capturing wide is free, because the depth payload is a fixed-size
+  // array whether 40% or 90% of it is populated. So the grabber takes everything
+  // the sensor can resolve and the UI decides what to show. There is a real
+  // surface at ~8.5m here that a 6m ceiling would have thrown away.
   float minDepth = 0.05f;
-  float maxDepth = 6.0f;
+  float maxDepth = 9.0f;
   bool lowLight = true;
 
   for (int i = 1; i < argc; i++) {
