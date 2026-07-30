@@ -1,0 +1,9 @@
+node_modules/
+dist/
+vendor/libfreenect2/
+vendor/prefix/
+native/build/
+captures/
+.playwright-cli/
+*.log
+.DS_Store
