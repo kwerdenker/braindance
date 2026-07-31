@@ -8,8 +8,11 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # libfreenect2 is built from source into a prefix rather than installed system
-# wide, because the vendored tree carries our patches. vendor/prefix is where the
-# macOS build lands; -DFREENECT2_ROOT=... points at any other one - the Pi's is
+# wide, because the source we build is our own: third_party/libfreenect2 is
+# upstream v0.2.1 plus the sub-9 fix, tracked in this repo so a rebuild does not
+# depend on a clone of a branch that pins nothing. See third_party/UPSTREAM.md.
+# vendor/prefix is where that build lands and is gitignored - source is tracked,
+# artifacts are not. -DFREENECT2_ROOT=... points at any other prefix; the Pi's is
 # ~/freenect2. Its own freenect2Config.cmake is not used: it bakes the install
 # path in with NO_DEFAULT_PATH, so it would ignore the override.
 set(FREENECT2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../vendor/prefix"
