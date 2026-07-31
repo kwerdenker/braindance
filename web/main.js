@@ -33,11 +33,12 @@ scene.fog = new THREE.FogExp2(0x05070a, 0.11);
 // can go through the controls at all - it is a frame-rate-dependent filter, so the
 // same move would land somewhere else at a different output frame rate.
 const ORBIT_TARGET = new THREE.Vector3(0, 0, -2.2);
+const PROGRAM_FOV = 50;
 
-const freeCamera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.05, 60);
+const freeCamera = new THREE.PerspectiveCamera(PROGRAM_FOV, innerWidth / innerHeight, 0.05, 60);
 freeCamera.position.set(0, 0.1, 1.6);
 
-const programCamera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.05, 60);
+const programCamera = new THREE.PerspectiveCamera(PROGRAM_FOV, innerWidth / innerHeight, 0.05, 60);
 
 // Which of the two the viewport draws. The free camera is the default, so the live
 // viewer stays exactly what it was. Step 5's top-down view draws the program
@@ -61,15 +62,29 @@ const PROGRAM_ORBIT = new THREE.Spherical()
   .setFromVector3(new THREE.Vector3(0, 0.1, 1.6).sub(ORBIT_TARGET));
 const PROGRAM_ORBIT_RATE = (2 * Math.PI) / 100;
 const programSpherical = new THREE.Spherical();
+// Orienting is done on a camera-shaped scratch object rather than on a bare
+// Object3D, because three points cameras and lights down -Z and everything else
+// down +Z: the same lookAt on the wrong kind of object gives a pose facing the
+// other way, and it would look plausible right up until the frustum was drawn.
+const poseScratch = new THREE.PerspectiveCamera();
 
-function poseProgramCamera(t) {
+// The placeholder hands back a pose as a value rather than moving the camera
+// itself, because the camera is a registry parameter like every other one and
+// everything reaches it through the same door. Step 5 replaces this function with
+// a curve read at t; nothing downstream of the registry has to change for that.
+function programPose(t) {
   programSpherical.set(
     PROGRAM_ORBIT.radius,
     PROGRAM_ORBIT.phi,
     PROGRAM_ORBIT.theta - t * PROGRAM_ORBIT_RATE,
   );
-  programCamera.position.setFromSpherical(programSpherical).add(ORBIT_TARGET);
-  programCamera.lookAt(ORBIT_TARGET);
+  poseScratch.position.setFromSpherical(programSpherical).add(ORBIT_TARGET);
+  poseScratch.lookAt(ORBIT_TARGET);
+  return {
+    position: poseScratch.position.toArray(),
+    quaternion: poseScratch.quaternion.toArray(),
+    fov: PROGRAM_FOV,
+  };
 }
 
 // ---------------------------------------------------------------- gpu textures
@@ -539,7 +554,6 @@ function setAdditive(on) {
   uniforms.softEdge.value = on ? 1 : 0;
   material.needsUpdate = true;
 }
-setAdditive(false);
 
 // ---------------------------------------------------------------- post chain
 
@@ -661,51 +675,47 @@ function postEnabled() {
   return afterimage.enabled || bloom.enabled || grade.enabled;
 }
 
-// ---------------------------------------------------------------- ui wiring
+// ------------------------------------------------------------ the registry
 
-const bind = (id, apply) => {
-  const el = document.getElementById(id);
-  const out = el.parentElement.querySelector('output');
-  const run = () => {
-    apply(Number(el.value));
-    if (out) out.textContent = el.value;
-  };
-  el.addEventListener('input', run);
-  run();
-};
-
-const bindUniform = (id, name) => bind(id, (v) => { uniforms[name].value = v; });
-
-bindUniform('pointSize', 'pointSize');
-bindUniform('opacity', 'opacity');
-bindUniform('exposure', 'exposure');
-bindUniform('near', 'nearClip');
-bindUniform('far', 'farClip');
-bindUniform('warp', 'warp');
-bindUniform('warpSpeed', 'warpSpeed');
-bindUniform('glitch', 'glitch');
-bindUniform('edgeTol', 'edgeTol');
-bindUniform('snapDelta', 'snapDelta');
-bindUniform('scan', 'scanAmount');
-bindUniform('rim', 'rimAmount');
-
-// Both drive the same memory: fade is the honest cross-fade, wake is how much
-// longer a hard transition lingers on top of it. Sized in seconds rather than in
-// frame intervals, so improving the frame rate does not shorten the look.
-bind('fade', (v) => { uniforms.fadeTime.value = v / 1000; updateDrawRange(); });
-bind('wake', (v) => { uniforms.wakeTime.value = v / 1000; updateDrawRange(); });
+// One declarative registry. Every parameter that shapes the image says here what
+// its default and range are, where its value lands in the renderer, how it
+// interpolates once step 5 keyframes it, and which side of the look/composition
+// split it sits on. Before this the values lived in four places - `uniforms.X`,
+// `bloom.strength`, `afterimage.uniforms.damp` and `grade.uniforms.*` - with the
+// DOM sliders as the actual source of truth, written by dispatching a synthetic
+// input event at them. That works right up until something without a DOM has to
+// set a look: a keyframe, a project file, a preset, or step 6's headless export
+// renderer. Now those are all the same operation on one object.
+//
+// Three interpolation kinds cover the surface, and they are carried here rather
+// than invented beside the keyframe editor, so there is one table rather than two
+// that can quietly disagree:
+//
+//   scalar  lerps between keys, with ease handles. Most sliders.
+//   step    holds until the next key. Every checkbox - lerping a boolean is
+//           meaningless.
+//   pose    position, orientation and field of view move together, because a
+//           camera move judged one component at a time is not judged at all.
+//
+// The tag is the same axis that decides what a preset contains. `look` travels
+// between clips. `composition` never does - applying someone else's look must not
+// move your camera, which is the whole reason a preset is not just a saved
+// project. `view` is neither: render scale and auto-orbit change what you are
+// looking at rather than what the clip is, so they stay out of a preset and out of
+// the undo snapshot for the same reason orbiting to inspect the cloud does.
+//
+// `near`/`far` are the awkward pair and are tagged look deliberately. They shape
+// the image, but the right value depends on where the subject actually stood, so
+// saving a preset picks which parameters go in with the look tags as the default
+// selection rather than taking the whole tag blindly. They are also viewer clips
+// and nothing else: they hide points that already arrived, which is unrelated to
+// the grabber's --min-depth/--max-depth, and wiring the two together would throw
+// away footage on the GPU before a frame was ever built.
 
 function updateDrawRange() {
   const shedding = uniforms.fadeTime.value > 0 || uniforms.wakeTime.value > 0;
   geometry.setDrawRange(0, shedding ? POINTS * 2 : POINTS);
 }
-
-bind('bloom', (v) => { bloom.strength = v; bloom.enabled = v > 0; });
-bind('trails', (v) => { afterimage.uniforms.damp.value = v; afterimage.enabled = v > 0; });
-bind('rgbSplit', (v) => { grade.uniforms.rgbSplit.value = v; grade.enabled = gradeNeeded(); });
-bind('scanlines', (v) => { grade.uniforms.scanlines.value = v; grade.enabled = gradeNeeded(); });
-bind('grain', (v) => { grade.uniforms.grain.value = v; grade.enabled = gradeNeeded(); });
-bind('renderScale', (v) => { renderScale = v / 100; resize(); });
 
 function gradeNeeded() {
   return grade.uniforms.rgbSplit.value > 0
@@ -713,48 +723,301 @@ function gradeNeeded() {
     || grade.uniforms.grain.value > 0;
 }
 
-const checkbox = (id, apply) => {
-  const el = document.getElementById(id);
-  el.addEventListener('change', () => apply(el.checked));
-  apply(el.checked);
-  return el;
+const PARAMS = {
+  pointSize: { def: 5, min: 0.5, max: 64, step: 0.5, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.pointSize.value = v; } },
+  opacity: { def: 1, min: 0.05, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.opacity.value = v; } },
+  exposure: { def: 1.15, min: 0.05, max: 6, step: 0.05, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.exposure.value = v; } },
+  additive: { def: false, kind: 'step', tag: 'look', apply: setAdditive },
+
+  near: { def: 0.05, min: 0.05, max: 9.5, step: 0.05, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.nearClip.value = v; } },
+  far: { def: 6, min: 0.05, max: 9.5, step: 0.05, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.farClip.value = v; } },
+
+  interpolate: { def: true, kind: 'step', tag: 'look',
+    apply: (on) => { uniforms.interpolate.value = on ? 1 : 0; } },
+  snapDelta: { def: 250, min: 20, max: 1200, step: 10, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.snapDelta.value = v; } },
+
+  // Both drive the same memory: fade is the honest cross-fade, wake is how much
+  // longer a hard transition lingers on top of it. Sized in seconds rather than in
+  // frame intervals, so improving the frame rate does not shorten the look. The
+  // ghost half of the geometry is left out of the draw range entirely when neither
+  // can shed, so a look with no persistence costs nothing to have the option.
+  fade: { def: 120, min: 0, max: 1500, step: 10, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.fadeTime.value = v / 1000; updateDrawRange(); } },
+  wake: { def: 0, min: 0, max: 4000, step: 10, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.wakeTime.value = v / 1000; updateDrawRange(); } },
+
+  warp: { def: 0, min: 0, max: 1, step: 0.005, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.warp.value = v; } },
+  warpSpeed: { def: 0.7, min: 0, max: 3, step: 0.05, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.warpSpeed.value = v; } },
+  glitch: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.glitch.value = v; } },
+  // Still what it always was - orbit the view you are looking at - and still view
+  // state rather than an edit: the controls advance it on the program delta the
+  // render loop hands them, so the same orbit renders the same way at any output
+  // frame rate and holds still when the stream stalls.
+  spin: { def: false, kind: 'step', tag: 'view',
+    apply: (on) => { controls.autoRotate = on; } },
+
+  scan: { def: 0, min: 0, max: 1.5, step: 0.01, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.scanAmount.value = v; } },
+  rim: { def: 0.55, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.rimAmount.value = v; } },
+  // Each post pass costs a full-screen read and write whether or not it changes
+  // anything, so a zero value switches its pass off rather than running it as a
+  // no-op. The three grade terms share one pass, so they gate it together.
+  bloom: { def: 0, min: 0, max: 6, step: 0.05, kind: 'scalar', tag: 'look',
+    apply: (v) => { bloom.strength = v; bloom.enabled = v > 0; } },
+  trails: { def: 0, min: 0, max: 0.97, step: 0.01, kind: 'scalar', tag: 'look',
+    apply: (v) => { afterimage.uniforms.damp.value = v; afterimage.enabled = v > 0; } },
+  rgbSplit: { def: 0, min: 0, max: 6, step: 0.05, kind: 'scalar', tag: 'look',
+    apply: (v) => { grade.uniforms.rgbSplit.value = v; grade.enabled = gradeNeeded(); } },
+  scanlines: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    apply: (v) => { grade.uniforms.scanlines.value = v; grade.enabled = gradeNeeded(); } },
+  grain: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    apply: (v) => { grade.uniforms.grain.value = v; grade.enabled = gradeNeeded(); } },
+
+  denoise: { def: true, kind: 'step', tag: 'look',
+    apply: (on) => { uniforms.denoise.value = on ? 1 : 0; } },
+  edgeTol: { def: 120, min: 10, max: 1200, step: 10, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.edgeTol.value = v; } },
+  renderScale: { def: 100, min: 40, max: 200, step: 5, kind: 'scalar', tag: 'view',
+    apply: (v) => { renderScale = v / 100; resize(); } },
+
+  // The one composition parameter today, and the only pose. It is here so step 5
+  // reads the kind off the registry instead of keeping a second table beside the
+  // camera path, and so the render path writes the pose the same way a keyframe
+  // eventually will. Composition is edited in the world rather than on a slider,
+  // which is why it is the one parameter with no panel control.
+  camera: { def: programPose(0), kind: 'pose', tag: 'composition',
+    apply: (p) => {
+      programCamera.position.fromArray(p.position);
+      programCamera.quaternion.fromArray(p.quaternion);
+      if (programCamera.fov !== p.fov) {
+        programCamera.fov = p.fov;
+        programCamera.updateProjectionMatrix();
+      }
+    } },
 };
 
-checkbox('denoise', (on) => { uniforms.denoise.value = on ? 1 : 0; });
-checkbox('interpolate', (on) => { uniforms.interpolate.value = on ? 1 : 0; });
-// Still what it always was - orbit the view you are looking at. What changed is
-// underneath: the controls advance it on the program delta the render loop hands
-// them rather than on wall-clock time, so the same orbit renders the same way at
-// any output frame rate, and it holds still when the stream stalls.
-checkbox('spin', (on) => { controls.autoRotate = on; });
-const additiveEl = checkbox('additive', setAdditive);
+// Range inputs snap to their step grid and clamp to their bounds, and the registry
+// has to do the same arithmetic rather than lean on the DOM for it - otherwise a
+// value set headlessly lands on the uniform unsnapped while the same value set
+// through a slider lands snapped, and two runs of the same project disagree by a
+// hair for reasons nothing records.
+const decimalsOf = (x) => {
+  const dot = String(x).indexOf('.');
+  return dot < 0 ? 0 : String(x).length - dot - 1;
+};
 
-const setSlider = (id, value) => {
-  const el = document.getElementById(id);
+// Every value is checked for what it is rather than coerced into something. The
+// callers that matter are not the sliders - those hand over exactly what the
+// registry declared - but `params.apply(JSON.parse(projectFile))` and step 5's
+// track output, and there the quiet coercions are the dangerous ones. `Number(null)`
+// and `Number('')` are both a finite 0, so a truncated project would restore a
+// zeroed look and say nothing, while `Number('abc')` on the very next key throws:
+// the same corruption failing two different ways is worse than either. `!!value`
+// has the mirror problem, turning the string "false" into true. So a scalar takes
+// a number, a step takes a boolean, and anything else is a loud error at the point
+// the bad value arrives instead of a wrong image somewhere downstream.
+function normalise(name, spec, value) {
+  if (spec.kind === 'pose') {
+    // Shape alone is not enough. A short position array slices to a short array,
+    // `fromArray` reads past its end and the camera's z becomes NaN; a missing fov
+    // stores NaN, and because NaN !== NaN the apply then rewrites the projection
+    // matrix every single frame. Live viewing hides all of it, because the next
+    // frame overwrites the pose from `programPose(t)` - which is exactly why this
+    // has to be caught here rather than when step 5 feeds a curve or a project file
+    // through the same door and an export comes out black.
+    const finite = (xs, n) => Array.isArray(xs) && xs.length === n && xs.every(Number.isFinite);
+    if (!finite(value?.position, 3) || !finite(value?.quaternion, 4) || !Number.isFinite(value?.fov)) {
+      throw new Error(
+        `${name} is a pose: it needs a 3-number position, a 4-number quaternion and a `
+        + `numeric fov, got ${JSON.stringify(value)}`,
+      );
+    }
+    return {
+      position: value.position.slice(),
+      quaternion: value.quaternion.slice(),
+      fov: value.fov,
+    };
+  }
+  if (typeof spec.def === 'boolean') {
+    if (typeof value !== 'boolean') throw new Error(`${name} is a step parameter: it takes a boolean, got ${JSON.stringify(value)}`);
+    return value;
+  }
+  const v = value;
+  if (typeof v !== 'number' || !Number.isFinite(v)) {
+    throw new Error(`${name} is a scalar: it takes a finite number, got ${JSON.stringify(value)}`);
+  }
+  const clamped = Math.min(spec.max, Math.max(spec.min, v));
+  const snapped = spec.min + Math.round((clamped - spec.min) / spec.step) * spec.step;
+  const decimals = Math.max(decimalsOf(spec.min), decimalsOf(spec.step));
+  return Math.min(spec.max, Math.max(spec.min, Number(snapped.toFixed(decimals))));
+}
+
+const values = new Map();
+const panelControls = new Map();
+
+function writeControl(name, value) {
+  const el = panelControls.get(name);
+  if (!el) return;
+  if (el.type === 'checkbox') {
+    el.checked = value;
+    return;
+  }
   el.value = String(value);
-  el.dispatchEvent(new Event('input'));
+  // Read the value back off the element rather than formatting the number here,
+  // so the readout says exactly what the slider says even if they ever disagree.
+  const out = el.parentElement.querySelector('output');
+  if (out) out.textContent = el.value;
+}
+
+const params = {
+  spec(name) {
+    const spec = PARAMS[name];
+    if (!spec) throw new Error(`unknown parameter ${name}`);
+    return { default: spec.def, min: spec.min, max: spec.max, step: spec.step, kind: spec.kind, tag: spec.tag };
+  },
+  names(tag) {
+    return Object.keys(PARAMS).filter((n) => !tag || PARAMS[n].tag === tag);
+  },
+  get(name) {
+    if (!(name in PARAMS)) throw new Error(`unknown parameter ${name}`);
+    const v = values.get(name);
+    return PARAMS[name].kind === 'pose' ? { ...v, position: [...v.position], quaternion: [...v.quaternion] } : v;
+  },
+  /** The single write path. Everything - UI, presets, step 5's tracks - goes here. */
+  set(name, value) {
+    const spec = PARAMS[name];
+    if (!spec) throw new Error(`unknown parameter ${name}`);
+    const v = normalise(name, spec, value);
+    values.set(name, v);
+    spec.apply(v);
+    writeControl(name, v);
+    return v;
+  },
+  apply(next) {
+    for (const [name, value] of Object.entries(next)) this.set(name, value);
+    return this;
+  },
+  /**
+   * A plain serialisable object. A project, a preset and an export job all start
+   * here, which is why the default selection is document state - look plus
+   * composition - and never view. Render scale and auto-orbit belong to whoever is
+   * looking rather than to the clip, so an undo snapshot built on a bare `values()`
+   * would put them in the document and pressing undo after dropping render scale
+   * for performance would put it back: the exact behaviour that teaches people not
+   * to trust undo. View state is still reachable, by naming it.
+   */
+  values(names = this.names().filter((n) => PARAMS[n].tag !== 'view')) {
+    return Object.fromEntries(names.map((n) => [n, this.get(n)]));
+  },
+  /** Defaults, not a serialisation - so this one does cover view state. */
+  reset(names = Object.keys(PARAMS)) {
+    for (const name of names) this.set(name, PARAMS[name].def);
+    return this;
+  },
 };
 
-// The Blackwall look is a whole pipeline state, not a shader branch, so selecting
-// it drives the post chain too. Leaving it restores a neutral view.
-const BLACKWALL = { bloom: 0.5, trails: 0.5, rgbSplit: 1.6, scanlines: 0.35, grain: 0.22, glitch: 0.18, pointSize: 4.5, scan: 0.35, rim: 0.5, fade: 120, wake: 550 };
-const NEUTRAL = { bloom: 0, trails: 0, rgbSplit: 0, scanlines: 0, grain: 0, glitch: 0, pointSize: 5, scan: 0, rim: 0.55, fade: 120, wake: 0 };
+// The panel is a view on the registry and holds no parameter data of its own. The
+// range, the default and the readout are all stamped from here at boot, because
+// two copies of a slider's bounds is two things to keep in step and the HTML copy
+// is the one nothing headless can read.
+for (const [name, spec] of Object.entries(PARAMS)) {
+  const el = document.getElementById(name);
+  if (spec.tag === 'composition') {
+    // Composition is edited in the world - a camera path is the one thing you
+    // cannot judge from a graph - so it having grown a slider means the split has
+    // been crossed somewhere and is worth stopping over.
+    if (el) throw new Error(`composition parameter ${name} has a panel control`);
+    continue;
+  }
+  if (!el) throw new Error(`parameter ${name} has no panel control`);
+  panelControls.set(name, el);
+  if (el.type === 'checkbox') {
+    el.addEventListener('change', () => params.set(name, el.checked));
+  } else {
+    el.min = String(spec.min);
+    el.max = String(spec.max);
+    el.step = String(spec.step);
+    // The string-to-number conversion belongs to the control rather than to the
+    // registry: a slider's value is text because the DOM says so, and letting that
+    // reach `normalise` would mean loosening it for every other caller too.
+    el.addEventListener('input', () => params.set(name, Number(el.value)));
+  }
+}
 
-let currentMode = 0;
-function applyMode(mode) {
-  const wasBlackwall = currentMode === 4;
-  currentMode = mode;
+params.reset();
+
+// ------------------------------------------------------------------- presets
+
+// Applying a preset is a user action and can never be an evaluation-time effect: a
+// look that re-applied itself while the playhead moved would make the timeline lie
+// about what it is showing. The render path raises this flag for the length of one
+// frame, and the two bulk writes a gesture performs refuse while it is up. Ordinary
+// parameter writes stay legal, because that is exactly what step 5's tracks do.
+//
+// What that actually covers, stated plainly so step 5 inherits the problem rather
+// than a false sense of having solved it. The flag catches the two doors a preset
+// goes through today - `applyPreset` and `setMode` - and nothing else. `params.apply`
+// is public and unguarded, so a caller that assembles the same bulk write by hand
+// gets no complaint, and the flag spans `renderProgramFrame` alone, so an evaluator
+// that writes its track values just before calling it is semantically inside
+// evaluation with the flag down. Widening it needs the shape of step 5's evaluator
+// to be known: the honest boundary is "the evaluator is running", and that object
+// does not exist yet.
+let evaluating = false;
+
+function refuseDuringEvaluation(what) {
+  if (evaluating) {
+    throw new Error(`${what} during evaluation: presets and modes are user actions, not tracks`);
+  }
+}
+
+/** Copies a set of look values in. The only bulk write a user gesture performs. */
+function applyPreset(preset) {
+  refuseDuringEvaluation('preset applied');
+  params.apply(preset);
+}
+
+// The Blackwall look is a whole pipeline state rather than a shader branch, so
+// selecting it drives the post chain too, and leaving it restores a neutral view.
+// Both are ordinary look presets now: values the registry knows how to write.
+//
+// For step 7, which is where this bites: the mode is not one of those values, and
+// `params.values(params.names('look'))` will not capture or restore it. That is the
+// right call here - the mode is clip state rather than a keyframeable parameter -
+// but the spec's preset table does list mode as presettable look, so preset save
+// and preset apply have to carry the mode alongside the registry subset rather than
+// assuming the subset is the whole preset.
+const BLACKWALL = { bloom: 0.5, trails: 0.5, rgbSplit: 1.6, scanlines: 0.35, grain: 0.22, glitch: 0.18, pointSize: 4.5, scan: 0.35, rim: 0.5, fade: 120, wake: 550, additive: true };
+const NEUTRAL = { bloom: 0, trails: 0, rgbSplit: 0, scanlines: 0, grain: 0, glitch: 0, pointSize: 5, scan: 0, rim: 0.55, fade: 120, wake: 0, additive: false };
+
+// The mode is a property of the clip rather than a track of any kind. Selecting it
+// rewrites twelve other look values, so a mode keyframe would silently stomp every
+// other track at the instant it fired - one mode per clip removes that problem
+// instead of leaving it to be managed. Multi-mode clips are not ruled out, only
+// deferred, and the stomping is what would have to be solved properly first.
+let clipMode = 0;
+
+function setMode(mode) {
+  refuseDuringEvaluation('mode selected');
+  const wasBlackwall = clipMode === 4;
+  clipMode = mode;
   uniforms.mode.value = mode;
 
   if (mode === 4) {
-    for (const [id, v] of Object.entries(BLACKWALL)) setSlider(id, v);
-    additiveEl.checked = true;
-    setAdditive(true);
+    applyPreset(BLACKWALL);
     scene.fog.color.setHex(0x05070a);
   } else if (wasBlackwall) {
-    for (const [id, v] of Object.entries(NEUTRAL)) setSlider(id, v);
-    additiveEl.checked = false;
-    setAdditive(false);
+    applyPreset(NEUTRAL);
   }
 
   document.querySelectorAll('#modes button').forEach((b) => {
@@ -763,7 +1026,7 @@ function applyMode(mode) {
 }
 
 document.querySelectorAll('#modes button').forEach((btn) => {
-  btn.addEventListener('click', () => applyMode(Number(btn.dataset.mode)));
+  btn.addEventListener('click', () => setMode(Number(btn.dataset.mode)));
 });
 
 addEventListener('keydown', (e) => {
@@ -1150,27 +1413,36 @@ function resetAccumulators() {
 // export transports drive exactly this call, and an accurate seek is nothing more
 // than running it repeatedly at earlier positions and throwing the results away.
 function renderProgramFrame(t) {
-  const frame = pairSource.at(t);
-  for (const step of frame.steps) {
-    step.makeCurrent();
-    advanceSurfaceState(step.gapSec);
+  evaluating = true;
+  try {
+    const frame = pairSource.at(t);
+    for (const step of frame.steps) {
+      step.makeCurrent();
+      advanceSurfaceState(step.gapSec);
+    }
+
+    uniforms.mixT.value = frame.mixT;
+    uniforms.sinceFrameSec.value = frame.sinceFrameSec;
+    uniforms.time.value = t;
+    grade.uniforms.time.value = t;
+
+    // The pose goes in through the registry rather than onto the camera, which is
+    // what makes the camera a parameter with a kind rather than an object the
+    // render path happens to move. Step 5 swaps the placeholder for a curve and
+    // this line does not change.
+    params.set('camera', programPose(t));
+
+    const dt = Math.max(0, t - lastProgramTime);
+    lastProgramTime = t;
+
+    // The delta goes in explicitly because the composer falls back to a clock of
+    // its own when render() is called bare, which would put a wall clock back
+    // inside the seam even though no pass in this chain reads the delta today.
+    if (postEnabled()) composer.render(dt);
+    else renderer.render(scene, viewCamera);
+  } finally {
+    evaluating = false;
   }
-
-  uniforms.mixT.value = frame.mixT;
-  uniforms.sinceFrameSec.value = frame.sinceFrameSec;
-  uniforms.time.value = t;
-  grade.uniforms.time.value = t;
-
-  poseProgramCamera(t);
-
-  const dt = Math.max(0, t - lastProgramTime);
-  lastProgramTime = t;
-
-  // The delta goes in explicitly because the composer falls back to a clock of
-  // its own when render() is called bare, which would put a wall clock back
-  // inside the seam even though no pass in this chain reads the delta today.
-  if (postEnabled()) composer.render(dt);
-  else renderer.render(scene, viewCamera);
 }
 
 // Navigation's own clock, kept out of the seam. The controls mutate the free
@@ -1267,6 +1539,12 @@ let pinnedPairs = null;
 globalThis.__kinect = {
   renderer, composer, scene, freeCamera, programCamera, controls, uniforms, material,
   bloom, afterimage, grade, geometry, resetAccumulators, renderProgramFrame,
+
+  // The registry and the two bulk writes a user gesture performs. Both refuse
+  // while a frame is being evaluated - see the note on `evaluating` for exactly
+  // how far that reaches and where step 5 has to extend it.
+  params, applyPreset, setMode, presets: { BLACKWALL, NEUTRAL },
+  mode: () => clipMode,
   // No control switches the viewport yet - the free camera is what the live
   // viewer shows. This is how the program camera is reached until step 5 gives
   // it a path worth looking at and the top-down view a reason to draw its frustum.

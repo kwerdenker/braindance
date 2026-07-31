@@ -74,22 +74,22 @@
 
     <div class="group">
       <label>Points</label>
-      <div class="row"><span>size</span><input id="pointSize" type="range" min="0.5" max="64" step="0.5" value="5"><output>5</output></div>
-      <div class="row"><span>opacity</span><input id="opacity" type="range" min="0.05" max="1" step="0.01" value="1"><output>1</output></div>
-      <div class="row"><span>brightness</span><input id="exposure" type="range" min="0.05" max="6" step="0.05" value="1.15"><output>1.15</output></div>
+      <div class="row"><span>size</span><input id="pointSize" type="range"><output></output></div>
+      <div class="row"><span>opacity</span><input id="opacity" type="range"><output></output></div>
+      <div class="row"><span>brightness</span><input id="exposure" type="range"><output></output></div>
       <label class="check"><input id="additive" type="checkbox"> additive glow</label>
     </div>
 
     <div class="group">
       <label>Depth clip (metres)</label>
-      <div class="row"><span>near</span><input id="near" type="range" min="0.05" max="9.5" step="0.05" value="0.05"><output>0.05</output></div>
-      <div class="row"><span>far</span><input id="far" type="range" min="0.05" max="9.5" step="0.05" value="6"><output>6</output></div>
+      <div class="row"><span>near</span><input id="near" type="range"><output></output></div>
+      <div class="row"><span>far</span><input id="far" type="range"><output></output></div>
     </div>
 
     <div class="group">
       <label>Smoothing</label>
-      <label class="check"><input id="interpolate" type="checkbox" checked> interpolate frames</label>
-      <div class="row"><span>snap mm</span><input id="snapDelta" type="range" min="20" max="1200" step="10" value="250"><output>250</output></div>
+      <label class="check"><input id="interpolate" type="checkbox"> interpolate frames</label>
+      <div class="row"><span>snap mm</span><input id="snapDelta" type="range"><output></output></div>
     </div>
 
     <div class="group">
@@ -101,34 +101,34 @@
 
     <div class="group">
       <label>Persistence (ms)</label>
-      <div class="row"><span>fade</span><input id="fade" type="range" min="0" max="1500" step="10" value="120"><output>120</output></div>
-      <div class="row"><span>wake</span><input id="wake" type="range" min="0" max="4000" step="10" value="0"><output>0</output></div>
+      <div class="row"><span>fade</span><input id="fade" type="range"><output></output></div>
+      <div class="row"><span>wake</span><input id="wake" type="range"><output></output></div>
     </div>
 
     <div class="group">
       <label>Motion</label>
-      <div class="row"><span>turbulence</span><input id="warp" type="range" min="0" max="1" step="0.005" value="0"><output>0</output></div>
-      <div class="row"><span>speed</span><input id="warpSpeed" type="range" min="0" max="3" step="0.05" value="0.7"><output>0.7</output></div>
-      <div class="row"><span>glitch</span><input id="glitch" type="range" min="0" max="1" step="0.01" value="0"><output>0</output></div>
+      <div class="row"><span>turbulence</span><input id="warp" type="range"><output></output></div>
+      <div class="row"><span>speed</span><input id="warpSpeed" type="range"><output></output></div>
+      <div class="row"><span>glitch</span><input id="glitch" type="range"><output></output></div>
       <label class="check"><input id="spin" type="checkbox"> auto-orbit</label>
     </div>
 
     <div class="group">
       <label>Post</label>
-      <div class="row"><span>scan</span><input id="scan" type="range" min="0" max="1.5" step="0.01" value="0"><output>0</output></div>
-      <div class="row"><span>rim</span><input id="rim" type="range" min="0" max="1" step="0.01" value="0.55"><output>0.55</output></div>
-      <div class="row"><span>bloom</span><input id="bloom" type="range" min="0" max="6" step="0.05" value="0"><output>0</output></div>
-      <div class="row"><span>trails</span><input id="trails" type="range" min="0" max="0.97" step="0.01" value="0"><output>0</output></div>
-      <div class="row"><span>rgb split</span><input id="rgbSplit" type="range" min="0" max="6" step="0.05" value="0"><output>0</output></div>
-      <div class="row"><span>scanlines</span><input id="scanlines" type="range" min="0" max="1" step="0.01" value="0"><output>0</output></div>
-      <div class="row"><span>grain</span><input id="grain" type="range" min="0" max="1" step="0.01" value="0"><output>0</output></div>
+      <div class="row"><span>scan</span><input id="scan" type="range"><output></output></div>
+      <div class="row"><span>rim</span><input id="rim" type="range"><output></output></div>
+      <div class="row"><span>bloom</span><input id="bloom" type="range"><output></output></div>
+      <div class="row"><span>trails</span><input id="trails" type="range"><output></output></div>
+      <div class="row"><span>rgb split</span><input id="rgbSplit" type="range"><output></output></div>
+      <div class="row"><span>scanlines</span><input id="scanlines" type="range"><output></output></div>
+      <div class="row"><span>grain</span><input id="grain" type="range"><output></output></div>
     </div>
 
     <div class="group">
       <label>Cleanup &amp; perf</label>
-      <label class="check"><input id="denoise" type="checkbox" checked> cull speckle</label>
-      <div class="row"><span>edge tol</span><input id="edgeTol" type="range" min="10" max="1200" step="10" value="120"><output>120</output></div>
-      <div class="row"><span>render %</span><input id="renderScale" type="range" min="40" max="200" step="5" value="100"><output>100</output></div>
+      <label class="check"><input id="denoise" type="checkbox"> cull speckle</label>
+      <div class="row"><span>edge tol</span><input id="edgeTol" type="range"><output></output></div>
+      <div class="row"><span>render %</span><input id="renderScale" type="range"><output></output></div>
     </div>
   </div>
 
