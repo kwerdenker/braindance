@@ -185,6 +185,7 @@ int main(int argc, char **argv) {
   int dumpCount = 24;
   int dumpEvery = 10;
 
+
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     if (a == "--no-color") wantColor = false;
@@ -332,6 +333,13 @@ int main(int argc, char **argv) {
   libfreenect2::Registration registration(ir, cp);
   libfreenect2::Frame undistorted(DW, DH, 4), registered(DW, DH, 4);
 
+  // 1920x1082, not 1080. apply() sizes its filter map as
+  // 1920*1080 + 1920*filter_height_half*2 with filter_height_half == 1, and the
+  // scatter writes into the row above and below the image so it needs no bounds
+  // check - so a 1080-row buffer is two rows short and it writes past the end.
+  libfreenect2::Frame bigdepth(1920, 1082, 4);
+  std::vector<int> colorDepthMap(DEPTH_PIXELS);
+
   // The calibration goes out as the raw structs rather than as JSON on purpose.
   // Registration builds its distortion and depth-to-colour maps from these floats
   // in its constructor, so a value that shifted by one ulp on the way through a
@@ -455,7 +463,12 @@ int main(int argc, char **argv) {
 
     const float *depthSrc;
     if (rgb) {
-      registration.apply(rgb, depth, &undistorted, &registered);
+      // The scratch buffers are passed in rather than left to apply(), which
+      // otherwise new/deletes an 8.3MB filter map and an 868KB offset map on
+      // every frame. Worth 0.30ms of registration's 5.71ms p50 on the Mac,
+      // measured as an interleaved A/B on the real loop - a tight loop cannot
+      // see it, because the allocator just hands the same block straight back.
+      registration.apply(rgb, depth, &undistorted, &registered, true, &bigdepth, colorDepthMap.data());
       depthSrc = (const float *)undistorted.data;
     } else {
       // Same undistortion the colour path applies, so geometry does not shift
