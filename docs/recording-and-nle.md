@@ -591,13 +591,42 @@ length — written alongside the capture and rebuildable by a single scan at
 import. A sidecar rather than a footer keeps the capture file append-only and
 survives a writer that dies mid-take.
 
-**The current replay path cannot be reused for editing.** `startReplay()` reads
-the whole file with `readFileSync` (`server/index.js:258`) and then copies every
-payload into a fresh Buffer (`:269`), so peak resident memory is roughly twice
-the file size. At the measured 14.6 MB/s that is a 4.4 GB file and about 8.8 GB
-resident for a five-minute take. Node 26 has no hard buffer ceiling to fail
-against, so it simply consumes the machine. Editing needs a reader that `pread`s
-the frames the playhead actually wants.
+**The current replay path cannot be reused for editing, and it fails harder than
+this document first claimed.** `startReplay()` reads the whole file with
+`readFileSync` (`server/index.js:264`) and then copies every payload into a fresh
+Buffer (`:275`), so peak resident memory is roughly twice the file size. That
+half is measured and holds: a 1.38 GB capture of 2840 frames peaks at 2.84 GB
+resident, 2.06x, across three runs varying by under 0.02%.
+
+The other half was wrong. This document said Node 26 has no hard buffer ceiling
+to fail against, so replay would simply consume the machine. The premise is
+right — `buffer.kMaxLength` is 9007199254740991, so there is no *buffer* ceiling —
+but `fs.readFileSync` enforces a separate 2 GiB cap of its own and throws
+`ERR_FS_FILE_TOO_LARGE`. Bracketed with sparse files on Node v26.0.0, the
+boundary is exact:
+
+| file size | result |
+| --- | --- |
+| 2,147,483,647 (2 GiB − 1) | reads, full length returned |
+| 2,147,483,648 (2 GiB) | `ERR_FS_FILE_TOO_LARGE` |
+
+So replay does not degrade into swap on a long take. It refuses outright at
+2 GiB, which at the measured 14.6 MB/s is about 147 seconds — **`--replay` cannot
+open any take longer than roughly two and a half minutes.** The correction
+strengthens the case for the reader rather than weakening it, because the old
+scenario was weakest exactly where it would be tested: 8.8 GB resident is
+survivable on a 64 GB machine, where a deterministic throw at 2 GiB is not
+survivable anywhere. Editing needs a reader that `pread`s the frames the playhead
+actually wants.
+
+**The same ceiling binds the import scan, so the scan streams.** Hashing and
+indexing in one pass is right, but doing it by reading the file whole would
+reintroduce the identical throw one layer up, in the code written to escape it.
+The scan reads incrementally and feeds the hash as it goes; the range endpoint
+reads per frame or in bounded chunks for the same reason. Nothing about this
+reaches the writer — a size cap or a rotation on the recorder would break the
+one-take-one-continuous-stream invariant below, and the boundary is a property of
+one doomed read path rather than of the format.
 
 **That reader lives on the server, behind an HTTP frame API.** The browser asks
 for a frame or a range, the server `pread`s against the capture and its index and
