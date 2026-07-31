@@ -264,7 +264,16 @@ export class JobStore {
       if (job.state !== 'running') {
         throw new Error(`job ${id} is ${job.state}, so nothing is rendering it and there is no outcome to report`);
       }
-      if (job.lease && lease !== job.lease) {
+      // **`job.lease &&` was the first version of this and it was permissive in
+      // the one direction that matters**: a running record whose lease is null or
+      // missing accepted a report from anybody, and a record is a file on disk
+      // that a hand or an older build can write. A running job has a lease by
+      // construction, so its absence is a broken record rather than a job to be
+      // helpful about.
+      if (typeof job.lease !== 'string' || job.lease === '') {
+        throw new Error(`job ${id} says it is running with no lease, which is not a state a claim can produce - the record is unusable rather than finishable`);
+      }
+      if (lease !== job.lease) {
         throw new Error(`job ${id} is held by another claim, so this report is not the one running it`);
       }
       job.state = state;

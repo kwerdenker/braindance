@@ -786,10 +786,23 @@ const serveWriteCounts = (req, res) => sendJson(res, {
 // about *rendering* lives in the browser and in `server/export.js`, where it
 // already was. A second encoder path would be the one thing this design keeps
 // rejecting.
-const serveJobs = async (req, res) => sendJson(res, { jobs: await JOBS.list() });
+/**
+ * A job as anybody may read it, which is a job without its lease.
+ *
+ * **The lease is a capability, and serving it hands it to whoever asks.** It was
+ * added so a finish report has to come from the claim that is running the job, and
+ * the first version left it in the record these two routes return - so `GET
+ * /jobs/<id>`, copy the lease, `POST /jobs/<id>/finish` put a forged outcome on a
+ * job somebody else was rendering, and the real worker's report then lost to the
+ * terminal-state guard. A secret that is published is not a secret, and the claim
+ * response is the one place it belongs because that is the reply to the request
+ * that earned it.
+ */
+const withoutLease = ({ lease, ...job }) => job;
+const serveJobs = async (req, res) => sendJson(res, { jobs: (await JOBS.list()).map(withoutLease) });
 const serveJob = async (req, res, args) => {
   try {
-    sendJson(res, await JOBS.read(args[0]));
+    sendJson(res, withoutLease(await JOBS.read(args[0])));
   } catch {
     sendJson(res, { error: `no job ${args[0]}` }, 404);
   }

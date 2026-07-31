@@ -90,6 +90,14 @@ export function originAllowed(req) {
   // This server speaks http, so that is the scheme the request arrived on; if it
   // ever terminates TLS itself, this is the line that has to learn about it rather
   // than a second rule somewhere else.
+  // **A Host header is an authority and nothing else, and that has to be checked
+  // before it is parsed rather than after.** `new URL('http://' + rawHost)` will
+  // happily consume a userinfo section, a path, a query or a fragment and hand
+  // back a normalised `host` - so `Host: evil.example@127.0.0.1:8080` and
+  // `Host: 127.0.0.1:8080/anything` both parsed to the trusted authority and were
+  // allowed. None of those are valid in a Host header, so the shape is the check:
+  // no `@`, no `/`, no `?`, no `#`, and no whitespace.
+  if (/[@/?#\s\\]/.test(rawHost)) return false;
   let hostUrl;
   try {
     hostUrl = new URL(`http://${rawHost}`);
@@ -97,6 +105,11 @@ export function originAllowed(req) {
     return false;
   }
   if (hostUrl.host === '') return false;
+  // And the parse has to have consumed exactly the authority: anything the URL
+  // parser moved into another component means the header was not one.
+  if (hostUrl.pathname !== '/' || hostUrl.search !== '' || hostUrl.username !== '' || hostUrl.password !== '') {
+    return false;
+  }
   return originUrl.protocol === 'http:' && originUrl.host === hostUrl.host;
 }
 

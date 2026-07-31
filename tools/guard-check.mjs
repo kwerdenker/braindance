@@ -54,9 +54,6 @@ const MUTATIONS = {
   // The control for the bind: back to whatever Node does when nobody says.
   'listen-any-host': { file: 'server/index.js', edits: [[
     "const HOST = flag('--host', LOOPBACK);", "const HOST = flag('--host', '0.0.0.0');"]] },
-  // A `file://` page and a sandboxed iframe both send the literal string `null`,
-  // which is not a URL and is same-origin with nothing. Treating an unparseable
-  // origin as absent is the plausible wrong reading of "no origin is not a browser".
   // The control for the scheme half. It is the predicate as originally written -
   // a parsed origin host against a raw Host string - which passed every row this
   // file had before an external review pointed at it.
@@ -64,6 +61,15 @@ const MUTATIONS = {
     "  return originUrl.protocol === 'http:' && originUrl.host === hostUrl.host;",
     '  return originUrl.host === rawHost;',
   ]] },
+  // The control for the authority-shape check, which is the hole the scheme fix
+  // opened and this closed.
+  'host-parsed-loosely': { file: 'server/http-guard.js', edits: [[
+    '  if (/[@/?#\\s\\\\]/.test(rawHost)) return false;',
+    '  if (false) return false;',
+  ]] },
+  // A `file://` page and a sandboxed iframe both send the literal string `null`,
+  // which is not a URL and is same-origin with anything. Treating an unparseable
+  // origin as absent is the plausible wrong reading of "no origin is not a browser".
   'origin-allows-null': { file: 'server/http-guard.js', edits: [[
     `  } catch {
     // \`null\` is what a sandboxed iframe and a \`file://\` page send, and it is not a
@@ -233,6 +239,19 @@ try {
   ]);
   ok('while spellings of one authority still open - a default port written out, and a host in capitals',
     hostVariants.every((r) => r === 'open'), hostVariants.join(', '));
+  // A Host header is an authority and nothing else. `new URL('http://' + host)`
+  // consumes userinfo, a path, a query or a fragment and normalises what is left
+  // to the trusted authority, so all four of these were allowed by the first
+  // version of the parsed comparison - the fix that closed the scheme hole opened
+  // these.
+  const malformed = await Promise.all([
+    upgradeWithHost(`http://127.0.0.1:${PORT}`, `evil.example@127.0.0.1:${PORT}`),
+    upgradeWithHost(`http://127.0.0.1:${PORT}`, `127.0.0.1:${PORT}/path`),
+    upgradeWithHost(`http://127.0.0.1:${PORT}`, `127.0.0.1:${PORT}?q`),
+    upgradeWithHost(`http://127.0.0.1:${PORT}`, `127.0.0.1:${PORT}#f`),
+  ]);
+  ok('a Host carrying userinfo, a path, a query or a fragment does not upgrade - it is an authority or it is not a Host',
+    malformed.every((r) => r !== 'open'), malformed.join(', '));
   const dup = await duplicateHostUpgrade();
   ok('and two Host headers do not upgrade, whoever refuses them - `req.headers.host` keeps only the first, so the one that was checked is not necessarily the one anything downstream believes',
     !/^HTTP\/1\.1 101/.test(dup), dup.slice(0, 40));

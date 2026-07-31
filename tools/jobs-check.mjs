@@ -70,8 +70,16 @@ const MUTATIONS = {
   // nothing observable and the suite passed it.** Two guards that answer the same
   // status for different reasons cannot be told apart one at a time; what
   // distinguishes them is their message, and behaviour is what a mutation moves.
+  //
+  // It removes the lease-presence guard as well, and that is not over-reach: the
+  // three refusals are layered, so with only the state pair gone a queued job
+  // still fell at "running with no lease" and the mutation moved nothing. A
+  // control has to remove whatever masks it or it is testing the mask.
   'finish-accepts-any-state': { file: 'server/jobs.js', edits: [[
     "      if (isTerminal(job.state)) {\n        throw new Error(`job ${id} is already ${job.state}, so this report is from a worker that lost a race`);\n      }\n      if (job.state !== 'running') {",
+    '      if (false) {',
+  ], [
+    "      if (typeof job.lease !== 'string' || job.lease === '') {",
     '      if (false) {',
   ]] },
   // The control for the atomicity rows, and they had none when they were written -
@@ -83,10 +91,22 @@ const MUTATIONS = {
     '    this.serialise = (fn) => {\n      const run = this.gate.then(fn, fn);\n      this.gate = run.then(() => {}, () => {});\n      return run;\n    };',
     '    this.serialise = (fn) => Promise.resolve().then(fn);',
   ]] },
+  // The control for the lease being a secret. It puts the lease back into what the
+  // read routes serve, which is how it first shipped.
+  'jobs-serve-lease': { file: 'server/index.js', edits: [[
+    'const withoutLease = ({ lease, ...job }) => job;',
+    'const withoutLease = (job) => job;',
+  ]] },
+  // And the control for a running record with no lease being finishable, which is
+  // what `if (job.lease && ...)` allowed.
+  'lease-optional-when-absent': { file: 'server/jobs.js', edits: [[
+    "      if (typeof job.lease !== 'string' || job.lease === '') {",
+    '      if (false) {',
+  ]] },
   // And the lease on its own, so "the report came from the claim that is running
   // it" has a control that is not the state check wearing a different name.
   'finish-ignores-lease': { file: 'server/jobs.js', edits: [[
-    '      if (job.lease && lease !== job.lease) {',
+    '      if (lease !== job.lease) {',
     '      if (false) {',
   ]] },
   // A retry that forgets what it was rendered on. The record still says a class
@@ -345,6 +365,37 @@ try {
   const held = (await post('/jobs/claim', { worker: 'holder', renderer: METAL })).body.job;
   const noLease = await post(`/jobs/${held.id}/finish`, { state: 'done' });
   check(noLease.status === 409, 'and a report with no lease is refused while a claim holds it', `${noLease.status}`);
+  // **A capability that is published is not a capability.** The lease was added so
+  // a report has to come from the claim running the job, and the first version
+  // left it in the record the read routes return - so anyone could GET the job,
+  // copy the lease and forge the outcome, and the real worker's report then lost
+  // to the terminal guard. Asserted on the read surface rather than on the
+  // behaviour, because the behaviour is indistinguishable until somebody looks.
+  const readBack = await get(`/jobs/${held.id}`);
+  const listed = (await get('/jobs')).jobs.find((j) => j.id === held.id);
+  check(!('lease' in readBack) && !('lease' in (listed ?? {})),
+    'and the lease is not in what the read routes serve, or copying it out of a GET is all forging one takes',
+    `GET ${'lease' in readBack ? 'leaks' : 'clean'}, list ${'lease' in (listed ?? {}) ? 'leaks' : 'clean'}`);
+  check(readBack.state === 'running' && readBack.id === held.id,
+    'while the rest of the record is still served, so that row is about the lease and not about the route being empty');
+
+  // **A record the queue could not have written, written by hand.** A `running`
+  // job always has a lease when a claim made it, so nothing this check drives can
+  // produce one without - which meant the guard against a leaseless running record
+  // was unreachable and its mutation changed nothing observable. The state exists
+  // on disk though: an older build wrote records with no lease field at all, and a
+  // record is a file. Planting it is the only way to stand in front of that door.
+  const plantedId = `job-${'ab'.repeat(8)}`;
+  writeFileSync(join(jobsDir, `${plantedId}.json`), `${JSON.stringify({
+    id: plantedId, version: 1, project: PROJECT, capture: HASH_A, renderer: METAL,
+    output: 'planted', width: 64, height: 64, fps: 30, codec: 'h264',
+    state: 'running', created: 1, claimed: 2, finished: null, worker: 'ghost',
+    error: null, attempts: 1, lease: null,
+  }, null, 2)}\n`);
+  const ghost = await post(`/jobs/${plantedId}/finish`, { state: 'done', output: 'planted' });
+  check(ghost.status === 409,
+    'a running record carrying no lease cannot be finished by anybody - that is a record no claim could have written, so it is unusable rather than open',
+    `${ghost.status} ${(ghost.body.error ?? '').slice(0, 60)}`);
   const rightLease = await post(`/jobs/${held.id}/finish`, { state: 'done', lease: held.lease });
   check(rightLease.status === 200, 'while the claim that holds the lease is taken, which is the positive half of that');
 
