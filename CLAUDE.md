@@ -163,6 +163,23 @@ node tools/export-check.mjs --url http://localhost:8080   # step 6: resolution, 
 node tools/export-check.mjs --mutate pointsize-absolute   # ... and must FAIL mutated
 ```
 
+The two below need no server, and `registration-check` needs no sensor either -
+it runs on a corpus of `Registration::apply` inputs dumped by
+`grabber --dump-corpus`.
+
+```
+node tools/vendor-check.mjs                          # third_party is upstream v0.2.1 + declared edits
+node tools/vendor-check.mjs --mutate oracle-drift    # ... and must FAIL mutated
+node tools/registration-check.mjs                    # our registration == upstream's, bit for bit
+node tools/registration-check.mjs --mutate one-lsb   # ... and must FAIL mutated
+```
+
+`registration-check` builds both sides every run - a pristine upstream prefix and
+ours - because a stale oracle `.dylib` turns the whole thing into a build compared
+against itself and nothing about a stale library looks wrong. It exits **2** for a
+build or runtime failure and **1** only when assertions fired, so a mutation that
+failed to compile can never be recorded as a mutation that was caught.
+
 `export-check` needs ffmpeg and ffprobe (`--ffmpeg`, `--ffprobe`; 8.1.1 at
 `/opt/homebrew/bin`) and writes into `exports/`, which is gitignored.
 

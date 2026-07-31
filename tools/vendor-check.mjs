@@ -77,6 +77,15 @@ const MUTATIONS = {
   },
   'extra-file': (tree) => writeFileSync(join(tree, 'src', 'sneaky.cpp'), '// not upstream\n'),
   'missing-file': (tree) => rmSync(join(tree, 'src', 'registration.cpp')),
+  // Not a mutation of the vendored tree but of the harness oracle beside it -
+  // the failure where somebody "refreshes" the oracle from our own optimised
+  // source and registration-check quietly starts comparing a build to itself.
+  'oracle-drift': (_tree, oracle) => {
+    const f = join(oracle, 'registration.cpp');
+    const s = readFileSync(f, 'utf8');
+    if (!s.includes('filter_width_half(2)')) throw new Error('anchor missing');
+    writeFileSync(f, s.replace('filter_width_half(2)', 'filter_width_half(4)'));
+  },
 };
 
 // --- run ------------------------------------------------------------------
@@ -91,12 +100,15 @@ if (mutation && !MUTATIONS[mutation]) {
 // the real vendored tree altered - a proof tool that damages its subject would
 // make every later run untrustworthy.
 let tree = join(ROOT, 'third_party', 'libfreenect2');
+let oracleDir = join(ROOT, 'third_party', 'oracle');
 let scratch = null;
 if (mutation) {
   scratch = mkdtempSync(join(tmpdir(), 'vendor-check-'));
   cpSync(tree, join(scratch, 'libfreenect2'), { recursive: true });
+  cpSync(oracleDir, join(scratch, 'oracle'), { recursive: true });
   tree = join(scratch, 'libfreenect2');
-  MUTATIONS[mutation](tree);
+  oracleDir = join(scratch, 'oracle');
+  MUTATIONS[mutation](tree, oracleDir);
 }
 
 let checked = 0;
@@ -141,6 +153,26 @@ for (const [path, { why, ours }] of DECLARED_EDITS) {
 for (const path of onDisk) {
   checked++;
   if (!manifest.has(path)) fail(`not part of upstream v0.2.1: ${path}`);
+}
+
+// 4. the harness oracle is still upstream, byte for byte.
+//
+// third_party/oracle/registration.cpp is the reference registration-check
+// measures our build against, so it has to be upstream's file and not a copy of
+// whatever we most recently wrote. Once registration is optimised, our own
+// src/registration.cpp stops matching upstream by design - and at that moment
+// the only thing standing between "differential test" and "a build compared
+// against itself" is this assertion.
+for (const [oraclePath, upstreamOf] of [['registration.cpp', 'src/registration.cpp']]) {
+  checked++;
+  const want = manifest.get(upstreamOf);
+  const full = join(oracleDir, oraclePath);
+  let got = null;
+  try { got = blobHash(readFileSync(full)); } catch { /* reported below */ }
+  if (got === null) fail(`harness oracle missing: ${oraclePath}`);
+  else if (got !== want) {
+    fail(`harness oracle has drifted from upstream ${upstreamOf} (want ${want}, got ${got}) - registration-check would be comparing our build against itself`);
+  }
 }
 
 if (scratch) rmSync(scratch, { recursive: true, force: true });
