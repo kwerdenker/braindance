@@ -29,14 +29,21 @@ const MANIFEST = join(ROOT, 'third_party', 'libfreenect2.manifest');
 // still differed and the check still passed while the fix it exists to protect
 // was gone. "Differs from upstream" is not "contains our change", and pinning
 // the exact content is the difference between the two.
+//
+// `marker` is a string the edit puts into the *compiled* library, and it is what
+// section 5 reads. Only one of the two edits has one, which is stated here rather
+// than papered over: the sub-9 fix changes `== 0x3ff` to `& 0x1ff`, which compiles
+// to an immediate and leaves nothing in the binary to look for.
 const DECLARED_EDITS = new Map([
   ['src/depth_packet_stream_parser.cpp', {
     why: 'accept depth frames missing only the unused 10th sub-image',
     ours: 'ab437103d6d73daa220fdc2d42971ef06b998804',
+    marker: null,
   }],
   ['src/registration.cpp', {
     why: 'thread the occlusion filter, banded by linear index',
     ours: '229c0f6d0346f133259c6d37b8fbb56b80f3d832',
+    marker: 'LIBFREENECT2_REG_THREADS',
   }],
 ]);
 
@@ -95,6 +102,17 @@ const MUTATIONS = {
     if (!s.includes('filter_width_half(2)')) throw new Error('anchor missing');
     writeFileSync(f, s.replace('filter_width_half(2)', 'filter_width_half(4)'));
   },
+  // The control for section 5, and the one this tool went without for a while.
+  // It does not touch the source at all - it points the artifact assertion at a
+  // prefix built from *different* source, which is precisely the thing the old
+  // version of this check could not tell from the right one.
+  //
+  // `vendor/prefix-oracle` is built by registration-check out of upstream's own
+  // registration.cpp, so it is a real library from real different source rather
+  // than a doctored copy of ours. That also means it only exists after a
+  // registration-check run, and its absence is exit 2 rather than a pass: a
+  // control that silently does not run is worse than no control.
+  'stale-prefix': () => ({ prefix: join(ROOT, 'vendor', 'prefix-oracle') }),
 };
 
 // --- run ------------------------------------------------------------------
@@ -110,6 +128,7 @@ if (mutation && !MUTATIONS[mutation]) {
 // make every later run untrustworthy.
 let tree = join(ROOT, 'third_party', 'libfreenect2');
 let oracleDir = join(ROOT, 'third_party', 'oracle');
+let prefix = argv.includes('--prefix') ? argv[argv.indexOf('--prefix') + 1] : join(ROOT, 'vendor', 'prefix');
 let scratch = null;
 if (mutation) {
   scratch = mkdtempSync(join(tmpdir(), 'vendor-check-'));
@@ -117,7 +136,9 @@ if (mutation) {
   cpSync(oracleDir, join(scratch, 'oracle'), { recursive: true });
   tree = join(scratch, 'libfreenect2');
   oracleDir = join(scratch, 'oracle');
-  MUTATIONS[mutation](tree, oracleDir);
+  // A mutation may redirect what gets inspected rather than edit the copy.
+  const redirect = MUTATIONS[mutation](tree, oracleDir);
+  if (redirect?.prefix) prefix = redirect.prefix;
 }
 
 let checked = 0;
@@ -184,17 +205,63 @@ for (const [oraclePath, upstreamOf] of [['registration.cpp', 'src/registration.c
   }
 }
 
+// 5. the library that is actually installed was built from this source.
+//
+// Sections 1-4 prove the *source tree*, and for a long time that was the whole of
+// this tool - which meant it passed identically whether the library the grabber
+// loads came from that tree or from a stale prefix built from something else. The
+// grabber's new call passes two optional out-parameters any libfreenect2 0.2
+// accepts, so an old prefix still links and still streams, single-threaded, with
+// nothing anywhere looking wrong. That is this repo's signature failure aimed at
+// the tool that proves the vendoring, and this section is the answer to it.
+//
+// What it reads is a string the declared edit puts in the binary. It is honest
+// about its own reach: only the registration edit has one, so this closes the gap
+// for the threading and NOT for the sub-9 fix, whose `& 0x1ff` compiles to an
+// immediate with nothing to look for. The sub-9 fix is still source-only proof.
+let unproven = 0;
+const libDir = join(prefix, 'lib');
+let lib = null;
+try {
+  const name = readdirSync(libDir).find((f) => /^libfreenect2\.\d+\.\d+\.\d+\.(dylib|so)$/.test(f))
+    ?? readdirSync(libDir).find((f) => /^libfreenect2\.so\.\d+\.\d+\.\d+$/.test(f));
+  if (name) lib = join(libDir, name);
+} catch { /* reported just below */ }
+
+if (!lib) {
+  unproven++;
+  console.log(`UNPROVEN  no built library under ${prefix} - sections 1-4 proved the source, and nothing here proved what is loaded`);
+} else {
+  const bytes = readFileSync(lib);
+  for (const [path, { why, marker }] of DECLARED_EDITS) {
+    if (!marker) continue;
+    checked++;
+    if (!bytes.includes(marker)) {
+      fail(`the library at ${lib} does not carry ${marker}, so it was NOT built from our ${path} - "${why}" is missing from the artifact even though the source has it`);
+    }
+  }
+}
+
 if (scratch) rmSync(scratch, { recursive: true, force: true });
 
 const label = mutation ? `mutation '${mutation}'` : 'vendored tree';
-console.log(`\n${label}: ${checked} assertions, ${failed} failed`);
+console.log(`\n${label}: ${checked} assertions, ${failed} failed${unproven ? `, ${unproven} unproven` : ''}`);
 if (mutation) {
   // Exit code alone cannot distinguish "the mutation was caught" from "the tool
   // crashed before asserting anything", and this repo has been bitten by exactly
   // that. So a mutation run reports on the assertion count.
+  // A mutation whose control could not run is not a mutation that was caught.
+  // `stale-prefix` points at a prefix registration-check builds, so on a tree
+  // where that has never run there is nothing to compare and saying "caught"
+  // would credit this tool with a detection it never made.
+  if (unproven) { console.log(`DID NOT RUN - ${unproven} claim unproven, so this mutation was never actually shown to the check`); process.exit(2); }
   if (failed === 0) { console.log('NOT CAUGHT - the check passed a tree it should have rejected'); process.exit(1); }
   console.log(`caught, as required (${failed} assertion${failed === 1 ? '' : 's'} fired)`);
   process.exit(0);
 }
-console.log(failed === 0 ? 'PASS' : 'FAIL');
-process.exit(failed === 0 ? 0 : 1);
+if (failed) { console.log('FAIL'); process.exit(1); }
+// Same reading as library-check's exit 2: "some claims were not tested here" and
+// "a claim failed" are different answers, and 1 already means the second.
+if (unproven) { console.log('PASS on the source, with the artifact untested here'); process.exit(2); }
+console.log('PASS');
+process.exit(0);

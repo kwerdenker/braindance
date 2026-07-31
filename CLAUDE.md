@@ -297,6 +297,21 @@ node tools/registration-check.mjs                    # our registration == upstr
 node tools/registration-check.mjs --mutate one-lsb   # ... and must FAIL mutated
 ```
 
+**`vendor-check` reads the built artifact as well as the source, and that closes most
+of the gap it landed with.** Sections 1-4 prove `third_party/` is upstream plus the
+declared edits; section 5 asserts the library actually installed at `vendor/prefix`
+carries `LIBFREENECT2_REG_THREADS`, the env override the threading edit introduces.
+Without it the check passed identically whether the grabber loaded that source or a
+stale prefix built from something else - and it silently would have, because the
+grabber's call passes two optional out-parameters any libfreenect2 0.2 accepts, so an
+old prefix links and streams single-threaded with nothing looking wrong. The control
+is `--mutate stale-prefix`, which points the assertion at `vendor/prefix-oracle` -
+a real library registration-check builds from upstream's own registration.cpp, rather
+than a doctored copy of ours - and it must FAIL. **What is still source-only is the
+sub-9 fix**, whose `& 0x1ff` compiles to an immediate and leaves nothing in the binary
+to look for; the tool says so rather than implying it covers both. Exit **2** where no
+prefix exists, on the same reading as `library-check`'s: untested is not passed.
+
 `registration-check` builds both sides every run - a pristine upstream prefix and
 ours - because a stale oracle `.dylib` turns the whole thing into a build compared
 against itself and nothing about a stale library looks wrong. It exits **2** for a
