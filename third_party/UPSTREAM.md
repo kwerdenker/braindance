@@ -74,12 +74,24 @@ showed p99 10.80 ms against 7.32 ms — which is thread scheduling jitter and is
 the thing to watch if this is ever on a latency budget rather than a throughput
 one.
 
+Bit-identical at 3, 4 and 7 threads. The odd counts are the ones worth running:
+the band chunking is `(hi - lo + threads - 1) / threads` clamped by a `min`, so a
+thread count that does not divide the range evenly is where an off-by-one would
+show, and `LIBFREENECT2_REG_THREADS` accepts anything from 1 to 64.
+
 **This has not been measured on a Pi, which is the machine it is for.** The Mac
 idles 27 ms of every 33 ms interval, so 2 ms buys nothing a user can see there.
 The Pi's registration is 13.13 ms of a 15.05 ms serial half, and it has four
 cores rather than twelve, so both the scaling and the payoff need measuring on it
 before any claim is made. `LIBFREENECT2_REG_THREADS` exists so that measurement
 can run both arms from one binary; it defaults to 4 and is not a tuning knob.
+
+**On the Pi, read delivered fps rather than `reg` p50.** Four threads on four
+cores puts this in competition with the depth solve's own `AsyncPacketProcessor`
+thread and the GL processor, which had twelve cores to spread across here and
+never contended. Oversubscription of that kind surfaces as dropped frames, not as
+slower registration, so a run that improves `reg` while falling below ~30.0 fps
+has made things worse and the segment timing will not say so.
 
 ### `src/depth_packet_stream_parser.cpp` — accept 9-of-10 sub-images
 
