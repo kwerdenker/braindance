@@ -873,6 +873,21 @@ const ROUTES = [
   { path: '/record/mark', pattern: /^\/record\/mark$/, write: { methods: ['POST'], run: serveRecordMark } },
 ];
 
+// The namespaces the table owns, taken from the table. Every `path` starts with a
+// slash and a literal segment, so the first segment is the namespace; anything
+// else in the table would be a route with no namespace to own, which is a bug in
+// the entry rather than something to tolerate here.
+//
+// Derived once at module load rather than per request - it cannot change, and a
+// `Set` lookup is what the request path pays instead of a regex.
+export const OWNED_NAMESPACES = new Set(ROUTES.map((r) => {
+  const first = r.path.split('/')[1];
+  if (!first || first.startsWith(':')) {
+    throw new Error(`route ${r.path} has no namespace segment, so nothing can own it`);
+  }
+  return first;
+}));
+
 /**
  * One dispatcher, and the only place a mutating route is let through.
  *
@@ -954,7 +969,16 @@ const httpServer = createServer((req, res) => {
   // than a file lookup: without this `/library/../web/main.js` and friends would
   // fall through to the static server, and more plainly a typo'd route would answer
   // with a directory listing's 404 instead of the API's.
-  if (/^\/(capture|library|projects|presets|record)(\/|$)/.test(urlPath)) {
+  //
+  // The set is derived from ROUTES rather than written out, because the five names
+  // it used to spell were a list somebody had to remember to extend. `jobs` is what
+  // made that concrete: step 8 adds a namespace, and a literal that did not mention
+  // it sends `/jobs/../web/main.js` to the static server while every other namespace
+  // gets the API's 404. Fixing the instance would have left the next one outside the
+  // list, which is the failure this repo already closed once for the route table's
+  // own dispatch - so the namespaces are the table's first segments, and a route
+  // added later is covered by existing rather than by being noticed.
+  if (OWNED_NAMESPACES.has(urlPath.split('/')[1])) {
     res.writeHead(404).end('not found');
     return;
   }

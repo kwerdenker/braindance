@@ -365,6 +365,24 @@ const MUTATIONS = {
   // A mutating handler *moved* behind a `read`. Kept beside the plant above rather
   // than described as the control, which it is not: what catches this one is the
   // recorder having moved, since a `GET /record/stop` ends the take.
+  // The control for the namespace seam. It puts the derived set back to a written
+  // list, one name short - which is exactly the state the dispatcher was in before
+  // step 8, and exactly the state it would return to the next time somebody added
+  // a namespace to a literal instead of to the table.
+  //
+  // `presets` is dropped rather than a name invented, so the mutation is testable
+  // against today's tree rather than only once `jobs` exists. What must fail is the
+  // shadowing row: with `presets` unowned, the file planted at web/presets/ is
+  // served off disk with a 200 where the route table should have answered 404.
+  'namespaces-hardcoded': { file: 'server/index.js', edits: [[
+    'export const OWNED_NAMESPACES = new Set(ROUTES.map((r) => {',
+    // Two parens are open at the anchor (`new Set(` and `ROUTES.map(`), so the
+    // replacement leaves two open too or the file does not parse - and a mutation
+    // that fails to parse is a server that never starts, which this suite would
+    // report as a catch without ever having run the check.
+    "export const OWNED_NAMESPACES = new Set(['capture', 'library', 'projects', 'record']);\n"
+    + 'const _unusedNamespaceDerivation = new Set([].map((r) => {',
+  ]] },
   'stop-route-reads': { file: 'server/index.js', edits: [[
     "  { path: '/record/stop', pattern: /^\\/record\\/stop$/, write: { methods: ['POST'], run: serveRecordStop } },",
     "  { path: '/record/stop', pattern: /^\\/record\\/stop$/, read: serveRecordStop },",
@@ -696,7 +714,14 @@ function stageServer() {
   const root = join(WORK, 'root');
   mkdirSync(root, { recursive: true });
   cpSync(join(REPO, 'server'), join(root, 'server'), { recursive: true });
-  for (const name of ['web', 'node_modules', 'vendor']) {
+  // `web` is copied where the other two are symlinked, and the difference is not
+  // cosmetic: the namespace-shadowing row plants files under it, and a symlink
+  // would put those in the repo's own web/. A proof tool that writes into its
+  // subject makes every later run untrustworthy, which is the same reason
+  // mutations run against a staged copy rather than an edit-and-restore. It is
+  // 312K, so the isolation costs nothing worth counting.
+  cpSync(join(REPO, 'web'), join(root, 'web'), { recursive: true });
+  for (const name of ['node_modules', 'vendor']) {
     const from = join(REPO, name);
     if (existsSync(from) && !existsSync(join(root, name))) symlinkSync(from, join(root, name));
   }
@@ -2284,6 +2309,58 @@ async function runChecks() {
       '--projects', guardDocs, '--presets', guardPresets,
     ], MAC_PORT + 8);
     const table = (await getJson(`${guardUrl}/library/routes`)).routes;
+
+    // **The file tree must not answer for a namespace the route table owns**, and
+    // this is asked of every namespace in the table rather than of the five
+    // somebody wrote down. The dispatcher used to hold that list as a literal, so
+    // the day a namespace was added it was outside the list until someone noticed -
+    // which is the "close the class, not the instance" rule, aimed at the seam step
+    // 8 was about to add `jobs` to.
+    //
+    // It is deliberately NOT a traversal test. The handoff that asked for this said
+    // `/jobs/../web/main.js` traverses, and it does not: `new URL()` removes dot
+    // segments including `%2e%2e`, and `isInside` rejects whatever is left, so four
+    // escape attempts all came back with nothing served. The real property is
+    // shadowing, and it is worth one measured sentence rather than a story - a file
+    // planted under an unowned namespace IS served, 200 with its contents, and the
+    // same file under an owned one is the API's 404.
+    const tableNamespaces = [...new Set(table.map((r) => r.path.split('/')[1]))];
+    check(tableNamespaces.length >= 5, 'the route table declares its namespaces, so this row grows when a step adds one',
+      tableNamespaces.join(', '));
+
+    // **The probe is two segments deep, and the first version was not.** A file at
+    // `/presets/shadow-probe.js` is claimed by `/presets/:name`, whose `([^/]+)`
+    // matches it - so the table answered 404 out of `readDocument` and the
+    // fallthrough this row is about was never reached. The mutation below ran the
+    // whole suite and was NOT caught, at 255 assertions and none failed, which is
+    // what a probe sitting in a dead zone looks like from the outside: indis-
+    // tinguishable from a build with nothing wrong with it. A slash in the tail
+    // puts it past every `([^/]+)` in the table.
+    const PROBE = 'shadow-probe/leak.js';
+    // The unowned twin. Without it the owned rows could all be 404 because nothing
+    // is served from anywhere - a check that only asserts refusals passes happily
+    // against a file server that is simply broken.
+    const CONTROL_NS = 'not-a-declared-namespace';
+    for (const ns of [...tableNamespaces, CONTROL_NS]) {
+      mkdirSync(join(root, 'web', ns, 'shadow-probe'), { recursive: true });
+      writeFileSync(join(root, 'web', ns, PROBE), `// planted under /${ns} by library-check\n`);
+    }
+    const control = await fetch(`${guardUrl}/${CONTROL_NS}/${PROBE}`);
+    check(control.status === 200,
+      'a file under a namespace the table does NOT declare is served off disk, which is what makes the next row mean something',
+      `/${CONTROL_NS}/${PROBE} -> ${control.status}`);
+    const shadowed = [];
+    for (const ns of tableNamespaces) {
+      const res = await fetch(`${guardUrl}/${ns}/${PROBE}`);
+      if (res.status !== 404) shadowed.push(`${ns}:${res.status}`);
+    }
+    check(shadowed.length === 0,
+      'and the identical file under every namespace the table DOES declare is the API\'s 404, not the file',
+      shadowed.length ? `served: ${shadowed.join(' ')}` : `${tableNamespaces.length} namespaces, all 404`);
+    // Removed again so the planted files cannot make any later row mean something
+    // different from what it says.
+    for (const ns of [...tableNamespaces, CONTROL_NS]) rmSync(join(root, 'web', ns), { recursive: true, force: true });
+
     const mutating = table.filter((r) => r.mutates);
     // A route that also answers GET is a legitimate read at that method, so the
     // method row below is about the ones where a GET can only be somebody else's
