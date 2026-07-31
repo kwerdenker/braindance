@@ -45,7 +45,11 @@ const ACK_WINDOW = 4;
 // is going to ask for and below "whatever arrives".
 export const MAX_FRAME_BYTES = 96 * 1024 * 1024;
 
-const VALID_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+// Exported so the render queue can refuse a name at enqueue rather than three
+// layers later. One rule with two callers, the same shape `originAllowed` took:
+// a second copy of this regex in `server/jobs.js` would be a second rule to keep
+// honest, and the one thing it decides is where a file gets written.
+export const VALID_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /**
  * The encode a request asks for. Two, and they are a codec choice rather than two

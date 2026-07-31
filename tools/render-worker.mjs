@@ -172,12 +172,42 @@ try {
         // carries the body, which the queue checks at enqueue - so this hands over
         // exactly one shape rather than guessing between two.
         globalThis.__kinect.library.restoreProject(j.project);
+        // **Settled before exporting, or the restore's own repaint lands inside
+        // the export's first seek.** `ExportTransport` counts how many times each
+        // program position reaches the sink and throws on anything but one,
+        // because an export of the same image repeated is the failure that looks
+        // most like a success - and a repaint this worker caused, arriving late,
+        // is counted as one of those reaches. It showed up as
+        // `the render at 0.000000s reached the export 2 times`, on some runs and
+        // not others, which is exactly what a race between a scheduled repaint and
+        // the first seek looks like from outside. The page has this for the
+        // purpose; the editor never hit it because a person does not restore a
+        // project and press export in the same task.
+        // **Then a seek, because `restoreProject` on its own leaves the transport
+        // where it was rather than where the restored document says.** The
+        // editor's own load path does exactly this - `loadProjectNamed` restores
+        // and then seeks to `timeline.programSec` - and a worker that restored
+        // without it went straight into the export with the playhead and the
+        // document disagreeing. `ExportTransport`'s first frame is the only one
+        // that seeks, and it counted two reaches at 0.000000s on roughly one run
+        // in three. Awaiting `settled()` alone narrowed nothing, which is the tell
+        // that the extra render was the seek reconciling state rather than a
+        // stray repaint.
+        const transport = globalThis.__kinect.timeline.transport();
+        await transport.seek(transport.programSec);
+        await globalThis.__kinect.timeline.settled();
         return globalThis.__kinect.export.run({
           name: j.output, width: j.width, height: j.height, fps: j.fps, codec: j.codec,
         });
       }, job);
       if (errors.length) throw new Error(`the page errored during the render: ${errors[0]}`);
-      const fin = await post(`/jobs/${job.id}/finish`, { state: 'done', output: result?.output ?? job.output });
+      // The frame count travels with the outcome so the record says how much was
+      // rendered rather than only that something was. `server/export.js` refuses a
+      // stream whose count differs from the one the export declared, so this is the
+      // encoder's own number and a check can hold the file against it.
+      const fin = await post(`/jobs/${job.id}/finish`, {
+        state: 'done', output: result?.output ?? job.output, frames: result?.frames ?? null, lease: job.lease,
+      });
       if (fin.status !== 200) throw new Error(`the queue refused the report: ${fin.body.error}`);
       console.log(`[worker] ${job.id} done ${result?.output ?? ''} ${result?.frames ?? ''} frames`);
     } catch (err) {
@@ -186,7 +216,7 @@ try {
       console.error(`[worker] ${job.id} failed: ${message}`);
       // Reported, not swallowed. A job left `running` by a worker that walked away
       // is the state nothing can tell from a job still being rendered.
-      await post(`/jobs/${job.id}/finish`, { state: 'failed', error: message }).catch(() => {});
+      await post(`/jobs/${job.id}/finish`, { state: 'failed', error: message, lease: job.lease }).catch(() => {});
     }
   }
 } finally {

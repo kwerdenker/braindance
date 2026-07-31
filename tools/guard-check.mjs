@@ -57,6 +57,13 @@ const MUTATIONS = {
   // A `file://` page and a sandboxed iframe both send the literal string `null`,
   // which is not a URL and is same-origin with nothing. Treating an unparseable
   // origin as absent is the plausible wrong reading of "no origin is not a browser".
+  // The control for the scheme half. It is the predicate as originally written -
+  // a parsed origin host against a raw Host string - which passed every row this
+  // file had before an external review pointed at it.
+  'origin-ignores-scheme': { file: 'server/http-guard.js', edits: [[
+    "  return originUrl.protocol === 'http:' && originUrl.host === hostUrl.host;",
+    '  return originUrl.host === rawHost;',
+  ]] },
   'origin-allows-null': { file: 'server/http-guard.js', edits: [[
     `  } catch {
     // \`null\` is what a sandboxed iframe and a \`file://\` page send, and it is not a
@@ -135,6 +142,47 @@ const upgrade = (origin, path = '/') => new Promise((resolve) => {
   setTimeout(() => done('timeout'), 5000);
 });
 
+// An upgrade carrying a chosen Host as well as a chosen Origin. The two are
+// compared against each other, so a row that only ever varies one of them is
+// testing half the predicate.
+const upgradeWithHost = (origin, host) => new Promise((resolve) => {
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT}/`, { headers: { Origin: origin, Host: host } });
+  const done = (r) => { try { ws.terminate(); } catch { /* already gone */ } resolve(r); };
+  ws.on('open', () => done('open'));
+  ws.on('unexpected-response', (_req, res) => done(`refused ${res.statusCode}`));
+  ws.on('error', (e) => done(`error ${e.message}`));
+  setTimeout(() => done('timeout'), 5000);
+});
+
+// Two Host headers, which `req.headers.host` collapses to the first. Sent down a
+// raw socket because no HTTP client will produce it on purpose - and it must not
+// open, whether Node rejects the request outright or the guard does.
+const duplicateHostUpgrade = () => new Promise((resolve) => {
+  const s = new Socket();
+  let seen = '';
+  const done = (r) => { s.destroy(); resolve(r); };
+  s.setTimeout(5000);
+  s.once('timeout', () => done('timeout'));
+  s.once('error', (e) => done(`error ${e.message}`));
+  s.on('data', (c) => {
+    seen += c.toString();
+    if (seen.includes('\r\n')) done(seen.split('\r\n')[0]);
+  });
+  s.connect(PORT, '127.0.0.1', () => {
+    s.write([
+      'GET / HTTP/1.1',
+      'Host: 127.0.0.1:' + PORT,
+      'Host: evil.example',
+      'Upgrade: websocket',
+      'Connection: Upgrade',
+      'Sec-WebSocket-Key: ' + Buffer.from('0123456789abcdef').toString('base64'),
+      'Sec-WebSocket-Version: 13',
+      'Origin: http://127.0.0.1:' + PORT,
+      '', '',
+    ].join('\r\n'));
+  });
+});
+
 const reachable = (host) => new Promise((resolve) => {
   const s = new Socket();
   const done = (r) => { s.destroy(); resolve(r); };
@@ -166,6 +214,28 @@ try {
     await upgrade('http://evil.example', '/export') === 'refused 403');
   ok('and an unknown socket path is still a 404 rather than a 403, so the guard did not swallow the router',
     await upgrade(`http://127.0.0.1:${PORT}`, '/nope') === 'refused 404');
+
+  // **These four came out of an external review, and the predicate as first
+  // written passed every row above while failing all of them.** An origin is a
+  // scheme, a host and a port; comparing a parsed host against a raw header
+  // compared one of the three and normalised only one side. So the rows that
+  // caught the original guard are the ones sending spellings, not values.
+  ok('an https origin is not this http server, even though the host and port match exactly',
+    await upgrade(`https://127.0.0.1:${PORT}`) === 'refused 403');
+  ok('and neither is a ws: or wss: origin, which is the same hole spelled differently',
+    await upgrade(`wss://127.0.0.1:${PORT}`) === 'refused 403');
+  // The other direction: a refusal this strict would be a guard that breaks the
+  // product, so the canonicalising cases have to still open.
+  const hostVariants = await Promise.all([
+    upgradeWithHost(`http://127.0.0.1:${PORT}`, `127.0.0.1:${PORT}`),
+    upgradeWithHost('http://localhost', 'localhost:80'),
+    upgradeWithHost('http://LOCALHOST', 'localhost'),
+  ]);
+  ok('while spellings of one authority still open - a default port written out, and a host in capitals',
+    hostVariants.every((r) => r === 'open'), hostVariants.join(', '));
+  const dup = await duplicateHostUpgrade();
+  ok('and two Host headers do not upgrade, whoever refuses them - `req.headers.host` keeps only the first, so the one that was checked is not necessarily the one anything downstream believes',
+    !/^HTTP\/1\.1 101/.test(dup), dup.slice(0, 40));
 
   console.log('\n[guard] nothing is on the network unless somebody typed a flag');
   ok('the server is up on loopback', await reachable('127.0.0.1'));

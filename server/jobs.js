@@ -16,6 +16,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { VALID_NAME } from './export.js';
 
 export const JOB_VERSION = 1;
 
@@ -49,6 +50,28 @@ export class JobStore {
   constructor(dir, { now = Date.now } = {}) {
     this.dir = dir;
     this.now = now;
+    // **Every state transition goes through here, one at a time.**
+    //
+    // `claim` lists, picks and writes, and `finish` reads, checks and writes,
+    // and both of those have an `await` between the decision and the write. In one
+    // Node process that is not a theoretical race: two requests arriving together
+    // interleave at exactly that await, so two workers both saw a job `queued`,
+    // both wrote it `running`, and both got a 200 for the same job - and two
+    // finish reports both read a `running` record, both passed the terminal-state
+    // guard, and the second one silently replaced the first one's outcome.
+    //
+    // A promise chain rather than a lock file because this is one process by
+    // construction: the queue lives beside the server that serves it. A lock file
+    // would be the right answer for two servers on one directory, and that is not
+    // a thing this program can currently be.
+    this.gate = Promise.resolve();
+    // Serialises `fn` against every other transition. The chain is advanced even
+    // when `fn` rejects, or one refused claim would wedge the queue forever.
+    this.serialise = (fn) => {
+      const run = this.gate.then(fn, fn);
+      this.gate = run.then(() => {}, () => {});
+      return run;
+    };
     // Same counter the document stores keep, for the same reason: a handler that
     // writes a job and puts the bytes back is invisible to a before-and-after
     // reading of the contents, and this is the quantity no restore can undo.
@@ -60,9 +83,11 @@ export class JobStore {
     return join(this.dir, `${id}.json`);
   }
 
-  // Content-addressed off the record itself, so two enqueues of the same edit at
-  // the same millisecond cannot collide, and an id carries nothing a path parser
-  // could act on.
+  // Content-addressed off the record itself, so an id carries nothing a path
+  // parser could act on. It does NOT make two enqueues of the same edit distinct -
+  // identical bodies inside one millisecond hash identically, and the second used
+  // to overwrite the first - which is why `enqueue` salts on collision rather than
+  // trusting this to be unique.
   idFor(record) {
     const h = createHash('sha256').update(JSON.stringify(record)).digest('hex');
     return `job-${h.slice(0, 16)}`;
@@ -130,27 +155,54 @@ export class JobStore {
     }
     if (!(Number(width) > 0 && Number(height) > 0)) throw new Error(`bad output size ${width}x${height}`);
     if (!(Number(fps) > 0)) throw new Error(`bad output rate ${fps}`);
-    const created = this.now();
-    const body = {
-      version: JOB_VERSION,
-      project,
-      capture,
-      renderer: renderer ?? null,
-      output: String(output ?? ''),
-      width: Math.trunc(width),
-      height: Math.trunc(height),
-      fps: Number(fps),
-      codec,
-      state: 'queued',
-      created,
-      claimed: null,
-      finished: null,
-      worker: null,
-      error: null,
-      attempts: 0,
-    };
-    const job = { id: this.idFor({ ...body, created }), ...body };
-    return this.#put(job);
+    // The exporter's own rule, imported rather than restated. A job carrying
+    // `../../server/index` used to be accepted here and refused three layers later
+    // by the export socket, so the queue held work it already knew could not run -
+    // and the refusal that mattered lived nowhere near the field it was about.
+    if (!VALID_NAME.test(String(output ?? ''))) {
+      throw new Error(`bad output name ${JSON.stringify(output)}: it names a file in the exports directory, so it is letters, digits, dot, dash and underscore`);
+    }
+    return this.serialise(async () => {
+      const live = await this.list();
+      // **Two jobs writing one file is one job's work thrown away.** Both render to
+      // `exports/<output>.mp4` and the second rename replaces the first, along with
+      // its sidecar - so a queue of two finished jobs leaves one video and two
+      // records claiming to describe it. Refused while the other is still going to
+      // write; a finished or failed job's name is free again, because replacing an
+      // export you already have is what re-exporting means.
+      const holder = live.find((j) => j.output === String(output) && (j.state === 'queued' || j.state === 'running'));
+      if (holder) {
+        throw new Error(`output ${JSON.stringify(String(output))} is already reserved by ${holder.id} (${holder.state}), and two jobs writing one file is one render thrown away`);
+      }
+      const created = this.now();
+      const body = {
+        version: JOB_VERSION,
+        project,
+        capture,
+        renderer: renderer ?? null,
+        output: String(output),
+        width: Math.trunc(width),
+        height: Math.trunc(height),
+        fps: Number(fps),
+        codec,
+        state: 'queued',
+        created,
+        claimed: null,
+        finished: null,
+        worker: null,
+        error: null,
+        attempts: 0,
+        lease: null,
+      };
+      // The id is content-addressed, and two identical enqueues inside one
+      // millisecond hash identically - so the second silently wrote over the first
+      // and a queue of two held one job. The salt is the collision counter rather
+      // than a random value, because the id has to stay a function of the record
+      // for the same reason every other identity in this program does.
+      let id = this.idFor({ ...body, salt: 0 });
+      for (let salt = 1; live.some((j) => j.id === id); salt++) id = this.idFor({ ...body, salt });
+      return this.#put({ id, ...body });
+    });
   }
 
   /**
@@ -162,39 +214,72 @@ export class JobStore {
    * silent-mismatch failure the class pinning exists to prevent, reappearing as
    * an absence rather than a wrong image.
    */
-  async claim({ worker, renderer }) {
-    if (!renderer) throw new Error('a worker claims with the renderer class it will render on');
-    const all = (await this.list()).filter((j) => j.state === 'queued').sort((a, b) => a.created - b.created);
-    const mine = all.filter((j) => rendererMatches(j.renderer, renderer));
-    if (mine.length === 0) {
-      const blocked = all.map((j) => ({ id: j.id, wants: j.renderer }));
-      return { job: null, blocked, queued: all.length };
-    }
-    const job = mine[0];
-    job.state = 'running';
-    job.claimed = this.now();
-    job.worker = worker ?? null;
-    job.attempts += 1;
-    // Stamped on the claim, not on completion. A job that dies mid-render has still
-    // told us which class of machine it was attempted on, and that is the provenance
-    // the field exists for.
-    job.renderer = renderer;
-    await this.#put(job);
-    return { job, blocked: [], queued: all.length };
+  claim({ worker, renderer }) {
+    if (!renderer) return Promise.reject(new Error('a worker claims with the renderer class it will render on'));
+    return this.serialise(async () => {
+      const all = (await this.list()).filter((j) => j.state === 'queued').sort((a, b) => a.created - b.created);
+      const mine = all.filter((j) => rendererMatches(j.renderer, renderer));
+      if (mine.length === 0) {
+        const blocked = all.map((j) => ({ id: j.id, wants: j.renderer }));
+        return { job: null, blocked, queued: all.length };
+      }
+      const job = mine[0];
+      job.state = 'running';
+      job.claimed = this.now();
+      job.worker = worker ?? null;
+      job.attempts += 1;
+      // A token the finisher has to present. Without it any caller could report on
+      // a job it never claimed - and `POST /jobs/<id>/finish` with `{"state":"done"}`
+      // straight after an enqueue marked a job done that no worker had ever
+      // touched, which is a render that never happened wearing a successful record.
+      job.lease = `${job.id}-${job.attempts}-${createHash('sha256').update(`${job.id}${job.attempts}${job.claimed}`).digest('hex').slice(0, 12)}`;
+      // Stamped on the claim, not on completion. A job that dies mid-render has still
+      // told us which class of machine it was attempted on, and that is the provenance
+      // the field exists for.
+      job.renderer = renderer;
+      await this.#put(job);
+      return { job, blocked: [], queued: all.length };
+    });
   }
 
-  /** Report an outcome. A job that already finished is refused rather than rewritten. */
-  async finish(id, { state, error = null, output = null }) {
-    if (state !== 'done' && state !== 'failed') throw new Error(`a job finishes done or failed, not ${state}`);
-    const job = await this.read(id);
-    if (isTerminal(job.state)) {
-      throw new Error(`job ${id} is already ${job.state}, so this report is from a worker that lost a race`);
-    }
-    job.state = state;
-    job.error = error;
-    job.finished = this.now();
-    if (output) job.output = output;
-    return this.#put(job);
+  /**
+   * Report an outcome, against the lease the claim handed out.
+   *
+   * **A job finishes only from `running`, and only for the claim that owns it.**
+   * Terminal-state-only was the first version of this guard and it was too weak in
+   * two directions at once: a `queued` job could be marked done by anyone who knew
+   * its id, without any worker ever having claimed it, and two reports that both
+   * read a `running` record both passed the guard so the second overwrote the
+   * first. The lease closes the first; running inside the same gate as `claim`
+   * closes the second.
+   */
+  finish(id, { state, error = null, output = null, frames = null, lease = null }) {
+    return this.serialise(async () => {
+      if (state !== 'done' && state !== 'failed') throw new Error(`a job finishes done or failed, not ${state}`);
+      if (output !== null && typeof output !== 'string') throw new Error('a job\'s output is a string or nothing');
+      const job = await this.read(id);
+      if (isTerminal(job.state)) {
+        throw new Error(`job ${id} is already ${job.state}, so this report is from a worker that lost a race`);
+      }
+      if (job.state !== 'running') {
+        throw new Error(`job ${id} is ${job.state}, so nothing is rendering it and there is no outcome to report`);
+      }
+      if (job.lease && lease !== job.lease) {
+        throw new Error(`job ${id} is held by another claim, so this report is not the one running it`);
+      }
+      job.state = state;
+      job.error = error;
+      job.finished = this.now();
+      job.lease = null;
+      if (output) job.output = output;
+      // What the encoder actually took, reported by the worker rather than derived
+      // here. The take's own frame count is NOT this number - the sample was shot
+      // on a degraded link at about 9.3fps and an export at 30 makes far more
+      // frames than the take holds - so anything comparing a file against "the
+      // clip" has to compare against this.
+      if (Number.isFinite(frames)) job.frames = frames;
+      return this.#put(job);
+    });
   }
 
   /**
@@ -204,14 +289,29 @@ export class JobStore {
    * rendered once has to land on the same class of machine or it is not a retry,
    * it is a different render of the same edit.
    */
-  async requeue(id) {
-    const job = await this.read(id);
-    job.state = 'queued';
-    job.claimed = null;
-    job.finished = null;
-    job.worker = null;
-    job.error = null;
-    return this.#put(job);
+  requeue(id) {
+    return this.serialise(async () => {
+      const job = await this.read(id);
+      // **A running job is refused rather than duplicated.** Putting one back on
+      // the queue while a worker is still rendering it lets a second worker claim
+      // it, so two machines render the same edit and whichever finishes first
+      // decides - and the first worker's own report then arrives against a lease
+      // that has moved. Requeue is for jobs that stopped, and a job that has not
+      // stopped is not one of them.
+      if (job.state === 'running') {
+        throw new Error(
+          `job ${id} is running on ${job.worker ?? 'a worker'}, so requeueing it would put a second machine on the same render: `
+          + 'let it finish or fail first',
+        );
+      }
+      job.state = 'queued';
+      job.claimed = null;
+      job.finished = null;
+      job.worker = null;
+      job.error = null;
+      job.lease = null;
+      return this.#put(job);
+    });
   }
 
   async remove(id) {

@@ -50,8 +50,8 @@ const MUTATIONS = {
   // queue - so an operator sees an idle worker and a backlog that never drains,
   // with nothing anywhere saying why. This is the failure wearing an absence.
   'claim-hides-blocked': { file: 'server/jobs.js', edits: [[
-    '      const blocked = all.map((j) => ({ id: j.id, wants: j.renderer }));\n      return { job: null, blocked, queued: all.length };',
-    '      return { job: null, blocked: [], queued: 0 };',
+    '        const blocked = all.map((j) => ({ id: j.id, wants: j.renderer }));\n        return { job: null, blocked, queued: all.length };',
+    '        return { job: null, blocked: [], queued: 0 };',
   ]] },
   // A capture named by anything other than content. A job naming a take by id
   // renders whatever is at that id on the worker, which is the property the hash
@@ -61,20 +61,41 @@ const MUTATIONS = {
     "    if (typeof capture !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(capture)) {",
     '    if (false) {',
   ]] },
-  // A terminal job that can be rewritten. Two workers racing on one job then leave
-  // whichever reported last as the record, and the outcome is a coin toss nobody
-  // sees.
-  'finish-overwrites-terminal': { file: 'server/jobs.js', edits: [[
-    '    if (isTerminal(job.state)) {',
-    '    if (false) {',
+  // A job whose outcome anyone can write, in either of the two ways that matters:
+  // a queued job marked done by anybody who knows its id, with nothing having
+  // rendered it, and a second report replacing the first one's.
+  //
+  // **It has to remove both guards, and the first version removed only the
+  // terminal one - which the running check subsumes, so the mutation changed
+  // nothing observable and the suite passed it.** Two guards that answer the same
+  // status for different reasons cannot be told apart one at a time; what
+  // distinguishes them is their message, and behaviour is what a mutation moves.
+  'finish-accepts-any-state': { file: 'server/jobs.js', edits: [[
+    "      if (isTerminal(job.state)) {\n        throw new Error(`job ${id} is already ${job.state}, so this report is from a worker that lost a race`);\n      }\n      if (job.state !== 'running') {",
+    '      if (false) {',
+  ]] },
+  // The control for the atomicity rows, and they had none when they were written -
+  // which would have made them decoration. It lets every transition run
+  // concurrently again, which is the implementation an external review found:
+  // list-then-write in `claim`, read-check-write in `finish`, both correct as long
+  // as nothing arrives at the same time.
+  'transitions-not-serialised': { file: 'server/jobs.js', edits: [[
+    '    this.serialise = (fn) => {\n      const run = this.gate.then(fn, fn);\n      this.gate = run.then(() => {}, () => {});\n      return run;\n    };',
+    '    this.serialise = (fn) => Promise.resolve().then(fn);',
+  ]] },
+  // And the lease on its own, so "the report came from the claim that is running
+  // it" has a control that is not the state check wearing a different name.
+  'finish-ignores-lease': { file: 'server/jobs.js', edits: [[
+    '      if (job.lease && lease !== job.lease) {',
+    '      if (false) {',
   ]] },
   // A retry that forgets what it was rendered on. The record still says a class
   // was involved once, but the next claim is unpinned, so the retry can land
   // anywhere - which is precisely a re-render on a different rasteriser, reached
   // by a different door than claim-ignores-renderer.
   'requeue-clears-renderer': { file: 'server/jobs.js', edits: [[
-    "    job.state = 'queued';\n    job.claimed = null;",
-    "    job.state = 'queued';\n    job.renderer = null;\n    job.claimed = null;",
+    "      job.state = 'queued';\n      job.claimed = null;",
+    "      job.state = 'queued';\n      job.renderer = null;\n      job.claimed = null;",
   ]] },
 };
 if (MUTATE && !MUTATIONS[MUTATE]) {
@@ -134,8 +155,20 @@ const servers = [];
 const startServer = async () => {
   const child = spawn(process.execPath, [join(root, 'server/index.js'),
     '--port', String(PORT), '--captures', caps, '--jobs', jobsDir,
-    '--projects', join(WORK, 'projects'), '--presets', join(WORK, 'presets'),
-    '--replay', join(caps, 'sample.knct')], { stdio: ['ignore', 'pipe', 'pipe'] });
+    // **No `--replay`, and that is the fix to a flake rather than a tidy-up.**
+    // A replaying server pushes a frame at the page continuously, and each one
+    // repaints - so a repaint could land inside the export's first seek and
+    // `ExportTransport` counted it, throwing `the render at 0.000000s reached the
+    // export 2 times`. It failed about one run in four, which is what a race
+    // against an arriving frame looks like from outside, and awaiting the page's
+    // own `settled()` narrowed it without closing it because the next frame
+    // arrives regardless of what the page has finished.
+    //
+    // A render worker's server has no live source by construction: it renders
+    // takes off disk. The `--replay` here was copied from the checks that need a
+    // stream and was making the fixture contend with the thing under test.
+    '--projects', join(WORK, 'projects'), '--presets', join(WORK, 'presets')],
+  { stdio: ['ignore', 'pipe', 'pipe'] });
   servers.push(child);
   const log = [];
   child.stdout.on('data', (c) => log.push(c.toString()));
@@ -179,9 +212,19 @@ const PROJECT = {
   retime: { rate: 1, keys: [] },
   appliedPreset: null,
 };
+// **The default output is unique per call, and that is load bearing.**
+// It used to be the constant `check`, so once the queue learned to refuse an
+// output another live job had reserved, every later enqueue got a 400 - and the
+// row asserting that a take-id capture is refused passed on the *collision*
+// message while the capture check was mutated away. A refusal that arrives for a
+// neighbouring reason reads exactly like the one being tested.
+let outputSeq = 0;
 const enqueue = (over = {}) => post('/jobs', {
-  project: PROJECT, capture: HASH_A, output: 'check', width: 640, height: 400, fps: 30, ...over,
+  project: PROJECT, capture: HASH_A, output: `check${++outputSeq}`, width: 640, height: 400, fps: 30, ...over,
 });
+// And a refusal is asserted by what it says, not only by its status, for the same
+// reason: 400 is the answer to several different questions.
+const refusedBecause = (res, needle) => res.status === 400 && String(res.body.error ?? '').includes(needle);
 
 try {
   const serverLog = await startServer();
@@ -192,11 +235,25 @@ try {
     `${good.status} ${good.body.id ?? good.body.error}`);
   check(good.body.renderer === null, 'and it starts unpinned, because the first job has no class to reproduce yet');
   const byId = await enqueue({ capture: 'sample' });
-  check(byId.status === 400, 'a capture named by take id is refused - an id is a filename and two machines can hold different footage under one',
+  check(refusedBecause(byId, 'content hash'),
+    'a capture named by take id is refused - an id is a filename and two machines can hold different footage under one',
     `${byId.status} ${(byId.body.error ?? '').slice(0, 60)}`);
   const envelope = await enqueue({ project: { name: 'p', rev: 'sha256:x', body: PROJECT } });
-  check(envelope.status === 400, 'and so is the store envelope in place of the document body, rather than being unwrapped on a guess',
-    `${envelope.status}`);
+  check(refusedBecause(envelope, 'envelope'),
+    'and so is the store envelope in place of the document body, rather than being unwrapped on a guess',
+    `${envelope.status} ${(envelope.body.error ?? '').slice(0, 50)}`);
+  // The output field used to be accepted unvalidated and refused three layers
+  // later by the export socket, so the queue held work it already knew could not
+  // run. Refused here now, against the exporter's own rule rather than a copy.
+  const badNames = ['../../server/index', '/tmp/absolute', '', 'a b', '.hidden'];
+  const refusedNames = [];
+  for (const output of badNames) {
+    const r = await enqueue({ output });
+    if (refusedBecause(r, 'bad output name')) refusedNames.push(output);
+  }
+  check(refusedNames.length === badNames.length,
+    'an output that is not a plain file name is refused at enqueue, not three layers later by the thing that writes the file',
+    `${refusedNames.length} of ${badNames.length} refused`);
 
   section('the queue hands a job only to a machine that can reproduce it');
   // **A precondition row, because the section below reasons about what is left in
@@ -230,15 +287,84 @@ try {
   check(c3.status === 200 && c3.body.job?.id === pinned.body.id,
     'a V3D worker gets it, so the refusal above was about the class and not about the job being unclaimable');
 
+  section('two jobs cannot be aimed at one file');
+  // Both would rename over exports/<name>.mp4 and the second would win, leaving
+  // two finished records describing one video. Placed here rather than beside the
+  // other enqueue refusals because it leaves a job in the queue, and the section
+  // above reasons about what is queued - the precondition row would have caught
+  // that, which is what it is for.
+  const first = await enqueue({ output: 'contested' });
+  const second = await enqueue({ output: 'contested' });
+  check(first.status === 200 && refusedBecause(second, 'already reserved'),
+    'a second live job cannot reserve an output the first one is still going to write',
+    `${first.status} then ${second.status} ${(second.body.error ?? '').slice(0, 40)}`);
+  const firstClaim = (await post('/jobs/claim', { worker: 'tidy', renderer: METAL })).body.job;
+  await post(`/jobs/${firstClaim.id}/finish`, { state: 'failed', error: 'tidying', lease: firstClaim.lease });
+  const reuse = await enqueue({ output: 'contested' });
+  check(reuse.status === 200,
+    'and the name frees up once nothing live holds it, because re-exporting over a file you already have is the ordinary case',
+    `${reuse.status}`);
+  const reuseClaim = (await post('/jobs/claim', { worker: 'tidy', renderer: METAL })).body.job;
+  await post(`/jobs/${reuseClaim.id}/finish`, { state: 'failed', error: 'tidying', lease: reuseClaim.lease });
+
+  section('the transitions are atomic, which a sequential drive cannot see');
+  // **Every row above this drives one request at a time, and the implementation
+  // they were written against passed them all while being racy.** An external
+  // review pointed at the list-then-write in `claim` and the read-check-write in
+  // `finish`, and it was right: a check that never issues two requests at once
+  // cannot tell an atomic transition from one that merely works when nobody is
+  // looking. These rows fire the requests together and count outcomes.
+  const raceJobs = [];
+  for (let i = 0; i < 4; i++) raceJobs.push((await enqueue({ output: `race${i}` })).body);
+  const claims = await Promise.all(Array.from({ length: 8 }, (_, i) =>
+    post('/jobs/claim', { worker: `racer${i}`, renderer: METAL })));
+  const handed = claims.filter((c) => c.body.job).map((c) => c.body.job.id);
+  check(handed.length === new Set(handed).size,
+    'eight workers claiming at once never receive the same job twice - a list-then-write hands one job to two machines',
+    `${handed.length} handed, ${new Set(handed).size} distinct`);
+  check(handed.length === raceJobs.length,
+    'and all four queued jobs were handed out rather than lost to the same race', `${handed.length} of ${raceJobs.length}`);
+
+  const victim = claims.find((c) => c.body.job).body.job;
+  const reports = await Promise.all([
+    post(`/jobs/${victim.id}/finish`, { state: 'done', output: 'winner', lease: victim.lease }),
+    post(`/jobs/${victim.id}/finish`, { state: 'failed', error: 'loser', lease: victim.lease }),
+  ]);
+  const accepted = reports.filter((r) => r.status === 200);
+  check(accepted.length === 1,
+    'two outcome reports fired together, and exactly one is taken - read-check-write lets the second overwrite the first',
+    `${accepted.length} accepted of 2`);
+
+  section('an outcome comes from the claim that is running it');
+  const unclaimed = (await enqueue({ output: 'never-rendered' })).body;
+  const forged = await post(`/jobs/${unclaimed.id}/finish`, { state: 'done', output: 'never-rendered' });
+  check(forged.status === 409,
+    'a queued job cannot be marked done by anyone who knows its id - nothing has rendered it, so there is no outcome to report',
+    `${forged.status}`);
+  check((await get(`/jobs/${unclaimed.id}`)).state === 'queued', 'and it is still queued afterwards');
+  const held = (await post('/jobs/claim', { worker: 'holder', renderer: METAL })).body.job;
+  const noLease = await post(`/jobs/${held.id}/finish`, { state: 'done' });
+  check(noLease.status === 409, 'and a report with no lease is refused while a claim holds it', `${noLease.status}`);
+  const rightLease = await post(`/jobs/${held.id}/finish`, { state: 'done', lease: held.lease });
+  check(rightLease.status === 200, 'while the claim that holds the lease is taken, which is the positive half of that');
+
   section('a finished job is finished');
-  const fin = await post(`/jobs/${good.body.id}/finish`, { state: 'done', output: '/exports/check.mp4' });
+  const fin = await post(`/jobs/${good.body.id}/finish`, { state: 'done', output: 'check', lease: c1.body.job.lease });
   check(fin.status === 200 && fin.body.state === 'done', 'a worker reports an outcome and the record takes it');
-  const again = await post(`/jobs/${good.body.id}/finish`, { state: 'failed', error: 'the loser of a race' });
+  const again = await post(`/jobs/${good.body.id}/finish`, { state: 'failed', error: 'the loser of a race', lease: c1.body.job.lease });
   check(again.status === 409, 'a second report on the same job is refused, so two workers racing cannot leave the last one to speak as the record',
     `${again.status}`);
   check((await get(`/jobs/${good.body.id}`)).state === 'done', 'and the record still says what the first one said');
 
   section('a retry is a retry, not a different render');
+  const running = (await post('/jobs/claim', { worker: 'still-going', renderer: METAL })).body.job;
+  if (running) {
+    const rqLive = await post(`/jobs/${running.id}/requeue`, {});
+    check(rqLive.status === 404 || rqLive.status === 409,
+      'a job that is still rendering cannot be requeued, or a second worker joins the first on the same edit',
+      `${rqLive.status}`);
+    await post(`/jobs/${running.id}/finish`, { state: 'failed', error: 'tidying the fixture', lease: running.lease });
+  }
   const rq = await post(`/jobs/${good.body.id}/requeue`, {});
   check(rq.status === 200 && rq.body.state === 'queued', 'a done job can go back on the queue');
   check(rq.body.renderer === METAL,
@@ -295,7 +421,21 @@ try {
     check(/width=320/.test(probed) && /height=200/.test(probed),
       'the file it wrote is a video at the size the job asked for, which is the only thing a metadata check cannot fake',
       probed.trim().replace(/\n/g, ' '));
-    check(!/frames=0\b/.test(probed) && /nb_frames=[1-9]/.test(probed), 'and it has frames in it');
+    // **"It has frames in it" was the first version of this row, and a worker that
+    // emitted one valid frame at the right size would have passed it.** What it
+    // compares against is the count the worker reported, which is the number the
+    // export declared to the encoder - and `server/export.js` refuses a stream
+    // that sends a different number, so the two ends agreeing is the claim.
+    //
+    // It is deliberately NOT the take's frame count. The sample was shot on a
+    // degraded link at about 9.3fps, so a 284-frame take exports to 911 frames at
+    // 30 - and the first version of this row asserted against `take.frames` and
+    // failed on a render that was entirely correct. Sizing anything by a take's
+    // frame count is the trap this repo already has a rule about.
+    const probedFrames = Number(probed.match(/nb_frames=(\d+)/)?.[1] ?? 0);
+    check(probedFrames > 1 && probedFrames === record.frames,
+      'and it holds every frame the export declared, not one frame at the right size',
+      `${probedFrames} in the file, ${record.frames} declared, from a ${take.frames}-frame take`);
   } else {
     console.log('  ...   render row skipped by --no-render, so nothing here proves a job becomes a file');
   }

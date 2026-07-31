@@ -49,15 +49,55 @@ export function originAllowed(req) {
   const origin = req.headers.origin;
   // No origin is not a browser, so there is no page to be lying about.
   if (!origin) return true;
-  let host;
+  // **A duplicated Host header is not a request this server will reason about.**
+  // Node *discards* the extra ones rather than joining them - `req.headers.host`
+  // is the first and a string, so nothing about the collapsed view says a second
+  // arrived. It has to be counted in `rawHeaders`, which is the only place the
+  // duplicate survives; checking `Array.isArray(req.headers.host)` looks like the
+  // same test and never fires, which is how this first shipped.
+  //
+  // What it is worth: this server reads only the first Host, so today the one
+  // checked is the one used. The refusal is for the request being malformed at
+  // all - anything in front of this that picked the second would disagree with
+  // the guard about which server the caller thinks it reached.
+  const raw = req.rawHeaders ?? [];
+  let hostCount = 0;
+  for (let i = 0; i < raw.length; i += 2) if (String(raw[i]).toLowerCase() === 'host') hostCount++;
+  if (hostCount > 1) return false;
+  const rawHost = req.headers.host;
+  if (typeof rawHost !== 'string' || rawHost === '') return false;
+
+  let originUrl;
   try {
-    host = new URL(origin).host;
+    originUrl = new URL(origin);
   } catch {
     // `null` is what a sandboxed iframe and a `file://` page send, and it is not a
     // URL. Neither is same-origin with anything.
     return false;
   }
-  return host === req.headers.host;
+
+  // **Compared through the URL parser on both sides, and including the scheme.**
+  // The first version of this compared `new URL(origin).host` against the raw
+  // `Host` string, which was wrong in both directions at once. It accepted
+  // `Origin: https://127.0.0.1:8080` against `Host: 127.0.0.1:8080`, because the
+  // parser had normalised one side and nothing had looked at the scheme - and an
+  // origin is a scheme, a host and a port, so two of three is not same-origin. It
+  // also rejected spellings that are genuinely the same authority, since the
+  // parser strips a default port, lowercases the host and compresses IPv6 on the
+  // origin side while the `Host` header keeps whatever the client typed.
+  //
+  // Running the header through the same parser is what makes the two comparable.
+  // This server speaks http, so that is the scheme the request arrived on; if it
+  // ever terminates TLS itself, this is the line that has to learn about it rather
+  // than a second rule somewhere else.
+  let hostUrl;
+  try {
+    hostUrl = new URL(`http://${rawHost}`);
+  } catch {
+    return false;
+  }
+  if (hostUrl.host === '') return false;
+  return originUrl.protocol === 'http:' && originUrl.host === hostUrl.host;
 }
 
 // Anything a hostile page cannot set without a preflight. The parameters are

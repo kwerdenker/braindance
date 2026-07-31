@@ -842,6 +842,10 @@ const serveJobFinish = async (req, res, args) => {
     const body = await readBody(req);
     sendJson(res, await JOBS.finish(args[0], {
       state: body.state, error: body.error ?? null, output: body.output ?? null,
+      frames: body.frames ?? null,
+      // The lease the claim handed out. Without it, `POST /jobs/<id>/finish` with
+      // `{"state":"done"}` marked a job done that nothing had ever rendered.
+      lease: body.lease ?? null,
     }));
   } catch (err) {
     sendJson(res, { error: err.message }, 409);
