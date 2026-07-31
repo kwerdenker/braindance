@@ -7,7 +7,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server/index.js",
     "replay": "node server/index.js --replay captures/sample.knct",
-    "record": "node server/index.js --record captures/sample.knct"
+    "record": "node server/index.js --record"
   },
   "keywords": [],
   "author": "",

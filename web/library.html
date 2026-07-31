@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Kinect v2 · library</title>
+<style>
+  /* The system in docs/design/tokens.css, restated in this file's own names the
+     way the viewer restates it - two copies of a palette is two things to keep in
+     step, and the studies are studies. Layout and interaction follow
+     docs/design/library.html. */
+  :root {
+    --paper: #05070a;
+    --paper-1: #0d1014;
+    --paper-2: #151920;
+    --paper-3: #1e232b;
+    --well: #04060a;
+    --ink: #e8ecf1;
+    --dim: #8b94a1;
+    --faint: #6d7683;
+    --line: rgba(255, 255, 255, 0.1);
+    --line-2: rgba(255, 255, 255, 0.2);
+    --line-3: rgba(255, 255, 255, 0.34);
+    --accent: #5ad1c4;
+    --accent-low: rgba(90, 209, 196, 0.14);
+    --on-accent: #04231f;
+    --rec: #ff3b4e;
+    --rec-low: rgba(255, 59, 78, 0.16);
+    --on-rec: #17000a;
+    --warn: #f0b04a;
+    --scrim: rgba(0, 0, 0, 0.68);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--paper); color: var(--ink);
+    font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-x: clip; }
+  body { display: flex; flex-direction: column; }
+
+  .head { flex: none; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 8px 12px; background: var(--paper-1); border-bottom: 1px solid var(--line); }
+  .head h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; }
+  .head .sum { color: var(--dim); font-size: 9px; font-variant-numeric: tabular-nums; }
+  .head .sum b { color: var(--ink); font-weight: 500; }
+  /* Which machine you are on. The library spans both, so "here" has to be named or
+     the local/node column is unreadable. */
+  .where { margin-left: auto; display: flex; align-items: center; gap: 8px;
+    font-size: 9px; color: var(--dim); white-space: nowrap; }
+  .where b { color: var(--ink); font-weight: 500; }
+  .where .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  .where .dot.off { background: transparent; border: 1px solid var(--warn); }
+
+  .tabs { flex: none; display: flex; gap: 8px; padding: 8px 12px; background: var(--paper-1); flex-wrap: wrap; }
+  .tab { appearance: none; height: 32px; padding: 0 12px; border: 1px solid var(--line);
+    border-radius: 4px; background: transparent; color: var(--dim); font: inherit; font-size: 9px;
+    letter-spacing: 0.14em; text-transform: uppercase; cursor: pointer; white-space: nowrap; }
+  .tab:hover { color: var(--ink); border-color: var(--line-2); }
+  .tab[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .tabs .space { margin-left: auto; display: flex; align-items: center; color: var(--dim); font-size: 9px; }
+  .tabs .space.low { color: var(--warn); }
+
+  .grid { flex: 1; min-height: 0; overflow-y: auto; display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(228px, 1fr)); gap: 12px; padding: 12px;
+    align-content: start; align-items: start; }
+
+  /* No overflow:hidden on the tile, deliberately. It would make the tile a scroll
+     container, whose intrinsic height excludes overflowing content - the grid then
+     sizes its rows from the definite parts alone and the rows overlap. Only .skim
+     needs clipping and it has a definite height. */
+  .tile { border: 1px solid var(--line); border-radius: 6px; background: var(--paper-1);
+    display: flex; flex-direction: column; }
+  .tile:hover { border-color: var(--line-2); }
+
+  /* The skim surface. Pointer events, so moving across it with a mouse and dragging
+     across it with a finger are one code path. */
+  .skim { position: relative; flex: none; overflow: hidden; border-radius: 6px 6px 0 0;
+    background: var(--well); cursor: ew-resize; touch-action: pan-y; }
+  /* The canvas stays in flow and JS gives it a definite pixel height: deriving it
+     from aspect-ratio leaves the tile with no reliable intrinsic height and the
+     grid rows overlap. 16:9 rather than the sensor's 512x424, because the poster
+     should preview the frame the export actually produces. */
+  .skim canvas { display: block; width: 100%; }
+  .skim .t { position: absolute; top: 6px; right: 7px; font-size: 9px; color: var(--dim);
+    font-variant-numeric: tabular-nums; pointer-events: none; background: var(--paper);
+    padding: 1px 4px; border-radius: 3px; }
+  .skim .coarse { position: absolute; top: 6px; left: 7px; font-size: 9px; color: var(--warn);
+    pointer-events: none; background: var(--paper); padding: 1px 4px; border-radius: 3px; }
+
+  /* The scrub bar, with the take's marks on it. Marks live on the take, so every
+     project built on it shows the same ticks - and the gallery can draw them
+     without loading anything that knows about edits. */
+  .bar { position: relative; height: 14px; background: var(--paper-2); }
+  .bar .pos { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--ink); }
+  .bar .mk { position: absolute; top: 3px; width: 5px; height: 5px; margin-left: -2.5px;
+    background: var(--accent); transform: rotate(45deg); }
+  .bar .done { position: absolute; top: 0; bottom: 0; left: 0; background: var(--accent-low); }
+
+  .meta { padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 5px; }
+  .meta .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .meta .name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta .dur { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 11px; }
+  .meta .sub { display: flex; align-items: center; gap: 8px; font-size: 9px; color: var(--faint); flex-wrap: wrap; }
+  .meta .flag { color: var(--warn); }
+
+  .state { display: inline-flex; align-items: center; gap: 5px; letter-spacing: 0.14em; text-transform: uppercase; }
+  .state i { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+  .state.local { color: var(--accent); } .state.local i { background: var(--accent); }
+  .state.remote { color: var(--dim); } .state.remote i { border: 1px solid var(--dim); }
+  .state.both { color: var(--ink); }
+  .state.both i { background: var(--accent); box-shadow: 0 0 0 2px var(--paper-1), 0 0 0 3px var(--dim); }
+
+  /* Actions, always visible and never hover-gated. Skimming is a pointer
+     affordance and the library also runs on the node's touch panel, where there is
+     no hover at all - so skimming is how you find a take and never how you act on
+     one. */
+  .acts { display: flex; gap: 8px; margin-top: 3px; flex-wrap: wrap; }
+  .act { appearance: none; flex: 1; height: 34px; padding: 0 8px; border: 1px solid var(--line-2);
+    border-radius: 4px; background: var(--paper-2); color: var(--ink); font: inherit; font-size: 9px;
+    letter-spacing: 0.14em; text-transform: uppercase; cursor: pointer; white-space: nowrap; }
+  .act:hover { background: var(--paper-3); border-color: var(--line-3); }
+  .act:disabled { color: var(--faint); background: var(--paper-1); border-color: var(--line); cursor: not-allowed; }
+  .act.primary { border-color: var(--accent); color: var(--accent); background: var(--accent-low); }
+  .act.primary:hover { background: var(--accent); color: var(--on-accent); }
+  .act.danger { flex: 0 0 auto; padding: 0 12px; border-color: var(--line-2); color: var(--dim); }
+  .act.danger:hover { border-color: var(--rec); color: var(--rec); background: var(--rec-low); }
+
+  /* Deleting the last copy of a take is the one action in this tool that cannot be
+     undone, and the tool's whole premise is keeping the raw footage - so it gets a
+     real confirm naming the take rather than an optimistic delete with an Undo
+     toast, because undo windows expire. Reclaiming a node copy that is already
+     downloaded is a different action with a different weight, and says so. */
+  dialog { border: 1px solid var(--line-2); border-radius: 10px; background: var(--paper-1);
+    color: var(--ink); padding: 20px; max-width: 380px; width: calc(100% - 32px);
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  dialog::backdrop { background: var(--scrim); }
+  dialog h2 { margin: 0 0 12px; font-size: 14px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; }
+  dialog p { margin: 0 0 12px; color: var(--dim); font-size: 11px; }
+  dialog p b { color: var(--ink); font-weight: 500; }
+  dialog .warnline { color: var(--warn); }
+  dialog .row { display: flex; gap: 8px; margin-top: 16px; }
+  dialog .row .act { height: 42px; font-size: 10px; }
+  dialog .row .act.confirm { border-color: var(--rec); color: var(--rec); background: var(--rec-low); }
+  dialog .row .act.confirm:hover { background: var(--rec); color: var(--on-rec); }
+
+  .empty { padding: 24px; color: var(--faint); grid-column: 1 / -1; }
+  #note { padding: 0 12px 8px; color: var(--warn); font-size: 10px; }
+  #note:empty { display: none; }
+
+  @media (max-width: 560px) {
+    .grid { grid-template-columns: minmax(0, 1fr); }
+    .where { margin-left: 0; width: 100%; }
+  }
+</style>
+</head>
+<body>
+
+<header class="head">
+  <h1>Library</h1>
+  <div class="sum" id="sum">reading…</div>
+  <div class="where" id="where"></div>
+</header>
+
+<div class="tabs" id="tabs">
+  <button class="tab" type="button" data-filter="all" aria-pressed="true">all</button>
+  <button class="tab" type="button" data-filter="local" aria-pressed="false">local</button>
+  <button class="tab" type="button" data-filter="remote" aria-pressed="false">node only</button>
+  <button class="tab" type="button" data-filter="both" aria-pressed="false">both</button>
+  <span class="space" id="space"></span>
+</div>
+
+<div id="note"></div>
+<main class="grid" id="grid" aria-label="Takes"></main>
+
+<dialog id="confirm">
+  <h2 id="cTitle">Delete take</h2>
+  <p id="cBody"></p>
+  <p class="warnline" id="cWarn"></p>
+  <div class="row">
+    <button class="act" type="button" id="cCancel">Cancel</button>
+    <button class="act confirm" type="button" id="cGo">Delete</button>
+  </div>
+</dialog>
+
+<script type="module" src="/library.js"></script>
+</body>
+</html>

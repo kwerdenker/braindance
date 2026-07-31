@@ -11,3 +11,6 @@ captures
 *.log
 .DS_Store
 exports
+projects
+presets
+.library-check

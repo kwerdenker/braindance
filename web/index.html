@@ -72,7 +72,16 @@
 
   #hint { position: fixed; bottom: 14px; left: 16px; color: var(--dim); z-index: 10; }
 
-  #camNote { color: var(--dim); font-size: 10px; line-height: 1.45; opacity: 0.75; margin-top: 2px; }
+  #camNote, #recNote, #recSpace { color: var(--dim); font-size: 10px; line-height: 1.45; opacity: 0.75; margin-top: 2px; }
+  /* Remaining time, never remaining bytes. "1h 47m left at current settings" is
+     actionable where "94 GB free" is arithmetic the operator has to do under
+     pressure, and time is the honest unit anyway since the rate depends on capture
+     rate and compression. */
+  #recSpace.low { color: var(--warn); opacity: 1; }
+  #recGo[aria-pressed=true] { background: var(--red); border-color: var(--red); color: #17000a; }
+  /* A clip on the timeline has nothing to record, and a live viewer has no clip.
+     The two surfaces are exclusive for the same reason the two transports are. */
+  body.editing #recordGroup { display: none; }
   .check input:disabled { opacity: 0.4; }
   .check.disabled { opacity: 0.45; cursor: default; }
 
@@ -197,6 +206,19 @@
   .ttick { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--line-2); }
   .ttick label { position: absolute; top: 3px; left: 4px; font-size: 9px; color: var(--faint);
     font-variant-numeric: tabular-nums; }
+  /* The take's marks, on the ruler the playhead runs along. They live on the take
+     rather than in any project, so every edit of that take shows the same ticks -
+     which is the payoff for putting them in a sidecar. Drawn in program time
+     through the retime curve, because the ruler is program time and a mark is
+     source time, and the two only coincide at rate 1 with no keys. */
+  .tmarks { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+  .tmk { position: absolute; bottom: 2px; width: 5px; height: 5px; margin-left: -2.5px;
+    background: var(--accent); transform: rotate(45deg); }
+  /* A mark the edit never reaches stacks at the right edge rather than being
+     dropped: the moment is still in the footage, and a tick nobody can explain is
+     better than a tick that silently vanished when the curve was retimed. */
+  .tmk.beyond { background: var(--faint); }
+
   .tplayhead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--ink);
     pointer-events: none; z-index: 3; }
   .tplayhead::before { content: ""; position: absolute; top: 0; left: -5px;
@@ -251,6 +273,17 @@
       <div id="camNote">A key takes the pose you are orbiting from. The path draws in
         the view and in the top-down; drag a node in either to move it. Composition is
         edited in the world, so there is no slider for it.</div>
+    </div>
+
+    <div class="group" id="recordGroup">
+      <label>Record</label>
+      <div class="btnrow">
+        <button id="recGo" type="button">record</button>
+        <button id="recMark" type="button" disabled>mark</button>
+      </div>
+      <div id="recNote">not recording</div>
+      <div id="recSpace">&nbsp;</div>
+      <div class="btnrow"><button id="toLibrary" type="button">library</button></div>
     </div>
 
     <div class="group">
@@ -329,6 +362,11 @@
         <span class="tchip">pre-roll <b id="tPreroll">&mdash;</b></span>
         <span class="tchip">last <b id="tCost">&mdash;</b></span>
         <span class="tchip">undo <b id="tUndo">0</b></span>
+        <label class="tchip">look<select id="tPreset"><option value="">—</option></select>
+          <button id="tPresetApply" type="button">apply</button><button id="tPresetSave" type="button">save</button></label>
+        <label class="tchip">project<select id="tProject"><option value="">—</option></select>
+          <button id="tProjectOpen" type="button">open</button><button id="tProjectSave" type="button">save</button></label>
+        <span class="tchip">marks <b id="tMarkCount">0</b><button id="tMark" type="button">mark here</button></span>
         <label class="tchip">export<select id="tExportSize"><option>1920x1080</option><option>1280x720</option><option>960x540</option><option>3840x2160</option></select>
           <button id="tExport" type="button">render</button></label>
         <span class="tchip warn" id="tBehind"></span>
@@ -343,6 +381,7 @@
       <div class="tcol beds" id="tBeds">
         <div class="trow ruler tbed" id="tBed">
           <div class="truler" id="tRuler"></div>
+          <div class="tmarks" id="tMarks"></div>
         </div>
         <div class="tplayhead" id="tPlayhead" style="left: 0%"></div>
       </div>

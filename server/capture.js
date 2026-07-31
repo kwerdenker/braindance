@@ -29,6 +29,15 @@ export const INDEX_VERSION = 2;
 // overhead, small enough that the scan's working set does not track file size.
 const SCAN_CHUNK = 4 * 1024 * 1024;
 
+// The depth grid every frame in this format carries, and the only reason it is
+// named on the server at all: the decimation below has to know the shape of the
+// array it is sampling down, and a divisor applied to a flat byte count would
+// take every k-th sample along one axis and none along the other. Checked against
+// the frame's own declared length before anything is sampled, so a capture whose
+// grid is not this one is refused rather than shredded.
+export const DEPTH_W = 512;
+export const DEPTH_H = 424;
+
 // What a frame run is read in. Bounded on purpose: a run can be the whole take,
 // and the point of this module is that no read is ever the size of the file.
 const RUN_CHUNK = 1024 * 1024;
@@ -195,10 +204,36 @@ export class Capture {
     this.path = path;
     this.index = index;
     this.handle = handle;
+    // How many callers are mid-read on this handle. The eviction below only ever
+    // closes a capture nobody is holding, because a descriptor closed underneath a
+    // frame run would fail inside a stream whose errors nobody is positioned to
+    // catch - which is the same reason the run reads off the retained handle in
+    // the first place.
+    this.leases = 0;
+    this.usedAt = 0;
   }
 
   get frameCount() {
     return this.index.frames.offset.length;
+  }
+
+  /**
+   * Holds this capture open for the life of the process.
+   *
+   * The replay loop is the one reader that does not come and go: it opens a take
+   * once and preads a frame out of it every few tens of milliseconds forever, with
+   * nothing bracketing the read that a lease could hang off. Without this it is not
+   * merely evictable, it is the *first* thing evicted - `leases` stays zero and
+   * `usedAt` never moves, so it sorts to the front of the queue below - and a
+   * library of twenty-five takes skimmed while a replay is running closes the
+   * replay's own descriptor underneath it. The reads then fail into the tick's
+   * catch, the viewer goes to `lost`, and the loop retries forever against a closed
+   * handle with one line in the log.
+   */
+  retain() {
+    this.leases++;
+    this.usedAt = ++useClock;
+    return this;
   }
 
   async readAt(position, bytes) {
@@ -221,10 +256,55 @@ export class Capture {
     return h ? this.readAt(h.offset, h.length) : Promise.resolve(null);
   }
 
-  /** One frame's payload, byte for byte as the socket would have delivered it. */
-  readFrame(n) {
+  /**
+   * One frame's payload, byte for byte as the socket would have delivered it -
+   * or, with a depth divisor above 1, the same frame sampled down.
+   *
+   * Decimation is a **network** concession and never a compute one, which is why
+   * it lives here rather than in any one consumer: the monitor asks for it because
+   * a radio link cannot carry 14.6 MB/s, the editor asks for it when the take is
+   * on the other end of that link, and the gallery asks for it to skim a take that
+   * has not been downloaded. One mechanism, three callers.
+   *
+   * What comes back is still a KNCT frame - same sixteen-byte payload header, same
+   * field offsets, same decoder - carrying a `ceil(DEPTH_W/k) x ceil(DEPTH_H/k)`
+   * grid sampled nearest-neighbour. **The colour block is copied through
+   * untouched**, and that is deliberate rather than an omission: at a divisor of 4
+   * the depth falls from 424KB to 27KB while the JPEG stays at about 52KB, so
+   * colour is what a decimated frame mostly is, and a version that dropped it
+   * would be a different mechanism wearing this one's measured numbers. What goes
+   * to disk is unaffected either way - the capture is already written.
+   */
+  async readFrame(n, depthDivisor = 1) {
     const { offset, length } = this.index.frames;
-    return this.readAt(offset[n], length[n]);
+    const payload = await this.readAt(offset[n], length[n]);
+    const k = Math.trunc(depthDivisor);
+    if (!(k > 1)) return payload;
+
+    const depthBytes = payload.readUInt32LE(0);
+    const colorBytes = payload.readUInt32LE(4);
+    if (depthBytes !== DEPTH_W * DEPTH_H * 2) {
+      throw new Error(
+        `frame ${n} carries ${depthBytes} depth bytes, not the ${DEPTH_W}x${DEPTH_H} grid `
+        + 'this divisor samples: refusing rather than sampling a shape nobody declared',
+      );
+    }
+    const w = Math.ceil(DEPTH_W / k);
+    const h = Math.ceil(DEPTH_H / k);
+    const out = Buffer.allocUnsafe(16 + w * h * 2 + colorBytes);
+    out.writeUInt32LE(w * h * 2, 0);
+    out.writeUInt32LE(colorBytes, 4);
+    // The capture timestamp, verbatim. A decimated frame is the same moment as the
+    // frame it came from, and a stamp rewritten here would put a second timeline
+    // into a format that has one.
+    payload.copy(out, 8, 8, 16);
+    for (let y = 0; y < h; y++) {
+      const src = 16 + y * k * DEPTH_W * 2;
+      const dst = 16 + y * w * 2;
+      for (let x = 0; x < w; x++) out.writeUInt16LE(payload.readUInt16LE(src + x * k * 2), dst + x * 2);
+    }
+    payload.copy(out, 16 + w * h * 2, 16 + depthBytes);
+    return out;
   }
 
   /**
@@ -285,26 +365,147 @@ export class Capture {
 const openCaptures = new Map();
 
 /**
- * Opens a capture once and keeps it open. The promise rather than the result is
- * memoised, so two requests arriving during a multi-gigabyte scan share it
- * instead of starting a second one.
+ * How many captures may hold a descriptor at once. This is the debt step 2 named
+ * and left for the gallery, and the scarce resource is descriptors rather than
+ * memory: an index is about twenty-five bytes a frame, but every open capture
+ * holds one fd against a soft limit of 256, and a library skimming a directory of
+ * takes touches every one of them. Unbounded, that is EMFILE followed by thrash.
  *
- * Nothing is ever evicted, which is fine while one take is open and a debt the
- * gallery has to settle. The scarce resource there is not memory - an index is
- * about twenty-five bytes a frame - it is file descriptors, since every capture
- * holds one against a soft limit of 256. A library listing a directory of takes
- * would hit EMFILE and then thrash, so the gallery wants cached indexes with the
- * handles evicted LRU and invalidated on a size or mtime change.
+ * Deliberately far below the limit rather than near it, because this process also
+ * holds the listener, every live socket, the replay handle and whatever ffmpeg is
+ * doing. A capture reopened after eviction costs one `open` and a sidecar read
+ * that the index cache below already answers.
+ */
+export const MAX_OPEN_CAPTURES = 24;
+
+// The index without the descriptor. A manifest wants offsets, stamps and a hash
+// for every take in a directory and wants to hold none of them open afterwards,
+// so it comes through here rather than through `openCapture` - and the sidecar
+// read `loadIndex` performs is itself short-lived, which is the whole property.
+// Cached in process on the same staleness test the sidecar uses, so listing a
+// directory twice does not stat and parse every take twice.
+const indexCache = new Map();
+
+export async function cachedIndex(capturePath) {
+  const path = resolve(capturePath);
+  const st = await stat(path);
+  const held = indexCache.get(path);
+  if (held && held.bytes === st.size && held.mtimeMs === st.mtimeMs) return held;
+  const index = await loadIndex(path);
+  indexCache.set(path, index);
+  return index;
+}
+
+/**
+ * A take's hello, read and the descriptor closed again before this returns.
+ *
+ * A manifest wants the sensor record of every take in a directory, and routing
+ * that through `openCapture` would leave one descriptor per take held for the
+ * length of a listing - the exact shape of the EMFILE the cap above exists to
+ * stop, arrived at from the other side. The hello is a few hundred bytes at an
+ * offset the index already recorded, so three syscalls per take is the whole cost.
+ */
+export async function readHelloOnce(capturePath, index) {
+  const h = index.hello;
+  if (!h) return null;
+  const handle = await open(resolve(capturePath), 'r');
+  try {
+    const buf = Buffer.allocUnsafe(h.length);
+    let got = 0;
+    while (got < h.length) {
+      const { bytesRead } = await handle.read(buf, got, h.length - got, h.offset + got);
+      if (bytesRead === 0) break;
+      got += bytesRead;
+    }
+    try {
+      return JSON.parse(buf.subarray(0, got).toString('utf8'));
+    } catch {
+      // A hello that is not JSON is a take from a writer this build does not know.
+      // The gallery still lists it; it just has nothing to say about the sensor.
+      return null;
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Drops a take's cached index, for a file this process just changed underneath. */
+export function forgetCapture(capturePath) {
+  const path = resolve(capturePath);
+  indexCache.delete(path);
+  const pending = openCaptures.get(path);
+  openCaptures.delete(path);
+  pending?.then((capture) => { if (capture.leases === 0) capture.close().catch(() => {}); }, () => {});
+}
+
+/**
+ * Opens a capture once and keeps it open until something else needs the
+ * descriptor. The promise rather than the result is memoised, so two requests
+ * arriving during a multi-gigabyte scan share it instead of starting a second one.
+ *
+ * Eviction is least-recently-used and only ever takes a capture with no lease
+ * out - see `Capture.leases`. That means the map can exceed the cap while enough
+ * requests are genuinely in flight, which is the honest behaviour: refusing to
+ * open the file a request is asking for would trade EMFILE for a 500, and the
+ * bound this exists to enforce is on descriptors left lying about rather than on
+ * descriptors in use.
  */
 export function openCapture(capturePath) {
   const path = resolve(capturePath);
   let pending = openCaptures.get(path);
   if (!pending) {
-    pending = (async () => new Capture(path, await loadIndex(path), await open(path, 'r')))();
+    pending = (async () => new Capture(path, await cachedIndex(path), await open(path, 'r')))();
     // A failure must not be remembered, or a capture that appears a moment later
     // would keep reporting the error from before it existed.
     pending.catch(() => openCaptures.delete(path));
+    pending.then((capture) => { settledValue.set(pending, capture); }, () => {});
     openCaptures.set(path, pending);
+    evictIdle();
   }
   return pending;
 }
+
+function evictIdle() {
+  if (openCaptures.size <= MAX_OPEN_CAPTURES) return;
+  // Resolved entries only. A capture still opening has no descriptor yet and no
+  // `usedAt` to rank by, and awaiting one here would make an eviction sweep wait
+  // on the multi-gigabyte scan it is trying to make room for.
+  const settled = [];
+  for (const [path, pending] of openCaptures) {
+    const capture = pendingValue(pending);
+    if (capture && capture.leases === 0) settled.push([path, capture]);
+  }
+  settled.sort((a, b) => a[1].usedAt - b[1].usedAt);
+  for (const [path, capture] of settled) {
+    if (openCaptures.size <= MAX_OPEN_CAPTURES) break;
+    openCaptures.delete(path);
+    capture.close().catch(() => {});
+  }
+}
+
+// A promise's resolved value, or null if it has not settled. There is no way to
+// ask a promise this, so the value is recorded on it as it resolves.
+const settledValue = new WeakMap();
+const pendingValue = (pending) => settledValue.get(pending) ?? null;
+
+/**
+ * Runs `fn` against an open capture with a lease held for exactly as long as it
+ * takes. Every reader goes through here rather than calling `openCapture`
+ * directly, because a lease released early is a descriptor closed under a read
+ * and a lease never released is the unbounded map this replaced.
+ */
+export async function withCapture(capturePath, fn) {
+  const capture = await openCapture(capturePath);
+  capture.leases++;
+  capture.usedAt = ++useClock;
+  try {
+    return await fn(capture);
+  } finally {
+    capture.leases--;
+  }
+}
+
+let useClock = 0;
+
+/** How many descriptors this module is holding. Read by the proof tool. */
+export const openCaptureCount = () => openCaptures.size;

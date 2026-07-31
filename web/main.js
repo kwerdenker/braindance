@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { PROJECT_VERSION } from './format.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -1023,13 +1024,31 @@ function normalise(name, spec, value) {
         + `numeric fov, got ${JSON.stringify(value)}`,
       );
     }
-    // **Known gap, carried deliberately.** Four finite numbers are checked, not
-    // four numbers of unit length, so a quaternion that is not normalised is
-    // accepted and reaches the camera - where three renormalises silently on some
-    // paths and not others, and where slerping between one unit and one non-unit
-    // quaternion is not the rotation either of them names. No door produces one
-    // today: keys come from a camera's own quaternion or from a saved project that
-    // came from the same place. The fix is a length check here.
+    // Closed in step 7, because step 7 is where a hand-edited or truncated project
+    // file arrives. Four finite numbers is not a rotation: a quaternion that is not
+    // of unit length reaches the camera, where three renormalises on some paths and
+    // not others, and where slerping between one unit and one non-unit quaternion
+    // is not the rotation either of them names - so a camera move authored between
+    // two such keys renders a path nobody drew, and nothing in the console says so.
+    //
+    // Refused rather than renormalised, which is the same call every other branch
+    // here makes. A quaternion 12% long is not a rotation with a scale attached, it
+    // is a number nobody meant, and quietly normalising it would produce *an*
+    // orientation and hide the fact that the file is damaged.
+    //
+    // The tolerance is four orders of magnitude looser than the error a real
+    // quaternion carries. Three's own output is unit to about 1e-7 and a project
+    // round-trips it through full-precision JSON, so 1e-3 has never been near a
+    // live value - while the shapes this is for, a truncated component or a hand
+    // -typed axis, miss by tenths.
+    const len = Math.hypot(...value.quaternion);
+    if (Math.abs(len - 1) > 1e-3) {
+      throw new Error(
+        `${name} has a quaternion of length ${len.toFixed(6)}: a rotation is unit length, `
+        + `and interpolating through [${value.quaternion.join(', ')}] would render a `
+        + 'camera move nobody authored',
+      );
+    }
     return {
       position: value.position.slice(),
       quaternion: value.quaternion.slice(),
@@ -1724,8 +1743,10 @@ function toggleKey(name) {
 // out would restore the twelve values Blackwall wrote while leaving Blackwall
 // selected: a state that never existed, which is the exact failure a whole-project
 // snapshot exists to make impossible.
+
 function serialiseProject() {
   return {
+    version: PROJECT_VERSION,
     mode: clipMode,
     // Composition per the preset table - it is never in a preset and it is part of
     // what the clip is - so it is document state and it is undoable.
@@ -1733,36 +1754,142 @@ function serialiseProject() {
     params: params.values(),
     tracks: Object.fromEntries([...tracks].map(([name, track]) => [name, track.serialise()])),
     retime: retime.serialise(),
+    // Provenance, not a reference. The values above are already copied in, so this
+    // changes nothing about what renders - it only records which revision of which
+    // look this clip was built from, which is what lets a gallery see that three
+    // clips are on one revision and two are on an older one.
+    appliedPreset,
   };
 }
 
-function restoreProject(project) {
-  applyModeValue(project.mode);
-  params.apply(project.params);
-
-  tracks.clear();
-  for (const [name, keys] of Object.entries(project.tracks)) {
-    if (keys.length === 0) continue;
-    const track = trackFor(name);
-    track.keys = keys.map((k) => ({
-      t: k.t, value: k.value, easeOut: [...k.easeOut], easeIn: [...k.easeIn],
-    }));
+/**
+ * A key as it arrives from outside, checked into a key this editor can hold.
+ *
+ * `t` is checked here and the value is checked by the registry, which is the split
+ * that matters: a time is a time whatever the parameter, and only the registry
+ * knows that `camera` is a pose and `additive` is a boolean. Handles default to
+ * linear when absent - a key written without them is linear, not handleless - and
+ * are checked when present, because a handle outside the unit box bends a curve
+ * back on itself inside a segment.
+ */
+function restoreKey(owner, k) {
+  if (!Number.isFinite(k?.t)) {
+    throw new Error(`${owner} has a key at t=${JSON.stringify(k?.t)}: a key time has to be a finite number`);
   }
-
-  retime.rate = project.retime.rate;
-  // The fourth door onto the curve, and the last unguarded one. A snapshot can only
-  // have come from a state the other three already vetted, so this cannot produce a
-  // falling curve today - but this is the door a project file loaded from disk will
-  // come through in step 7, and a guard that only covers the doors that exist now is
-  // a guard that stops covering the moment one is added.
-  const restored = project.retime.keys.map((k) => ({
+  const handle = (side, xs, fallback) => {
+    if (xs === undefined) return [...fallback];
+    if (!Array.isArray(xs) || xs.length !== 2 || !xs.every(Number.isFinite)) {
+      throw new Error(`${owner}'s key at ${k.t}s has a ${side} handle of ${JSON.stringify(xs)}: it takes two finite numbers`);
+    }
+    return [...xs];
+  };
+  return {
     t: k.t,
     value: k.value,
-    easeOut: [...(k.easeOut ?? EASE_OUT_LINEAR)],
-    easeIn: [...(k.easeIn ?? EASE_IN_LINEAR)],
-  }));
-  retime.assertMonotonic(restored);
-  retime.keys = restored;
+    easeOut: handle('easeOut', k.easeOut, EASE_OUT_LINEAR),
+    easeIn: handle('easeIn', k.easeIn, EASE_IN_LINEAR),
+  };
+}
+
+/**
+ * The one door a whole document comes through, and since step 7 it is the door a
+ * **file from outside this page** comes through - an undo snapshot and a project
+ * loaded off disk are the same object and take the same route, because a second
+ * route is a second set of checks to keep honest.
+ *
+ * Everything here refuses rather than repairs. That is not caution for its own
+ * sake: the three things this now catches are each a *silent* wrong image rather
+ * than a crash, which is the class of failure this repo keeps finding after the
+ * fact. A falling retime curve stops playback with the play button still lit. A
+ * non-unit quaternion renders a camera move nobody drew. A `pointSize` from before
+ * step 6's rebase draws 1.8x wrong at every size.
+ */
+function restoreProject(project) {
+  if (!project || typeof project !== 'object') {
+    throw new Error(`a project is an object, got ${JSON.stringify(project)}`);
+  }
+  // The version gate, first, because everything below it is interpreted *in* the
+  // version. A file with no version predates the field, which means it predates
+  // the point at which `pointSize` stopped being drawing-buffer pixels - so its
+  // look cannot be reconstructed from what it contains, and opening it on a guess
+  // would render a size nobody authored and record no reason why.
+  if (project.version !== PROJECT_VERSION) {
+    throw new Error(
+      `this project is version ${JSON.stringify(project.version)} and this build reads `
+      + `version ${PROJECT_VERSION}: point size is pixels at 1080p in version ${PROJECT_VERSION} `
+      + 'and was pixels at the drawing buffer before it, so there is no faithful reading of '
+      + 'an unversioned file',
+    );
+  }
+  if (!Number.isInteger(project.mode) || project.mode < 0 || project.mode > 4) {
+    throw new Error(`mode is ${JSON.stringify(project.mode)}: the clip's mode is a whole number from 0 to 4`);
+  }
+  if (!Number.isFinite(project.outputFps) || project.outputFps <= 0) {
+    throw new Error(`outputFps is ${JSON.stringify(project.outputFps)}: it has to be a positive number`);
+  }
+  if (!project.params || typeof project.params !== 'object') {
+    throw new Error('a project carries a params object');
+  }
+  if (!project.tracks || typeof project.tracks !== 'object') {
+    throw new Error('a project carries a tracks object, empty if nothing is keyed');
+  }
+  if (!project.retime || !Array.isArray(project.retime.keys) || !Number.isFinite(project.retime.rate)) {
+    throw new Error('a project carries a retime with a numeric rate and an array of keys');
+  }
+
+  // Built whole before anything is written, so a project that fails halfway leaves
+  // the editor on the clip it already had rather than on a half-applied one. The
+  // registry's own refusals do the value checking, key by key: `params.normalise`
+  // is what rejects a scalar that is a string, a step that is not a boolean and -
+  // since this step - a quaternion that is not of unit length. Routing keys through
+  // it is the whole of why a hand-edited camera track cannot reach `poseAt`.
+  const restoredTracks = [];
+  for (const [name, keys] of Object.entries(project.tracks)) {
+    if (!Array.isArray(keys)) throw new Error(`track ${name} is not an array of keys`);
+    if (keys.length === 0) continue;
+    // Names the registry does not know are refused rather than dropped. A track
+    // silently discarded is an edit silently lost, and the file is more likely to
+    // be from a build this one cannot read than to be harmlessly extra.
+    params.spec(name);
+    restoredTracks.push([name, keys.map((k) => {
+      const key = restoreKey(`track ${name}`, k);
+      key.value = params.normalise(name, key.value);
+      return key;
+    })]);
+  }
+
+  const restoredRetime = project.retime.keys.map((k) => {
+    const key = restoreKey('the retime curve', k);
+    if (!Number.isFinite(key.value)) {
+      throw new Error(`the retime key at ${key.t}s maps to ${JSON.stringify(key.value)}: source time is a number`);
+    }
+    return key;
+  });
+  // The fourth door onto the curve, and the one this step exists to close. The
+  // other three are gestures inside a page that already vetted the curve; this is
+  // the one a file arrives through, and a descending region does not merely fail -
+  // it kills the animation loop, or worse, passes the residency guard vacuously
+  // because the bounds it compares have crossed, and playback simply stops
+  // advancing with the play button still lit.
+  retime.assertMonotonic(restoredRetime);
+
+  // Null or a name and a revision, and checked because it is displayed: a stamp
+  // carrying an object where a string belongs would put "[object Object]" on a
+  // chip that is supposed to be the audit trail for a set of clips.
+  const stamp = project.appliedPreset ?? null;
+  if (stamp !== null && (typeof stamp.name !== 'string' || typeof stamp.rev !== 'string')) {
+    throw new Error(`appliedPreset is ${JSON.stringify(stamp)}: it is null, or a name and a rev`);
+  }
+
+  applyModeValue(project.mode);
+  params.apply(project.params);
+  appliedPreset = stamp;
+
+  tracks.clear();
+  for (const [name, keys] of restoredTracks) trackFor(name).keys = keys;
+
+  retime.rate = project.retime.rate;
+  retime.keys = restoredRetime;
 
   if (timeline && timeline.outputFps !== project.outputFps) {
     // The playhead is not part of the document, so an undo that changed the output
@@ -2002,6 +2129,15 @@ function connect() {
 
       if (msg.camera) {
         showCamera(msg.camera);
+        return;
+      }
+
+      // Any connected client can arm or stop a take, so every connected monitor
+      // has to see the state change - that is the whole reason record state is
+      // broadcast rather than answered only to whoever asked.
+      if (msg.recording) {
+        recordState = msg.recording;
+        paintRecord(null);
         return;
       }
 
@@ -3657,6 +3793,20 @@ const ui = {
   exportSize: document.getElementById('tExportSize'),
   exportGo: document.getElementById('tExport'),
   exportNote: document.getElementById('tExportNote'),
+  marks: document.getElementById('tMarks'),
+  markCount: document.getElementById('tMarkCount'),
+  mark: document.getElementById('tMark'),
+  preset: document.getElementById('tPreset'),
+  presetApply: document.getElementById('tPresetApply'),
+  presetSave: document.getElementById('tPresetSave'),
+  project: document.getElementById('tProject'),
+  projectOpen: document.getElementById('tProjectOpen'),
+  projectSave: document.getElementById('tProjectSave'),
+  recGo: document.getElementById('recGo'),
+  recMark: document.getElementById('recMark'),
+  recNote: document.getElementById('recNote'),
+  recSpace: document.getElementById('recSpace'),
+  toLibrary: document.getElementById('toLibrary'),
 };
 
 let timeline = null;
@@ -4176,7 +4326,151 @@ function timingChanged() {
   ui.rate.disabled = retime.keys.length > 0;
   ui.fps.value = String(timeline.outputFps);
   buildRuler();
+  paintMarks();
   lanesChanged();
+}
+
+// --------------------------------------------------------------- marks on the take
+
+// The take's marks, fetched once when it opens. They belong to the take rather
+// than to any project built on it, which is the whole reason they live in a
+// sidecar: correcting one corrects it for every edit of that footage, and the
+// gallery can draw them without loading anything that knows about edits.
+let takeMarks = [];
+let openTakeId = null;
+
+function paintMarks() {
+  const host = ui.marks;
+  if (!host) return;
+  host.replaceChildren();
+  ui.markCount.textContent = String(takeMarks.length);
+  if (!timeline) return;
+  const total = Math.max(1e-6, rulerDuration());
+  for (const mark of takeMarks) {
+    // Marks are stamped in source milliseconds and the ruler is program seconds,
+    // so every tick goes through the curve. The two coincide only at rate 1 with
+    // no keys, which is exactly the case that would let a wrong implementation
+    // look right - so this is drawn through `programSecAt` even when it is the
+    // identity.
+    const program = retime.programSecAt(mark.sourceMs / 1000);
+    const el = document.createElement('span');
+    // A mark the edit never reaches is drawn at the edge in the dim colour rather
+    // than dropped. `programSecAt` returns where the curve ends for a source
+    // position it never gets to, so this is the honest reading of that answer: the
+    // moment is still in the footage, and a tick that silently vanished when
+    // somebody shortened the clip would be worse than one that needs explaining.
+    const beyond = program >= total - 1e-9 && mark.sourceMs / 1000 > retime.sourceSecAt(total) + 1e-9;
+    el.className = beyond ? 'tmk beyond' : 'tmk';
+    el.style.left = `${Math.max(0, Math.min(1, program / total)) * 100}%`;
+    el.title = `${mark.label ?? mark.id} · source ${(mark.sourceMs / 1000).toFixed(2)}s`;
+    host.appendChild(el);
+  }
+}
+
+async function loadMarks(id) {
+  try {
+    const res = await fetch(`/capture/${encodeURIComponent(id)}/marks`);
+    takeMarks = res.ok ? (await res.json()).marks : [];
+  } catch {
+    takeMarks = [];
+  }
+  paintMarks();
+}
+
+/**
+ * Flags the moment at the playhead. Written in source milliseconds, because a
+ * mark describes the footage rather than this edit of it - it survives a retime,
+ * outlives this project, and is shared by every project built on this take.
+ */
+async function markHere() {
+  if (!openTakeId || !timeline) return;
+  const sourceMs = Math.round(retime.sourceSecAt(timeline.programSec) * 1000);
+  const rec = { id: `m${Date.now().toString(36)}`, sourceMs, label: `mark ${takeMarks.length + 1}`, at: Date.now() };
+  const res = await fetch(`/capture/${encodeURIComponent(openTakeId)}/marks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ marks: [rec] }),
+  });
+  takeMarks = (await res.json()).marks;
+  paintMarks();
+}
+
+// ------------------------------------------------------------- the preset library
+
+/**
+ * Where the look on screen came from, or null if nobody applied one.
+ *
+ * This is a copy plus a stamp rather than a reference, and the copy is what keeps
+ * a project self-contained - a render worker needs the file and nothing else, and
+ * re-rendering last month's project has to produce the image it produced then.
+ * Resolving a preset by name at render time would give centrally-updatable
+ * cohesion at the cost of both those properties, and deleting a preset would break
+ * every project that named it.
+ *
+ * The stamp recovers most of what a reference offered, for nothing: because
+ * presets are content-hashed the same way captures are, the gallery can see that
+ * three clips are on one revision of a look and two are on an older one. Drift is
+ * not repaired automatically - tweaking a preset means re-applying it - but it
+ * stops being invisible, which is the part that bites when a set of clips is
+ * supposed to belong together.
+ */
+let appliedPreset = null;
+
+/**
+ * A preset carries the look values *and* the mode, and the second half is a
+ * special case rather than an oversight.
+ *
+ * The registry deliberately excludes the mode: it is clip state, not a
+ * keyframeable parameter, so `params.values(params.names('look'))` will neither
+ * capture nor restore it. The spec's preset table lists mode first among
+ * presettable look, and both statements hold - a preset carries static values, and
+ * applying one is a user action - so the preset format carries the mode alongside
+ * the registry subset instead of assuming the subset is the whole preset.
+ */
+function presetFromCurrentLook(names) {
+  return { mode: clipMode, values: params.values(names ?? params.names('look')) };
+}
+
+/**
+ * Applies a saved preset and stamps where it came from.
+ *
+ * `applyModeValue` rather than `setMode`, and this is the trap the two functions
+ * were split for. `setMode(4)` applies the hardcoded BLACKWALL look as part of
+ * selecting the mode, so routing a user's own preset through it would overwrite
+ * that user's twelve values with the built-in ones on the way past - the preset
+ * would appear to load and would not be the preset.
+ */
+function applyStoredPreset(doc) {
+  refuseDuringEvaluation('a stored preset applied');
+  if (doc.body.version !== PROJECT_VERSION) {
+    throw new Error(
+      `preset ${doc.name} is version ${JSON.stringify(doc.body.version)} and this build reads `
+      + `${PROJECT_VERSION}: point size is pixels at 1080p here and was pixels at the drawing `
+      + 'buffer before, so its look cannot be reconstructed',
+    );
+  }
+  if (Number.isInteger(doc.body.mode)) applyModeValue(doc.body.mode);
+  params.apply(doc.body.values ?? {});
+  appliedPreset = { name: doc.name, rev: doc.rev };
+  requestRepaint();
+  history.commit();
+}
+
+const documentsIn = async (kind) => (await (await fetch(`/${kind}`)).json())[kind];
+
+async function refreshPresets() {
+  const list = await documentsIn('presets');
+  ui.preset.replaceChildren(new Option('—', ''));
+  for (const doc of list) ui.preset.appendChild(new Option(doc.name, doc.name));
+  if (appliedPreset) ui.preset.value = appliedPreset.name;
+  return list;
+}
+
+async function refreshProjects() {
+  const list = await documentsIn('projects');
+  ui.project.replaceChildren(new Option('—', ''));
+  for (const doc of list) ui.project.appendChild(new Option(doc.name, doc.name));
+  return list;
 }
 
 // ------------------------------------------------------- dragging keys and handles
@@ -4789,6 +5083,178 @@ ui.exportGo.addEventListener('click', async () => {
   }
 });
 
+// ------------------------------------------------- the library controls in the editor
+
+ui.mark.addEventListener('click', () => { markHere().catch(showTimelineError); });
+
+ui.presetApply.addEventListener('click', async () => {
+  const name = ui.preset.value;
+  if (!name) return;
+  try {
+    applyStoredPreset(await (await fetch(`/presets/${encodeURIComponent(name)}`)).json());
+    ui.note.textContent = `applied ${name} · ${appliedPreset.rev.slice(7, 15)}`;
+  } catch (err) {
+    showTimelineError(err);
+  }
+});
+
+ui.presetSave.addEventListener('click', async () => {
+  // Named by the user, because a preset library whose entries are called
+  // "preset 3" is a library nobody uses twice.
+  const name = prompt('save this look as', appliedPreset?.name ?? 'look-1');
+  if (!name) return;
+  try {
+    const res = await fetch(`/presets/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(presetFromCurrentLook()),
+    });
+    const saved = await res.json();
+    if (saved.error) throw new Error(saved.error);
+    // Saving stamps the clip too. The look on screen genuinely is that revision of
+    // that preset, and leaving the stamp on whatever was applied before would have
+    // the provenance say a look this clip no longer has.
+    appliedPreset = { name: saved.name, rev: saved.rev };
+    await refreshPresets();
+    ui.note.textContent = `saved ${saved.name} · ${saved.rev.slice(7, 15)}`;
+    history.commit();
+  } catch (err) {
+    showTimelineError(err);
+  }
+});
+
+ui.projectSave.addEventListener('click', async () => {
+  const name = prompt('save this edit as', ui.project.value || `${openTakeId ?? 'clip'}-edit`);
+  if (!name) return;
+  try {
+    // The take is named by content hash rather than by path, which is what makes a
+    // project a self-contained render job and what catches a capture that was
+    // truncated, re-recorded or swapped underneath an edit. A path cannot do
+    // either.
+    const body = { ...serialiseProject(), take: { id: openTakeId, hash: openTakeHash } };
+    const res = await fetch(`/projects/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const saved = await res.json();
+    if (saved.error) throw new Error(saved.error);
+    await refreshProjects();
+    ui.project.value = saved.name;
+    ui.note.textContent = `saved ${saved.name} · ${saved.bytes} bytes`;
+  } catch (err) {
+    showTimelineError(err);
+  }
+});
+
+ui.projectOpen.addEventListener('click', async () => {
+  const name = ui.project.value;
+  if (!name) return;
+  try {
+    await loadProjectNamed(name);
+  } catch (err) {
+    showTimelineError(err);
+  }
+});
+
+/**
+ * Loads a project file onto the open take. This is the untrusted door: everything
+ * before now came from a state this page had already vetted, and a file has not.
+ *
+ * The take is checked by hash before the document is applied. A project that names
+ * different footage renders somebody else's edit over this take and looks entirely
+ * plausible doing it, and a project whose take was re-recorded under the same name
+ * is the same failure with nobody to blame - which is exactly what hash-referencing
+ * the capture was for.
+ *
+ * Playback is stopped across the restore for the reason undo stops it: the
+ * accumulators walk forward one source frame at a time and cannot be walked back,
+ * so a retime curve swapped underneath a running playhead asks the source to go
+ * backwards on the very next step, from inside the animation loop.
+ */
+async function loadProjectNamed(name) {
+  const doc = await (await fetch(`/projects/${encodeURIComponent(name)}`)).json();
+  if (doc.error) throw new Error(doc.error);
+  const take = doc.body.take;
+  if (take && openTakeHash && take.hash && take.hash !== openTakeHash) {
+    throw new Error(
+      `project ${name} was built on ${take.id} (${take.hash.slice(0, 22)}…) and the open take `
+      + `hashes ${openTakeHash.slice(0, 22)}…: this is different footage, so the edit would `
+      + 'render against material it was never authored against',
+    );
+  }
+  const resume = timeline ? timeline.playing : false;
+  if (resume) timeline.pause();
+  restoreProject(doc.body);
+  // The stack restarts from the loaded document rather than keeping the previous
+  // clip's history. Undoing across a project load would walk back into an edit of
+  // something else, which is the shape of undo people learn not to trust.
+  history.begin();
+  await timeline.seek(timeline.programSec);
+  if (resume) timeline.play();
+  ui.project.value = name;
+  ui.note.textContent = `opened ${name}`;
+  return doc;
+}
+
+// ------------------------------------------------------------- the recorder surface
+
+// Record, mark and remaining time - the load-bearing four-fifths of a shooting
+// surface. It is on the live viewer and nowhere else: a clip on the timeline has
+// nothing to record, and the two transports are exclusive for the same reason.
+//
+// The control is an HTTP call and the *state* comes back on the socket every
+// monitor is already listening to, which keeps the property the spec asks for -
+// a phone watching a capture node can start the take it is watching and press
+// mark, and every other monitor sees the recording state change.
+let recordState = { armed: false, recording: false, takeId: null, startedAt: null };
+
+function paintRecord(storage) {
+  if (!ui.recGo) return;
+  const rec = recordState.recording;
+  ui.recGo.textContent = rec ? 'stop' : 'record';
+  ui.recGo.setAttribute('aria-pressed', String(rec));
+  ui.recMark.disabled = !rec;
+  ui.recNote.textContent = rec
+    ? `${recordState.takeId} · ${recordState.frames} frames`
+    : (recordState.armed ? 'armed, waiting for the sensor' : 'not recording');
+  if (storage) {
+    ui.recSpace.textContent = `${storage.label} left at current settings`;
+    // The warning is load-bearing rather than polish: with manual-only deletion the
+    // card genuinely fills, and unattended the failure lands mid-shoot.
+    ui.recSpace.classList.toggle('low', storage.secondsLeft < 15 * 60);
+  }
+}
+
+async function pollRecord() {
+  try {
+    const state = await (await fetch('/record/state')).json();
+    recordState = state;
+    paintRecord(state.storage);
+  } catch { /* a server that went away is the status line's problem, not this one's */ }
+}
+
+if (ui.recGo) {
+  ui.recGo.addEventListener('click', async () => {
+    ui.recGo.disabled = true;
+    try {
+      const res = await fetch(recordState.recording || recordState.armed ? '/record/stop' : '/record/start', { method: 'POST' });
+      const body = await res.json();
+      if (body.error) ui.recNote.textContent = body.error;
+    } finally {
+      ui.recGo.disabled = false;
+      await pollRecord();
+    }
+  });
+  ui.recMark.addEventListener('click', async () => {
+    const body = await (await fetch('/record/mark', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    })).json();
+    ui.recNote.textContent = body.error ?? `${body.label} at ${(body.sourceMs / 1000).toFixed(1)}s`;
+  });
+  ui.toLibrary.addEventListener('click', () => { location.href = '/library.html'; });
+}
+
 ui.camView.addEventListener('click', () => {
   const program = viewCamera === freeCamera;
   setViewCamera(program ? programCamera : freeCamera);
@@ -4820,6 +5286,11 @@ ui.camView.addEventListener('click', () => {
  * with everything else, so the file is where it becomes permanent and opening the
  * file is where it gets refused.
  */
+// The open take's content hash, which is how a project names its footage. Read off
+// the index the source already fetched rather than recomputed, because rehashing
+// gigabytes on every project save is exactly what step 2's design refuses.
+let openTakeHash = null;
+
 async function openTake(id) {
   const source = await IndexedPairSource.open(id);
   const res = await fetch(`/capture/${encodeURIComponent(id)}/hello`);
@@ -4876,6 +5347,14 @@ async function openTake(id) {
   // comparing.
   chromeOn = true;
   placeChrome();
+  openTakeId = id;
+  openTakeHash = source.index.hash;
+  // Awaited, so the first paint of the ruler already has the ticks on it. A take
+  // whose marks arrived a frame later would show them appearing, which reads as
+  // the page finding them rather than the take having them.
+  await loadMarks(id);
+  await refreshPresets().catch(() => {});
+  await refreshProjects().catch(() => {});
   timingChanged();
   // The stack starts from whatever the clip already is, so the first undo has
   // somewhere honest to land rather than an empty document.
@@ -4937,6 +5416,12 @@ if (REQUESTED_TAKE) {
   // look accidental when it is a requirement.
   connect();
   renderer.setAnimationLoop(liveLoop);
+  // The remaining-time readout, on the surface an operator is actually looking at.
+  // Polled rather than pushed because free space changes on its own - another
+  // process writing, a card filling - and a number that only moved when the
+  // recorder did would be stale in the one direction that matters.
+  pollRecord();
+  setInterval(pollRecord, 5000);
 }
 
 // Handles for profiling and for poking at the scene from the console.
@@ -5070,6 +5555,34 @@ globalThis.__kinect = {
         hasColor: uniforms.hasColor.value,
       };
     },
+  },
+
+  /**
+   * The library's half of the editor: the document version, the load path a
+   * project file arrives through, the preset stamp, and the take's marks.
+   *
+   * `restoreProject` is exposed raw and deliberately. It is the door every refusal
+   * this step added lives on, and a check that could only reach it through a
+   * successful save-and-load could never hand it the malformed documents those
+   * refusals exist for.
+   */
+  library: {
+    PROJECT_VERSION,
+    restoreProject,
+    serialiseProject,
+    loadProject: loadProjectNamed,
+    applyStoredPreset,
+    presetFromCurrentLook,
+    appliedPreset: () => appliedPreset,
+    marks: () => takeMarks.map((m) => ({ ...m })),
+    markHere,
+    takeId: () => openTakeId,
+    takeHash: () => openTakeHash,
+    /** Where each mark ticks on the ruler, as the page actually drew it. */
+    markTicks: () => [...document.querySelectorAll('#tMarks .tmk')].map((el) => ({
+      left: Number.parseFloat(el.style.left),
+      beyond: el.classList.contains('beyond'),
+    })),
   },
 
   // The export, and the two things a check has to be able to ask it: run one, and

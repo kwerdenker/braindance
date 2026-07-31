@@ -111,6 +111,23 @@ inside a single straight segment of the retime curve where the tangent *is* the 
 probes were moved onto the knees and onto an eased ramp and the same mutation now fails four.
 Ask what the wrong implementation would agree with, and probe somewhere it cannot.
 
+**A probe that changes the state it samples proves whatever it did to it.** This is a
+distinct failure from the two above - not a probe in a dead zone and not a vacuous
+assertion, but an observer effect inside the instrument, and it is easy to write because
+the sampling call looks passive. Step 7's recorder check waited for takes by polling the
+library, then asserted each closed take held all the frames its writer emitted. Listing
+the library scans every capture in the directory *including the one still being written*,
+and the scan writes a sidecar - so "does a sidecar exist" stopped meaning "the take is
+finished" the moment something asked the question, and the take that was mid-recording
+was counted against a total it was never going to reach. It came in at 10 frames and at
+11 on two runs, which is the burst plus however long the last poll took, and it fired on
+four unrelated mutations before it was pinned - a check red for reasons that have nothing
+to do with what is under test, which is how a gating check teaches people to re-run until
+green. The fix was to take "closed" from the writer's own log rather than from an artifact
+the reader creates. **Before polling for a condition, ask what the polling call itself
+writes, opens or caches** - anything that lists, scans or indexes a directory something
+else is writing is a candidate.
+
 **When one probe turns out to be blind to something, ask what all of them are blind to
 together.** Step 6 got the first half of this right and stopped one question short, which is
 why it is a rule rather than a note. Its commit reasons that `pointsize-absolute` passes the

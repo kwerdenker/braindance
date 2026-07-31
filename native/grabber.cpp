@@ -291,14 +291,34 @@ int main(int argc, char **argv) {
   libfreenect2::Frame undistorted(DW, DH, 4), registered(DW, DH, 4);
 
   // The browser needs the real intrinsics to unproject; hardcoded values skew the cloud.
+  //
+  // startedAt is the wall clock, and it is here rather than in the server because
+  // this is the only place that knows when the stream actually began. Every frame
+  // timestamp below is steady_clock - monotonic since boot, which is exactly right
+  // for frame spacing and useless for sorting a library, since two takes recorded a
+  // day apart on a node that never rebooted are indistinguishable by it. A gallery
+  // otherwise has nothing but the file's modification time, which changes when a
+  // take is copied between machines.
+  long long startedAt = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
   char hello[512];
   int helloLen = std::snprintf(hello, sizeof(hello),
     "{\"serial\":\"%s\",\"firmware\":\"%s\",\"width\":%d,\"height\":%d,"
     "\"fx\":%.6f,\"fy\":%.6f,\"cx\":%.6f,\"cy\":%.6f,\"color\":%s,"
-    "\"minDepth\":%.3f,\"maxDepth\":%.3f,\"lowLight\":%s}",
+    "\"minDepth\":%.3f,\"maxDepth\":%.3f,\"lowLight\":%s,\"startedAt\":%lld}",
     serial.c_str(), dev->getFirmwareVersion().c_str(), DW, DH,
     ir.fx, ir.fy, ir.cx, ir.cy, wantColor ? "true" : "false",
-    minDepth, maxDepth, (wantColor && lowLight) ? "true" : "false");
+    minDepth, maxDepth, (wantColor && lowLight) ? "true" : "false", startedAt);
+  // snprintf truncates silently, and a truncated hello is not JSON - so every take
+  // recorded afterwards would carry a sensor record nothing can parse, and the
+  // gallery would list them all with unknown intrinsics. The serial and the
+  // firmware are device strings rather than constants, so the length is not
+  // something this file can reason about once and forget.
+  if (helloLen < 0 || (size_t)helloLen >= sizeof(hello)) {
+    std::fprintf(stderr, "[grabber] hello needs %d bytes and the buffer is %zu: refusing to "
+                 "stream a sensor record that would be cut in half\n", helloLen, sizeof(hello));
+    return 1;
+  }
   if (!write_message(STDOUT_FILENO, TYPE_HELLO, hello, (uint32_t)helloLen)) return 1;
   std::fprintf(stderr, "[grabber] streaming %s (fx=%.2f fy=%.2f cx=%.2f cy=%.2f)\n",
                serial.c_str(), ir.fx, ir.fy, ir.cx, ir.cy);
