@@ -58,10 +58,18 @@ Each takes a running server and exits non-zero on failure.
 node tools/determinism-check.mjs                    # step 1: same program time, same image
 node tools/determinism-check.mjs --clock --before HEAD~1
 node tools/index-check.mjs --url http://localhost:8123   # step 2: index, hash, frame API
+node tools/registry-check.mjs --url http://localhost:8080 # step 3: one registry, sliders as views
+node tools/timeline-check.mjs --url http://localhost:8080 # step 4: seek equals playback
+node tools/timeline-check.mjs --mutate preroll-constant   # ... and must FAIL mutated
 ```
 
 `--clock` refuses a rev whose `main.js` already contains the transport, so it needs
 `--before` pointing at a commit before step 1.
+
+`timeline-check --mutate <name>` serves a deliberately broken `main.js` into the running
+server and is expected to exit non-zero. It refuses a mutation whose text it cannot find
+exactly once, because a replacement that silently matched nothing would run the unmutated
+page and be recorded as the check having missed a bug it was never shown.
 
 ## Fixtures
 

@@ -13,6 +13,11 @@ const DH = 424;
 const POINTS = DW * DH;
 
 const statusEl = document.getElementById('status');
+// Read here rather than beside the rest of the timeline, because `resize` runs at
+// boot and has to know how much of the window the strip is taking. Hidden it
+// measures zero, which is what keeps the live viewer's viewport exactly what it
+// was.
+const timelineEl = document.getElementById('timeline');
 
 // ---------------------------------------------------------------- scene setup
 
@@ -150,7 +155,17 @@ const makeStateTarget = () => new THREE.WebGLRenderTarget(DW, DH, {
 let statePrev = makeStateTarget();
 let stateNext = makeStateTarget();
 
-const MAX_AGE = 4.0;
+// How long a ray's age is allowed to keep counting, in seconds of source time.
+// This is not a free number: a ghost is drawn while `age < fadeTime + wakeTime *
+// strength`, so once the clamp sits below the longest life the registry can ask
+// for, a ray that stops swapping pins its age at the ceiling and sheds forever at
+// fixed alpha. At 4.0 that was reachable - fade and wake top out at 1500 and 4000
+// milliseconds - and it showed up as a wake that never expired in the live viewer
+// and as a seek that could not reproduce a playback, because a reset zeroes the
+// ghost and no length of pre-roll puts an immortal one back. The assertion below
+// `PARAMS` is what keeps the two in step; raising a slider's maximum past this
+// fails at boot rather than in the footage.
+const MAX_AGE = 6.0;
 
 const stateUniforms = {
   depthCurr: { value: depthCurr },
@@ -555,6 +570,38 @@ function setAdditive(on) {
   material.needsUpdate = true;
 }
 
+// --------------------------------------------------------- binding a source frame
+
+// The two doors every acquisition path goes through to put a capture frame in
+// front of the shader. There is one of each rather than one per source, because
+// the swap is the part that has to be identical: a socket arrival, a pinned run
+// and an indexed pull all have to leave the textures in the same relationship or
+// the renderer would produce a different image depending on where the bytes came
+// from - which is the drift this whole design is arranged to prevent.
+function bindDepth(data) {
+  const swap = depthPrev;
+  depthPrev = depthCurr;
+  depthCurr = swap;
+  depthCurr.image.data.set(data);
+  depthCurr.needsUpdate = true;
+  uniforms.depthPrev.value = depthPrev;
+  uniforms.depthCurr.value = depthCurr;
+}
+
+// Ownership of the bitmap stays with the caller. Live closes its own two swaps
+// later, once it is certainly unbound; the indexed cache holds its own until the
+// frame is evicted. Closing one here would free a bitmap the other still needs.
+function bindColor(bitmap) {
+  const swap = colorPrev;
+  colorPrev = colorCurr;
+  colorCurr = swap;
+  colorCurr.image = bitmap;
+  colorCurr.needsUpdate = true;
+  uniforms.colorPrev.value = colorPrev;
+  uniforms.colorCurr.value = colorCurr;
+  uniforms.hasColor.value = 1;
+}
+
 // ---------------------------------------------------------------- post chain
 
 // Deliberately ordered: trails accumulate the raw cloud, bloom blows out the hot
@@ -655,14 +702,18 @@ function setViewCamera(cam) {
 }
 
 function resize() {
+  // The stage is the window less whatever the timeline strip is taking, which is
+  // nothing at all while it is hidden. Overlaying it on the image instead would
+  // have cost nothing here and hidden the bottom of every frame being graded.
+  const height = Math.max(1, innerHeight - timelineEl.offsetHeight);
   for (const cam of [freeCamera, programCamera]) {
-    cam.aspect = innerWidth / innerHeight;
+    cam.aspect = innerWidth / height;
     cam.updateProjectionMatrix();
   }
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2) * renderScale);
-  renderer.setSize(innerWidth, innerHeight);
+  renderer.setSize(innerWidth, height);
   composer.setPixelRatio(Math.min(devicePixelRatio, 2) * renderScale);
-  composer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, height);
   const buf = renderer.getDrawingBufferSize(new THREE.Vector2());
   // Bloom is the most expensive pass, so it runs at half the buffer resolution.
   bloom.setSize(Math.max(1, buf.x / 2), Math.max(1, buf.y / 2));
@@ -806,6 +857,22 @@ const PARAMS = {
     } },
 };
 
+// The surface memory's age ceiling has to cover the longest persistence the two
+// sliders can ask for, or a ray that stops swapping pins its age below its own
+// life and sheds forever. The check lives here rather than beside `MAX_AGE`
+// because the shader string is built long before `PARAMS` exists, and it is an
+// assertion rather than a clamp because the honest failure is "this look cannot
+// be rendered correctly", which a silently shortened wake would hide.
+{
+  const longestLife = (PARAMS.fade.max + PARAMS.wake.max) / 1000;
+  if (MAX_AGE < longestLife) {
+    throw new Error(
+      `the surface memory clamps age at ${MAX_AGE}s but fade and wake can ask for `
+      + `${longestLife}s: a ghost past the clamp would never expire`,
+    );
+  }
+}
+
 // Range inputs snap to their step grid and clamp to their bounds, and the registry
 // has to do the same arithmetic rather than lean on the DOM for it - otherwise a
 // value set headlessly lands on the uniform unsnapped while the same value set
@@ -879,6 +946,14 @@ function writeControl(name, value) {
   if (out) out.textContent = el.value;
 }
 
+// Announced after every registry write, so whatever is showing the image can
+// rebuild it. Live viewing needs nothing here - it renders every frame anyway -
+// which is why this starts as a no-op and the timeline installs itself into it
+// rather than the registry knowing a transport exists. Assigned rather than a
+// subscriber list because there is one consumer and inventing a fan-out for it
+// would be machinery for a problem nobody has.
+let paramWritten = () => {};
+
 const params = {
   spec(name) {
     const spec = PARAMS[name];
@@ -901,6 +976,10 @@ const params = {
     values.set(name, v);
     spec.apply(v);
     writeControl(name, v);
+    // Here rather than at the call sites, for the same reason this is the single
+    // write path at all: a preset, a slider, a mode and step 5's tracks all end up
+    // on this line, so nothing can change the image without saying that it did.
+    paramWritten(name, spec.tag);
     return v;
   },
   apply(next) {
@@ -975,6 +1054,29 @@ params.reset();
 // does not exist yet.
 let evaluating = false;
 
+// Registry writes the transport makes on its own behalf, rather than on a user's:
+// the camera pose every render poses, and the three parameters a draft borrows for
+// one frame and hands back. Neither may ask for a repaint. A render that scheduled
+// another render would never stop, and a draft would be chased by the accurate
+// seek it exists to postpone - so the drag would pay for both.
+//
+// This is a separate flag from `evaluating` rather than a widening of it, and the
+// two mean different things: `evaluating` says a preset is not a track, this says
+// a write came from the renderer rather than from a hand. Nesting is real - a
+// draft's suppression spans a render that suppresses in turn - so it saves and
+// restores instead of clearing.
+let transportWriting = false;
+
+function withoutRepaint(write) {
+  const outer = transportWriting;
+  transportWriting = true;
+  try {
+    return write();
+  } finally {
+    transportWriting = outer;
+  }
+}
+
 function refuseDuringEvaluation(what) {
   if (evaluating) {
     throw new Error(`${what} during evaluation: presets and modes are user actions, not tracks`);
@@ -1023,6 +1125,12 @@ function setMode(mode) {
   document.querySelectorAll('#modes button').forEach((b) => {
     b.setAttribute('aria-pressed', String(Number(b.dataset.mode) === mode));
   });
+
+  // Asked for explicitly, because the mode is clip state and deliberately not a
+  // registry parameter - so selecting Depth or Contour writes nothing the
+  // registry announces, and the image would sit on the previous reading of the
+  // footage until something else happened to move.
+  requestRepaint();
 }
 
 document.querySelectorAll('#modes button').forEach((btn) => {
@@ -1084,14 +1192,7 @@ async function pumpColorDecode() {
     const dropped = retiringBitmap;
     retiringBitmap = colorPrev.image instanceof ImageBitmap ? colorPrev.image : null;
 
-    const swap = colorPrev;
-    colorPrev = colorCurr;
-    colorCurr = swap;
-    colorCurr.image = bitmap;
-    colorCurr.needsUpdate = true;
-    uniforms.colorPrev.value = colorPrev;
-    uniforms.colorCurr.value = colorCurr;
-    uniforms.hasColor.value = 1;
+    bindColor(bitmap);
 
     // Only close a bitmap once it is two swaps old and certainly unbound.
     if (dropped) dropped.close();
@@ -1110,13 +1211,7 @@ function handleFrame(buffer) {
   const stampMs = Number(view.getBigUint64(8, true));
   const offset = 16; // u32 + u32 + u64 timestamp
 
-  const swap = depthPrev;
-  depthPrev = depthCurr;
-  depthCurr = swap;
-  depthCurr.image.data.set(new Uint16Array(buffer, offset, depthBytes / 2));
-  depthCurr.needsUpdate = true;
-  uniforms.depthPrev.value = depthPrev;
-  uniforms.depthCurr.value = depthCurr;
+  bindDepth(new Uint16Array(buffer, offset, depthBytes / 2));
 
   const now = performance.now();
   livePairs.push(stampMs, now);
@@ -1245,6 +1340,40 @@ const NOMINAL_GAP_MS = 1000 / 30;
 const DISCONTINUITY_MS = 5000;
 const noop = () => {};
 
+// What the instrument reads instead of taking the transport's word for anything.
+// A check that asks "did the seek reset the accumulators" has to be able to see
+// that it did, or it is asserting the claim rather than enforcing it.
+const counters = { renders: 0, stateAdvances: 0, resets: 0, drafts: 0, seeks: 0, requests: 0, framesFetched: 0 };
+
+// The one function mapping program time to source time. Everything above it works
+// in program time - the playhead, the look, the camera, every keyframe step 5 adds
+// - and everything below it works in source time, because that is what a capture
+// is addressed in. A constant slope is normal speed, a shallow one slow motion.
+//
+// Step 5 replaces the body with a curve read at t and nothing on either side
+// changes, which is the whole reason the mapping is a function here rather than a
+// multiplication inlined at the two call sites that need it. Export needs no
+// inverse of it, which is why the playhead lives in program time at all.
+const retime = {
+  rate: 1,
+  sourceSecAt(programSec) { return programSec * this.rate; },
+  // The local slope, in source seconds per program second. A pre-roll needs it to
+  // turn fade and wake - which are source milliseconds and stay that way - into a
+  // number of output frames.
+  slopeAt(/* programSec */) { return this.rate; },
+  // How long a program is, given a source that long. It lives here rather than as
+  // a division at the transport, because a curve answers it by integrating and a
+  // caller reaching for `rate` would be a third door into a seam that promises
+  // two - which is the drift this design keeps refusing one layer up.
+  programDurationFor(sourceSec) { return sourceSec / Math.abs(this.rate); },
+  // The program position a source position sits at. The inverse exists only while
+  // the slope is constant, and export never needs it - it is here so a seek can
+  // shorten a pre-roll to the source frames it can actually hold, which is the one
+  // place a source bound has to become a program bound. Step 5's curve answers it
+  // by searching its own keys, or refuses and the clamp reads the target instead.
+  programSecAt(sourceSec) { return sourceSec / this.rate; },
+};
+
 class LivePairSource {
   constructor() {
     // The pair's stamps are a program clock built by accumulating the gaps the
@@ -1346,12 +1475,6 @@ const livePairs = new LivePairSource();
 const liveTransport = new LiveTransport(livePairs);
 let pairSource = livePairs;
 
-// Opened here rather than beside the socket code, because `handleFrame` pushes
-// into the pair source above. Arrivals cannot dispatch until module evaluation
-// finishes either way, but relying on that at the call site makes the ordering
-// look accidental when it is a requirement.
-connect();
-
 // ------------------------------------------------------------- render pipeline
 
 // One ping-pong step of the surface memory, advanced by exactly one source frame.
@@ -1360,6 +1483,7 @@ connect();
 // rather than the display's - and because a seek has to be able to walk it
 // forward at will, which is impossible while "a frame arrived" is what drives it.
 function advanceSurfaceState(dtSec) {
+  counters.stateAdvances++;
   stateUniforms.depthCurr.value = depthCurr;
   stateUniforms.statePrev.value = statePrev.texture;
   // The upper bound is the discontinuity gate and nothing tighter. A lower one
@@ -1387,6 +1511,7 @@ let lastProgramTime = 0;
 // that state, since a zero last-depth reads as invalid and the first frame after
 // it comes through as births rather than as swaps.
 function resetAccumulators() {
+  counters.resets++;
   const color = new THREE.Color();
   renderer.getClearColor(color);
   const alpha = renderer.getClearAlpha();
@@ -1413,9 +1538,13 @@ function resetAccumulators() {
 // export transports drive exactly this call, and an accurate seek is nothing more
 // than running it repeatedly at earlier positions and throwing the results away.
 function renderProgramFrame(t) {
+  counters.renders++;
   evaluating = true;
   try {
-    const frame = pairSource.at(t);
+    // The one place program time becomes source time. Live is the degenerate case
+    // - a rate of 1 with the playhead built out of the capture's own gaps, so the
+    // mapping is the identity and the live path is unchanged by having it here.
+    const frame = pairSource.at(retime.sourceSecAt(t));
     for (const step of frame.steps) {
       step.makeCurrent();
       advanceSurfaceState(step.gapSec);
@@ -1430,7 +1559,7 @@ function renderProgramFrame(t) {
     // what makes the camera a parameter with a kind rather than an object the
     // render path happens to move. Step 5 swaps the placeholder for a curve and
     // this line does not change.
-    params.set('camera', programPose(t));
+    withoutRepaint(() => params.set('camera', programPose(t)));
 
     const dt = Math.max(0, t - lastProgramTime);
     lastProgramTime = t;
@@ -1452,88 +1581,1023 @@ function renderProgramFrame(t) {
 // here, and they read a delta of their own rather than the one the render keeps.
 let lastNavTime = 0;
 
-renderer.setAnimationLoop(() => {
-  const t = liveTransport.positionAt(performance.now());
-  // Auto-orbit is the one thing the controls advance on a delta, and it gets the
-  // program delta rather than a wall clock, so the same orbit renders the same
-  // way at any output frame rate. The stall behaviour falls out of that: program
-  // time does not advance without frames, so the delta is zero and the orbit
-  // holds still instead of lurching when the next one lands.
+// Auto-orbit is the one thing the controls advance on a delta, and it gets the
+// program delta rather than a wall clock, so the same orbit renders the same way
+// at any output frame rate. The stall behaviour falls out of that: program time
+// does not advance without frames, so the delta is zero and the orbit holds still
+// instead of lurching when the next one lands. Both transports drive it, which is
+// why it is a function of the position rather than a line inside the live loop.
+function advanceNavigation(t) {
   controls.update(Math.max(0, t - lastNavTime));
   lastNavTime = t;
+}
+
+function liveLoop() {
+  const t = liveTransport.positionAt(performance.now());
+  advanceNavigation(t);
   renderProgramFrame(t);
-});
+}
 
-// ------------------------------------------------------------------ drive hook
+// -------------------------------------------------------------- indexed frames
 
-// A run of capture frames pinned from a file, driving the renderer with no socket
-// and no wall clock anywhere in the loop. It is the shape the indexed source will
-// take: bracket the position, then hand back every source frame the playhead
-// crossed so the surface memory sees each one in turn.
-class PinnedPairSource {
-  constructor(buffer) {
-    const view = new DataView(buffer);
-    this.frames = [];
-    for (let off = 0; off + 16 <= buffer.byteLength;) {
-      const depthBytes = view.getUint32(off, true);
-      const colorBytes = view.getUint32(off + 4, true);
-      this.frames.push({
-        depth: new Uint16Array(buffer, off + 16, depthBytes / 2),
-        stampMs: Number(view.getBigUint64(off + 8, true)),
-      });
-      off += 16 + depthBytes + colorBytes;
-    }
-    const first = this.frames[0].stampMs;
-    this.times = this.frames.map((f) => (f.stampMs - first) / 1000);
+// The pull half of the acquisition axis. Live cannot be asked for a frame the
+// sensor has not produced; a timeline knows exactly which frame it wants, so it
+// binary-searches step 2's index and fetches through the HTTP frame API. What it
+// hands back is the same shape the pushed source hands back, so the renderer
+// never learns which one fed it.
+
+// How many frames stay decoded. Depth is 434KB and a registered colour bitmap
+// about 868KB, so this is the memory ceiling in the browser rather than a tuning
+// knob - 192 frames is roughly 180MB with colour on half of them, and it has to
+// cover the longest pre-roll a slow damp can ask for.
+const CACHE_FRAMES = 192;
+// The most frames one call may ask to have resident at once, kept below the cache
+// so a span always has room for the two bitmaps the colour textures are holding
+// and for the pair at the target. A pre-roll can reach past this: the trails half
+// is a count of output frames independent of the rate, so its source span is
+// `frames * rate / outputFps`, and a damp of 0.97 at 4x with 24fps out spans 25
+// seconds of source - every one of those a slider value. The seek clamps and says
+// what it dropped rather than asking for more than can be held.
+const MAX_SPAN_FRAMES = CACHE_FRAMES - 16;
+// How many frames one range request covers. The endpoint will serve any run, but
+// the response is buffered whole in the browser, so the request is chunked to
+// bound that allocation at about 16MB.
+const RUN_FRAMES = 32;
+// How far ahead playback keeps the cache filled, in output frames. A fetch is
+// about a millisecond and an output frame is 33, so this only has to absorb a
+// stall rather than hide the latency.
+const PREFETCH_FRAMES = 30;
+const KNCT_MAGIC = 0x4b4e4354;
+const KNCT_HEADER = 12;
+
+// The walk every source that can address a capture by time performs, written
+// once. Bracket a source position, hand back each frame the playhead crossed with
+// the gap the sensor recorded before it, and refuse to move backwards without a
+// reset. The pinned run and the indexed pull are genuinely the same shape and
+// were written out twice, which had already begun to drift - one clamped a
+// negative gap and the other did not - so the only thing a subclass says is where
+// a frame's bytes come from.
+//
+// Live is not one of these and stays separate on purpose: it cannot be asked for
+// a frame the sensor has not produced, so it has no bracket to search and no
+// frame to make current.
+class StampedPairSource {
+  /** @param times source seconds from the first frame, ascending. */
+  constructor(times) {
+    if (times.length < 2) throw new Error(`a pair source needs two frames, got ${times.length}`);
+    this.times = times;
+    // The accumulators have been walked through this frame.
     this.applied = -1;
+  }
+
+  get count() { return this.times.length; }
+
+  get duration() { return this.times[this.times.length - 1]; }
+
+  /** The frame at or before `sourceSec`, as the lower half of a bracketing pair. */
+  bracket(sourceSec) {
+    let lo = 0;
+    let hi = this.count - 2;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (this.times[mid] <= sourceSec) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  }
+
+  /**
+   * Puts the walk back at frame `i`, so the next `at` emits `i` and `i + 1` as
+   * its steps. Both a draft scrub and an accurate seek need it for the same
+   * reason: the accumulators have just been cleared, so the source's record of
+   * how far they were walked no longer holds.
+   */
+  seekTo(i) {
+    this.applied = Math.max(-1, Math.min(this.count - 2, i) - 1);
   }
 
   rewind() { this.applied = -1; }
 
+  /** One frame's bytes in front of the shader. Where they come from is the subclass. */
+  // eslint-disable-next-line no-unused-vars
   makeCurrent(k) {
-    const swap = depthPrev;
-    depthPrev = depthCurr;
-    depthCurr = swap;
-    depthCurr.image.data.set(this.frames[k].depth);
-    depthCurr.needsUpdate = true;
-    uniforms.depthPrev.value = depthPrev;
-    uniforms.depthCurr.value = depthCurr;
+    throw new Error(`${this.constructor.name} does not say where its frames come from`);
   }
 
-  at(programSec) {
+  at(sourceSec) {
     const times = this.times;
-    let i = 0;
-    while (i < times.length - 2 && times[i + 1] <= programSec) i++;
+    const i = this.bracket(sourceSec);
 
     // The pair is (i, i+1) and the accumulators have been walked through i+1,
     // which is the same relationship live holds between its two arrivals. Moving
     // backwards past that leaves them describing a future that has not happened,
-    // and there is no way to walk them back - the caller has to reset and pre-roll
-    // forward. Refusing is the point: a timeline transport that forgets to reset
-    // before a backward seek is step 4's likeliest integration bug, and silently
-    // re-aging the accumulators would hand it a subtly wrong image instead of an
-    // error.
+    // and there is no way to walk them back - the caller has to reset and seek
+    // the walk forward. Refusing is the point: a transport that forgets to reset
+    // before a backward seek is this design's likeliest integration bug, and
+    // silently re-ageing the accumulators would hand it a subtly wrong image
+    // instead of an error.
     if (i + 1 < this.applied) {
       throw new Error(
-        `backward seek to ${programSec}s without a reset: the accumulators have `
+        `backward seek to ${sourceSec}s without a reset: the accumulators have `
         + `already consumed frame ${this.applied}`,
       );
     }
 
     const steps = [];
     for (let k = this.applied + 1; k <= i + 1; k++) {
-      const gapSec = k === 0 ? NOMINAL_GAP_MS / 1000 : times[k] - times[k - 1];
+      // Clamped, because a capture whose stamps are not strictly ascending would
+      // otherwise age the surface memory backwards. The state pass clamps the
+      // other end, at the discontinuity gate.
+      const gapSec = k === 0 ? NOMINAL_GAP_MS / 1000 : Math.max(0, times[k] - times[k - 1]);
       steps.push({ gapSec, makeCurrent: () => this.makeCurrent(k) });
     }
     this.applied = i + 1;
 
     const span = Math.max(1e-6, times[i + 1] - times[i]);
-    const offset = Math.min(Math.max(programSec - times[i], 0), span);
+    const offset = Math.min(Math.max(sourceSec - times[i], 0), span);
     return { steps, mixT: offset / span, sinceFrameSec: offset };
   }
 }
 
+class IndexedPairSource extends StampedPairSource {
+  static async open(id) {
+    const res = await fetch(`/capture/${encodeURIComponent(id)}/index`);
+    if (!res.ok) throw new Error(`capture ${id}: ${res.status} ${res.statusText}`);
+    return new IndexedPairSource(id, await res.json());
+  }
+
+  constructor(id, index) {
+    const stamps = index.frames.stampMs;
+    if (stamps.length < 2) throw new Error(`capture ${id} has ${stamps.length} frames, need two to bracket`);
+    // Source seconds from the first frame, which is what a capture is addressed
+    // in. The stamps themselves are the sensor's own monotonic clock and carry an
+    // arbitrary origin.
+    super(stamps.map((s) => (s - stamps[0]) / 1000));
+    this.id = id;
+    this.index = index;
+    this.cache = new Map();
+    this.pending = null;
+  }
+
+  resident(a, b) {
+    for (let k = Math.max(0, a); k <= Math.min(this.count - 1, b); k++) {
+      if (!this.cache.has(k)) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Puts frames a..b in the cache. Fetches are serialised rather than run in
+   * parallel: a prefetch racing a seek would fetch the same run twice and, worse,
+   * could evict the seek's own frames out from under it between its fetch and its
+   * render.
+   */
+  ensure(a, b) {
+    const run = () => this.fetchSpan(a, b);
+    this.pending = (this.pending ?? Promise.resolve()).then(run, run);
+    return this.pending;
+  }
+
+  async fetchSpan(a, b) {
+    const from = Math.max(0, a);
+    const to = Math.min(this.count - 1, b);
+    // Loud, because there is no useful partial answer. A caller asking for more
+    // frames than the cache can hold would have some of them evicted before it
+    // rendered the rest, and the image it produced would be built from whatever
+    // survived - which is exactly the silent wrong picture this source refuses
+    // elsewhere. Both callers clamp; this is what makes that a requirement
+    // rather than a convention.
+    if (to - from + 1 > MAX_SPAN_FRAMES) {
+      throw new Error(
+        `a span of ${to - from + 1} frames does not fit a cache of ${CACHE_FRAMES}: `
+        + 'the caller has to clamp it and say what it dropped',
+      );
+    }
+    const runs = [];
+    for (let k = from; k <= to; k++) {
+      if (this.cache.has(k)) continue;
+      const last = runs[runs.length - 1];
+      // Split at the chunk length as well as at a cache hit. A run can be the
+      // whole pre-roll, and one response covering it would be buffered whole by
+      // `arrayBuffer` - hundreds of megabytes for a slow damp on a full-rate
+      // take, in a single allocation, for a decode that proceeds frame by frame
+      // anyway.
+      if (last && last[1] === k - 1 && last[1] - last[0] + 1 < RUN_FRAMES) last[1] = k;
+      else runs.push([k, k]);
+    }
+    // Trimmed after every chunk rather than once at the end, so the cache tracks
+    // its ceiling while a long span is filling instead of overshooting it and
+    // settling back afterwards. The span itself is protected, which is safe
+    // precisely because the guard above bounds it below the ceiling.
+    for (const [lo, hi] of runs) {
+      await this.fetchRun(lo, hi);
+      this.trim(from, to);
+    }
+  }
+
+  /**
+   * A run in one request where there is a run to have. Step 2 measured eight
+   * frames as one range request at 2.27ms against 4.93ms as eight separate ones,
+   * and a pre-roll asks for exactly that shape - a contiguous block, known in
+   * advance, wanted at once.
+   */
+  async fetchRun(lo, hi) {
+    counters.requests++;
+    const single = lo === hi;
+    const url = single
+      ? `/capture/${encodeURIComponent(this.id)}/frame/${lo}`
+      : `/capture/${encodeURIComponent(this.id)}/frames/${lo}-${hi}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`${url}: ${res.status} ${res.statusText}`);
+    const buffer = await res.arrayBuffer();
+
+    // A single frame is the payload alone and a run is the file's own slice with
+    // the KNCT framing still interleaved, because payloads concatenated have no
+    // boundaries left to parse back. Two shapes, one decoder below them.
+    const decodes = [];
+    if (single) {
+      decodes.push(this.take(lo, buffer, 0, buffer.byteLength));
+    } else {
+      const view = new DataView(buffer);
+      let off = 0;
+      for (let k = lo; k <= hi; k++) {
+        if (off + KNCT_HEADER > buffer.byteLength) {
+          throw new Error(`run ${lo}-${hi} ended at frame ${k}: the response was short`);
+        }
+        const magic = view.getUint32(off, true);
+        if (magic !== KNCT_MAGIC) {
+          throw new Error(`run ${lo}-${hi} desynced at frame ${k}: magic 0x${magic.toString(16)}`);
+        }
+        const len = view.getUint32(off + 8, true);
+        decodes.push(this.take(k, buffer, off + KNCT_HEADER, len));
+        off += KNCT_HEADER + len;
+      }
+    }
+    await Promise.all(decodes);
+    counters.framesFetched += decodes.length;
+  }
+
+  /**
+   * One frame payload into the cache. The depth block is copied out rather than
+   * kept as a view: a view would pin the whole run's buffer alive for as long as
+   * any one of its frames was cached, so an eight-frame run would cost eight
+   * times its own size until the last of them was evicted.
+   */
+  async take(k, buffer, offset, length) {
+    const view = new DataView(buffer, offset, length);
+    const depthBytes = view.getUint32(0, true);
+    const colorBytes = view.getUint32(4, true);
+    if (depthBytes !== POINTS * 2) {
+      throw new Error(`frame ${k} carries ${depthBytes} depth bytes, expected ${POINTS * 2}`);
+    }
+    const depth = new Uint16Array(buffer.slice(offset + 16, offset + 16 + depthBytes));
+    let bitmap = null;
+    if (colorBytes > 0) {
+      const jpeg = new Uint8Array(buffer, offset + 16 + depthBytes, colorBytes);
+      try {
+        bitmap = await createImageBitmap(new Blob([jpeg], { type: 'image/jpeg' }));
+      } catch {
+        /* a torn JPEG from a dropped USB packet: this frame renders depth only */
+      }
+    }
+    this.cache.set(k, { depth, bitmap });
+  }
+
+  /**
+   * Drops the oldest frames outside the span just asked for. The two bitmaps the
+   * colour textures are holding are skipped whatever their age - closing one
+   * would leave the shader sampling a detached bitmap, and the failure would show
+   * up as a black colour channel rather than as an error.
+   */
+  trim(keepFrom, keepTo) {
+    if (this.cache.size <= CACHE_FRAMES) return;
+    const bound = [colorPrev.image, colorCurr.image];
+    for (const k of this.cache.keys()) {
+      if (this.cache.size <= CACHE_FRAMES) break;
+      if (k >= keepFrom && k <= keepTo) continue;
+      const frame = this.cache.get(k);
+      if (frame.bitmap && bound.includes(frame.bitmap)) continue;
+      frame.bitmap?.close();
+      this.cache.delete(k);
+    }
+  }
+
+  makeCurrent(k) {
+    const frame = this.cache.get(k);
+    // Loud rather than approximate. A missing frame means the transport rendered
+    // without awaiting its own fetch, and the alternative to throwing is an image
+    // built from whatever depth happened to still be in the texture - which would
+    // be a wrong picture that no later check could attribute to anything.
+    if (!frame) throw new Error(`frame ${k} is not resident: ensure() was not awaited`);
+    bindDepth(frame.depth);
+    // Colour arrives at half the depth rate on this sensor, so a frame without a
+    // JPEG leaves the pair where it was. That is what the live path does with the
+    // same stream, and matching it is what makes a seek reproduce a playback.
+    if (frame.bitmap) bindColor(frame.bitmap);
+  }
+
+}
+
+// ------------------------------------------------------------------ the timeline
+
+// The playhead driven by the timeline rather than by an arrival. Everything
+// expensive about that comes from the two feedback accumulators: the image at t
+// is not a function of the frames at t, so landing on a position means rendering
+// the frames before it and throwing them away. How many is computable.
+//
+// The two halves are sized in different units and both are converted to output
+// frames here, because a pre-roll is a run of `renderProgramFrame` calls and
+// nothing else. Fade and wake are source milliseconds - they stay source-referred
+// for the three reasons the design gives - so they convert through the retime
+// slope and the output frame rate. The afterimage is already in output frames and
+// depends only on damp. Neither is a constant, so both are computed per seek.
+
+// 1% of the previous image left in the afterimage. Three's pass is
+// `max(new, damp * old)` with anything under 0.1 zeroed outright, so a residual
+// this small has already been cut to exactly zero rather than merely made small -
+// which is what lets a seek land on the same pixels as a playback instead of near
+// them.
+const AFTERIMAGE_RESIDUAL = 0.01;
+
+// The three the accumulators run on. A draft holds them at zero for one frame:
+// with fade and wake at zero the ghost half leaves the draw range and the live
+// half's ramp-in is a constant 1, so the surface memory contributes nothing to
+// the image at all, and with trails at zero the afterimage pass is switched off.
+// That is the whole of what makes a draft a single frame with no history.
+const BYPASSED = ['fade', 'wake', 'trails'];
+const BYPASS_ZERO = { fade: 0, wake: 0, trails: 0 };
+
+// The most output frames one tick may render to catch up. Enough to absorb a
+// hitch of a few frames, small enough that a machine which cannot sustain the
+// rate still yields between ticks rather than freezing the tab trying.
+const CATCHUP_FRAMES = 4;
+// How far behind real time playback has to fall before it says so. About eight
+// frames at 30fps: below that it is a hitch, above it the rate on screen is not
+// the rate the readout claims.
+const BEHIND_NOTICE_MS = 250;
+
+class TimelineTransport {
+  constructor(source) {
+    this.source = source;
+    this.outputFps = 30;
+    // The playhead is an integer output frame rather than a float second, so
+    // playback and a seek walk the same grid. A seek that landed between two
+    // output frames would pre-roll along a different set of positions than the
+    // playback it is meant to reproduce, and the images would differ for a reason
+    // nothing records.
+    this.frame = 0;
+    this.playing = false;
+    this.nextDueMs = 0;
+    // Raised by a draft, because a draft is deliberately not the true image.
+    // Anything that has to be true - releasing the scrubber, pressing play -
+    // clears it by seeking.
+    this.drafted = false;
+    this.prefetching = null;
+    this.lastSeek = null;
+    this.lastCostMs = 0;
+    // How far playback is running behind real time, in wall milliseconds. Never
+    // closed by skipping - only reported.
+    this.behindMs = 0;
+    // The tail of the operation chain, and whether one is running right now.
+    this.queue = null;
+    this.working = false;
+  }
+
+  get programSec() { return this.frame / this.outputFps; }
+
+  /** Program seconds. The retime answers it, because only the retime knows how. */
+  get duration() { return retime.programDurationFor(this.source.duration); }
+
+  get lastFrame() { return Math.max(0, Math.floor(this.duration * this.outputFps)); }
+
+  frameAt(programSec) {
+    return Math.max(0, Math.min(this.lastFrame, Math.round(programSec * this.outputFps)));
+  }
+
+  sourceFrameAt(programSec) {
+    return this.source.bracket(retime.sourceSecAt(programSec));
+  }
+
+  /**
+   * Everything that produces an image runs alone, in the order it was asked for.
+   *
+   * Two of them interleaved is the failure this transport keeps finding, and it
+   * is always the same shape: an operation clears the accumulators and walks
+   * forward, another one resumes inside that walk, and the second asks the source
+   * to go backwards. The source refuses - correctly, and far too late for anyone
+   * to do anything with. A repaint landing under a scrub, a scrub release landing
+   * under a repaint, and a preset applied while a seek is still fetching its
+   * frames are all that shape, so they are all fixed here rather than one at a
+   * time at the three call sites that happen to have been noticed.
+   */
+  async exclusive(work) {
+    const run = async () => {
+      this.working = true;
+      try {
+        return await work();
+      } finally {
+        this.working = false;
+      }
+    };
+    const mine = (this.queue ?? Promise.resolve()).then(run, run);
+    // The chain itself must never reject, or one failed operation would be
+    // inherited by every operation queued behind it.
+    this.queue = mine.catch(() => {});
+    return mine;
+  }
+
+  /** Resolves once nothing this transport started is still running. */
+  idle() { return this.queue ?? Promise.resolve(); }
+
+  /**
+   * How many output frames have to be rendered and discarded ahead of a seek.
+   * Reported in both halves rather than as one number, because which half wins
+   * says which parameter to reach for when a seek is slow.
+   */
+  preroll(programSec = this.programSec) {
+    const surfaceSec = uniforms.fadeTime.value + uniforms.wakeTime.value;
+    // How much source time one output frame advances. A hold has a slope of zero
+    // and no number of output frames covers a source duration at that speed, so
+    // the surface half is skipped there - correctly, because a hold is not
+    // advancing the surface memory either.
+    const sourcePerFrame = Math.abs(retime.slopeAt(programSec)) / this.outputFps;
+    const surface = sourcePerFrame > 0 ? Math.ceil(surfaceSec / sourcePerFrame) : 0;
+    const damp = afterimage.enabled ? afterimage.uniforms.damp.value : 0;
+    const trails = damp > 0 ? Math.ceil(Math.log(AFTERIMAGE_RESIDUAL) / Math.log(damp)) : 0;
+    const frames = Math.max(surface, trails);
+    return { surface, trails, frames, sec: frames / this.outputFps };
+  }
+
+  /**
+   * The true image at a program position: clear both feedback paths, then render
+   * forward from far enough back that neither carries anything the playback would
+   * not have carried. `frames` overrides the computed length, which is how the
+   * proof tool shows that the computed one is load-bearing rather than generous.
+   */
+  seek(programSec, options = {}) {
+    return this.exclusive(() => this.seekNow(programSec, options));
+  }
+
+  async seekNow(programSec, { frames } = {}) {
+    const target = this.frameAt(programSec);
+    const t = target / this.outputFps;
+    const plan = this.preroll(t);
+    const asked = frames ?? plan.frames;
+    let length = asked;
+    let start = Math.max(0, target - length);
+    const to = this.sourceFrameAt(t) + 1;
+    let from = this.sourceFrameAt(start / this.outputFps);
+
+    // A pre-roll can want more source frames than the cache can hold - the trails
+    // half is a count of output frames whatever the rate, so a slow damp at a high
+    // speed reaches far back through the take. Fetching it anyway would evict its
+    // own head before the render reached it, so the pre-roll is shortened to what
+    // can be held and the shortfall is recorded the way head-clipping already is.
+    // An honest short pre-roll beats a long one built on frames that went away.
+    if (to - from + 1 > MAX_SPAN_FRAMES) {
+      from = to - MAX_SPAN_FRAMES + 1;
+      start = Math.min(target, Math.ceil(retime.programSecAt(this.source.times[from]) * this.outputFps));
+      length = target - start;
+    }
+    await this.source.ensure(from, to);
+
+    const began = performance.now();
+    counters.seeks++;
+    resetAccumulators();
+    this.source.seekTo(from);
+    // Navigation advances once for the whole seek rather than once per pre-roll
+    // frame. The pre-roll is hidden rendering, so letting the controls settle
+    // through it would smear the orbit's damping into the afterimage of an image
+    // nobody asked to be moving.
+    advanceNavigation(t);
+    for (let k = start; k <= target; k++) renderProgramFrame(k / this.outputFps);
+
+    this.lastCostMs = performance.now() - began;
+    this.frame = target;
+    this.drafted = false;
+    this.lastSeek = {
+      target, start, frames: length, plan,
+      // A pre-roll that ran into the head of the take is shorter than the one
+      // that was computed, so an equality proved at such a position is proving
+      // something easier. Recorded rather than hidden.
+      clamped: asked > target,
+      // And so is one the frame cache could not hold. Both are the same kind of
+      // fact - the seek did less than it computed - and a reader has to be able
+      // to tell which, because only the second is a ceiling worth raising.
+      capped: length < Math.min(asked, target),
+      shortfall: Math.min(asked, target) - length,
+      sourceFrames: to - from + 1,
+    };
+    this.paint();
+    return this.lastSeek;
+  }
+
+  /**
+   * One frame with the accumulators bypassed, for the length of a drag. The
+   * parameters are zeroed after the fetch and restored before returning, all
+   * inside one task, so the panel never paints them at zero.
+   *
+   * This is the shape the note on `evaluating` predicted - a bulk write landing
+   * immediately either side of a render, semantically inside evaluation with the
+   * flag down - and the flag is deliberately not widened over it. Two reasons.
+   * The rule the flag enforces is that a *preset* is a user action rather than a
+   * track, and a draft writes no track: it borrows three parameters for one frame
+   * and gives them back, so refusing a preset click during a seek would be a
+   * different rule wearing this one's name. And the window that would need
+   * protecting cannot be entered - there is no await between the borrow and the
+   * restore, so no gesture can land inside it and leave the three parameters
+   * stranded at zero. Step 5's evaluator is a different case and still wants the
+   * honest boundary the note asks for.
+   */
+  draft(programSec) {
+    return this.exclusive(() => this.draftNow(programSec));
+  }
+
+  async draftNow(programSec) {
+    const target = this.frameAt(programSec);
+    const t = target / this.outputFps;
+    const i = this.sourceFrameAt(t);
+    await this.source.ensure(i, i + 1);
+
+    const began = performance.now();
+    // Borrow, render and hand back, none of it asking for a repaint: these three
+    // writes are the transport's own, and a repaint scheduled off them would run
+    // the accurate seek this frame exists to avoid.
+    withoutRepaint(() => {
+      const held = params.values(BYPASSED);
+      params.apply(BYPASS_ZERO);
+      try {
+        // The reset is what lets a drag go backwards. Nothing here reads the
+        // accumulators, so clearing them costs four target clears and removes the
+        // one state that could not be walked the other way.
+        resetAccumulators();
+        this.source.seekTo(i);
+        advanceNavigation(t);
+        renderProgramFrame(t);
+      } finally {
+        params.apply(held);
+      }
+    });
+
+    this.lastCostMs = performance.now() - began;
+    counters.drafts++;
+    this.frame = target;
+    this.drafted = true;
+    this.paint();
+    return this.lastCostMs;
+  }
+
+  /**
+   * One output frame forward, or false if there is nothing to advance to. The
+   * playback loop and the proof tool drive the same call - the loop adds pacing
+   * and prefetch around it and nothing else.
+   */
+  step() {
+    const next = this.frame + 1;
+    if (next > this.lastFrame) return false;
+    const t = next / this.outputFps;
+    if (!this.source.resident(this.source.applied + 1, this.sourceFrameAt(t) + 1)) return false;
+    advanceNavigation(t);
+    renderProgramFrame(t);
+    this.frame = next;
+    return true;
+  }
+
+  tick(nowMs = performance.now()) {
+    if (!this.playing) return;
+    // An exclusive operation is mid-walk, and stepping into it would advance the
+    // accumulators underneath a reset that has already happened.
+    if (this.working) {
+      this.prefetch();
+      return;
+    }
+    // Every frame that has come due is rendered, up to a cap, and only the last
+    // of them reaches the screen. That honours never-skip - each one still walks
+    // the accumulators, which is the whole reason a frame cannot be dropped -
+    // while letting a single slow tick be repaid instead of becoming a permanent
+    // offset. The cap is what stops a machine that cannot keep up from spending
+    // an entire tick catching up and never yielding.
+    let rendered = 0;
+    while (nowMs >= this.nextDueMs && rendered < CATCHUP_FRAMES) {
+      if (!this.step()) break;
+      this.nextDueMs += 1000 / this.outputFps;
+      rendered++;
+    }
+    if (rendered > 0) this.paint();
+    else if (this.frame >= this.lastFrame) this.pause();
+    // Anything still owed after the cap is a deficit the machine is not going to
+    // repay, and it is surfaced rather than absorbed: a link too slow to feed the
+    // playhead and a renderer too slow to draw it both look like smooth playback
+    // at the wrong speed, which is the one thing an instrument must not do
+    // quietly. Nothing is skipped to close it - playback runs late, in order.
+    this.behindMs = Math.max(0, nowMs - this.nextDueMs);
+    this.prefetch();
+  }
+
+  /** The fetch in flight, or null when the window ahead is already resident. */
+  prefetch() {
+    if (this.prefetching) return this.prefetching;
+    // Clamped for the same reason a seek is: at a high rate the window ahead
+    // covers more source frames than the cache holds, and asking for them is a
+    // refusal rather than a slow answer. Prefetching less is harmless - the next
+    // tick asks again from wherever the playhead has reached.
+    const ahead = Math.min(
+      this.sourceFrameAt((this.frame + PREFETCH_FRAMES) / this.outputFps) + 1,
+      this.source.applied + MAX_SPAN_FRAMES - 1,
+    );
+    if (this.source.resident(this.source.applied, ahead)) return null;
+    const fetching = this.source.ensure(this.source.applied, ahead)
+      .catch((err) => showTimelineError(err))
+      .finally(() => { if (this.prefetching === fetching) this.prefetching = null; });
+    this.prefetching = fetching;
+    return fetching;
+  }
+
+  /**
+   * Playback with the wall clock taken out: every output frame in order, as fast
+   * as the bytes arrive. This is what step 6's export transport is, and it is
+   * also how a proof tool reaches a position "by playback" without waiting real
+   * seconds for it. It adds no rendering of its own - `step` is still the only
+   * thing that renders - so a run and a played take walk identical positions.
+   */
+  runTo(toFrame) {
+    return this.exclusive(() => this.runToNow(toFrame));
+  }
+
+  async runToNow(toFrame) {
+    const limit = Math.min(toFrame, this.lastFrame);
+    let stalls = 0;
+    while (this.frame < limit) {
+      if (this.step()) {
+        stalls = 0;
+        continue;
+      }
+      if (++stalls > 200) throw new Error(`playback stalled at output frame ${this.frame}`);
+      await (this.prefetch() ?? new Promise((r) => setTimeout(r, 0)));
+    }
+    return this.frame;
+  }
+
+  async play() {
+    if (this.playing) return;
+    this.behindMs = 0;
+    // A draft is not the image playback would have produced, so playing on from
+    // one would start the afterimage off a picture that never existed.
+    if (this.drafted) await this.seek(this.programSec);
+    this.playing = true;
+    this.nextDueMs = performance.now();
+    this.paint();
+  }
+
+  pause() {
+    this.playing = false;
+    this.paint();
+  }
+
+  paint() { paintTimeline(this); }
+}
+
+// --------------------------------------------------------------- the timeline UI
+
+// Deliberately small. The scrubber, the playhead, play/pause and a speed control,
+// and the two clocks that say what the coordinate actually is - program time read
+// off the ruler and source time derived from it through the retime, never edited.
+// Step 5 is what grows lanes, keys and a curve underneath this.
+
+const ui = {
+  root: timelineEl,
+  play: document.getElementById('tPlay'),
+  program: document.getElementById('tProgram'),
+  source: document.getElementById('tSource'),
+  rate: document.getElementById('tRate'),
+  rateOut: document.getElementById('tRateOut'),
+  fps: document.getElementById('tFps'),
+  preroll: document.getElementById('tPreroll'),
+  cost: document.getElementById('tCost'),
+  behind: document.getElementById('tBehind'),
+  bed: document.getElementById('tBed'),
+  ruler: document.getElementById('tRuler'),
+  playhead: document.getElementById('tPlayhead'),
+  note: document.getElementById('tNote'),
+};
+
+let timeline = null;
+
+const timecode = (sec) => {
+  const s = Math.max(0, sec);
+  const m = Math.floor(s / 60);
+  return `${String(m).padStart(2, '0')}:${(s - m * 60).toFixed(3).padStart(6, '0')}`;
+};
+
+function showTimelineError(err) {
+  ui.note.textContent = String(err?.message ?? err);
+  console.error('[timeline]', err);
+}
+
+function paintTimeline(t) {
+  const program = t.programSec;
+  ui.play.textContent = t.playing ? '❙❙' : '▶';
+  ui.play.setAttribute('aria-label', t.playing ? 'Pause' : 'Play');
+  ui.program.textContent = timecode(program);
+  ui.source.textContent = timecode(retime.sourceSecAt(program));
+  ui.playhead.style.left = `${(program / Math.max(1e-6, t.duration)) * 100}%`;
+  const plan = t.preroll(program);
+  // Both halves, because which one wins is the whole point of computing it: the
+  // surface half moves with fade, wake, speed and output rate, the trails half
+  // only with damp, and a reader who sees one number cannot tell them apart.
+  ui.preroll.textContent = `${plan.frames} frames · ${plan.sec.toFixed(2)} s `
+    + `(surface ${plan.surface}, trails ${plan.trails})`;
+  ui.cost.textContent = t.lastCostMs
+    ? `${t.drafted ? 'draft' : 'seek'} ${t.lastCostMs.toFixed(1)} ms`
+    : '—';
+  // Playback never drops a frame to keep up, so falling behind is a fact about
+  // the machine rather than about the edit, and it belongs on screen for the same
+  // reason the decimation setting does: an instrument that silently changes its
+  // own scale is worse than none.
+  ui.behind.textContent = t.playing && t.behindMs > BEHIND_NOTICE_MS
+    ? `${(t.behindMs / 1000).toFixed(1)}s behind`
+    : '';
+}
+
+function buildRuler(t) {
+  const total = Math.max(1e-6, t.duration);
+  const step = total > 120 ? 20 : total > 60 ? 10 : total > 20 ? 5 : 1;
+  const ticks = [];
+  for (let s = 0; s <= total; s += step) {
+    const tick = document.createElement('div');
+    tick.className = 'ttick';
+    tick.style.left = `${(s / total) * 100}%`;
+    const label = document.createElement('label');
+    label.textContent = `${s}s`;
+    tick.appendChild(label);
+    ticks.push(tick);
+  }
+  ui.ruler.replaceChildren(...ticks);
+}
+
+// A drag resolves at whatever rate the drafts come back, and never queues more
+// than one behind the one in flight: the position the pointer is at now is the
+// only one worth rendering, so an older one is dropped rather than caught up on.
+// Same shape as the colour decode pump, and for the same reason.
+let draftWanted = null;
+let draftBusy = false;
+
+async function pumpDraft() {
+  if (draftBusy || draftWanted === null || !timeline) return;
+  draftBusy = true;
+  const t = draftWanted;
+  draftWanted = null;
+  try {
+    await timeline.draft(t);
+  } catch (err) {
+    showTimelineError(err);
+  } finally {
+    draftBusy = false;
+    if (draftWanted !== null) pumpDraft();
+  }
+}
+
+// A look change while the playhead is parked has to rebuild the image, and it has
+// to rebuild it *accurately*. Drafting here would be worse than useless: fade,
+// wake and trails are exactly the three a draft zeroes, so grading them against
+// one would show nothing changing at all - which is the WYSIWYG failure the
+// single-renderer decision exists to prevent, arriving through the back door.
+//
+// An accurate seek is 33ms at Blackwall, so a slider drag resolves at about
+// 30 repaints a second, and the coalescing below is what keeps it there: only the
+// latest state is worth rebuilding, so an older request is dropped rather than
+// caught up on. A look with a long pre-roll repaints more slowly, which is honest
+// - the chip beside it says how many frames it is paying for.
+let repaintWanted = false;
+let repaintBusy = false;
+let repaintScheduled = false;
+
+async function pumpRepaint() {
+  if (repaintBusy || !repaintWanted || !timeline) return;
+  repaintBusy = true;
+  repaintWanted = false;
+  try {
+    await timeline.seek(timeline.programSec);
+  } catch (err) {
+    showTimelineError(err);
+  } finally {
+    repaintBusy = false;
+    if (repaintWanted) pumpRepaint();
+  }
+}
+
+/** Rebuilds the image and the readouts at wherever the playhead is parked. */
+function requestRepaint() {
+  // Playing rebuilds every frame anyway, and a drag is about to ask for the true
+  // image the moment it ends, so neither needs one scheduled underneath it.
+  if (!timeline || timeline.playing || scrubbing || orbiting) return;
+  repaintWanted = true;
+  if (repaintScheduled) return;
+  repaintScheduled = true;
+  // Deferred to the end of the task so a bulk write asks for one image rather
+  // than a queue of them. Selecting Blackwall is twelve registry writes plus the
+  // mode itself: repainting on the first would render a look with one parameter
+  // applied and eleven still to come, then render the real one behind it - two
+  // accurate seeks to show one picture, the first of which never existed.
+  queueMicrotask(() => {
+    repaintScheduled = false;
+    pumpRepaint();
+  });
+}
+
+paramWritten = (name, tag) => {
+  // View state changes what you are looking at rather than what the clip is, and
+  // both of today's view parameters already do their own work: render scale
+  // resizes the buffers, and auto-orbit only means anything with a clock running.
+  if (tag === 'view' || transportWriting) return;
+  requestRepaint();
+};
+
+const programAtPointer = (e) => {
+  const r = ui.bed.getBoundingClientRect();
+  return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * timeline.duration;
+};
+
+let scrubbing = false;
+
+ui.bed.addEventListener('pointerdown', (e) => {
+  if (!timeline) return;
+  ui.bed.setPointerCapture(e.pointerId);
+  scrubbing = true;
+  timeline.pause();
+  draftWanted = programAtPointer(e);
+  pumpDraft();
+});
+
+ui.bed.addEventListener('pointermove', (e) => {
+  if (!scrubbing) return;
+  draftWanted = programAtPointer(e);
+  pumpDraft();
+});
+
+for (const type of ['pointerup', 'pointercancel']) {
+  ui.bed.addEventListener(type, (e) => {
+    if (!scrubbing) return;
+    scrubbing = false;
+    // The queued position goes first, and it is the whole of the fix for the one
+    // gesture this transport exists to get right. A draft is usually in flight
+    // when the pointer comes up, and its `finally` pumps whatever is queued
+    // behind it - so without this the release would render the true image and
+    // then paint a draft of the second-to-last pointer position over the top of
+    // it, leaving `drafted` up and the playhead a few frames out. The fetch
+    // ordering guarantees the wrong one lands last rather than making it a race.
+    draftWanted = null;
+    // Releasing is what asks for the true image, so this is the one gesture that
+    // pays for a pre-roll. The picture visibly changes here, which is the
+    // well-understood convention rather than a surprise.
+    timeline.seek(programAtPointer(e)).catch(showTimelineError);
+  });
+}
+
+ui.play.addEventListener('click', () => {
+  if (!timeline) return;
+  if (timeline.playing) timeline.pause();
+  else timeline.play().catch(showTimelineError);
+});
+
+ui.rate.addEventListener('input', () => {
+  if (!timeline) return;
+  // Speed is the retime's slope, which is document state rather than transport
+  // state - it is the one-key version of the curve step 5 draws. Changing it
+  // moves where the playhead's program time lands in the take, so the image has
+  // to be rebuilt at the position the playhead already holds.
+  retime.rate = Number(ui.rate.value);
+  ui.rateOut.textContent = `${retime.rate.toFixed(2)}×`;
+  const wasPlaying = timeline.playing;
+  timeline.pause();
+  buildRuler(timeline);
+  timeline.seek(Math.min(timeline.programSec, timeline.duration))
+    .then(() => { if (wasPlaying) return timeline.play(); })
+    .catch(showTimelineError);
+});
+
+ui.fps.addEventListener('change', () => {
+  if (!timeline) return;
+  const held = timeline.programSec;
+  timeline.outputFps = Number(ui.fps.value);
+  const wasPlaying = timeline.playing;
+  timeline.pause();
+  timeline.seek(held)
+    .then(() => { if (wasPlaying) return timeline.play(); })
+    .catch(showTimelineError);
+});
+
+// Orbiting while the playhead is parked has the same shape as scrubbing: a drag
+// wants a cheap frame per pointer move and a true one on release. Only a pointer
+// drag is answered - the controls also fire `change` from the update inside a
+// render, and answering that would render itself in a loop.
+let orbiting = false;
+controls.addEventListener('start', () => { orbiting = true; });
+controls.addEventListener('change', () => {
+  if (!orbiting || !timeline || timeline.playing) return;
+  draftWanted = timeline.programSec;
+  pumpDraft();
+});
+controls.addEventListener('end', () => {
+  orbiting = false;
+  if (!timeline || timeline.playing) return;
+  // Same release rule as the scrubber: whatever is queued behind the draft in
+  // flight would otherwise paint itself over the true image this asks for.
+  draftWanted = null;
+  timeline.seek(timeline.programSec).catch(showTimelineError);
+});
+
+/**
+ * Opens a take on the timeline. The live socket is never opened on this path.
+ *
+ * **Step 6 has to fix this before it exports anything.** The sensor's intrinsics -
+ * `uniforms.focal` and `uniforms.center` - arrive only over the WebSocket, in the
+ * hello the grabber sends, so a page opened on a take renders on the defaults
+ * baked into the uniform block: fx 366, fy 366, cx 256, cy 212. Those are the
+ * nominal values, and this sensor's own hello reports cx 257.775909 and
+ * cy 206.784195, so every unprojected point is already a fraction of a pixel out
+ * and a take from a differently-calibrated device would be further. Nothing on
+ * screen can show it, because the whole image is consistently wrong in the same
+ * way - which is exactly why it has to be written down here rather than left to
+ * be noticed. The fix is small and step 2 already did the hard part: the sidecar
+ * records the hello's offset and length, so the intrinsics are one fetch away and
+ * belong in this function beside the index.
+ */
+async function openTake(id) {
+  const source = await IndexedPairSource.open(id);
+  // A page opened on a take opens no socket at all, and the detach is still the
+  // door it goes through: the flag it raises is what stops a colour decode
+  // started anywhere else from landing in the textures under a timeline render.
+  detachStream();
+  sensorLabel = `take ${id} · ${source.count} frames · ${source.duration.toFixed(2)}s`;
+  setStatus();
+
+  pairSource = source;
+  timeline = new TimelineTransport(source);
+  document.body.classList.add('editing');
+  ui.root.hidden = false;
+  ui.rateOut.textContent = `${retime.rate.toFixed(2)}×`;
+  ui.fps.value = String(timeline.outputFps);
+  resize();
+  buildRuler(timeline);
+  await timeline.seek(0);
+  renderer.setAnimationLoop(() => timeline.tick());
+  return timeline;
+}
+
+// ------------------------------------------------------------------ drive hook
+
+// A run of capture frames pinned from a file, driving the renderer with no socket
+// and no wall clock anywhere in the loop. Everything about the walk it performs is
+// the shared one; all it adds is that its bytes are already in memory.
+class PinnedPairSource extends StampedPairSource {
+  constructor(buffer) {
+    const view = new DataView(buffer);
+    const frames = [];
+    for (let off = 0; off + 16 <= buffer.byteLength;) {
+      const depthBytes = view.getUint32(off, true);
+      const colorBytes = view.getUint32(off + 4, true);
+      frames.push({
+        depth: new Uint16Array(buffer, off + 16, depthBytes / 2),
+        stampMs: Number(view.getBigUint64(off + 8, true)),
+      });
+      off += 16 + depthBytes + colorBytes;
+    }
+    const first = frames[0].stampMs;
+    super(frames.map((f) => (f.stampMs - first) / 1000));
+    this.frames = frames;
+  }
+
+  makeCurrent(k) {
+    bindDepth(this.frames[k].depth);
+  }
+}
+
 let pinnedPairs = null;
+
+// ------------------------------------------------------------------------- boot
+
+// Which transport owns the loop is decided once, here, and the two are exclusive:
+// a page editing a take must not have a socket writing depth into the textures
+// underneath it, and a live viewer has no timeline to drive. There is no gallery
+// yet to pick a take from, so the take is named on the URL - step 7 replaces this
+// line with a library and nothing below it changes.
+const REQUESTED_TAKE = new URLSearchParams(location.search).get('take');
+
+if (REQUESTED_TAKE) {
+  openTake(REQUESTED_TAKE).catch((err) => {
+    sensorLabel = `cannot open take ${REQUESTED_TAKE}`;
+    setStatus();
+    showTimelineError(err);
+  });
+} else {
+  // Opened here rather than beside the socket code, because `handleFrame` pushes
+  // into the pair source above. Arrivals cannot dispatch until module evaluation
+  // finishes either way, but relying on that at the call site makes the ordering
+  // look accidental when it is a requirement.
+  connect();
+  renderer.setAnimationLoop(liveLoop);
+}
 
 // Handles for profiling and for poking at the scene from the console.
 globalThis.__kinect = {
@@ -1551,6 +2615,58 @@ globalThis.__kinect = {
   setViewCamera,
   viewCamera: () => viewCamera,
 
+  // The timeline, and the counters a proof tool reads instead of taking the
+  // transport's word for what it did. A check asserting "the seek reset the
+  // accumulators once and rendered 29 frames" has to be able to see both numbers,
+  // or it is restating the claim rather than testing it.
+  timeline: {
+    open: openTake,
+    transport: () => timeline,
+    retime,
+    counters,
+    /**
+     * Resolves once every scheduled repaint has been enqueued and run and the
+     * transport's queue has drained. Anything measuring renders needs it: a
+     * repaint it did not ask for would land inside its window and be counted as
+     * work the thing under test performed.
+     */
+    async settled() {
+      for (let i = 0; i < 200; i++) {
+        // A macrotask, so a repaint scheduled on the microtask queue has been
+        // enqueued by the time the transport is asked whether it is idle.
+        await new Promise((resolve) => { setTimeout(resolve, 0); });
+        await timeline?.idle();
+        if (!repaintWanted && !repaintBusy && !repaintScheduled && !timeline?.working) return;
+      }
+      throw new Error('the transport never settled');
+    },
+    /** A snapshot, so a reader cannot accidentally hold a live object. */
+    read() {
+      if (!timeline) return null;
+      const t = timeline;
+      return {
+        frame: t.frame,
+        programSec: t.programSec,
+        sourceSec: retime.sourceSecAt(t.programSec),
+        outputFps: t.outputFps,
+        rate: retime.rate,
+        duration: t.duration,
+        lastFrame: t.lastFrame,
+        playing: t.playing,
+        drafted: t.drafted,
+        lastSeek: t.lastSeek,
+        lastCostMs: t.lastCostMs,
+        behindMs: t.behindMs,
+        preroll: t.preroll(),
+        applied: t.source.applied,
+        cached: t.source.cache.size,
+        mixT: uniforms.mixT.value,
+        sinceFrameSec: uniforms.sinceFrameSec.value,
+        hasColor: uniforms.hasColor.value,
+      };
+    },
+  },
+
   // The deterministic drive. Every claim from step 1 onward is checked through
   // it: pin the inputs, step the playhead to an exact program position, read the
   // image back, and see whether the same positions give the same pixels twice.
@@ -1567,6 +2683,15 @@ globalThis.__kinect = {
       return pinnedPairs.times.slice();
     },
     times() { return pinnedPairs.times.slice(); },
+    /**
+     * One frame's depth straight into the current texture, bypassing every pair
+     * source. This exists for one check and it is the only one that can be made:
+     * everything else a transport proves is relative, because both arms of a
+     * comparison walk the same lookup, so a systematic off-by-one in which frame
+     * gets bound would shift them together and agree. Rendering from bytes handed
+     * in here ties a picture to a frame number instead.
+     */
+    injectDepth(depth) { bindDepth(depth); },
     reset() {
       pinnedPairs?.rewind();
       resetAccumulators();
