@@ -411,23 +411,70 @@ await afterArm.page.close();
 // left to say.
 const GOLDEN_SKIP = new Set(['camera']);
 
+// The one value that legitimately moved, and it is rescaled rather than skipped.
+//
+// Step 6 made every screen-space term relative to a 1080p reference, which changed
+// what `pointSize` *means*: it is pixels at 1080p now, where it used to be pixels
+// at whatever buffer the look happened to be graded against - the 600-tall one the
+// design document's resolution A/B calls the good size. So both presets and the
+// registry default took the factor 1080/600, and comparing the raw number across
+// that change would be comparing two different quantities.
+//
+// Skipping it the way the camera is skipped would have been weaker than what this
+// replaces. The camera has nothing left to compare against, because the placeholder
+// orbit it used to come from was deleted; `pointSize` has an exact expected value,
+// so the equality becomes an equality against that instead of going away. A value
+// that moved by any other factor still fails here.
+const POINT_SIZE_REBASE = 1080 / 600;
+const GOLDEN_RESCALE = { pointSize: POINT_SIZE_REBASE };
+
+const rescaled = (name, before, after) => {
+  const factor = GOLDEN_RESCALE[name];
+  if (!factor) return false;
+  const x = Number(before);
+  const y = Number(after);
+  return Number.isFinite(x) && Number.isFinite(y) && y === x * factor;
+};
+
 for (const stage of Object.keys(beforeArm.out)) {
   const a = beforeArm.out[stage];
   const b = afterArm.out[stage];
-  const differing = Object.keys(a).filter((field) => !eq(a[field], b[field]));
-  if (differing.includes('landing')) {
-    const sub = Object.keys(a.landing).filter((n) => !GOLDEN_SKIP.has(n) && !eq(a.landing[n], b.landing[n]));
-    if (sub.length === 0) differing.splice(differing.indexOf('landing'), 1);
-  }
+  const unexplained = (field) => (typeof a[field] === 'object' && a[field]
+    ? Object.keys(a[field]).filter((sub) => !eq(a[field][sub], b[field][sub])
+      && !GOLDEN_SKIP.has(sub) && !rescaled(sub, a[field][sub], b[field][sub]))
+    : []);
+  const differing = Object.keys(a).filter((field) => {
+    if (eq(a[field], b[field])) return false;
+    if (typeof a[field] !== 'object' || !a[field]) return true;
+    return unexplained(field).length > 0;
+  });
   const detail = differing.map((field) => {
-    const keys = typeof a[field] === 'object' && a[field]
-      ? Object.keys(a[field]).filter((sub) => !eq(a[field][sub], b[field][sub]))
-      : [];
+    const keys = unexplained(field);
     return keys.length
       ? `${field}{${keys.map((s) => `${s}: ${show(a[field][s])} -> ${show(b[field][s])}`).join(', ')}}`
       : `${field}: ${show(a[field])} -> ${show(b[field])}`;
   }).join('; ');
   check(differing.length === 0, `${stage.padEnd(10)} identical to ${BEFORE_REV}`, detail);
+}
+
+// And the rescale is asserted rather than assumed, at every stage of the walk and
+// on all three views of the value - the uniform it lands on, the slider and the
+// readout - so a preset re-tuned by hand to something near 1.8 would fail here.
+{
+  const wrong = [];
+  const seen = [];
+  for (const stage of Object.keys(beforeArm.out)) {
+    for (const field of ['landing', 'dom', 'readouts']) {
+      const x = Number(beforeArm.out[stage][field]?.pointSize);
+      const y = Number(afterArm.out[stage][field]?.pointSize);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if (field === 'landing') seen.push(`${stage} ${x}->${y}`);
+      if (y !== x * POINT_SIZE_REBASE) wrong.push(`${stage}.${field} ${x} -> ${y}`);
+    }
+  }
+  check(wrong.length === 0,
+    `and pointSize moved by exactly 1080/600 everywhere it appears, because its unit did`,
+    wrong.length ? wrong.join('; ') : seen.join(', '));
 }
 
 // With no camera keys the pose is a single value the clip holds, so two renders at

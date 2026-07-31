@@ -261,7 +261,12 @@ const uniforms = {
   focal: { value: new THREE.Vector2(366, 366) },
   center: { value: new THREE.Vector2(256, 212) },
   resolution: { value: new THREE.Vector2(DW, DH) },
-  pointSize: { value: 5 },
+  // The drawing buffer's height, which is what makes every screen-space term
+  // below a fraction of the frame rather than a count of pixels. Written by
+  // `resize` and by nothing else, so the one place the buffer can change is also
+  // the one place this can.
+  bufferHeight: { value: 1080 },
+  pointSize: { value: 9 },
   opacity: { value: 1 },
   exposure: { value: 1.15 },
   nearClip: { value: 0.5 },
@@ -290,6 +295,7 @@ precision highp usampler2D;
 uniform usampler2D depthPrev, depthCurr;
 uniform sampler2D stateTex;
 uniform vec2 focal, center, resolution;
+uniform float bufferHeight;
 uniform float pointSize, nearClip, farClip, warp, warpSpeed, time, edgeTol;
 uniform float mixT, snapDelta, glitch;
 uniform float fadeTime, wakeTime, sinceFrameSec;
@@ -431,9 +437,31 @@ void main() {
 
   vec4 mv = modelViewMatrix * vec4(pos, 1.0);
   gl_Position = projectionMatrix * mv;
-  // Clamped so a point right at the sensor cannot balloon into a full-screen quad.
-  gl_PointSize = clamp(pointSize * (1.0 / max(0.15, -mv.z)), 1.0, 64.0);
-  vSize = gl_PointSize;
+
+  // Every screen-space term in this renderer is defined against a 1080p reference
+  // and scales with the drawing buffer, and this is the dominant one. Set in
+  // framebuffer pixels and scaled by distance but not by buffer height, the same
+  // scene at twice the height kept each point the same pixel size while the frame
+  // gained four times the pixels: coverage per point dropped fourfold, the 217k
+  // points stopped overlapping into a surface, and the sub-pixel RGB split began
+  // fringing individual points instead of edges. That is a different image rather
+  // than the same one at higher fidelity, so pointSize is now pixels at 1080p.
+  //
+  // The clamp stays in framebuffer pixels deliberately. It is a bound on what the
+  // hardware can draw rather than a look value: ALIASED_POINT_SIZE_RANGE is
+  // [1, 511] on this GPU, so a sub-pixel point is not expressible at all and
+  // scaling the lower bound would be a more elaborate way of asking for one. The
+  // residual is confined to the clamped tails - the far cloud below one pixel, and
+  // points closer than about a quarter of a metre - and a check comparing two
+  // output sizes has to keep out of that band rather than pretend it is not there.
+  float k = bufferHeight / 1080.0;
+  gl_PointSize = clamp(pointSize * k / max(0.15, -mv.z), 1.0, 64.0);
+  // Carried in reference pixels rather than framebuffer ones, because the fragment
+  // shader normalises a splat's additive energy against its area. For the same
+  // image at twice the size each point covers four times the pixels, so it has to
+  // keep the same alpha - normalising against the drawn size instead would make
+  // the identical look sum four times too bright at twice the resolution.
+  vSize = gl_PointSize / k;
 }
 `;
 
@@ -539,7 +567,13 @@ void main() {
   // Additive contributions sum, and near points get both larger sprites and more
   // overlap, so a splat's energy is normalised against its area. Without this the
   // nearest subject saturates to flat white while the background stays correct.
-  if (softEdge == 1) alpha *= clamp(36.0 / (vSize * vSize), 0.05, 1.0);
+  // 116.64 is forced by the unit change rather than chosen. The same look now asks
+  // for 1.8 times the point size it used to, so holding alpha fixed at every
+  // distance means C / (1.8 P / d)^2 = 36 / (P / d)^2, and the only C that
+  // satisfies it is 36 * 1.8^2. Leaving it at 36 would have moved the distance at
+  // which the normalisation starts biting from 0.75m out to 1.35m - a look change
+  // wearing a resolution fix's clothes.
+  if (softEdge == 1) alpha *= clamp(116.64 / (vSize * vSize), 0.05, 1.0);
 
   fragColor = vec4(col * exposure, alpha * falloff);
 }
@@ -636,7 +670,16 @@ const GradeShader = {
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 
     void main() {
-      vec2 texel = 1.0 / resolution;
+      // The same 1080p reference the point pass uses. Every term here is sized in
+      // reference pixels rather than framebuffer ones, so the grade a look was
+      // built at holds at any output size: without it the split narrows, the
+      // scanlines crowd and the grain thins as resolution rises - a look that is
+      // *nearly* resolution-independent, which is the kind you trust and then have
+      // to debug. Bloom needs none of this and gets none: it already runs at half
+      // the drawing buffer, so it is proportional by construction.
+      float k = resolution.y / 1080.0;
+      vec2 ref = resolution / k;
+      vec2 texel = 1.0 / ref;
       vec3 col;
 
       if (rgbSplit > 0.0) {
@@ -651,15 +694,23 @@ const GradeShader = {
       }
 
       if (scanlines > 0.0) {
-        float line = sin(vUv.y * resolution.y * 1.3 + time * 2.0) * 0.5 + 0.5;
+        float line = sin(vUv.y * ref.y * 1.3 + time * 2.0) * 0.5 + 0.5;
         col *= 1.0 - scanlines * 0.35 * line;
       }
 
       if (grain > 0.0) {
         // Weighted by luminance so grain lives in the signal instead of lifting
         // the empty background into a grey haze.
+        //
+        // Quantised onto the reference grid rather than sampled continuously, so
+        // one grain cell is one 1080p pixel wherever the frame is drawn. Sampling
+        // continuously would give four sub-pixels of a 2x render four unrelated
+        // hash values that average to a quarter of the variance, which is exactly
+        // the "grain grows finer as resolution rises" this reference exists to
+        // stop. At 1080p it is the same one-value-per-pixel noise it always was,
+        // off a different seed.
         float lum = dot(col, vec3(0.299, 0.587, 0.114));
-        float n = hash(vUv * resolution + fract(time) * 137.0);
+        float n = hash(floor(vUv * ref) + fract(time) * 137.0);
         col += (n - 0.5) * grain * 0.22 * (0.15 + lum);
       }
 
@@ -686,6 +737,16 @@ composer.addPass(new OutputPass());
 
 let renderScale = 1;
 
+// The drawing buffer an export has taken over, or null while the window owns it.
+// An export's output resolution is a setting rather than a property of whatever
+// window it was started from, and the look is resolution-relative precisely so
+// that can be true - but the buffer still has to actually become that size, and
+// there is one function that sizes it. So the override lands here rather than
+// beside the export, and `renderScale` loses to it: it multiplies the pixel
+// ratio, so a preview left at 85% would otherwise deliver an 85% file under a
+// 1080p name.
+let outputSize = null;
+
 // Which camera the viewport draws. Navigation is switched off while the program
 // camera is on screen, because a drag would otherwise move the free camera
 // somewhere nobody can see and leave it there.
@@ -699,19 +760,70 @@ function resize() {
   // The stage is the window less whatever the timeline strip is taking, which is
   // nothing at all while it is hidden. Overlaying it on the image instead would
   // have cost nothing here and hidden the bottom of every frame being graded.
-  const height = Math.max(1, innerHeight - timelineEl.offsetHeight);
+  const width = outputSize ? outputSize.w : innerWidth;
+  const height = outputSize ? outputSize.h : Math.max(1, innerHeight - timelineEl.offsetHeight);
+  // An export's aspect comes from the output it was asked for, not from the window
+  // it was started in, or the file would be framed by whoever happened to be
+  // watching.
   for (const cam of [freeCamera, programCamera]) {
-    cam.aspect = innerWidth / height;
+    cam.aspect = width / height;
     cam.updateProjectionMatrix();
   }
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2) * renderScale);
-  renderer.setSize(innerWidth, height);
-  composer.setPixelRatio(Math.min(devicePixelRatio, 2) * renderScale);
-  composer.setSize(innerWidth, height);
+  const ratio = outputSize ? 1 : Math.min(devicePixelRatio, 2) * renderScale;
+  renderer.setPixelRatio(ratio);
+  // The canvas keeps the CSS box it had while an export runs. The buffer becomes
+  // the output's, which is the part that matters, and the page does not reflow
+  // around a 1080p canvas in a 640px window and drag the editor's furniture with
+  // it.
+  renderer.setSize(width, height, !outputSize);
+  composer.setPixelRatio(ratio);
+  composer.setSize(width, height);
   const buf = renderer.getDrawingBufferSize(new THREE.Vector2());
-  // Bloom is the most expensive pass, so it runs at half the buffer resolution.
-  bloom.setSize(Math.max(1, buf.x / 2), Math.max(1, buf.y / 2));
+  // Bloom is the most expensive pass, so it runs at half resolution - and the
+  // resolution it is half of is the 1080p reference rather than the drawing
+  // buffer, which is what makes its halo a fixed fraction of the frame.
+  //
+  // Running it at half the *buffer* makes bloom's cost proportional and its
+  // appearance anything but: UnrealBloomPass bakes a fixed tap count into its
+  // shaders when it is constructed - [6, 10, 14, 18, 22] across the five mips -
+  // while `setSize` scales the mip chain with what it is given. More texels per
+  // mip and the same number of taps means a halo whose width in frame-fractions
+  // is inversely proportional to buffer height, halving every time the buffer
+  // doubles. Measured at 1920x1200 against 3840x2400 it was the whole of the
+  // remaining residual once every other term was reference-relative: a mean
+  // channel difference of 13.1 against 0.6, and a halo covering the frame at the
+  // smaller size against 80.3% of it at the larger.
+  //
+  // The reference the chain is frozen at is the 600-tall buffer the look was graded
+  // against, and it is the same reference `pointSize` was rebased to. Freezing it at
+  // 1080 instead was tried and is wrong for a reason worth writing down: the halo's
+  // width is a tap count over a texel count, so a chain with 1.8x the texels has a
+  // halo 1.8x tighter - constant at last, but constant at a glow Blackwall was never
+  // tuned for. Measured across the two builds, the whole look at 1080p against the
+  // graded look at 600: 7.16/255 on the worst of forty tile means at a 1080-frozen
+  // chain, 1.10 at this one.
+  //
+  // What holds it constant is measured to 1200 and shipped to 2160, and the gap is
+  // worth naming rather than assuming. The bright pass reads the full-resolution
+  // frame into this frozen chain with one bilinear tap per destination texel, so
+  // it point-samples a 2:1 region of the frame at a 600 buffer, 4:1 at 1200 and
+  // 7.2:1 at 2160 - the undersampling grows with output size while the chain does
+  // not. `export-check` compares 600 against 1200, where it measures 0.781/255 on
+  // the coarse grid; nothing here has been measured at 4K, so a 4K export inherits
+  // the claim by extrapolation. The way to close it is an arm at 3840x2160 against
+  // 1920x1080, not an argument.
+  //
+  // The cost moves with it, in both directions. A 4K export now pays 600-referred
+  // bloom, which is the cheaper half of the trade and the right direction for a
+  // render that is CPU-bound anyway. A capture node previewing at 800x480 pays it
+  // too, which is the expensive half, and the two chains rather than the ratio
+  // between them: the old code called setSize(400, 240) there and got a 200x120
+  // first mip, this one calls setSize(500, 300) and gets 250x150. That is 37,500
+  // texels against 24,000, so 1.56x on the machine with the least to spare.
+  const refWidth = (buf.x / buf.y) * 600;
+  bloom.setSize(Math.max(1, refWidth / 2), 300);
   grade.uniforms.resolution.value.set(buf.x, buf.y);
+  uniforms.bufferHeight.value = buf.y;
 }
 addEventListener('resize', resize);
 resize();
@@ -769,7 +881,14 @@ function gradeNeeded() {
 }
 
 const PARAMS = {
-  pointSize: { def: 5, min: 0.5, max: 64, step: 0.5, kind: 'scalar', tag: 'look',
+  // Pixels at 1080p, not pixels. The unit changed exactly once, when the screen-
+  // space terms went resolution-relative, and every value here changed with it:
+  // this default and both presets are their old values times 1080/600, the 600
+  // being the drawing buffer the look was graded against. The step went with them
+  // - 0.5 was a fifth of a pixel of the old grid and 8.1 is not on it, and a
+  // preset that snapped to 8.0 would leave the rebase 1.2% out for no reason
+  // anyone could later find.
+  pointSize: { def: 9, min: 0.5, max: 64, step: 0.1, kind: 'scalar', tag: 'look',
     apply: (v) => { uniforms.pointSize.value = v; } },
   opacity: { def: 1, min: 0.05, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
     apply: (v) => { uniforms.opacity.value = v; } },
@@ -1125,8 +1244,16 @@ function applyPreset(preset) {
 // but the spec's preset table does list mode as presettable look, so preset save
 // and preset apply have to carry the mode alongside the registry subset rather than
 // assuming the subset is the whole preset.
-const BLACKWALL = { bloom: 0.5, trails: 0.5, rgbSplit: 1.6, scanlines: 0.35, grain: 0.22, glitch: 0.18, pointSize: 4.5, scan: 0.35, rim: 0.5, fade: 120, wake: 550, additive: true };
-const NEUTRAL = { bloom: 0, trails: 0, rgbSplit: 0, scanlines: 0, grain: 0, glitch: 0, pointSize: 5, scan: 0, rim: 0.55, fade: 120, wake: 0, additive: false };
+//
+// Both point sizes are the ones these presets always had, times 1080/600. That is
+// the whole of the re-tune and it happens exactly once: `pointSize` is pixels at
+// 1080p now, the buffer these looks were graded against was 600 tall, and 4.5 and
+// 5 pixels there are 8.1 and 9 pixels at the reference. Nothing else in either
+// preset moves, because nothing else in either preset was in pixels - the grade's
+// frequencies are not parameters, and they simply become 1080p-referred with the
+// rest of the look.
+const BLACKWALL = { bloom: 0.5, trails: 0.5, rgbSplit: 1.6, scanlines: 0.35, grain: 0.22, glitch: 0.18, pointSize: 8.1, scan: 0.35, rim: 0.5, fade: 120, wake: 550, additive: true };
+const NEUTRAL = { bloom: 0, trails: 0, rgbSplit: 0, scanlines: 0, grain: 0, glitch: 0, pointSize: 9, scan: 0, rim: 0.55, fade: 120, wake: 0, additive: false };
 
 // The mode is a property of the clip rather than a track of any kind. Selecting it
 // rewrites twelve other look values, so a mode keyframe would silently stomp every
@@ -2289,6 +2416,21 @@ function resetAccumulators() {
   lastProgramTime = 0;
 }
 
+// Where an export takes its bytes, and it is one position rather than a callback
+// on every frame.
+//
+// The readback has to happen in the same task as the render that produced it -
+// nothing preserves the drawing buffer across a paint - and `renderProgramFrame`
+// is the only thing that renders, so this is the only place that is certainly
+// true. A callback on every frame would be simpler and much worse: a seek's
+// pre-roll renders dozens of frames nobody wants, `readPixels` is a full GPU
+// stall, and paying one per discarded frame would put the cost of an accurate
+// seek into every exported frame. So the export names the program position it
+// wants, and the sink fires when the render is at it - which a pre-roll's
+// positions never are, since both sides divide the same integer frame by the same
+// output rate.
+let frameSink = null;
+
 // One image at one program position. This is the whole seam: the timeline and the
 // export transports drive exactly this call, and an accurate seek is nothing more
 // than running it repeatedly at earlier positions and throwing the results away.
@@ -2327,6 +2469,15 @@ function renderProgramFrame(t) {
     // inside the seam even though no pass in this chain reads the delta today.
     if (postEnabled()) composer.render(dt);
     else renderer.render(scene, viewCamera);
+
+    if (frameSink !== null && t === frameSink.t) {
+      const gl = renderer.getContext();
+      gl.readPixels(
+        0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight,
+        gl.RGBA, gl.UNSIGNED_BYTE, frameSink.pixels,
+      );
+      frameSink.hits++;
+    }
   } finally {
     evaluating = false;
   }
@@ -3216,6 +3367,263 @@ class TimelineTransport {
   paint() { paintTimeline(this); }
 }
 
+// ------------------------------------------------------------------- the export
+
+// One renderer, driven with no wall clock anywhere.
+//
+// The classic failure here is a second offline renderer that never quite matches
+// the preview, so there is not one: an export is the timeline transport stepped at
+// k / outputFps, and `runTo` - playback with the clock taken out - is the driver.
+// `step` stays the only thing that renders, so an exported frame and a played one
+// walk identical positions by construction rather than by agreement. Slower than
+// real time is fine and is arguably the point: the whole reason to record raw is
+// to spend more time on the image than the sensor had.
+//
+// Remote encoding is then this same code driven by Playwright in headless Chrome
+// on a bigger machine, which is why the job record below carries the renderer
+// class from the very first job.
+
+const deferred = () => {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  // Marked handled here so a failure that nobody is awaiting yet - the socket
+  // dying between two frames, say - surfaces at the await that comes next instead
+  // of as an unhandled rejection with no context attached.
+  promise.catch(() => {});
+  return { promise, resolve, reject };
+};
+
+/**
+ * The wire, and the flow control on it.
+ *
+ * Frames go out as raw RGBA binary messages and the server acks each one once it
+ * has reached ffmpeg's stdin. The window is what stops the browser running ahead
+ * of the encoder: a cheap look renders faster than libx264 encodes, and without an
+ * ack the frames would pile up eight megabytes at a time in the server's memory
+ * behind a stdin that is not draining. `bufferedAmount` would bound the browser's
+ * own queue and say nothing at all about that one.
+ */
+class ExportSink {
+  constructor(begin) {
+    this.ready = deferred();
+    this.done = deferred();
+    this.window = 1;
+    this.sent = 0;
+    this.acked = 0;
+    this.waiting = null;
+    this.failure = null;
+    this.finished = false;
+    const socket = new WebSocket(`ws://${location.host}/export`);
+    socket.binaryType = 'arraybuffer';
+    socket.onopen = () => socket.send(JSON.stringify({ begin }));
+    socket.onmessage = (event) => this.receive(JSON.parse(event.data));
+    socket.onerror = () => this.fail(new Error('the export socket failed'));
+    socket.onclose = () => this.fail(new Error('the export socket closed before the encode finished'));
+    this.socket = socket;
+  }
+
+  receive(msg) {
+    if (msg.error) {
+      this.fail(new Error(msg.error));
+    } else if (msg.ready) {
+      this.window = msg.ready.window;
+      this.ready.resolve(msg.ready);
+    } else if (msg.ack) {
+      this.acked = msg.ack;
+      const waiter = this.waiting;
+      this.waiting = null;
+      waiter?.resolve();
+    } else if (msg.done) {
+      this.finished = true;
+      this.done.resolve(msg.done);
+    }
+  }
+
+  fail(err) {
+    if (this.failure || this.finished) return;
+    this.failure = err;
+    this.ready.reject(err);
+    this.done.reject(err);
+    this.waiting?.reject(err);
+    this.socket.close();
+  }
+
+  /** Hands one frame to the wire and returns once the pipe has room for the next. */
+  async send(pixels) {
+    if (this.failure) throw this.failure;
+    // `send` queues a copy, which is what lets the readback reuse one buffer for
+    // the whole export rather than allocating eight megabytes a frame. If that
+    // were ever untrue the exported frames would be the *last* frame repeated,
+    // which is exactly what the per-frame hashes the server returns would catch.
+    this.socket.send(pixels);
+    this.sent++;
+    while (!this.failure && this.sent - this.acked >= this.window) {
+      this.waiting = deferred();
+      await this.waiting.promise;
+    }
+  }
+
+  async finish() {
+    if (this.failure) throw this.failure;
+    this.socket.send(JSON.stringify({ end: true }));
+    return this.done.promise;
+  }
+}
+
+class ExportTransport {
+  constructor(transport, options) {
+    this.transport = transport;
+    this.width = options.width;
+    this.height = options.height;
+    this.fps = options.fps;
+    this.from = options.from;
+    this.to = options.to;
+    this.onProgress = options.onProgress ?? (() => {});
+    // One buffer for the whole run. `readPixels` is a GPU-to-CPU synchronisation
+    // point and will stall the pipeline every frame; that is accepted at export
+    // rates, and if it ever becomes the limit the fix is asynchronous readback
+    // through a pixel buffer with a fence rather than a different transport.
+    this.pixels = new Uint8Array(options.width * options.height * 4);
+  }
+
+  /**
+   * Every frame from `from` to `to`, in order, each one read back in the same task
+   * as the render that produced it.
+   *
+   * The first frame is the only one that costs a seek - it has to pre-roll the
+   * accumulators from a known state, exactly as landing the playhead there in the
+   * editor would - and every frame after it is a single step. That is why an
+   * export needs no driver of its own: those are the two things the timeline
+   * transport already does.
+   */
+  async run(sink) {
+    for (let n = this.from; n <= this.to; n++) {
+      const at = n / this.fps;
+      frameSink = { t: at, pixels: this.pixels, hits: 0 };
+      let hits = 0;
+      try {
+        if (n === this.from) await this.transport.seek(at);
+        else await this.transport.runTo(n);
+      } finally {
+        hits = frameSink.hits;
+        frameSink = null;
+      }
+      // Counted rather than assumed. A seek that stood down, a `runTo` asked for a
+      // frame it was already past, or a program position that stopped being the
+      // one the sink names would all leave the buffer holding the previous frame -
+      // and an export of the same image repeated is the failure that looks most
+      // like a success.
+      if (hits !== 1) {
+        throw new Error(`the render at ${at.toFixed(6)}s reached the export ${hits} times, not once`);
+      }
+      await sink.send(this.pixels);
+      this.onProgress(n - this.from + 1, this.to - this.from + 1);
+    }
+    return this.to - this.from + 1;
+  }
+}
+
+// Whether an export owns the renderer. Nothing else may draw while one does: a
+// repaint queued by a slider, or a draft from a scrub, would clear the
+// accumulators in the middle of a walk the export is halfway through and hand it
+// a frame with no history behind it.
+let exporting = false;
+
+const rendererClass = () => {
+  const gl = renderer.getContext();
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  return dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+};
+
+/**
+ * The door. Sizes the buffer to the output, points the viewport at the program
+ * camera, takes the furniture off, renders the clip, and puts the editor back
+ * exactly as it was.
+ *
+ * The output size is a setting rather than the window's, which is only true
+ * because every screen-space term is resolution-relative now - that is the whole
+ * reason this step comes after the one above it.
+ */
+async function exportClip(options = {}) {
+  if (!timeline) throw new Error('there is no clip open to export');
+  if (exporting) throw new Error('an export is already running');
+  const width = Math.trunc(options.width ?? 1920);
+  const height = Math.trunc(options.height ?? 1080);
+  const fps = options.fps ?? timeline.outputFps;
+
+  const restore = {
+    outputFps: timeline.outputFps,
+    programSec: timeline.programSec,
+    chrome: chromeOn,
+    camera: viewCamera,
+  };
+
+  exporting = true;
+  timeline.pause();
+  try {
+    // The rate first, because the frame grid every position below is named in is
+    // the output rate's grid.
+    timeline.outputFps = fps;
+    const from = Math.max(0, Math.trunc(options.from ?? 0));
+    const to = Math.min(timeline.lastFrame, Math.trunc(options.to ?? timeline.lastFrame));
+    if (to < from) throw new Error(`an export of frames ${from}..${to} has nothing in it`);
+
+    // Composition comes from the camera track, so the export renders what the
+    // program camera sees whatever the editor happens to be orbiting.
+    setViewCamera(programCamera);
+    // Chrome is not the frame. It lives on a canvas of its own so it cannot reach
+    // the pixels anyway; taking it off is so the editor is not drawing a path over
+    // a buffer that has become the output's size underneath it.
+    chromeOn = false;
+    placeChrome();
+    outputSize = { w: width, h: height };
+    resize();
+
+    const gl = renderer.getContext();
+    if (gl.drawingBufferWidth !== width || gl.drawingBufferHeight !== height) {
+      throw new Error(
+        `the drawing buffer is ${gl.drawingBufferWidth}x${gl.drawingBufferHeight} after asking for `
+        + `${width}x${height}: the output size did not reach the renderer`,
+      );
+    }
+
+    const run = new ExportTransport(timeline, {
+      width, height, fps, from, to, onProgress: options.onProgress,
+    });
+    const sink = new ExportSink({
+      name: options.name ?? timeline.source.id,
+      width,
+      height,
+      fps,
+      frames: to - from + 1,
+      codec: options.codec ?? 'h264',
+      // A job is a project file plus a capture named by content hash plus output
+      // settings, and it records the renderer class it was made on. There is one
+      // render machine today so the field constrains nothing - but a job record
+      // without it cannot be retrofitted once old jobs exist, and provenance is
+      // exactly what is wanted on the day two workers disagree about an image.
+      project: serialiseProject(),
+      capture: timeline.source.index.hash,
+      renderer: rendererClass(),
+    });
+    await sink.ready.promise;
+    await run.run(sink);
+    return await sink.finish();
+  } finally {
+    exporting = false;
+    outputSize = null;
+    resize();
+    chromeOn = restore.chrome;
+    placeChrome();
+    setViewCamera(restore.camera);
+    timeline.outputFps = restore.outputFps;
+    timeline.frame = timeline.frameAt(restore.programSec);
+    timingChanged();
+    requestRepaint();
+  }
+}
+
 // --------------------------------------------------------------- the timeline UI
 
 // Deliberately small. The scrubber, the playhead, play/pause and a speed control,
@@ -3246,6 +3654,9 @@ const ui = {
   camKey: document.getElementById('camKey'),
   camClear: document.getElementById('camClear'),
   camView: document.getElementById('camView'),
+  exportSize: document.getElementById('tExportSize'),
+  exportGo: document.getElementById('tExport'),
+  exportNote: document.getElementById('tExportNote'),
 };
 
 let timeline = null;
@@ -3340,7 +3751,7 @@ let draftWanted = null;
 let draftBusy = false;
 
 async function pumpDraft() {
-  if (draftBusy || draftWanted === null || !timeline) return;
+  if (draftBusy || draftWanted === null || !timeline || exporting) return;
   draftBusy = true;
   const t = draftWanted;
   draftWanted = null;
@@ -3386,8 +3797,11 @@ async function pumpRepaint() {
 /** Rebuilds the image and the readouts at wherever the playhead is parked. */
 function requestRepaint() {
   // Playing rebuilds every frame anyway, and a drag is about to ask for the true
-  // image the moment it ends, so neither needs one scheduled underneath it.
-  if (!timeline || timeline.playing || scrubbing || orbiting) return;
+  // image the moment it ends, so neither needs one scheduled underneath it. An
+  // export is the same rule for a harder reason: it is walking the accumulators
+  // forward a frame at a time, and a repaint landing between two of its frames
+  // would reset them under it. It repaints once at the end for the editor's sake.
+  if (!timeline || timeline.playing || scrubbing || orbiting || exporting) return;
   repaintWanted = true;
   if (repaintScheduled) return;
   repaintScheduled = true;
@@ -4347,6 +4761,34 @@ ui.camClear.addEventListener('click', () => {
   history.commit();
 });
 
+// The export control: one size and one button. What is exported is the clip, at
+// the output rate the timeline is already set to, through the program camera -
+// which frames, which codec and where the file goes are the job queue's questions
+// rather than this one's, and inventing a dialog for them here would be inventing
+// the answers too.
+ui.exportGo.addEventListener('click', async () => {
+  if (exporting) return;
+  const [width, height] = ui.exportSize.value.split('x').map(Number);
+  ui.exportGo.disabled = true;
+  ui.exportNote.textContent = `export ${width}x${height} starting`;
+  try {
+    const done = await exportClip({
+      width,
+      height,
+      onProgress: (n, total) => {
+        ui.exportNote.textContent = `export ${Math.round((n / total) * 100)}% · frame ${n}/${total}`;
+      },
+    });
+    ui.exportNote.textContent = `${done.output} · ${done.frames} frames · ${(done.bytes / 1e6).toFixed(1)} MB `
+      + `in ${(done.elapsedMs / 1000).toFixed(1)}s`;
+  } catch (err) {
+    ui.exportNote.textContent = `export failed: ${err.message}`;
+    showTimelineError(err);
+  } finally {
+    ui.exportGo.disabled = false;
+  }
+});
+
 ui.camView.addEventListener('click', () => {
   const program = viewCamera === freeCamera;
   setViewCamera(program ? programCamera : freeCamera);
@@ -4357,21 +4799,65 @@ ui.camView.addEventListener('click', () => {
 /**
  * Opens a take on the timeline. The live socket is never opened on this path.
  *
- * **Step 6 has to fix this before it exports anything.** The sensor's intrinsics -
- * `uniforms.focal` and `uniforms.center` - arrive only over the WebSocket, in the
- * hello the grabber sends, so a page opened on a take renders on the defaults
- * baked into the uniform block: fx 366, fy 366, cx 256, cy 212. Those are the
- * nominal values, and this sensor's own hello reports cx 257.775909 and
- * cy 206.784195, so every unprojected point is already a fraction of a pixel out
- * and a take from a differently-calibrated device would be further. Nothing on
- * screen can show it, because the whole image is consistently wrong in the same
- * way - which is exactly why it has to be written down here rather than left to
- * be noticed. The fix is small and step 2 already did the hard part: the sidecar
- * records the hello's offset and length, so the intrinsics are one fetch away and
- * belong in this function beside the index.
+ * The intrinsics come from the take rather than from a socket, and that is the
+ * whole reason this function fetches twice. `uniforms.focal` and `uniforms.center`
+ * used to arrive only in the hello the grabber sends over the WebSocket, so a page
+ * opened on a take unprojected every point on the defaults baked into the uniform
+ * block - fx 366, fy 366, cx 256, cy 212 against this sensor's own 366.031494 and
+ * cx 257.775909, cy 206.784195. That is about 45mm of error at three metres,
+ * scaling with depth, and nothing on screen could ever have shown it: the error is
+ * a near-uniform translation, so both arms of every comparison in this repo were
+ * wrong in exactly the same way and agreed. Step 2's scan already recorded where
+ * the hello sits in the file, so this is one positioned read.
+ *
+ * A take with no hello is refused rather than opened on the defaults. The whole
+ * point of the fetch is that geometry nobody can check must not be baked into an
+ * export, and "we do not know this sensor's intrinsics" is exactly that case.
+ *
+ * The live socket writes the same two uniforms without this gate, and that is the
+ * right place for the asymmetry rather than an omission: a live preview bakes
+ * nothing, and a hello the sensor sent badly is recorded into the capture along
+ * with everything else, so the file is where it becomes permanent and opening the
+ * file is where it gets refused.
  */
 async function openTake(id) {
   const source = await IndexedPairSource.open(id);
+  const res = await fetch(`/capture/${encodeURIComponent(id)}/hello`);
+  if (!res.ok) {
+    throw new Error(
+      `take ${id} carries no sensor hello (${res.status}): its intrinsics are unknown, and `
+      + 'unprojecting it on the boot defaults would put every point out by tens of millimetres '
+      + 'with nothing on screen to show it',
+    );
+  }
+  const hello = await res.json();
+  // Positive rather than finite, and inside the frame rather than merely a number.
+  // `Number.isFinite(0)` is true, so a hello carrying `fx: 0` - the shape a writer
+  // that recorded a field it never filled produces - passed a refusal written to
+  // stop exactly this: every pixel unprojects through a division by zero, and a
+  // negative focal mirrors the cloud through the optical axis. Both are geometry
+  // nobody can check, which is the case this gate exists for rather than a corner
+  // of it.
+  //
+  // The centre is bounded by the depth grid this page is about to index rather
+  // than by a range invented here: `pixel` runs over DWxDH in the vertex shader,
+  // so a principal point outside it puts the optical axis off the sensor, which is
+  // a transposed or unit-confused record rather than an unusual camera. The bound
+  // is deliberately not tight - a real cx sits near the middle - because a
+  // plausible-but-wrong centre is a translation no bound can distinguish from a
+  // correct one, and pretending otherwise would be a threshold with no method
+  // behind it.
+  const usable = hello.fx > 0 && hello.fy > 0
+    && hello.cx > 0 && hello.cx < DW
+    && hello.cy > 0 && hello.cy < DH;
+  if (!usable) {
+    throw new Error(
+      `take ${id} has an unusable hello: ${JSON.stringify(hello)} - focal lengths must be `
+      + `positive and the centre must lie inside the ${DW}x${DH} depth frame`,
+    );
+  }
+  uniforms.focal.value.set(hello.fx, hello.fy);
+  uniforms.center.value.set(hello.cx, hello.cy);
   // A page opened on a take opens no socket at all, and the detach is still the
   // door it goes through: the flag it raises is what stops a colour decode
   // started anywhere else from landing in the textures under a timeline render.
@@ -4584,6 +5070,17 @@ globalThis.__kinect = {
         hasColor: uniforms.hasColor.value,
       };
     },
+  },
+
+  // The export, and the two things a check has to be able to ask it: run one, and
+  // find out whether one is running. `run` resolves with what the server said it
+  // wrote - the output path, the frame count, and the hashes of the frames that
+  // actually crossed the wire, which is the only view anything has of what left
+  // the browser.
+  export: {
+    run: exportClip,
+    running: () => exporting,
+    rendererClass,
   },
 
   // The deterministic drive. Every claim from step 1 onward is checked through

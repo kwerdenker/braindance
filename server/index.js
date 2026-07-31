@@ -10,6 +10,7 @@ import { dirname, join, normalize, extname, sep, resolve } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { MessageParser, TYPE_HELLO, TYPE_FRAME } from './protocol.js';
 import { openCapture, captureIdFor } from './capture.js';
+import { handleExportSocket, MAX_FRAME_BYTES } from './export.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -42,11 +43,14 @@ const MIME = {
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  '.mp4': 'video/mp4',
+  '.mkv': 'video/x-matroska',
 };
 
 const WEB_DIR = join(ROOT, 'web');
 const THREE_DIR = join(ROOT, 'node_modules/three');
 const CAPTURES_DIR = join(ROOT, 'captures');
+const EXPORTS_DIR = join(ROOT, 'exports');
 
 // A bare startsWith would also match a sibling like `web-private`, so the
 // separator has to be part of the comparison.
@@ -85,6 +89,27 @@ async function serveCapture(res, id, rest) {
   } catch (err) {
     if (err.code === 'ENOENT') res.writeHead(404).end('unknown capture');
     else res.writeHead(500).end(`capture unreadable: ${err.message}`);
+    return;
+  }
+
+  // The sensor's own intrinsics, as the grabber reported them when the take was
+  // recorded. The timeline path has no socket to hear them on, and unprojecting a
+  // take on the boot defaults is wrong in a way nothing on screen can show -
+  // every point translates together, so both arms of every comparison are wrong
+  // identically. Step 2's scan already recorded where the hello sits, so this is
+  // one positioned read.
+  if (rest === 'hello') {
+    const payload = await capture.readHello();
+    if (!payload) {
+      res.writeHead(404).end('this capture carries no hello');
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': MIME['.json'],
+      'Content-Length': payload.length,
+      'Cache-Control': 'no-cache',
+    });
+    res.end(payload);
     return;
   }
 
@@ -173,12 +198,18 @@ const httpServer = createServer((req, res) => {
   let filePath;
   if (urlPath.startsWith('/vendor/three/')) {
     filePath = join(THREE_DIR, urlPath.slice('/vendor/three/'.length));
+  } else if (urlPath.startsWith('/exports/')) {
+    // Served so a finished export can be played back where it was made, in the
+    // browser, rather than only inspected with a probe. A video that decodes is
+    // the last thing an export has to prove and the only one a metadata check
+    // cannot make.
+    filePath = join(EXPORTS_DIR, urlPath.slice('/exports/'.length));
   } else {
     filePath = join(WEB_DIR, urlPath === '/' ? 'index.html' : urlPath);
   }
 
   const resolved = normalize(filePath);
-  if (!isInside(WEB_DIR, resolved) && !isInside(THREE_DIR, resolved)) {
+  if (!isInside(WEB_DIR, resolved) && !isInside(THREE_DIR, resolved) && !isInside(EXPORTS_DIR, resolved)) {
     res.writeHead(403).end('forbidden');
     return;
   }
@@ -197,7 +228,38 @@ const httpServer = createServer((req, res) => {
   }
 });
 
-const wss = new WebSocketServer({ server: httpServer });
+// Two sockets on one port, routed here rather than by handing each server the
+// http server. `ws` aborts an upgrade whose path it does not recognise, so two
+// servers attached that way would each destroy the other's handshakes - the
+// second one to see the event would 400 a socket the first had already taken.
+const wss = new WebSocketServer({ noServer: true });
+// Compression off, said rather than inherited: an export is raw RGBA over
+// loopback precisely so no CPU is spent on bytes that were never scarce, and a
+// deflate negotiated by default would undo that decision silently.
+const exportWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: MAX_FRAME_BYTES });
+
+httpServer.on('upgrade', (req, socket, head) => {
+  let path;
+  try {
+    path = new URL(req.url, 'http://localhost').pathname;
+  } catch {
+    socket.destroy();
+    return;
+  }
+  const target = path === '/export' ? exportWss : path === '/' ? wss : null;
+  if (!target) {
+    socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+  target.handleUpgrade(req, socket, head, (ws) => target.emit('connection', ws, req));
+});
+
+exportWss.on('connection', (ws) => {
+  console.log('[export] client connected');
+  ws.on('error', (err) => console.error('[export] socket error:', err.message));
+  handleExportSocket(ws, { outDir: EXPORTS_DIR });
+});
 
 let helloJson = null;
 const stats = { frames: 0, dropped: 0, bytes: 0, since: Date.now() };

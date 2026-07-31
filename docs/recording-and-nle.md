@@ -1131,9 +1131,63 @@ float k = drawingBufferHeight / 1080.0;
 gl_PointSize = clamp(pointSize * k / max(0.15, -mv.z), 1.0, 64.0);
 ```
 
-Grain and scanline frequency in the grade pass take the same factor. Bloom needs
-nothing — it already runs at half the drawing buffer, so it is proportional by
-construction.
+Grain and scanline frequency in the grade pass take the same factor.
+
+**Bloom was claimed here to need nothing, and that was wrong.** It does run at
+half the drawing buffer, but half the buffer makes bloom's *cost* proportional,
+not its *appearance*, and the two were conflated. `UnrealBloomPass` bakes a fixed
+tap count into its shaders at construction — `[6, 10, 14, 18, 22]` across the
+five mips — while `setSize` scales the mip chain with the buffer. So a bigger
+buffer gives each mip more texels while the blur still spans the same number of
+them, and the halo's width *as a fraction of the frame* is inversely proportional
+to buffer height: it halves every time the buffer doubles.
+
+Measured on a pinned Blackwall scene at 1920x1200 against 3840x2400, the larger
+arm box-downsampled to match, both then reduced 4:1 so per-pixel rasterisation
+aliasing is not what is being compared. Mean channel difference out of 255, and
+the ratio of mean luminance large-to-small:
+
+| pipeline | mean diff | luminance ratio |
+| --- | --- | --- |
+| point pass only | 0.137 | 1.0000 |
+| + trails | 0.427 | 0.9999 |
+| + grade | 0.581 | 0.986 |
+| + bloom | 13.077 | 0.851 |
+
+The bloom row is the whole of the remaining residual, and the halo covers 100% of
+the frame at the smaller size against 80.3% at the larger. **So the bloom chain is
+sized against a fixed reference rather than against the drawing buffer**, which
+makes the halo's frame-fraction constant and, incidentally, makes bloom's cost
+constant instead of growing with output size.
+
+**That reference is 600, not 1080, and the difference is not cosmetic.** Freezing
+the chain anywhere makes the halo constant; freezing it at the height the look was
+graded at is what makes it constant *at the glow the look was tuned for*. The halo's
+width is a tap count over a texel count, so a chain with 1.8x the texels has a halo
+1.8x tighter — and 1.8 is exactly 1080/600, the same factor `pointSize` was rebased
+by. Both were tried and measured: the graded look at 960x600 against the whole of
+Blackwall at 1920x1200, compared on forty tile means, lands at **7.16/255** on the
+worst tile with the chain frozen at 1080 and **1.10/255** frozen at 600. So this is
+the one place the 1080p *unit* and the graded *chain* are deliberately different
+numbers, and `main.js` reads `bufferHeight / 1080.0` in the shaders beside
+`(buf.x / buf.y) * 600` at `bloom.setSize` for that reason.
+
+The price runs in both directions and the expensive direction lands on the machine
+with the least to spare. A 4K export now pays 600-referred bloom, which is cheaper
+than the buffer-proportional chain it replaces and the right way round for a render
+that is CPU-bound anyway. A capture node previewing at 800x480 pays it too: a mip-0
+of 250x150 against the 200x120 it used to have, 37,500 texels against 24,000, about
+**1.6x on one pass**. Sized against the 1080p reference instead it would have been
+121,500 texels, or 5.06x, which is the number that would have put the Pi's preview
+claim in doubt. It does not, but the claim is still measured on the old chain and
+step 9 re-measures it on hardware rather than scaling it on paper.
+
+Two more screen-space terms belong to the same rule and were missed by the
+enumeration above: `rgbSplit`'s offset is a constant pixel width, so its
+frame-fraction halves at twice the buffer, and the additive normalisation
+`36.0 / (vSize * vSize)` needs its size in reference pixels or the same look sums
+four times too bright at twice the resolution. Both sit on Blackwall's path. The
+rule is every screen-space term, and an enumeration is not the rule.
 
 Fixing only `gl_PointSize` was rejected even though it is the dominant term and a
 one-line change. It removes the obvious failure, where the cloud goes dark and

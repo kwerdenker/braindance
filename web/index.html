@@ -165,8 +165,13 @@
     border: 1px solid var(--line); border-radius: 3px; background: var(--paper-3);
     color: var(--ink); font: inherit; font-size: 9px; padding: 1px 3px;
   }
+  .tchip button {
+    border: 1px solid var(--line); border-radius: 3px; background: var(--paper-3);
+    color: var(--ink); font: inherit; font-size: 9px; padding: 1px 6px; cursor: pointer;
+  }
+  .tchip button[disabled] { color: var(--dim); cursor: default; }
   .tchip.warn, #tNote { border-color: var(--warn); color: var(--warn); }
-  #tNote:empty, #tBehind:empty { display: none; }
+  #tNote:empty, #tBehind:empty, #tExportNote:empty { display: none; }
 
   .tlanes { flex: 1; min-height: 0; display: grid; grid-template-columns: 96px minmax(0, 1fr); }
   .tcol { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -324,7 +329,10 @@
         <span class="tchip">pre-roll <b id="tPreroll">&mdash;</b></span>
         <span class="tchip">last <b id="tCost">&mdash;</b></span>
         <span class="tchip">undo <b id="tUndo">0</b></span>
+        <label class="tchip">export<select id="tExportSize"><option>1920x1080</option><option>1280x720</option><option>960x540</option><option>3840x2160</option></select>
+          <button id="tExport" type="button">render</button></label>
         <span class="tchip warn" id="tBehind"></span>
+        <span class="tchip" id="tExportNote"></span>
         <span class="tchip" id="tNote"></span>
       </div>
     </div>

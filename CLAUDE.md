@@ -65,12 +65,69 @@ which reads as a caught mutation to anything checking only the exit code. Seen t
 5, on two different mutations in two different suite runs. **Count failed assertions, not
 exit codes**, and treat `fails=0` as a crash to investigate rather than a success to record.
 
+**A cumulative table hides which term is wrong.** Step 6 measured the look at two
+output sizes down one pipeline - points, then trails, then "grade" - and reverting
+any single grade term moved that row by less than the row's own sampling residual,
+so three mutations passed. One row per term fixed it: `rgbsplit-absolute` now fails
+the rgbsplit row and leaves the grain and scanline rows alone, which is a check
+saying *what* broke rather than *that* something did.
+
+**Three of step 6's probes were also standing in dead zones**, each for its own
+reason, and each was found by mutation rather than by reading. The additive
+normalisation is clamped to 1 beyond 0.83m, so at the default framing a mutation of
+it changed nothing at all - the probe needed a camera inside the cloud. Grain at the
+preset's 0.22 is about one part in 255, so reverting its reference grid moved every
+number by 4% - the probe needed the slider at full. And an export at the editor's
+own buffer size cannot tell an output size that reached the renderer from one that
+did not - that probe needed a size the editor is not.
+
+**A mean absolute difference cannot see noise that moved.** Grain that has shifted
+is as different from grain that has not as grain that has thinned, so both grade
+mutations survived every difference-based threshold the sampling residual left room
+for. What catches them is a correlation: high-pass both images and correlate, and a
+structure quantised onto a shared reference grid correlates 0.94 where a continuously
+sampled one correlates 0.77.
+
+**Playwright drops the page's execution context here, and it is not the code.** A
+second live WebGL page while an export is reading pixels back will sometimes take
+the renderer process down, and it arrives as `Execution context was destroyed` -
+with the server log showing the export it happened during completing normally, all
+frames present. `export-check` runs one browser at a time and retries that specific
+error up to three times, printing the retry count; anything else propagates on the
+first attempt, because a check that retried real failures would report whichever
+attempt it liked.
+
+**`page.evaluate(fnSourceString, arg)` does not call the function.** Playwright
+evaluates the string as an expression, so the arrow function is created, never
+invoked, and `undefined` comes back - which surfaced three helpers later as a
+missing shot rather than as a call that did not happen. The house pattern is
+`page.evaluate(\`(${FN})(${JSON.stringify(opts)})\`)`, and it is what the other
+tools already do.
+
 **Place a probe where its answer would be different, not where it is convenient.** A third
 flaw came out of this on step 5: a mutation replacing the pre-roll's window query with the
 tangent it replaced was caught by only one of five probe positions, because four of them sat
 inside a single straight segment of the retime curve where the tangent *is* the curve. The
 probes were moved onto the knees and onto an eased ramp and the same mutation now fails four.
 Ask what the wrong implementation would agree with, and probe somewhere it cannot.
+
+**When one probe turns out to be blind to something, ask what all of them are blind to
+together.** Step 6 got the first half of this right and stopped one question short, which is
+why it is a rule rather than a note. Its commit reasons that `pointsize-absolute` passes the
+1728x1080 arm because the scale factor is exactly 1 there, and keeps a second arm at
+1920x1200 for that reason - correct, and it never asked what every arm agreed about at once.
+The answer was the aspect ratio. Every arm in `export-check` was 1.6 - 960x600, 1920x1200,
+1728x1080, the 640x400 stage - and at 1.6 `bufferWidth / 1728` and `bufferHeight / 1080` are
+not close but *identical*, so a build referencing the width was bit-identical on every arm
+and would have passed all 30 assertions while drawing 11.1% too large on every size the
+export menu offers. A set of probes that agree about a quantity cannot measure it however
+many of them there are, and the agreement is invisible precisely because each arm confirms
+the others. **The tell was there to be read: the values the instrument tested were not the
+values the product ships** - four sizes in the menu, all 16:9, and not one of them in the
+check. Compare the constants a tool sweeps against the constants the UI offers, and treat a
+disjoint pair as a hole until measured otherwise. The fix was one cross-build arm at
+1920x1080 and a `scale-by-width` mutation, which now fails that row and leaves every other
+assertion in the file passing.
 
 ## Proof tools
 
@@ -85,7 +142,12 @@ node tools/timeline-check.mjs --url http://localhost:8080 # step 4: seek equals 
 node tools/timeline-check.mjs --mutate preroll-constant   # ... and must FAIL mutated
 node tools/keyframe-check.mjs --url http://localhost:8080 # step 5: tracks, retime curve, undo
 node tools/keyframe-check.mjs --mutate pose-linear        # ... and must FAIL mutated
+node tools/export-check.mjs --url http://localhost:8080   # step 6: resolution, export, the file
+node tools/export-check.mjs --mutate pointsize-absolute   # ... and must FAIL mutated
 ```
+
+`export-check` needs ffmpeg and ffprobe (`--ffmpeg`, `--ffprobe`; 8.1.1 at
+`/opt/homebrew/bin`) and writes into `exports/`, which is gitignored.
 
 `--clock` refuses a rev whose `main.js` already contains the transport, so it needs
 `--before` pointing at a commit before step 1.
@@ -139,8 +201,32 @@ thing that should be touching capture bytes.
   Match the density and voice already in the file.
 - Commits: imperative subject, then a body explaining the why and carrying the measurements
   with their methods.
-- Don't tune look values before step 6. `pointSize` changes meaning when screen-space terms
-  go resolution-relative, so anything tuned earlier is invalidated.
+- **`pointSize` is pixels at 1080p.** Step 6 made every screen-space term relative to a
+  1080p reference, and that rebased both presets and the registry default by 1080/600 -
+  the 600 being the buffer the look was graded against. `registry-check` asserts the
+  factor rather than skipping the value, so a preset re-tuned by hand to something near
+  it fails. A project saved before that change needs its point size scaled by the buffer
+  height it was authored at.
+- **1080p is the unit; 600 is the graded chain, and both numbers are correct.** Every
+  screen-space term is *expressed* against a 1080p reference - that is what `pointSize`,
+  the grade's frequencies and the split's offset are all in. Bloom is the one term with
+  no parameter to express, because its width lives in a tap count baked into three's
+  shaders, so instead its mip chain is *frozen* at what the old code produced at the
+  600-tall buffer the look was authored on (`resize` calls `setSize(aspect * 300, 300)`).
+  Freezing it at 1080 makes it constant across output sizes and 1.8x too tight, which is
+  a look nobody graded. Same reference, two ways of holding it.
+
+  **Two references are in play and they are not the same thing, so do not reconcile them.**
+  1080p is the *unit* every screen-space term is expressed in — a value means the pixels it
+  would draw at 1080p, so `k = drawingBufferHeight / 1080` scales it wherever the frame
+  actually lands. 600 is the *graded chain*: bloom's mip chain is frozen at what the old
+  build produced at a 600-tall buffer, because `UnrealBloomPass` bakes a fixed tap count in
+  at construction, so its halo's width is a tap count over a texel count and freezing the
+  chain anywhere else changes the glow rather than preserving it. Both were measured — a
+  1080-frozen chain lands 7.16/255 on the worst of forty tile means against the graded look,
+  where the 600-frozen one lands 1.10. So `main.js` correctly reads `bufferHeight / 1080.0`
+  in the shaders and `(buf.x / buf.y) * 600` at `bloom.setSize`, and neither is a typo for
+  the other.
 
 ## Process hygiene
 

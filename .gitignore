@@ -10,3 +10,4 @@ captures
 .playwright-cli
 *.log
 .DS_Store
+exports
