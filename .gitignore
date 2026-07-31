@@ -14,3 +14,7 @@ exports
 projects
 presets
 .library-check
+
+# Render-queue records. The queue is state a machine accumulates, not source.
+jobs
+.jobs-check

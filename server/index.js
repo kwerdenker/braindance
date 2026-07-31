@@ -16,6 +16,7 @@ import {
   readMarkLog, readMarks, reconcile, remaining, removeTake, resolveMarks, scanTakes,
 } from './library.js';
 import { Recorder } from './recorder.js';
+import { JobStore } from './jobs.js';
 import { requireMutation, originAllowed } from './http-guard.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -118,6 +119,10 @@ const captureAliases = new Map();
 // which is exactly the shoot where the operator cannot go and fix it.
 const PROJECTS = new DocumentStore(resolve(flag('--projects', join(ROOT, 'projects'))), 'project');
 const PRESETS = new DocumentStore(resolve(flag('--presets', join(ROOT, 'presets'))), 'preset');
+// The render queue's records. A flag for the same reason the document stores take
+// one: a capture node and an editing machine are the same program, and running
+// both on one host is how the two-machine behaviour gets tested at all.
+const JOBS = new JobStore(resolve(flag('--jobs', join(ROOT, 'jobs'))));
 const node = NODE_URL ? new NodeLink(NODE_URL, NODE_NAME) : null;
 
 function capturePathFor(id) {
@@ -771,8 +776,85 @@ function serveRoutes(req, res) {
  * only honest witness. Which one to trust is decided by what the failure can forge.
  */
 const serveWriteCounts = (req, res) => sendJson(res, {
-  projects: PROJECTS.writes, presets: PRESETS.writes, marks: markWriteCount(),
+  projects: PROJECTS.writes, presets: PRESETS.writes, marks: markWriteCount(), jobs: JOBS.writes,
 });
+
+// ---- the render queue
+//
+// The queue is deliberately thin. A job is a record, a worker asks for one, and
+// the only judgement in here is which worker may have which job - everything
+// about *rendering* lives in the browser and in `server/export.js`, where it
+// already was. A second encoder path would be the one thing this design keeps
+// rejecting.
+const serveJobs = async (req, res) => sendJson(res, { jobs: await JOBS.list() });
+const serveJob = async (req, res, args) => {
+  try {
+    sendJson(res, await JOBS.read(args[0]));
+  } catch {
+    sendJson(res, { error: `no job ${args[0]}` }, 404);
+  }
+};
+
+const serveJobEnqueue = async (req, res) => {
+  try {
+    sendJson(res, await JOBS.enqueue(await readBody(req)));
+  } catch (err) {
+    sendJson(res, { error: err.message }, 400);
+  }
+};
+
+/**
+ * A worker asking for work, and the one place the renderer class is enforced.
+ *
+ * **An empty queue and a queue this worker may not touch are different answers**,
+ * and they are reported as different answers. Collapsing them into "no work" is
+ * the silent mismatch the class pinning exists to prevent, wearing an absence
+ * instead of a wrong image - the operator would see an idle worker and a queue
+ * that never drains, with nothing anywhere saying why.
+ */
+const serveJobClaim = async (req, res) => {
+  try {
+    const body = await readBody(req);
+    const { job, blocked, queued } = await JOBS.claim({ worker: body.worker ?? null, renderer: body.renderer });
+    if (job) {
+      sendJson(res, { job, queued });
+      return;
+    }
+    if (blocked.length) {
+      console.log(`[jobs] ${blocked.length} queued for another renderer class, none for ${body.renderer}`);
+      sendJson(res, {
+        job: null,
+        queued,
+        blocked,
+        error: `${blocked.length} job(s) are queued and every one of them is pinned to a different renderer class than ${JSON.stringify(body.renderer)}: `
+          + 'this is a scheduling failure rather than an empty queue, because a re-render on a different rasteriser would not reproduce the original',
+      }, 409);
+      return;
+    }
+    sendJson(res, { job: null, queued: 0, blocked: [] });
+  } catch (err) {
+    sendJson(res, { error: err.message }, 400);
+  }
+};
+
+const serveJobFinish = async (req, res, args) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, await JOBS.finish(args[0], {
+      state: body.state, error: body.error ?? null, output: body.output ?? null,
+    }));
+  } catch (err) {
+    sendJson(res, { error: err.message }, 409);
+  }
+};
+
+const serveJobRequeue = async (req, res, args) => {
+  try {
+    sendJson(res, await JOBS.requeue(args[0]));
+  } catch (err) {
+    sendJson(res, { error: err.message }, 404);
+  }
+};
 const serveRemaining = async (req, res) => sendJson(res, await remaining(CAPTURES_DIR, recordingRate()));
 const serveDescriptors = (req, res) => sendJson(res, { open: openCaptureCount(), real: realDescriptorCount() });
 const serveRecordState = async (req, res) => sendJson(res, {
@@ -871,6 +953,18 @@ const ROUTES = [
   { path: '/record/start', pattern: /^\/record\/start$/, write: { methods: ['POST'], run: serveRecordStart } },
   { path: '/record/stop', pattern: /^\/record\/stop$/, write: { methods: ['POST'], run: serveRecordStop } },
   { path: '/record/mark', pattern: /^\/record\/mark$/, write: { methods: ['POST'], run: serveRecordMark } },
+
+  // ---- the render queue
+  { path: '/jobs', pattern: /^\/jobs\/?$/, read: serveJobs, write: { methods: ['POST'], run: serveJobEnqueue } },
+  { path: '/jobs/claim', pattern: /^\/jobs\/claim$/, write: { methods: ['POST'], run: serveJobClaim } },
+  // The lookahead is why a GET of /jobs/claim answers 405 and not 404. Without it
+  // `claim` matches `([^/]+)` and is read as a job id, so a route that exists and
+  // takes POST reports itself as a job that does not exist - which is the wrong
+  // answer twice over, and the sort of thing the route sweep drives past because
+  // 404 looks like a handler having looked.
+  { path: '/jobs/:id', pattern: /^\/jobs\/(?!claim$)([^/]+)$/, read: serveJob },
+  { path: '/jobs/:id/finish', pattern: /^\/jobs\/([^/]+)\/finish$/, write: { methods: ['POST'], run: serveJobFinish } },
+  { path: '/jobs/:id/requeue', pattern: /^\/jobs\/([^/]+)\/requeue$/, write: { methods: ['POST'], run: serveJobRequeue } },
 ];
 
 // The namespaces the table owns, taken from the table. Every `path` starts with a

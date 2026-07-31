@@ -1,0 +1,321 @@
+#!/usr/bin/env node
+// Step 8's proof: the queue only hands a job to a machine that can reproduce it,
+// and a job carries enough to be reproduced at all.
+//
+// **Every refusal here has a positive twin.** A queue that refused every claim
+// would satisfy "a mismatched worker is turned away" perfectly, and a check built
+// only out of refusals would call that a pass - so each row that asserts a no is
+// next to the row asserting the matching yes. That is the same shape `guard-check`
+// uses and the same reason.
+//
+// The renderer rows are the ones worth being careful about, because the failure
+// they guard against does not look like a failure. Two rasterisers that nearly
+// agree produce a video that plays; nobody notices until an A/B. So "the queue
+// refused" is asserted by *what it said*, naming the blocked job and the class it
+// wants, rather than by an absence that an empty queue would also produce.
+import { spawn } from 'node:child_process';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
+const argv = process.argv.slice(2);
+const flag = (name, dflt = null) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : dflt);
+const has = (name) => argv.includes(name);
+const PORT = Number(flag('--port', '8231'));
+const MUTATE = flag('--mutate');
+const WORK = join(REPO, '.jobs-check');
+const SAMPLE = flag('--source', join(REPO, 'captures', 'sample.knct'));
+// The end-to-end render is real work - a browser, a GPU and ffmpeg - so it is
+// skippable for a fast semantic run. It is NOT skipped by default: a queue whose
+// jobs never turn into a file is a queue that proves nothing about rendering.
+const SKIP_RENDER = has('--no-render');
+
+const METAL = 'ANGLE Metal / Apple M2 Max';
+const V3D = 'ANGLE (Broadcom, V3D 7.1.10.2, OpenGL ES 3.1)';
+
+// --- mutations -------------------------------------------------------------
+// Each names source text and must match exactly once. Aimed one property at a
+// time, because a mutation that fails every row cannot say which row is load
+// bearing - the lesson step 6 recorded when a cumulative table hid a wrong term.
+const MUTATIONS = {
+  // The one the whole step exists to prevent: the queue stops caring what it is
+  // dispatching to, and a re-render lands on a different rasteriser.
+  'claim-ignores-renderer': { file: 'server/jobs.js', edits: [[
+    'export const rendererMatches = (want, have) => want === null || want === undefined || want === have;',
+    'export const rendererMatches = () => true;',
+  ]] },
+  // The subtler half. The queue still refuses, but reports the refusal as an empty
+  // queue - so an operator sees an idle worker and a backlog that never drains,
+  // with nothing anywhere saying why. This is the failure wearing an absence.
+  'claim-hides-blocked': { file: 'server/jobs.js', edits: [[
+    '      const blocked = all.map((j) => ({ id: j.id, wants: j.renderer }));\n      return { job: null, blocked, queued: all.length };',
+    '      return { job: null, blocked: [], queued: 0 };',
+  ]] },
+  // A capture named by anything other than content. A job naming a take by id
+  // renders whatever is at that id on the worker, which is the property the hash
+  // exists to hold - and step 7's library already reconciles two machines holding
+  // different footage under one name, so this is not hypothetical.
+  'enqueue-accepts-any-capture': { file: 'server/jobs.js', edits: [[
+    "    if (typeof capture !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(capture)) {",
+    '    if (false) {',
+  ]] },
+  // A terminal job that can be rewritten. Two workers racing on one job then leave
+  // whichever reported last as the record, and the outcome is a coin toss nobody
+  // sees.
+  'finish-overwrites-terminal': { file: 'server/jobs.js', edits: [[
+    '    if (isTerminal(job.state)) {',
+    '    if (false) {',
+  ]] },
+  // A retry that forgets what it was rendered on. The record still says a class
+  // was involved once, but the next claim is unpinned, so the retry can land
+  // anywhere - which is precisely a re-render on a different rasteriser, reached
+  // by a different door than claim-ignores-renderer.
+  'requeue-clears-renderer': { file: 'server/jobs.js', edits: [[
+    "    job.state = 'queued';\n    job.claimed = null;",
+    "    job.state = 'queued';\n    job.renderer = null;\n    job.claimed = null;",
+  ]] },
+};
+if (MUTATE && !MUTATIONS[MUTATE]) {
+  console.error(`unknown mutation ${MUTATE} - have ${Object.keys(MUTATIONS).join(', ')}`);
+  process.exit(2);
+}
+
+// --- harness ---------------------------------------------------------------
+let assertions = 0;
+let failures = 0;
+const check = (ok, label, detail = '') => {
+  assertions++;
+  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${label}${detail ? `  ${detail}` : ''}`);
+  if (!ok) failures++;
+  return ok;
+};
+const section = (title) => console.log(`\n[jobs] ${title}`);
+
+// Staged the way library-check stages: a copy, never an edit-and-restore, so a
+// falsification run cannot leave a mutated tree behind a crash.
+rmSync(WORK, { recursive: true, force: true });
+mkdirSync(WORK, { recursive: true });
+const root = join(WORK, 'root');
+mkdirSync(root, { recursive: true });
+cpSync(join(REPO, 'server'), join(root, 'server'), { recursive: true });
+cpSync(join(REPO, 'web'), join(root, 'web'), { recursive: true });
+for (const name of ['node_modules', 'vendor']) {
+  const from = join(REPO, name);
+  if (existsSync(from)) symlinkSync(from, join(root, name));
+}
+if (MUTATE) {
+  const spec = MUTATIONS[MUTATE];
+  const path = join(root, spec.file);
+  let source = readFileSync(path, 'utf8');
+  for (const [from, to] of spec.edits) {
+    const hits = source.split(from).length - 1;
+    if (hits !== 1) {
+      console.error(`mutation ${MUTATE} matched ${hits} times in ${spec.file}, expected exactly 1 - refusing to run an unmutated server`);
+      process.exit(2);
+    }
+    source = source.replace(from, to);
+  }
+  writeFileSync(path, source);
+}
+
+const caps = join(WORK, 'captures');
+const jobsDir = join(WORK, 'jobs');
+const exportsDir = join(root, 'exports');
+mkdirSync(caps, { recursive: true });
+if (!existsSync(SAMPLE)) {
+  console.error(`no capture at ${SAMPLE} - this check needs one take to render`);
+  process.exit(2);
+}
+symlinkSync(SAMPLE, join(caps, 'sample.knct'));
+
+const servers = [];
+const startServer = async () => {
+  const child = spawn(process.execPath, [join(root, 'server/index.js'),
+    '--port', String(PORT), '--captures', caps, '--jobs', jobsDir,
+    '--projects', join(WORK, 'projects'), '--presets', join(WORK, 'presets'),
+    '--replay', join(caps, 'sample.knct')], { stdio: ['ignore', 'pipe', 'pipe'] });
+  servers.push(child);
+  const log = [];
+  child.stdout.on('data', (c) => log.push(c.toString()));
+  child.stderr.on('data', (c) => log.push(c.toString()));
+  for (let i = 0; i < 200; i++) {
+    await new Promise((done) => { setTimeout(done, 100); });
+    try {
+      const r = await fetch(`${URL_}/library/takes`);
+      if (r.ok) return () => log.join('');
+    } catch { /* not up yet */ }
+  }
+  throw new Error(`server never came up:\n${log.join('')}`);
+};
+const URL_ = `http://localhost:${PORT}`;
+const stopServers = () => { for (const c of servers) c.kill('SIGKILL'); servers.length = 0; };
+
+const post = async (path, body, headers = {}) => {
+  const res = await fetch(URL_ + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(body ?? {}),
+  });
+  return { status: res.status, body: await res.json().catch(() => ({})) };
+};
+const get = async (path) => (await fetch(URL_ + path)).json();
+
+const HASH_A = `sha256:${'a'.repeat(64)}`;
+// A document `restoreProject` accepts, field for field, rather than a plausible
+// looking one. It is written out here instead of serialised from a page because
+// the queue rows below must not need a browser to run - but it has to actually
+// load, or the render row would fail for a reason that has nothing to do with the
+// queue. `mode` is a whole number 0-4 and `appliedPreset` is null or a name and a
+// rev; the first draft used `mode: 'rgb'` and failed the render row while every
+// queue row passed, which is a check reporting the wrong thing broken.
+const PROJECT = {
+  version: 1,
+  mode: 0,
+  outputFps: 30,
+  params: {},
+  tracks: {},
+  retime: { rate: 1, keys: [] },
+  appliedPreset: null,
+};
+const enqueue = (over = {}) => post('/jobs', {
+  project: PROJECT, capture: HASH_A, output: 'check', width: 640, height: 400, fps: 30, ...over,
+});
+
+try {
+  const serverLog = await startServer();
+
+  section('a job is self-contained, or it is not a job');
+  const good = await enqueue();
+  check(good.status === 200 && good.body.state === 'queued', 'a job with a project body and a content-hashed capture is accepted',
+    `${good.status} ${good.body.id ?? good.body.error}`);
+  check(good.body.renderer === null, 'and it starts unpinned, because the first job has no class to reproduce yet');
+  const byId = await enqueue({ capture: 'sample' });
+  check(byId.status === 400, 'a capture named by take id is refused - an id is a filename and two machines can hold different footage under one',
+    `${byId.status} ${(byId.body.error ?? '').slice(0, 60)}`);
+  const envelope = await enqueue({ project: { name: 'p', rev: 'sha256:x', body: PROJECT } });
+  check(envelope.status === 400, 'and so is the store envelope in place of the document body, rather than being unwrapped on a guess',
+    `${envelope.status}`);
+
+  section('the queue hands a job only to a machine that can reproduce it');
+  // **A precondition row, because the section below reasons about what is left in
+  // the queue.** Without it a mutation that lets a refused enqueue through fails
+  // these renderer rows too, and it would read as the renderer pinning being
+  // broken when what actually broke is two sections up - a mutation caught for a
+  // neighbouring reason, which this repo has already recorded once as looking
+  // exactly like a mutation caught for its own.
+  const beforePin = (await get('/jobs')).jobs;
+  check(beforePin.length === 1 && beforePin[0].id === good.body.id,
+    'exactly one job survived the refusals above, so what follows is about the renderer class and not about a stray job',
+    `${beforePin.length}: ${beforePin.map((j) => j.output).join(', ')}`);
+  const pinned = await enqueue({ output: 'pinned', renderer: V3D });
+  check(pinned.status === 200 && pinned.body.renderer === V3D, 'a job can be pinned to a renderer class at enqueue');
+  const c1 = await post('/jobs/claim', { worker: 'mac', renderer: METAL });
+  check(c1.status === 200 && c1.body.job?.id === good.body.id,
+    'a Metal worker is given the unpinned job, which is the positive half of every refusal below',
+    c1.body.job?.id ?? JSON.stringify(c1.body).slice(0, 70));
+  check(c1.body.job?.renderer === METAL && c1.body.job?.state === 'running',
+    'and the claim stamps the class it will render on, which is the provenance the field exists for');
+  check(c1.body.job?.attempts === 1, 'attempts moves on the claim, so a job retried forever is visible as a number rather than a mood');
+
+  const c2 = await post('/jobs/claim', { worker: 'mac', renderer: METAL });
+  check(c2.status === 409 && c2.body.job === null,
+    'with only a V3D job left, a Metal worker is refused rather than handed it',
+    `${c2.status}`);
+  check((c2.body.blocked ?? []).some((b) => b.id === pinned.body.id && b.wants === V3D),
+    'and the refusal NAMES the job and the class it wants - an empty queue and a queue full of somebody else\'s work are different answers',
+    JSON.stringify(c2.body.blocked ?? []).slice(0, 80));
+  const c3 = await post('/jobs/claim', { worker: 'pi', renderer: V3D });
+  check(c3.status === 200 && c3.body.job?.id === pinned.body.id,
+    'a V3D worker gets it, so the refusal above was about the class and not about the job being unclaimable');
+
+  section('a finished job is finished');
+  const fin = await post(`/jobs/${good.body.id}/finish`, { state: 'done', output: '/exports/check.mp4' });
+  check(fin.status === 200 && fin.body.state === 'done', 'a worker reports an outcome and the record takes it');
+  const again = await post(`/jobs/${good.body.id}/finish`, { state: 'failed', error: 'the loser of a race' });
+  check(again.status === 409, 'a second report on the same job is refused, so two workers racing cannot leave the last one to speak as the record',
+    `${again.status}`);
+  check((await get(`/jobs/${good.body.id}`)).state === 'done', 'and the record still says what the first one said');
+
+  section('a retry is a retry, not a different render');
+  const rq = await post(`/jobs/${good.body.id}/requeue`, {});
+  check(rq.status === 200 && rq.body.state === 'queued', 'a done job can go back on the queue');
+  check(rq.body.renderer === METAL,
+    'and it stays pinned to the class it was rendered on - a retry that could land anywhere is a second render of the same edit, not a retry',
+    String(rq.body.renderer).slice(0, 40));
+  const c4 = await post('/jobs/claim', { worker: 'pi', renderer: V3D });
+  check(c4.status === 409, 'so the V3D worker cannot pick up the Metal retry', `${c4.status}`);
+
+  section('the queue is behind the same guard every mutating route is');
+  const noType = await fetch(`${URL_}/jobs`, { method: 'POST', body: '{}' });
+  check(noType.status === 415, 'an enqueue without a JSON content type is refused', `${noType.status}`);
+  const crossOrigin = await fetch(`${URL_}/jobs`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'http://evil.example' }, body: '{}',
+  });
+  check(crossOrigin.status === 403, 'and one from another page is refused before it is read', `${crossOrigin.status}`);
+  const getClaim = await fetch(`${URL_}/jobs/claim`);
+  check(getClaim.status === 405,
+    'a GET of /jobs/claim is 405 and not 404 - the route exists, and reading it as a job id would say it does not',
+    `${getClaim.status}`);
+
+  section('the namespace the table owns is not answerable by the file tree');
+  mkdirSync(join(root, 'web', 'jobs', 'probe'), { recursive: true });
+  writeFileSync(join(root, 'web', 'jobs', 'probe', 'leak.js'), '// planted\n');
+  const shadow = await fetch(`${URL_}/jobs/probe/leak.js`);
+  check(shadow.status === 404,
+    'a file planted at web/jobs/ is the API\'s 404, because the owned namespaces come from the route table rather than a list',
+    `${shadow.status}`);
+  rmSync(join(root, 'web', 'jobs'), { recursive: true, force: true });
+
+  if (!SKIP_RENDER) {
+    section('and a job becomes a file, through the page\'s own export door');
+    const { takes } = await get('/library/takes');
+    const take = takes[0];
+    if (!take) throw new Error('no take in the staged library to render');
+    const real = await enqueue({ capture: take.hash, output: 'jobs-check-render', width: 320, height: 200 });
+    check(real.status === 200, 'a job against real footage is queued', real.body.id ?? real.body.error);
+    const worker = spawn(process.execPath, [join(REPO, 'tools/render-worker.mjs'),
+      '--url', URL_, '--name', 'jobs-check', '--drain', '--max', '1'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const wlog = [];
+    worker.stdout.on('data', (c) => wlog.push(c.toString()));
+    worker.stderr.on('data', (c) => wlog.push(c.toString()));
+    const code = await new Promise((done) => worker.on('close', done));
+    const record = await get(`/jobs/${real.body.id}`);
+    check(code === 0 && record.state === 'done',
+      'the worker claims it, renders it headless and reports done', `exit ${code}, state ${record.state}${record.error ? `, ${record.error.slice(0, 70)}` : ''}`);
+    check(/ANGLE/.test(String(record.renderer)),
+      'and the class on the record is the one the browser actually reported, not one the worker was told',
+      String(record.renderer).slice(0, 46));
+    let probed = '';
+    try {
+      probed = execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=width,height,nb_frames',
+        '-of', 'default=nw=1', record.output], { encoding: 'utf8' });
+    } catch (err) { probed = `ffprobe failed: ${err.message}`; }
+    check(/width=320/.test(probed) && /height=200/.test(probed),
+      'the file it wrote is a video at the size the job asked for, which is the only thing a metadata check cannot fake',
+      probed.trim().replace(/\n/g, ' '));
+    check(!/frames=0\b/.test(probed) && /nb_frames=[1-9]/.test(probed), 'and it has frames in it');
+  } else {
+    console.log('  ...   render row skipped by --no-render, so nothing here proves a job becomes a file');
+  }
+
+  check(!/\[jobs\] .*undefined/.test(serverLog()), 'the server logged no undefined while all of that ran');
+} catch (err) {
+  failures++;
+  assertions++;
+  console.log(`\n  FAIL  the run did not finish: ${err.message}`);
+} finally {
+  stopServers();
+  rmSync(WORK, { recursive: true, force: true });
+  rmSync(exportsDir, { recursive: true, force: true });
+}
+
+console.log(`\n[jobs] ${assertions} assertions, ${failures} failed`);
+if (MUTATE) {
+  if (failures === 0) { console.log('[jobs] NOT CAUGHT - the check passed a queue it should have rejected'); process.exit(1); }
+  console.log(`[jobs] caught, as required (${failures} assertion${failures === 1 ? '' : 's'} fired)`);
+  process.exit(1);
+}
+console.log(failures === 0 ? '[jobs] PASS' : `[jobs] FAIL (${failures})`);
+process.exit(failures === 0 ? 0 : 1);

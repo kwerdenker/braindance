@@ -272,7 +272,19 @@ node tools/library-check.mjs --url http://localhost:8080  # step 7: library, rec
 node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL mutated
 node tools/guard-check.mjs                                # the socket's origin rule, and the bind
 node tools/guard-check.mjs --mutate upgrade-skips-origin  # ... and must FAIL mutated
+node tools/jobs-check.mjs                                 # step 8: the queue, the pin, and a real render
+node tools/jobs-check.mjs --mutate claim-ignores-renderer # ... and must FAIL mutated
 ```
+
+`jobs-check` spawns its own server and renders one real job through
+`tools/render-worker.mjs`, so it needs a GPU browser and ffprobe. `--no-render` drops
+that row and says so - the queue rows are seconds, the render row is a minute. Its
+mutation runs use `--no-render` because all five are queue semantics.
+
+**The worker reads its renderer class out of the browser it will render in and cannot
+be told one.** `channel: 'chromium'` rather than the bundled headless shell, which has
+no GPU and falls back to SwiftShader - a class nothing else can reproduce, which the
+worker refuses outright rather than pinning jobs to.
 
 `guard-check` spawns its own servers and needs none running. It exits **2** when the
 machine has no non-internal IPv4, because "not listening on the network" is only a
