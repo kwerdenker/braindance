@@ -16,7 +16,7 @@ import {
   readMarkLog, readMarks, reconcile, remaining, removeTake, resolveMarks, scanTakes,
 } from './library.js';
 import { Recorder } from './recorder.js';
-import { requireMutation } from './http-guard.js';
+import { requireMutation, originAllowed } from './http-guard.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -29,6 +29,23 @@ const flag = (name, fallback = null) => {
 const has = (name) => args.includes(name);
 
 const PORT = Number(flag('--port', '8080'));
+// Loopback unless somebody says otherwise, and saying otherwise is a flag rather
+// than a default, because this server has no authentication of any kind: the
+// recorder's arm, start and stop are reachable by anything that can route to the
+// port. A capture node genuinely has to be reachable - the whole two-machine
+// design is a browser on the Mac driving a node over Wi-Fi - so `--host 0.0.0.0`
+// is a supported and expected thing to type. What it must not be is what happens
+// when nobody thought about it.
+//
+// The origin checks are the other half and they are not a substitute for this one.
+// Host equality cannot survive DNS rebinding in general: a name the attacker
+// controls, resolving to the node's LAN address, makes `Origin` and `Host` the
+// same string, so the request is genuinely same-origin by every test a server can
+// run on itself. That is an argument for not being on the network by default, not
+// a hole in the guard - the guard stops the ordinary drive-by, and the bind
+// address stops the thing that has to be routable to be attacked at all.
+const LOOPBACK = '127.0.0.1';
+const HOST = flag('--host', LOOPBACK);
 const REPLAY = flag('--replay');
 // Recording is a runtime action now rather than a path on the command line: a
 // take is a file, start opens one and stop closes it, so `--record` only says
@@ -986,6 +1003,21 @@ const wss = new WebSocketServer({ noServer: true });
 const exportWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: MAX_FRAME_BYTES });
 
 httpServer.on('upgrade', (req, socket, head) => {
+  // The same origin rule the mutating routes stand behind, asked here because a
+  // socket is the one door it did not cover. `WebSocket` is exempt from the
+  // same-origin policy and sends no preflight, so any page anywhere could open one
+  // against a node on the visitor's own network and drive it - and this socket is
+  // not a read-only view: it carries the recorder's arm, start and stop. The
+  // content-type and method halves of `requireMutation` are meaningless for an
+  // upgrade, which is why `originAllowed` is exported without a `res` to write to.
+  //
+  // Asked before the path is routed, so a page from somewhere else gets one answer
+  // rather than learning which paths exist by how they are refused.
+  if (!originAllowed(req)) {
+    socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+    socket.destroy();
+    return;
+  }
   let path;
   try {
     path = new URL(req.url, 'http://localhost').pathname;
@@ -1383,8 +1415,11 @@ try {
   console.error(`[server] no captures directory at ${CAPTURES_DIR} and it could not be made: ${err.message}`);
 }
 
-httpServer.listen(PORT, () => {
-  console.log(`[server] viewer on http://localhost:${PORT}`);
+httpServer.listen(PORT, HOST, () => {
+  console.log(`[server] viewer on http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
+  if (HOST !== LOOPBACK) {
+    console.log(`[server] reachable from the network on ${HOST} - anyone who can route here can drive the recorder`);
+  }
   if (REPLAY) startReplay().catch((err) => console.error(`[server] replay failed: ${err.message}`));
   else startLive();
 });

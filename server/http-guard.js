@@ -37,7 +37,13 @@
  * WebSocket upgrade is the one coming - has nothing to write a 403 into and still
  * needs the same answer. One predicate that two paths can share beats two rules that
  * drift, and the shape is worth having before the second caller rather than after.
- * As of this commit `requireMutation` below is the only caller.
+ *
+ * The second caller has arrived: `server/index.js` asks this on the `upgrade` event,
+ * where the socket carries the recorder's arm, start and stop and `WebSocket` is
+ * exempt from the same-origin policy, so the answer has to be the same one the
+ * mutating routes get. The other two thirds of `requireMutation` do not apply there -
+ * an upgrade is always a GET and declares no content type - which is the whole
+ * reason this is a predicate rather than a gate.
  */
 export function originAllowed(req) {
   const origin = req.headers.origin;

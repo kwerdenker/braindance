@@ -270,7 +270,16 @@ node tools/export-check.mjs --url http://localhost:8080   # step 6: resolution, 
 node tools/export-check.mjs --mutate pointsize-absolute   # ... and must FAIL mutated
 node tools/library-check.mjs --url http://localhost:8080  # step 7: library, recorder, routes
 node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL mutated
+node tools/guard-check.mjs                                # the socket's origin rule, and the bind
+node tools/guard-check.mjs --mutate upgrade-skips-origin  # ... and must FAIL mutated
 ```
+
+`guard-check` spawns its own servers and needs none running. It exits **2** when the
+machine has no non-internal IPv4, because "not listening on the network" is only a
+claim if there is a second address a client could have arrived on - the same reading
+as `library-check`'s low-space row. Every refusal it asserts has a positive twin, so
+a server that refused every upgrade, or bound to nothing, fails it rather than
+passing quietly.
 
 `library-check` had no invocation line at all until this merge, while being referenced
 twice below it — so the list taught a six-tool sweep where there are seven. `plant-open-take`

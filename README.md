@@ -35,7 +35,25 @@ node server/index.js --no-color         # depth only, no colour stream
 node server/index.js --port 9000
 node server/index.js --record captures/session.knct
 node server/index.js --replay captures/session.knct
+node server/index.js --host 0.0.0.0      # reachable from other machines - see below
 ```
+
+**The server binds loopback unless you pass `--host`, and a capture node needs it.**
+There is no authentication anywhere in this program: whoever can reach the port can
+arm the recorder, start a take and stop one. On a Mac you are editing on, that is
+nothing anybody else should be able to reach, so the default is `127.0.0.1`. A
+capture node is the case where being reachable is the entire point — a browser on
+the Mac driving a Pi over Wi-Fi — so start the node with `--host 0.0.0.0` and it
+says on stdout that it did. Being on a network you trust is doing the work there;
+the flag just makes that a decision somebody took rather than the default.
+
+The WebSocket is held to the same origin rule the mutating HTTP routes are, because
+`WebSocket` is exempt from the same-origin policy and sends no preflight — so
+without it, any page you visited could open a socket against a node on your own
+network and drive the recorder. A request carrying no `Origin` at all still passes,
+which is load-bearing rather than lax: every call across the capture-node link is a
+server-side `fetch` and none of them has an origin to declare.
+`node tools/guard-check.mjs` proves both halves.
 
 `--replay` is the one to reach for when iterating on shaders: it loops a recorded
 capture so you can work on the visuals with the sensor unplugged. It replays the
