@@ -37,7 +37,53 @@ scarce, and every file removed is a file the manifest can no longer vouch for.
 
 ## What we changed
 
-One file, `src/depth_packet_stream_parser.cpp`: accept depth frames missing only
+Two files.
+
+### `src/registration.cpp` — thread the occlusion filter
+
+`Registration::apply` spends most of its time in the occlusion filter: an 8.3 MB
+init to `+inf`, then a scatter writing a min-z into a 5×3 window of a 1920×1080
+map for each of 217,088 depth pixels. Upstream does both single-threaded, and
+there is no GPU path and no `PacketPipeline` variant for any of it — the pipeline
+abstraction covers depth packet processing only.
+
+The scatter now records its windows into a work list, and threads then split the
+init and the scatter together. **Banding is by linear index, not by row**, and
+that is the whole subtlety: the loop never bounds-checks `cx` on its own — the
+guard is on `c_off`, and upstream's comment argues no check is needed because the
+colour image is wider than depth — so at `cx < 2` the window's left edge is a
+negative offset that physically lands in the previous row's tail. Threads owning
+adjacent *row* stripes would collide precisely there. A linear range has no such
+seam. No atomics are needed, because each thread writes only inside its own
+half-open range and windows straddling a boundary are clipped by both neighbours.
+
+Worth **2.07 ms of registration's 5.76 ms p50, a 36% reduction**, on an M2 Max at
+four threads. Interleaved A/B/A/B/A/B against a build of upstream's own scatter,
+three rounds, ~1000 frames per arm after 60 of warmup, all three paired deltas
+favouring the threaded build and all six arms sustaining 30.03–30.04 fps:
+
+| round | upstream | threaded | delta |
+| --- | --- | --- | --- |
+| 1 | 5.71 ms | 3.56 ms | −2.15 |
+| 2 | 6.01 ms | 3.60 ms | −2.41 |
+| 3 | 5.56 ms | 3.90 ms | −1.66 |
+| mean | 5.76 ms | 3.69 ms | **−2.07** |
+
+p90 falls with it, 6.69 ms to 4.59 ms. The tail is occasionally worse — one round
+showed p99 10.80 ms against 7.32 ms — which is thread scheduling jitter and is
+the thing to watch if this is ever on a latency budget rather than a throughput
+one.
+
+**This has not been measured on a Pi, which is the machine it is for.** The Mac
+idles 27 ms of every 33 ms interval, so 2 ms buys nothing a user can see there.
+The Pi's registration is 13.13 ms of a 15.05 ms serial half, and it has four
+cores rather than twelve, so both the scaling and the payoff need measuring on it
+before any claim is made. `LIBFREENECT2_REG_THREADS` exists so that measurement
+can run both arms from one binary; it defaults to 4 and is not a tuning knob.
+
+### `src/depth_packet_stream_parser.cpp` — accept 9-of-10 sub-images
+
+Accept depth frames missing only
 the unused 10th sub-image. The depth solve reads sub-images 0–8 — nine
 measurements, three phase steps across three modulation frequencies — and the
 tenth is commented out in the CPU processor and never fetched by the OpenCL

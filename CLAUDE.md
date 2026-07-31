@@ -18,6 +18,28 @@ This repo measures rather than reasons. Several inherited estimates in these doc
   whether the page cache was warm.
 - **Proxy evidence does not close a user-visible change.** Drive the real UI with
   `playwright-cli` and show it working. A passing unit test is not a rendered frame.
+- **Read a health number the measurement itself reports, and throw the run away when
+  it is wrong.** Delivered fps is that number for anything using the grabber: the
+  loop idles 55% of every interval, so a run that does not sustain ~30.0 was
+  competing for the machine and its per-segment timings are noise. A threading A/B
+  came back 22.75fps with registration p50 swinging 11.50/13.65/8.30ms across three
+  rounds of one arm, which reads as a wildly variable optimisation and was actually
+  Spotlight - `mds_stores` at 45% indexing the 280MB corpus and the build trees the
+  session had just created. `captures/` and `vendor/` now carry
+  `.metadata_never_index`. Re-run on a settled machine and the same comparison was
+  flat: all six arms 30.03-30.04fps, all three paired deltas the same sign.
+
+### A tight loop cannot measure an allocation
+
+Two arms that both hit the allocator back to back are not an A/B of allocation
+cost. `Registration::apply` new/deletes 9.2MB per call, and measured offline by
+applying one frame five times in a row, hoisting those buffers came out *slower*
+in all three paired rounds - because the allocator hands the same block straight
+back and the baseline arm was already effectively persistent, leaving buffer
+alignment as the only real variable. On the real loop, where 33ms and a JPEG
+encode sit between calls, the same change is worth 0.30ms of 5.71ms. **An offline
+harness is for correctness; `grabber --profile` on the sensor is for cost** - and a
+screening measurement that removes the effect will confidently report its absence.
 
 ### An instrument must enforce its claims, not assert them
 

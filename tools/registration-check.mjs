@@ -70,6 +70,12 @@ const MUTATIONS = {
   // depth_data[index]; *undistorted_data = z;` appears identically in both
   // apply() and undistortDepth(), and the tool refuses an ambiguous match
   // rather than silently mutating whichever came first.
+  // Clips one element off the right end of every scatter run. This is aimed at
+  // the threaded banding specifically: the failure mode there is a window that
+  // straddles two threads' ranges being written by neither, or twice, and an
+  // off-by-one in the clip is what that looks like in source.
+  'band-off-by-one': ['const int b = (s + span) < hi ? (s + span) : hi;',
+                      'const int b = (s + span - 1) < hi ? (s + span - 1) : hi;'],
   'depth-one-mm': [
     'const float z = depth_data[index];\n    *undistorted_data = z;\n\n    // checking for invalid depth value',
     'float z = depth_data[index];\n    { static int _n = 0; if (z > 0.0f && ++_n == 1000) z += 1.0f; }\n    *undistorted_data = z;\n\n    // checking for invalid depth value'],

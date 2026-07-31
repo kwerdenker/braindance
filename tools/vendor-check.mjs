@@ -34,6 +34,10 @@ const DECLARED_EDITS = new Map([
     why: 'accept depth frames missing only the unused 10th sub-image',
     ours: 'ab437103d6d73daa220fdc2d42971ef06b998804',
   }],
+  ['src/registration.cpp', {
+    why: 'thread the occlusion filter, banded by linear index',
+    ours: 'defd45cc77a672f2951008dc30c37f578d47b114',
+  }],
 ]);
 
 // git's blob hash, computed here rather than by shelling out to git-hash-object
@@ -65,9 +69,14 @@ function parseManifest() {
 // rather than on a crash. A mutation that changes nothing reads as a check that
 // found nothing, so each one alters bytes the check demonstrably reads.
 const MUTATIONS = {
+  // Deliberately a file with no declared edit. It used to touch registration.cpp,
+  // which stopped testing anything once registration.cpp became a declared edit -
+  // the mutation still failed, but on the content pin rather than on the
+  // undeclared-change assertion it is named for, so the assertion it exists to
+  // exercise was no longer covered by anything.
   'undeclared-edit': (tree) => {
-    const f = join(tree, 'src', 'registration.cpp');
-    writeFileSync(f, readFileSync(f, 'utf8').replace('filter_width_half(2)', 'filter_width_half(3)'));
+    const f = join(tree, 'src', 'packet_pipeline.cpp');
+    writeFileSync(f, readFileSync(f, 'utf8') + '\n// not upstream\n');
   },
   'revert-local-edit': (tree) => {
     const f = join(tree, 'src', 'depth_packet_stream_parser.cpp');

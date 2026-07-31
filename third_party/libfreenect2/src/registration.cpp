@@ -31,6 +31,12 @@
 #include <libfreenect2/registration.h>
 #include <limits>
 
+// LOCAL EDIT: apply() is threaded. See third_party/UPSTREAM.md.
+#include <vector>
+#include <thread>
+#include <cstdlib>
+#include <algorithm>
+
 namespace libfreenect2
 {
 
@@ -68,6 +74,13 @@ private:
   const int filter_width_half;
   const int filter_height_half;
   const float filter_tolerance;
+
+  // LOCAL EDIT. The occlusion scatter's work list, hoisted to members so it is
+  // not reallocated per frame - the same reason apply() takes bigdepth and
+  // color_depth_map. mutable because apply() is const.
+  mutable std::vector<int> scatter_base;
+  mutable std::vector<float> scatter_z;
+  int threads;
 };
 
 void RegistrationImpl::distort(int mx, int my, float& x, float& y) const
@@ -167,9 +180,14 @@ void RegistrationImpl::apply(const Frame *rgb, const Frame *depth, Frame *undist
     filter_map = bigdepth ? (float*)bigdepth->data : new float[size_filter_map];
     p_filter_map = filter_map + offset_filter_map;
 
-    for(float *it = filter_map, *end = filter_map + size_filter_map; it != end; ++it){
-      *it = std::numeric_limits<float>::infinity();
-    }
+    // LOCAL EDIT: the init-to-infinity has moved below, into the same parallel
+    // region as the scatter. Nothing between here and there reads filter_map, and
+    // a thread that initialises its own band and then scatters only into that
+    // band needs no barrier between the two - which halves the thread creations
+    // per frame. Doing them as two regions costs 8 create/joins every frame at
+    // 30fps, and that overhead is a large fraction of what threading buys back.
+    scatter_base.clear();
+    scatter_z.clear();
   }
 
   /* Fix depth distortion, and compute pixel to use from 'rgb' based on depth measurement,
@@ -218,18 +236,62 @@ void RegistrationImpl::apply(const Frame *rgb, const Frame *depth, Frame *undist
     *map_c_off = c_off;
 
     if(enable_filter){
-      // setting a window around the filter map pixel corresponding to the color pixel with the current z value
-      int yi = (cy - filter_height_half) * 1920 + cx - filter_width_half; // index of first pixel to set
-      for(int r = -filter_height_half; r <= filter_height_half; ++r, yi += 1920) // index increased by a full row each iteration
-      {
-        float *it = p_filter_map + yi;
-        for(int c = -filter_width_half; c <= filter_width_half; ++c, ++it)
-        {
-          // only set if the current z is smaller
-          if(z < *it)
-            *it = z;
+      // LOCAL EDIT: the window is recorded rather than written here, so the
+      // scatter can be split across threads below. Upstream wrote it inline.
+      scatter_base.push_back((cy - filter_height_half) * 1920 + cx - filter_width_half);
+      scatter_z.push_back(z);
+    }
+  }
+
+  // LOCAL EDIT: the occlusion scatter, banded across threads.
+  //
+  // Banding is by *linear index*, not by row, and that is the whole subtlety.
+  // The loop above never bounds-checks cx on its own - the guard is on c_off,
+  // and the comment argues no check is needed because the colour image is wider
+  // than depth - so at cx < 2 the window's left edge is a negative offset that
+  // physically lands in the previous row's tail. Threads owning adjacent row
+  // stripes would collide exactly there. A linear range has no such seam.
+  //
+  // No atomics: each thread writes only indices inside its own half-open range,
+  // so no two threads ever touch the same float. Windows straddling a boundary
+  // are clipped by both neighbours, and between them they write every element
+  // once. min is idempotent either way, but this does not rely on that.
+  if(enable_filter){
+    const size_t n = scatter_base.size();
+    const int span = 2 * filter_width_half + 1;
+    const float inf = std::numeric_limits<float>::infinity();
+    auto band = [&](int lo, int hi) {
+      // This thread's slice of the init, then this thread's slice of the
+      // scatter. Same range for both, which is what makes the barrier
+      // unnecessary - nothing it writes will be read by anyone else.
+      for(int i = lo; i < hi; ++i) p_filter_map[i] = inf;
+      for(size_t k = 0; k < n; ++k){
+        const int base = scatter_base[k];
+        const float z = scatter_z[k];
+        for(int r = 0; r <= 2 * filter_height_half; ++r){
+          const int s = base + r * 1920;
+          const int a = s > lo ? s : lo;
+          const int b = (s + span) < hi ? (s + span) : hi;
+          for(int i = a; i < b; ++i){
+            float *it = p_filter_map + i;
+            if(z < *it) *it = z;
+          }
         }
       }
+    };
+    if(threads <= 1){
+      band(-offset_filter_map, size_filter_map - offset_filter_map);
+    } else {
+      const int lo = -offset_filter_map, hi = size_filter_map - offset_filter_map;
+      const int chunk = (hi - lo + threads - 1) / threads;
+      std::vector<std::thread> pool;
+      pool.reserve(threads);
+      for(int t = 0; t < threads; ++t){
+        const int a = lo + t * chunk;
+        const int b = (a + chunk) < hi ? (a + chunk) : hi;
+        if(a < b) pool.push_back(std::thread(band, a, b));
+      }
+      for(size_t t = 0; t < pool.size(); ++t) pool[t].join();
     }
   }
 
@@ -370,6 +432,20 @@ Registration::~Registration()
 RegistrationImpl::RegistrationImpl(Freenect2Device::IrCameraParams depth_p, Freenect2Device::ColorCameraParams rgb_p):
   depth(depth_p), color(rgb_p), filter_width_half(2), filter_height_half(1), filter_tolerance(0.01f)
 {
+  // LOCAL EDIT. Reserved once so the scatter's work list never reallocates
+  // mid-frame; 512*424 is its hard ceiling, one entry per depth pixel.
+  scatter_base.reserve(512 * 424);
+  scatter_z.reserve(512 * 424);
+
+  // Thread count is an environment variable purely so the A/B that justifies
+  // this can run both arms from one binary, interleaved, the way this repo
+  // measures. It is not a tuning knob anybody is expected to set.
+  threads = 4;
+  if(const char *e = std::getenv("LIBFREENECT2_REG_THREADS")){
+    const int v = std::atoi(e);
+    if(v >= 1 && v <= 64) threads = v;
+  }
+
   float mx, my;
   int ix, iy, index;
   float rx, ry;
