@@ -257,6 +257,20 @@ time is 1.38 GB where a real full-rate five-minute take is 4.42 GB. A fixture is
 looped with rewritten monotonic stamps — real depth and real JPEGs, only the u64 at payload
 offset 8 moves. Say so whenever a number rests on one.
 
+## The Mac's USB topology reads worse than it measures
+
+`ioreg -p IOUSB -w0` shows the sensor as controller -> `USB3.0 Hub` -> `NuiSensor
+Adaptor` -> `Xbox NUI Sensor`, with a gigabit ethernet adapter on that same hub.
+Against the README's "1 hub, own controller" that looks like the degraded
+topology which measures 12.82fps, and it is not - **this rig sustains 30.02fps
+with 2 subsequence warnings in 1921 frames.** The `USB3.0 Hub` is a good
+high-speed one and the count is not the thing that matters.
+
+Note also that `system_profiler SPUSBDataType` returns *nothing at all* on this
+machine, so a check built on it reads as "no Kinect attached" whether one is
+attached or not. Use `ioreg`. And settle the question by running the grabber and
+reading delivered fps rather than by counting boxes in a tree.
+
 ## Two things that are easy to get backwards
 
 **`nearClip`/`farClip` versus `--min-depth`/`--max-depth`.** The first pair are viewer
