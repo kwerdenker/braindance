@@ -25,14 +25,52 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x05070a);
 scene.fog = new THREE.FogExp2(0x05070a, 0.11);
 
-const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.05, 60);
-camera.position.set(0, 0.1, 1.6);
+// The camera does two unrelated jobs and they cannot share an object. Orbiting to
+// inspect the cloud is navigation - view state, leaving no trace - while a camera
+// key is document state a keyframe writes and an export has to reproduce exactly.
+// So there are two cameras: a free one the controls drive, and a program one the
+// transport poses straight from program time. Damping is why nothing keyframed
+// can go through the controls at all - it is a frame-rate-dependent filter, so the
+// same move would land somewhere else at a different output frame rate.
+const ORBIT_TARGET = new THREE.Vector3(0, 0, -2.2);
 
-const controls = new OrbitControls(camera, renderer.domElement);
+const freeCamera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.05, 60);
+freeCamera.position.set(0, 0.1, 1.6);
+
+const programCamera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.05, 60);
+
+// Which of the two the viewport draws. The free camera is the default, so the live
+// viewer stays exactly what it was. Step 5's top-down view draws the program
+// camera's frustum from outside, which is why these are two objects rather than
+// one object with the controls switched off.
+let viewCamera = freeCamera;
+
+const controls = new OrbitControls(freeCamera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.07;
 controls.autoRotateSpeed = 0.6;
-controls.target.set(0, 0, -2.2);
+controls.target.copy(ORBIT_TARGET);
+
+// The program pose is a pure function of program time, so it holds no state and
+// has nothing to drift - which is the property step 5's keyframed path has to
+// keep, and the reason this placeholder is shaped the way it is rather than
+// animated off a clock. It is a slow orbit, one revolution per 100 seconds,
+// starting where the free camera starts. Nothing shows it until something calls
+// setViewCamera; the viewport draws the free camera by default.
+const PROGRAM_ORBIT = new THREE.Spherical()
+  .setFromVector3(new THREE.Vector3(0, 0.1, 1.6).sub(ORBIT_TARGET));
+const PROGRAM_ORBIT_RATE = (2 * Math.PI) / 100;
+const programSpherical = new THREE.Spherical();
+
+function poseProgramCamera(t) {
+  programSpherical.set(
+    PROGRAM_ORBIT.radius,
+    PROGRAM_ORBIT.phi,
+    PROGRAM_ORBIT.theta - t * PROGRAM_ORBIT_RATE,
+  );
+  programCamera.position.setFromSpherical(programSpherical).add(ORBIT_TARGET);
+  programCamera.lookAt(ORBIT_TARGET);
+}
 
 // ---------------------------------------------------------------- gpu textures
 
@@ -508,7 +546,8 @@ setAdditive(false);
 // Deliberately ordered: trails accumulate the raw cloud, bloom blows out the hot
 // edges, then the grade tears the whole image the way a failing signal would.
 const composer = new EffectComposer(renderer);
-composer.addPass(new RenderPass(scene, camera));
+const renderPass = new RenderPass(scene, viewCamera);
+composer.addPass(renderPass);
 
 const afterimage = new AfterimagePass(0.0);
 afterimage.enabled = false;
@@ -592,9 +631,20 @@ composer.addPass(new OutputPass());
 
 let renderScale = 1;
 
+// Which camera the viewport draws. Navigation is switched off while the program
+// camera is on screen, because a drag would otherwise move the free camera
+// somewhere nobody can see and leave it there.
+function setViewCamera(cam) {
+  viewCamera = cam;
+  renderPass.camera = cam;
+  controls.enabled = cam === freeCamera;
+}
+
 function resize() {
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
+  for (const cam of [freeCamera, programCamera]) {
+    cam.aspect = innerWidth / innerHeight;
+    cam.updateProjectionMatrix();
+  }
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2) * renderScale);
   renderer.setSize(innerWidth, innerHeight);
   composer.setPixelRatio(Math.min(devicePixelRatio, 2) * renderScale);
@@ -672,6 +722,10 @@ const checkbox = (id, apply) => {
 
 checkbox('denoise', (on) => { uniforms.denoise.value = on ? 1 : 0; });
 checkbox('interpolate', (on) => { uniforms.interpolate.value = on ? 1 : 0; });
+// Still what it always was - orbit the view you are looking at. What changed is
+// underneath: the controls advance it on the program delta the render loop hands
+// them rather than on wall-clock time, so the same orbit renders the same way at
+// any output frame rate, and it holds still when the stream stalls.
 checkbox('spin', (on) => { controls.autoRotate = on; });
 const additiveEl = checkbox('additive', setAdditive);
 
@@ -729,14 +783,7 @@ let sensorState = '';
 let decodeBusy = false;
 let pendingColor = null;
 let retiringBitmap = null;
-
-// Interpolation runs against measured arrival spacing, not an assumed 30fps -
-// this stream is irregular, and guessing wrong stutters worse than not blending.
-let frameInterval = 1000 / 30;
-let lastFrameAt = 0;
-let sinceFrame = 0;
-let stateDirty = false;
-let arrivalDt = 1 / 30;
+let streamDetached = false;
 
 function setStatus() {
   const rate = document.createElement('b');
@@ -763,6 +810,14 @@ async function pumpColorDecode() {
   pendingColor = null;
   try {
     const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/jpeg' }));
+    // The decode is asynchronous, so one started while the stream was still live
+    // can finish after a pinned run has taken the textures over - and it would
+    // switch colour back on partway through, which is a render that differs from
+    // its own repeat for reasons nothing in the transport can explain.
+    if (streamDetached) {
+      bitmap.close();
+      return;
+    }
     const dropped = retiringBitmap;
     retiringBitmap = colorPrev.image instanceof ImageBitmap ? colorPrev.image : null;
 
@@ -789,6 +844,7 @@ function handleFrame(buffer) {
   const view = new DataView(buffer);
   const depthBytes = view.getUint32(0, true);
   const colorBytes = view.getUint32(4, true);
+  const stampMs = Number(view.getBigUint64(8, true));
   const offset = 16; // u32 + u32 + u64 timestamp
 
   const swap = depthPrev;
@@ -800,19 +856,7 @@ function handleFrame(buffer) {
   uniforms.depthCurr.value = depthCurr;
 
   const now = performance.now();
-  let gap = frameInterval;
-  if (lastFrameAt) {
-    gap = now - lastFrameAt;
-    // Clamped so one stall does not stretch the blend across the next second.
-    if (gap > 5 && gap < 500) frameInterval = frameInterval * 0.8 + gap * 0.2;
-  }
-  lastFrameAt = now;
-  sinceFrame = 0;
-
-  // The surface memory advances once per arrival, not once per display frame -
-  // it describes the sensor's timeline, not the display's.
-  arrivalDt = Math.min(0.5, Math.max(0.001, gap / 1000));
-  stateDirty = true;
+  livePairs.push(stampMs, now);
 
   if (colorBytes > 0) {
     pendingColor = new Uint8Array(buffer, offset + depthBytes, colorBytes);
@@ -886,6 +930,7 @@ function connect() {
   };
 
   ws.onclose = () => {
+    if (streamDetached) return;
     sensorLabel = 'disconnected — retrying';
     setStatus();
     setTimeout(connect, 1000);
@@ -894,17 +939,172 @@ function connect() {
   ws.onerror = () => ws.close();
 }
 
+// Live acquisition has to be able to go away. A timeline render or an export
+// pulls its frames from a file, and an arrival landing in the depth textures
+// underneath one of those would corrupt the image it was asked to reproduce.
+function detachStream() {
+  streamDetached = true;
+  socket?.close();
+  // The socket closing does not stop a frame that has already been parsed, so
+  // the queued JPEG goes too and any decode still in flight drops its result.
+  pendingColor = null;
+  sensorLabel = 'stream detached';
+  setStatus();
+}
+
+// ------------------------------------------------------------------ transport
+
+// Program time is the coordinate everything below reads: output seconds from the
+// start of the edit. A transport is the only thing that answers "what time is
+// it", and live viewing is the degenerate case of one rather than an exception -
+// the playhead is pinned to the newest arrival instead of being dragged along a
+// timeline or stepped at k / outputFps. That is what stops the live path drifting
+// from what the editor and the export renderer produce, since there is only ever
+// one clock and one image pipeline.
+//
+// Acquisition is a separate axis, below the renderer. A pair source answers which
+// two capture frames bracket a program position and how far between them the
+// playhead sits, and it is the only thing that knows where the bytes came from -
+// live pushes arrivals in over the socket, and step 2's indexed source will pull
+// them through the frame API. Both converge on the same two depth textures, so
+// the renderer never learns which one fed it.
+//
+// A source hands back the frames the playhead crossed as *steps*, oldest first,
+// each carrying the gap the sensor recorded before it and knowing how to make its
+// own depth current. The surface memory has to see each frame in turn, so a bare
+// list of gaps would leave step 4's pre-roll comparing the newest depth against
+// itself and computing a wake that never happened.
+
+const NOMINAL_GAP_MS = 1000 / 30;
+// Past this, a stamp step is a take boundary rather than a stall. The sample
+// capture has a real 1448ms gap in it, so the threshold has to sit well clear of
+// what a struggling sensor produces or genuine stalls get repaired away.
+const DISCONTINUITY_MS = 5000;
+const noop = () => {};
+
+class LivePairSource {
+  constructor() {
+    // The pair's stamps are a program clock built by accumulating the gaps the
+    // sensor itself reported, so the playhead advances on capture cadence rather
+    // than on however fast the socket happened to deliver.
+    this.tA = 0;
+    this.tB = 0;
+    this.arrivedAtMs = 0;
+    // Two smoothed intervals with different jobs, and conflating them is the
+    // mistake to avoid. sourceGapMs stands in for a capture gap the stamps cannot
+    // supply, and it is source time. deliveryMs is how long the pair is expected
+    // to stay the newest one, and it is wall time - measured rather than assumed
+    // at 30fps, because this stream is irregular and guessing wrong stutters
+    // worse than not blending at all.
+    this.sourceGapMs = NOMINAL_GAP_MS;
+    this.deliveryMs = NOMINAL_GAP_MS;
+    this.lastStampMs = null;
+    this.lastWallMs = 0;
+    this.pendingGapMs = 0;
+    this.pendingFrames = 0;
+  }
+
+  /** One arrival, after its depth has been swapped into the current texture. */
+  push(stampMs, wallMs) {
+    const raw = this.lastStampMs === null ? 0 : stampMs - this.lastStampMs;
+    this.lastStampMs = stampMs;
+
+    // A replay loops its capture back to the start and a grabber restart opens a
+    // new take, so the stamp can go backwards or leap a long way, and there the
+    // smoothed gap stands in - program time only ever moves forward, because a
+    // playhead that went backwards would walk the accumulators into a state no
+    // sequence of frames could have produced. A merely long gap is not that: it
+    // is a stall the sensor genuinely had, and the sample capture contains one of
+    // 1448ms. Averaging it away would age the surface memory by a twentieth of
+    // the time that actually passed and leave wakes alive that should have gone.
+    const gap = (raw > 0 && raw < DISCONTINUITY_MS) ? raw : this.sourceGapMs;
+    // The smoothed value only has to be a plausible stand-in, so the outliers stay
+    // out of it even though they are used as they are above.
+    if (raw > 5 && raw < 500) this.sourceGapMs = this.sourceGapMs * 0.8 + raw * 0.2;
+
+    const delivered = this.lastWallMs ? wallMs - this.lastWallMs : 0;
+    // Clamped so one stall does not stretch the blend across the next second.
+    if (delivered > 5 && delivered < 500) this.deliveryMs = this.deliveryMs * 0.8 + delivered * 0.2;
+    this.lastWallMs = wallMs;
+
+    this.tA = this.tB;
+    this.tB += gap;
+    this.arrivedAtMs = wallMs;
+    this.pendingGapMs += gap;
+    this.pendingFrames++;
+  }
+
+  at(programSec) {
+    const steps = [];
+    if (this.pendingFrames > 0) {
+      // Only two depth textures exist on this path, so a burst of arrivals inside
+      // one display interval has already overwritten the frames in between and
+      // their pixels are gone. One step carrying the summed gap is the best that
+      // can be done here; the indexed source can fetch every crossed frame, which
+      // is what an accurate seek needs and what this cannot give.
+      steps.push({ gapSec: this.pendingGapMs / 1000, makeCurrent: noop });
+      this.pendingGapMs = 0;
+      this.pendingFrames = 0;
+    }
+
+    const spanMs = Math.max(1, this.tB - this.tA);
+    const offsetMs = Math.min(Math.max(programSec * 1000 - this.tA, 0), spanMs);
+    return { steps, mixT: offsetMs / spanMs, sinceFrameSec: offsetMs / 1000 };
+  }
+}
+
+class LiveTransport {
+  constructor(source) { this.source = source; }
+
+  /**
+   * Live is the one transport that reads a wall clock, and it reads it for a
+   * single purpose: deciding where inside the current pair's gap the playhead
+   * sits, so a 30fps stream still blends and fades smoothly on a 120Hz display.
+   * What comes out is a program position, so nothing downstream can drift with
+   * how long the tab has been open.
+   */
+  positionAt(wallMs) {
+    const s = this.source;
+    if (!s.arrivedAtMs) return 0;
+    // Walk across the pair over one expected delivery interval, then hold. The
+    // clock only picks a position inside the gap - how far program time advances
+    // is the recorded gap and nothing else - so the wall clock decides pacing and
+    // never duration. Pacing to delivery rather than to the capture gap is
+    // deliberate: over a link slower than the sensor the two differ, and a
+    // playhead that reached the newest arrival early would sit there juddering
+    // instead of moving. Holding rather than extrapolating past it is the other
+    // half of that - a late frame extrapolated would overshoot into garbage.
+    const frac = Math.min(1, (wallMs - s.arrivedAtMs) / Math.max(1, s.deliveryMs));
+    return (s.tA + frac * (s.tB - s.tA)) / 1000;
+  }
+}
+
+const livePairs = new LivePairSource();
+const liveTransport = new LiveTransport(livePairs);
+let pairSource = livePairs;
+
+// Opened here rather than beside the socket code, because `handleFrame` pushes
+// into the pair source above. Arrivals cannot dispatch until module evaluation
+// finishes either way, but relying on that at the call site makes the ordering
+// look accidental when it is a requirement.
 connect();
 
-// ---------------------------------------------------------------- render loop
+// ------------------------------------------------------------- render pipeline
 
-// One ping-pong step of the surface memory. Kept on the render loop rather than
-// inside the socket handler so all GL work stays on one code path, and so a burst
-// of arrivals inside one display interval collapses to a single update.
-function advanceSurfaceState() {
+// One ping-pong step of the surface memory, advanced by exactly one source frame.
+// The transport calls it once per capture frame the playhead crosses, with that
+// frame's own recorded gap, because the memory describes the sensor's timeline
+// rather than the display's - and because a seek has to be able to walk it
+// forward at will, which is impossible while "a frame arrived" is what drives it.
+function advanceSurfaceState(dtSec) {
   stateUniforms.depthCurr.value = depthCurr;
   stateUniforms.statePrev.value = statePrev.texture;
-  stateUniforms.dt.value = arrivalDt;
+  // The upper bound is the discontinuity gate and nothing tighter. A lower one
+  // would undo the gate a layer down: the sample capture's real 1448ms stall
+  // would arrive here and be truncated, so wakes born before the stall would
+  // survive it with life left over - which is the failure the gate exists to
+  // prevent. Anything past the gate never reaches this call.
+  stateUniforms.dt.value = Math.min(DISCONTINUITY_MS / 1000, Math.max(0.001, dtSec));
   stateUniforms.snapDelta.value = uniforms.snapDelta.value;
 
   renderer.setRenderTarget(stateNext);
@@ -917,32 +1117,203 @@ function advanceSurfaceState() {
   uniforms.stateTex.value = statePrev.texture;
 }
 
-const clock = new THREE.Clock();
-renderer.setAnimationLoop(() => {
-  const dt = clock.getDelta();
-  uniforms.time.value = clock.getElapsedTime();
-  grade.uniforms.time.value = uniforms.time.value;
+let lastProgramTime = 0;
 
-  if (stateDirty) {
-    advanceSurfaceState();
-    stateDirty = false;
+// Clears both feedback paths. Neither can be walked backwards, so an accurate
+// seek clears them and pre-rolls forward from a known state - and all zeroes is
+// that state, since a zero last-depth reads as invalid and the first frame after
+// it comes through as births rather than as swaps.
+function resetAccumulators() {
+  const color = new THREE.Color();
+  renderer.getClearColor(color);
+  const alpha = renderer.getClearAlpha();
+  renderer.setClearColor(0x000000, 0);
+  // Three exposes no reset on the afterimage pass, so its two buffers are reached
+  // for directly. They are the whole of its state at 0.185.1, and the check is
+  // there because a rename on upgrade would fail silently: setRenderTarget of
+  // undefined binds the canvas instead, the clear lands nowhere, and the seek
+  // would quietly carry the previous image's trails into its pre-roll.
+  const feedback = [statePrev, stateNext, afterimage._textureComp, afterimage._textureOld];
+  if (!feedback.every((target) => target?.isWebGLRenderTarget)) {
+    throw new Error('afterimage internals moved: the accumulator reset is no longer complete');
+  }
+  for (const target of feedback) {
+    renderer.setRenderTarget(target);
+    renderer.clear(true, true, true);
+  }
+  renderer.setRenderTarget(null);
+  renderer.setClearColor(color, alpha);
+  lastProgramTime = 0;
+}
+
+// One image at one program position. This is the whole seam: the timeline and the
+// export transports drive exactly this call, and an accurate seek is nothing more
+// than running it repeatedly at earlier positions and throwing the results away.
+function renderProgramFrame(t) {
+  const frame = pairSource.at(t);
+  for (const step of frame.steps) {
+    step.makeCurrent();
+    advanceSurfaceState(step.gapSec);
   }
 
-  // Walk toward the newest frame over one measured interval, then hold. Holding
-  // rather than extrapolating keeps a late frame from overshooting into garbage.
-  sinceFrame += dt * 1000;
-  uniforms.mixT.value = Math.min(1, sinceFrame / Math.max(1, frameInterval));
-  uniforms.sinceFrameSec.value = sinceFrame / 1000;
+  uniforms.mixT.value = frame.mixT;
+  uniforms.sinceFrameSec.value = frame.sinceFrameSec;
+  uniforms.time.value = t;
+  grade.uniforms.time.value = t;
 
-  controls.update();
+  poseProgramCamera(t);
 
+  const dt = Math.max(0, t - lastProgramTime);
+  lastProgramTime = t;
+
+  // The delta goes in explicitly because the composer falls back to a clock of
+  // its own when render() is called bare, which would put a wall clock back
+  // inside the seam even though no pass in this chain reads the delta today.
   if (postEnabled()) composer.render(dt);
-  else renderer.render(scene, camera);
+  else renderer.render(scene, viewCamera);
+}
+
+// Navigation's own clock, kept out of the seam. The controls mutate the free
+// camera by accumulation, so calling them from inside `renderProgramFrame` would
+// make two renders at the same program time produce different images - the exact
+// coupling this step removes, arriving through a different door. They stay out
+// here, and they read a delta of their own rather than the one the render keeps.
+let lastNavTime = 0;
+
+renderer.setAnimationLoop(() => {
+  const t = liveTransport.positionAt(performance.now());
+  // Auto-orbit is the one thing the controls advance on a delta, and it gets the
+  // program delta rather than a wall clock, so the same orbit renders the same
+  // way at any output frame rate. The stall behaviour falls out of that: program
+  // time does not advance without frames, so the delta is zero and the orbit
+  // holds still instead of lurching when the next one lands.
+  controls.update(Math.max(0, t - lastNavTime));
+  lastNavTime = t;
+  renderProgramFrame(t);
 });
+
+// ------------------------------------------------------------------ drive hook
+
+// A run of capture frames pinned from a file, driving the renderer with no socket
+// and no wall clock anywhere in the loop. It is the shape the indexed source will
+// take: bracket the position, then hand back every source frame the playhead
+// crossed so the surface memory sees each one in turn.
+class PinnedPairSource {
+  constructor(buffer) {
+    const view = new DataView(buffer);
+    this.frames = [];
+    for (let off = 0; off + 16 <= buffer.byteLength;) {
+      const depthBytes = view.getUint32(off, true);
+      const colorBytes = view.getUint32(off + 4, true);
+      this.frames.push({
+        depth: new Uint16Array(buffer, off + 16, depthBytes / 2),
+        stampMs: Number(view.getBigUint64(off + 8, true)),
+      });
+      off += 16 + depthBytes + colorBytes;
+    }
+    const first = this.frames[0].stampMs;
+    this.times = this.frames.map((f) => (f.stampMs - first) / 1000);
+    this.applied = -1;
+  }
+
+  rewind() { this.applied = -1; }
+
+  makeCurrent(k) {
+    const swap = depthPrev;
+    depthPrev = depthCurr;
+    depthCurr = swap;
+    depthCurr.image.data.set(this.frames[k].depth);
+    depthCurr.needsUpdate = true;
+    uniforms.depthPrev.value = depthPrev;
+    uniforms.depthCurr.value = depthCurr;
+  }
+
+  at(programSec) {
+    const times = this.times;
+    let i = 0;
+    while (i < times.length - 2 && times[i + 1] <= programSec) i++;
+
+    // The pair is (i, i+1) and the accumulators have been walked through i+1,
+    // which is the same relationship live holds between its two arrivals. Moving
+    // backwards past that leaves them describing a future that has not happened,
+    // and there is no way to walk them back - the caller has to reset and pre-roll
+    // forward. Refusing is the point: a timeline transport that forgets to reset
+    // before a backward seek is step 4's likeliest integration bug, and silently
+    // re-aging the accumulators would hand it a subtly wrong image instead of an
+    // error.
+    if (i + 1 < this.applied) {
+      throw new Error(
+        `backward seek to ${programSec}s without a reset: the accumulators have `
+        + `already consumed frame ${this.applied}`,
+      );
+    }
+
+    const steps = [];
+    for (let k = this.applied + 1; k <= i + 1; k++) {
+      const gapSec = k === 0 ? NOMINAL_GAP_MS / 1000 : times[k] - times[k - 1];
+      steps.push({ gapSec, makeCurrent: () => this.makeCurrent(k) });
+    }
+    this.applied = i + 1;
+
+    const span = Math.max(1e-6, times[i + 1] - times[i]);
+    const offset = Math.min(Math.max(programSec - times[i], 0), span);
+    return { steps, mixT: offset / span, sinceFrameSec: offset };
+  }
+}
+
+let pinnedPairs = null;
 
 // Handles for profiling and for poking at the scene from the console.
 globalThis.__kinect = {
-  renderer, composer, scene, camera, controls, uniforms, material, bloom, afterimage, grade, geometry,
+  renderer, composer, scene, freeCamera, programCamera, controls, uniforms, material,
+  bloom, afterimage, grade, geometry, resetAccumulators, renderProgramFrame,
+  // No control switches the viewport yet - the free camera is what the live
+  // viewer shows. This is how the program camera is reached until step 5 gives
+  // it a path worth looking at and the top-down view a reason to draw its frustum.
+  setViewCamera,
+  viewCamera: () => viewCamera,
+
+  // The deterministic drive. Every claim from step 1 onward is checked through
+  // it: pin the inputs, step the playhead to an exact program position, read the
+  // image back, and see whether the same positions give the same pixels twice.
+  drive: {
+    /** Detaches the live loop and feeds a run of capture frame payloads instead. */
+    pin(buffer) {
+      renderer.setAnimationLoop(null);
+      detachStream();
+      pinnedPairs = new PinnedPairSource(buffer);
+      pairSource = pinnedPairs;
+      // Colour decode is asynchronous, so a pinned run leaves it out rather than
+      // racing it. Depth is what the accumulators read anyway.
+      uniforms.hasColor.value = 0;
+      return pinnedPairs.times.slice();
+    },
+    times() { return pinnedPairs.times.slice(); },
+    reset() {
+      pinnedPairs?.rewind();
+      resetAccumulators();
+    },
+    stepTo(t) { renderProgramFrame(t); },
+    /** Must be called in the same task as the render: the buffer is not preserved. */
+    readPixels() {
+      const gl = renderer.getContext();
+      const { drawingBufferWidth: w, drawingBufferHeight: h } = gl;
+      const pixels = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      return pixels;
+    },
+    async hashes(times) {
+      const out = [];
+      for (const t of times) {
+        renderProgramFrame(t);
+        const pixels = this.readPixels();
+        const digest = await crypto.subtle.digest('SHA-256', pixels);
+        out.push(Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join(''));
+      }
+      return out;
+    },
+  },
+
   // Reads the surface memory back off the GPU. Mostly useful for checking that a
   // static scene sheds nothing: if it does, the swap detector is firing on sensor
   // noise rather than on motion.
