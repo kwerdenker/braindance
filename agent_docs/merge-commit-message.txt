@@ -1,0 +1,53 @@
+Own libfreenect2, and take registration's 2.07ms back
+
+Merges own-libfreenect2, eight commits on this branch's own base. The driver stops
+being a URL and a branch name and becomes source this repository holds: upstream
+v0.2.1 at fd64c5d9b214df6f6a55b4419357e51083f15d93, committed under third_party
+with one tracked edit, and patches/ deleted because a patch file beside a clone
+recipe was one source in two representations that could disagree. The recipe it
+replaces cloned --depth 1 of a *branch*, so it pinned nothing and produced the
+right driver only because upstream has not committed since 2020-03-01. This repo
+has no remote and lives on one machine, so "we can re-fetch it" was never a
+property it had.
+
+Registration was then optimised twice, both proven bit-identical against a
+pristine upstream build before and after: persistent scratch buffers instead of
+9.2MB new/deleted per call, and the occlusion filter threaded. The threading is
+worth 2.07ms of registration's 5.76ms p50 on an M2 Max at four threads, measured
+interleaved A/B/A/B/A/B over three rounds, ~1000 frames per arm after 60 of warmup,
+all three paired deltas the same sign and all six arms sustaining 30.03-30.04fps.
+The capture node picks 2 rather than 4, from a sweep run there; the Mac's answer
+was 4 and 4 was the worst setting on the node.
+
+The banding is by linear index rather than by row, and that is the subtlety worth
+carrying: the scatter never bounds-checks cx on its own, so at cx < 2 a window's
+left edge is a negative offset landing in the previous row's tail, and threads
+owning adjacent row stripes would collide exactly there.
+
+CLAUDE.md is resolved as a union rather than by taking a side. The two branches
+appended different things and neither supersedes the other: this side's rules about
+closing a class rather than an instance, asserting against the resource rather than
+its bookkeeping, and confirming a mutation was caught for the reason claimed; the
+other side's rule that a run must be thrown away when the health number it reports
+is wrong, and that a tight loop cannot measure an allocation because the allocator
+hands the same block straight back.
+
+One gap is recorded rather than fixed, and it is this repo's own signature failure
+aimed at the tool that proves the vendoring. vendor-check verifies the *source
+tree* is upstream plus the declared edit. It passes identically whether the library
+that got linked was built from that tree or from a stale prefix built from
+something else - so a build that silently lost the threading passes every assertion
+it makes, and the thing that streams frames is the artifact rather than the source.
+The branch knows the principle and applied it one file over: registration-check
+rebuilds both prefixes every run precisely because "nothing about a stale library
+looks wrong". The falsification control vendor-check needs is a prefix built from
+different source, which must FAIL. Until it has one, it proves what it says about
+the source and nothing about what is loaded.
+
+Two open items come across unchanged and are the branch's own, stated in its final
+commits and in third_party/UPSTREAM.md: no GPU registration path was built, and
+nobody has yet measured whether the recovered headroom fixes the two problems it
+was for - a live viewer costing a take about 11% of its frames, and a bloom
+regression.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
