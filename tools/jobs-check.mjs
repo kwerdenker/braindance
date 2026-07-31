@@ -123,6 +123,15 @@ const MUTATIONS = {
     "      if (typeof job.lease !== 'string' || lease !== job.lease) {\n        throw new Error(`job ${id} is held by another claim, so this is not the one rendering it`);\n      }",
     '      if (false) { throw new Error(\'unreachable\'); }',
   ]] },
+  // **The control for the shadow row's positive twin.** It makes the static file
+  // server answer nothing at all, which a refusal-only row cannot tell from a
+  // route table correctly winning - and the first version of that row could not:
+  // it asserted a 404 and nothing else, so a server that served no files passed it
+  // while proving nothing about namespaces.
+  'static-serves-nothing': { file: 'server/index.js', edits: [[
+    '    const stat = statSync(resolved);',
+    "    const stat = statSync(resolved); throw new Error('serving nothing');",
+  ]] },
   // A retry that forgets what it was rendered on. The record still says a class
   // was involved once, but the next claim is unpinned, so the retry can land
   // anywhere - which is precisely a re-render on a different rasteriser, reached
@@ -487,11 +496,24 @@ try {
     `${getClaim.status}`);
 
   section('the namespace the table owns is not answerable by the file tree');
-  mkdirSync(join(root, 'web', 'jobs', 'probe'), { recursive: true });
-  writeFileSync(join(root, 'web', 'jobs', 'probe', 'leak.js'), '// planted\n');
+  // **This row was refusal-only and it was vacuous, which was proved rather than
+  // reasoned about.** It asserted a 404 and nothing else, so `static-serves-nothing`
+  // - a server whose file handler answers nothing at all - passed the whole check
+  // at 42 assertions, none failed. A 404 from a route table winning and a 404 from
+  // a file server that is simply broken are the same three digits. The identical
+  // file under a namespace the table does not declare has to come back, or the row
+  // above it is measuring nothing.
+  for (const ns of ['jobs', 'not-a-declared-namespace']) {
+    mkdirSync(join(root, 'web', ns, 'probe'), { recursive: true });
+    writeFileSync(join(root, 'web', ns, 'probe', 'leak.js'), '// planted\n');
+  }
+  const servedElsewhere = await fetch(`${URL_}/not-a-declared-namespace/probe/leak.js`);
+  check(servedElsewhere.status === 200,
+    'a file under a namespace the table does not declare is served off disk, which is what makes the next row mean anything',
+    `${servedElsewhere.status}`);
   const shadow = await fetch(`${URL_}/jobs/probe/leak.js`);
   check(shadow.status === 404,
-    'a file planted at web/jobs/ is the API\'s 404, because the owned namespaces come from the route table rather than a list',
+    'and the identical file at web/jobs/ is the API\'s 404, because the owned namespaces come from the route table rather than a list',
     `${shadow.status}`);
   rmSync(join(root, 'web', 'jobs'), { recursive: true, force: true });
 
@@ -541,7 +563,12 @@ try {
     console.log('  ...   render row skipped by --no-render, so nothing here proves a job becomes a file');
   }
 
-  check(!/\[jobs\] .*undefined/.test(serverLog()), 'the server logged no undefined while all of that ran');
+  // A row asserting the server never logged `[jobs] ... undefined` used to sit
+  // here and it is gone rather than kept. The server writes `[jobs]` in exactly
+  // one place, and nothing it interpolates there can be undefined - so no
+  // implementation this check could be pointed at would fail it. An assertion that
+  // cannot fail still increments the count, which is the part that does harm: it
+  // buys confidence with a number rather than with evidence.
 } catch (err) {
   failures++;
   assertions++;
