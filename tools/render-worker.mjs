@@ -165,6 +165,16 @@ try {
       // The project travels *in the job* rather than by name. That is what makes a
       // job self-contained: a name would resolve to whatever is in the store when
       // the worker gets round to it, which is the opposite of reproducing an edit.
+      // **Says it is alive while it renders, because the queue's only alternative
+      // is believing a dead worker forever.** A render runs for minutes or hours
+      // by design, so nothing can time a job out on duration - what the queue
+      // expires is silence, and this is the noise. Cheap and unconditional: if it
+      // fails the render still runs, and the job goes stale, which is the safe
+      // direction.
+      const beat = setInterval(() => {
+        post(`/jobs/${job.id}/heartbeat`, { lease: job.lease }).catch(() => {});
+      }, 15_000);
+      beat.unref?.();
       const result = await page.evaluate(async (j) => {
         // `restoreProject` rather than `loadProject`: the second fetches by name
         // from the store, and a job carries its document precisely so it does not
@@ -210,9 +220,11 @@ try {
       });
       if (fin.status !== 200) throw new Error(`the queue refused the report: ${fin.body.error}`);
       console.log(`[worker] ${job.id} done ${result?.output ?? ''} ${result?.frames ?? ''} frames`);
+      clearInterval(beat);
     } catch (err) {
       failed++;
       const message = String(err.message ?? err);
+      clearInterval(beat);
       console.error(`[worker] ${job.id} failed: ${message}`);
       // Reported, not swallowed. A job left `running` by a worker that walked away
       // is the state nothing can tell from a job still being rendered.

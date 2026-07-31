@@ -40,6 +40,7 @@ const V3D = 'ANGLE (Broadcom, V3D 7.1.10.2, OpenGL ES 3.1)';
 // time, because a mutation that fails every row cannot say which row is load
 // bearing - the lesson step 6 recorded when a cumulative table hid a wrong term.
 const MUTATIONS = {
+  'reserve-queued-only': { file: 'server/jobs.js', edits: [["      const holder = live.find((j) => j.output === String(output) && (j.state === 'queued' || j.state === 'running'));", "      const holder = live.find((j) => j.output === String(output) && j.state === 'queued');"]] },
   // The one the whole step exists to prevent: the queue stops caring what it is
   // dispatching to, and a re-render lands on a different rasteriser.
   'claim-ignores-renderer': { file: 'server/jobs.js', edits: [[

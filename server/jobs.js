@@ -46,10 +46,21 @@ const isTerminal = (state) => state === 'done' || state === 'failed';
  */
 export const rendererMatches = (want, have) => want === null || want === undefined || want === have;
 
+// How long a claim may go without saying anything before it is treated as gone.
+//
+// **A timeout on its own would be a guess about how long a render takes**, and
+// this design says out loud that renders are slower than real time and may run for
+// hours - so the thing that expires is not the job, it is the *silence*. A worker
+// that is alive says so while it renders, and this is only how long a dead one
+// stays believed. Generous against the worker's own interval rather than against
+// any render.
+export const STALE_MS = 120_000;
+
 export class JobStore {
-  constructor(dir, { now = Date.now } = {}) {
+  constructor(dir, { now = Date.now, staleMs = STALE_MS } = {}) {
     this.dir = dir;
     this.now = now;
+    this.staleMs = staleMs;
     // **Every state transition goes through here, one at a time.**
     //
     // `claim` lists, picks and writes, and `finish` reads, checks and writes,
@@ -226,6 +237,9 @@ export class JobStore {
       const job = mine[0];
       job.state = 'running';
       job.claimed = this.now();
+      // Stamped on the claim too, so a worker that dies before its first heartbeat
+      // still gets the full window rather than being stale the instant it starts.
+      job.heartbeat = job.claimed;
       job.worker = worker ?? null;
       job.attempts += 1;
       // A token the finisher has to present. Without it any caller could report on
@@ -301,17 +315,26 @@ export class JobStore {
   requeue(id) {
     return this.serialise(async () => {
       const job = await this.read(id);
-      // **A running job is refused rather than duplicated.** Putting one back on
-      // the queue while a worker is still rendering it lets a second worker claim
-      // it, so two machines render the same edit and whichever finishes first
-      // decides - and the first worker's own report then arrives against a lease
-      // that has moved. Requeue is for jobs that stopped, and a job that has not
-      // stopped is not one of them.
+      // **A running job is refused rather than duplicated - unless it has gone
+      // quiet, and that exception is not optional.** Refusing every running job
+      // was the first version of this and it deadlocked: a worker killed
+      // mid-render left the job `running` forever, `finish` wanted the lease that
+      // died with it, `claim` skipped it because it was not queued, and its output
+      // name stayed reserved so not even a replacement could be enqueued under it.
+      // Nothing in the program could reach that job again.
+      //
+      // What expires is the silence rather than the job. A live worker heartbeats
+      // while it renders, so a claim that has said nothing for `staleMs` is a dead
+      // one - and reclaiming it cannot duplicate a live render, because a live
+      // render would have spoken.
       if (job.state === 'running') {
-        throw new Error(
-          `job ${id} is running on ${job.worker ?? 'a worker'}, so requeueing it would put a second machine on the same render: `
-          + 'let it finish or fail first',
-        );
+        const quietFor = this.now() - (job.heartbeat ?? job.claimed ?? 0);
+        if (quietFor < this.staleMs) {
+          throw new Error(
+            `job ${id} is running on ${job.worker ?? 'a worker'} and was heard from ${Math.round(quietFor / 1000)}s ago, `
+            + `so requeueing it would put a second machine on the same render: let it finish, or wait for it to go quiet for ${Math.round(this.staleMs / 1000)}s`,
+          );
+        }
       }
       job.state = 'queued';
       job.claimed = null;
@@ -319,6 +342,26 @@ export class JobStore {
       job.worker = null;
       job.error = null;
       job.lease = null;
+      job.heartbeat = null;
+      return this.#put(job);
+    });
+  }
+
+  /**
+   * A claim saying it is still there.
+   *
+   * Held to the same lease `finish` is, because otherwise anyone could keep a dead
+   * worker's job looking alive forever - which is the deadlock this exists to end,
+   * reintroduced from the other side.
+   */
+  heartbeat(id, { lease = null } = {}) {
+    return this.serialise(async () => {
+      const job = await this.read(id);
+      if (job.state !== 'running') throw new Error(`job ${id} is ${job.state}, so there is no claim to keep alive`);
+      if (typeof job.lease !== 'string' || lease !== job.lease) {
+        throw new Error(`job ${id} is held by another claim, so this is not the one rendering it`);
+      }
+      job.heartbeat = this.now();
       return this.#put(job);
     });
   }

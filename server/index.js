@@ -865,6 +865,17 @@ const serveJobFinish = async (req, res, args) => {
   }
 };
 
+// A worker saying it is still rendering. Cheap on purpose: this is the only thing
+// standing between a machine that died and a job nothing can ever reach again.
+const serveJobHeartbeat = async (req, res, args) => {
+  try {
+    const body = await readBody(req);
+    sendJson(res, withoutLease(await JOBS.heartbeat(args[0], { lease: body.lease ?? null })));
+  } catch (err) {
+    sendJson(res, { error: err.message }, 409);
+  }
+};
+
 const serveJobRequeue = async (req, res, args) => {
   try {
     sendJson(res, await JOBS.requeue(args[0]));
@@ -981,6 +992,7 @@ const ROUTES = [
   // 404 looks like a handler having looked.
   { path: '/jobs/:id', pattern: /^\/jobs\/(?!claim$)([^/]+)$/, read: serveJob },
   { path: '/jobs/:id/finish', pattern: /^\/jobs\/([^/]+)\/finish$/, write: { methods: ['POST'], run: serveJobFinish } },
+  { path: '/jobs/:id/heartbeat', pattern: /^\/jobs\/([^/]+)\/heartbeat$/, write: { methods: ['POST'], run: serveJobHeartbeat } },
   { path: '/jobs/:id/requeue', pattern: /^\/jobs\/([^/]+)\/requeue$/, write: { methods: ['POST'], run: serveJobRequeue } },
 ];
 
