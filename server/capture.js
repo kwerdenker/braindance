@@ -211,6 +211,10 @@ export class Capture {
     // the first place.
     this.leases = 0;
     this.usedAt = 0;
+    // Set when this capture has been dropped from the map while a reader still holds
+    // it. Nothing can reach it again, so the last lease to be released is the only
+    // thing left that can close it - see `forgetCapture`.
+    this.doomed = false;
   }
 
   get frameCount() {
@@ -283,6 +287,19 @@ export class Capture {
 
     const depthBytes = payload.readUInt32LE(0);
     const colorBytes = payload.readUInt32LE(4);
+    // The frame's own two lengths have to add up to the frame. Only the depth length
+    // was checked, so a colour length that overstated the payload sized `out` larger
+    // than the copy that follows fills it - and `allocUnsafe` hands back whatever was
+    // in that memory, so the tail of the served frame was this process's own
+    // recycled heap. Checked here rather than in the scan because this is the path
+    // that builds a new buffer from the two numbers; at divisor 1 the payload is
+    // returned exactly as the file holds it, which is what the format promises.
+    if (16 + depthBytes + colorBytes !== payload.length) {
+      throw new Error(
+        `frame ${n} declares ${depthBytes} depth and ${colorBytes} colour bytes, which is not the `
+        + `${payload.length - 16} it carries: refusing rather than sampling past the frame`,
+      );
+    }
     if (depthBytes !== DEPTH_W * DEPTH_H * 2) {
       throw new Error(
         `frame ${n} carries ${depthBytes} depth bytes, not the ${DEPTH_W}x${DEPTH_H} grid `
@@ -386,14 +403,37 @@ export const MAX_OPEN_CAPTURES = 24;
 // directory twice does not stat and parse every take twice.
 const indexCache = new Map();
 
+// Scans in flight, keyed by path. The promise rather than the result, for the same
+// reason `openCapture` memoises one: a take being written moves its size and its
+// modification time continuously, so every request that reaches the staleness test
+// above fails it, and the gallery on the node's own panel polls. Without this, each
+// poll started its own full read plus sha256 of the same multi-gigabyte file, in
+// parallel, against the disk the recorder is writing to.
+const indexPending = new Map();
+
 export async function cachedIndex(capturePath) {
   const path = resolve(capturePath);
   const st = await stat(path);
   const held = indexCache.get(path);
   if (held && held.bytes === st.size && held.mtimeMs === st.mtimeMs) return held;
-  const index = await loadIndex(path);
-  indexCache.set(path, index);
-  return index;
+  const running = indexPending.get(path);
+  if (running) return running;
+  const started = loadIndex(path);
+  indexPending.set(path, started);
+  started.then(
+    (index) => {
+      // Only if this scan is still the one in flight. `forgetCapture` clears the
+      // entry when the file changes underneath, and a scan that finished after that
+      // is describing bytes that are already gone - caching it would put the state
+      // this whole module invalidates for straight back into the map.
+      if (indexPending.get(path) === started) {
+        indexCache.set(path, index);
+        indexPending.delete(path);
+      }
+    },
+    () => { if (indexPending.get(path) === started) indexPending.delete(path); },
+  );
+  return started;
 }
 
 /**
@@ -429,13 +469,30 @@ export async function readHelloOnce(capturePath, index) {
   }
 }
 
-/** Drops a take's cached index, for a file this process just changed underneath. */
+/**
+ * Drops a take's cached index, for a file this process just changed underneath.
+ *
+ * **The descriptor goes with it, whenever the last reader lets go.** This used to
+ * close only when the lease count was already zero, and then drop the map entry
+ * anyway - so a delete, a reclaim or a take closing while a gallery tile was mid-skim
+ * left a `FileHandle` that nothing could reach and nothing would ever close.
+ * `withCapture`'s `finally` only decremented. On Node 26 that is fatal rather than
+ * untidy: a `FileHandle` collected unclosed throws `ERR_INVALID_STATE` from the
+ * garbage collector, at the top level, where there is nothing to catch it - measured
+ * on v26.0.0, process gone, taking the listener, every socket and whatever the
+ * recorder's write stream still had buffered. The gallery leases per pointer move
+ * and Delete is a button on the same tile, so the two are one gesture apart.
+ */
 export function forgetCapture(capturePath) {
   const path = resolve(capturePath);
   indexCache.delete(path);
+  indexPending.delete(path);
   const pending = openCaptures.get(path);
   openCaptures.delete(path);
-  pending?.then((capture) => { if (capture.leases === 0) capture.close().catch(() => {}); }, () => {});
+  pending?.then((capture) => {
+    capture.doomed = true;
+    if (capture.leases === 0) capture.close().catch(() => {});
+  }, () => {});
 }
 
 /**
@@ -502,6 +559,11 @@ export async function withCapture(capturePath, fn) {
     return await fn(capture);
   } finally {
     capture.leases--;
+    // The last lease on a capture nobody can reach any more is what closes it. Not
+    // an optimisation: an unclosed `FileHandle` is a process death on Node 26 - see
+    // `forgetCapture` for the measurement - and this is the only place left holding
+    // a reference to one.
+    if (capture.doomed && capture.leases === 0) await capture.close().catch(() => {});
   }
 }
 

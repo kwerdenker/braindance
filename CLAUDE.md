@@ -58,6 +58,24 @@ and the check reported a clean pass. Rewritten through `renderer.setScissor` it 
 have it move a number the check already prints, or the verdict is about the mutation rather
 than about the check.
 
+**And the converse, which is worse, because it reads as coverage: before believing a mutation
+was *caught*, confirm it was caught for the reason claimed.** Step 7 built a plant for the
+route sweep - a read route that writes a document and puts it back inside the same request,
+which a before-and-after comparison of the contents cannot see by construction, since both
+readings are taken outside the request. It failed two rows, and one of them was the contents
+comparison it was written to walk past. The reason had nothing to do with the property under
+test: APFS keeps modification times to the nanosecond, `utimesSync` takes a `Date` carrying
+milliseconds, and the 0.13ms the restore could not put back is what failed the row -
+`1785523816453.8726` against `1785523816454`. On a filesystem with coarser stamps the identical
+plant walks straight through, so the control was asserting the platform rather than the design,
+while looking exactly like a control that works. **This was found by measuring, not by reading**
+- the mutation was run and the two snapshots diffed field by field, which is the only thing that
+distinguishes a row that went red for its own reason from one that went red for a neighbouring
+one. The fix was to rebuild the plant so nothing about it depends on the filesystem:
+write-then-remove touches nothing that survives, leaves the listing identical, and moves only
+the monotonic write count. It now fails that one row and leaves the contents row passing, which
+is what makes the count load-bearing rather than a second way of saying the same thing.
+
 **A mutation run that exits non-zero with zero failed assertions did not run.** Both tools
 refuse a mutation whose anchor text they cannot find, and Playwright occasionally dies with
 `Execution context was destroyed` partway through a run - and all three outcomes exit 1,
@@ -80,6 +98,53 @@ preset's 0.22 is about one part in 255, so reverting its reference grid moved ev
 number by 4% - the probe needed the slider at full. And an export at the editor's
 own buffer size cannot tell an output size that reached the renderer from one that
 did not - that probe needed a size the editor is not.
+
+**Close the class, not the instance — and have the check enumerate it.** A review of step 7
+found six HTTP routes that changed something while dispatching on the path alone, one at a
+time, which makes six a floor rather than a total. Fixing them individually would have left
+the next route anybody adds outside the list. The routes are now one table that *is* the
+dispatch, served at `/library/routes`, and `library-check` walks it: every route with a write
+handler is asked for its method, its content type and its origin, so a route added later is
+asked by existing. Enumerating turned up four mutating routes the individual poking missed -
+`/library/delete/:id`, `/library/sync-marks/:id`, `/record/mark` and `/presets/:name`, ten
+against six. **The falsification control has to be a mutation that adds a mutating route
+without registering it** — and for one round this paragraph said so while the suite had
+no such mutation. What it had was `stop-route-reads`, which *moves* `/record/stop`'s
+handler into the `read` slot, caught by a hardcoded floor on the route counts
+(`mutating.length >= 10 && writeOnly.length >= 7`). Moving a route drops both counts and
+trips the floor; **adding** one moves neither in the failing direction, so the floor was
+blind by construction to the shape this paragraph names. A planted read route writing a
+project passed the whole suite at 241 of 241, exit 0, with its file on disk afterwards.
+`read-route-writes` is the control now, and what catches it is a snapshot of every store
+rather than a count of registered routes — because a count cannot answer "did a read
+handler mutate something".
+
+**Two agreements made that sweep blind, and both are the same question as step 6's
+aspect ratio.** The shooting server was spawned with **no `--projects` and no
+`--presets`**, so three of the library's five stores sat outside the one directory being
+snapshotted — which is the mechanical reason the plant was invisible. And the
+**recording** take's id was substituted into every `:id`, where `beingRecorded` answers
+409 before the handler runs: five capture routes were driven and never executed, counted
+as swept and not swept. The sweep now drives an open take and a closed one, GET and HEAD,
+document names that exist and names that do not, and asserts by name that every route got
+past the 409 — with any route it cannot build a concrete URL for named rather than
+silently driven at a URL still carrying a literal `:foo`.
+
+**Assert against the resource, not against the bookkeeping that claims to track it.**
+`/library/descriptors` reported `openCaptures.size`, and the bug underneath it dropped the map
+entry while leaving the `FileHandle` open - so the number *fell* while the real count rose, and
+an arm reading it watched a descriptor leak and recorded a descriptor being released, 0 against
+a real 2. It reports `readdirSync('/dev/fd').length` beside it now and the arm asserts on that.
+The same question is worth asking of any count a proof tool reads back from the thing under
+test.
+
+**`p.x.__proto__ = v` in a probe is not what a file on disk does.** Assignment invokes the
+`__proto__` setter and creates no own property at all, so `Object.entries` never sees it and
+the document handed to the loader is unchanged - two rows labelled `__proto__` passed against
+a build that accepted `__proto__`, because the probe never contained one. `JSON.parse` and
+`Object.defineProperty` both create the own, enumerable property that a real file produces.
+This is the mirror of the `JSON.stringify` trap already recorded above: values sent as source
+survive, except this one key, where source is the shape that does not.
 
 **A mean absolute difference cannot see noise that moved.** Grain that has shifted
 is as different from grain that has not as grain that has thinned, so both grade
@@ -146,6 +211,26 @@ disjoint pair as a hole until measured otherwise. The fix was one cross-build ar
 1920x1080 and a `scale-by-width` mutation, which now fails that row and leaves every other
 assertion in the file passing.
 
+**That rule has a second form, and it hides better: not every arm agreeing about one
+quantity, but every observation of a single *object* switched off at once, each for its own
+locally defensible reason.** Step 7's route sweep watched five stores, a write counter and the
+recorder's own state, and a read route appending 64KB to the take being recorded passed all
+251 assertions at exit 0 — leaving nine 4096-byte runs of 0x07 in the file and
+`stream desync at 6349028: expected magic KNCT, got 0x7070707` when it finally closed. Three
+decisions assembled into that hole and every one of them is right on its own: the open take's
+size and modification time are excluded from the snapshot **by name**, because they move on
+their own and comparing them would flake; no write counter covers the captures directory,
+because the counters were built for the document stores; and the recorder's state field tracks
+the recorder rather than the file, which is what it is for. Reading any one of them finds
+nothing wrong. **The file they all skipped was the take being shot** — the most valuable thing
+in the system, excluded on purpose, for a good reason.
+
+So ask the question in both directions. Not only "what do my arms agree about", but **"is there
+an object here that every observation happens to skip"** — and be most suspicious where the
+skipping was deliberate, because a deliberate exclusion comes with a justification that stops
+anybody looking twice. The fix was to assert the identity `bytes === on-disk size` after the
+take closes, where nothing is in flight and it is exact, with `plant-open-take` as the control.
+
 ## Proof tools
 
 Each takes a running server and exits non-zero on failure.
@@ -168,6 +253,12 @@ node tools/export-check.mjs --mutate pointsize-absolute   # ... and must FAIL mu
 
 `--clock` refuses a rev whose `main.js` already contains the transport, so it needs
 `--before` pointing at a commit before step 1.
+
+`library-check` exits **2**, not 0, when a claim went unproven - the low-space refusal needs a
+real small filesystem and only macOS gets one here. The verdict line says so too. Anything
+gating on `!== 0` therefore treats a Linux run as not-a-pass, which is the intended reading:
+"some claims were not tested here" and "a claim failed" are different answers and 1 already
+means the second.
 
 `--mutate <name>` serves a deliberately broken `main.js` into the running server and is
 expected to exit non-zero. Both tools refuse a mutation whose text they cannot find exactly

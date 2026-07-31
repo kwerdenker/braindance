@@ -109,12 +109,32 @@ export async function readMarks(capturePath) {
 }
 
 /**
+ * How many times anything in this process has written a mark log, ever.
+ *
+ * **A counter, because contents can be put back and a counter cannot.** The route
+ * sweep in `library-check` asserts that no route answering GET changes anything, and
+ * it did that by reading the stores before and after - which a handler that writes and
+ * restores inside the same request defeats by construction, since both readings are
+ * taken outside it. Restoring the bytes is easy and restoring the modification time is
+ * one `utimes` away. What no restore can undo is that the write happened, so the sweep
+ * asserts on this and the snapshot becomes the second opinion rather than the only one.
+ *
+ * Monotonic and never reset. A counter something can set back is the contents problem
+ * again with an extra step.
+ */
+let markWrites = 0;
+export const markWriteCount = () => markWrites;
+
+/**
  * Appends records. Append-only is what makes this safe without a lock: a crash
  * keeps every mark written before it, and two writers interleave into a log the
  * resolver can still read.
  */
 export async function appendMarks(capturePath, records) {
   const lines = records.map((rec) => `${JSON.stringify(rec)}\n`).join('');
+  // Counted before the await, so a write that fails partway still counts as having
+  // touched the log - which is the honest answer for an append that may have landed.
+  if (lines) markWrites++;
   if (lines) await appendFile(marksPathFor(capturePath), lines);
 }
 
@@ -125,10 +145,46 @@ export async function appendMarks(capturePath, records) {
  * descriptor, so a directory of two hundred takes costs two hundred sidecar reads
  * and nothing that stays open.
  */
-async function describeTake(dir, file) {
+async function describeTake(dir, file, recording) {
   const path = join(dir, file);
   const id = captureIdFor(path);
   const st = await stat(path);
+
+  // **The take being written is described without being scanned.** Its size and its
+  // modification time move continuously, which is exactly the staleness test
+  // `cachedIndex` uses - so every `/library/*` request re-ran a full read plus
+  // sha256 over the in-progress take, and the gallery on the node's own panel is the
+  // caller. On a 4.4 GB take that is minutes of disk contention against the
+  // recorder's own writes, which is what turns a slow card into dropped frames.
+  //
+  // What is left out is everything a scan produces. A hash over a file still growing
+  // would name bytes that no longer describe it a moment later, and a frame count
+  // taken mid-write is a number that was true once - so this reports null rather
+  // than a figure that reads like a fact, and says the take is recording, which is
+  // what the tile actually has to draw.
+  if (recording) {
+    return {
+      id,
+      file,
+      bytes: st.size,
+      hash: null,
+      frames: null,
+      durationSec: 0,
+      capturedAt: st.mtimeMs,
+      dateSource: 'mtime',
+      truncated: false,
+      hasHello: null,
+      hello: null,
+      openable: false,
+      recording: true,
+      // Cheap and it is the one thing that is true mid-take: marks pressed in the
+      // room land in the sidecar, and the sidecar is beside the take rather than in
+      // it. Held marks are still on the recorder until it closes, so this is the
+      // ones already flushed.
+      marks: await readMarks(path),
+    };
+  }
+
   const index = await cachedIndex(path);
   const stamps = index.frames.stampMs;
   const hello = await readHelloOnce(path, index);
@@ -169,6 +225,7 @@ async function describeTake(dir, file) {
     // Two frames is the floor for a pair source, so a shorter take lists and
     // refuses to open. Named here rather than discovered in the editor.
     openable: Boolean(index.hello) && stamps.length >= 2,
+    recording: false,
     marks,
   };
 }
@@ -178,7 +235,7 @@ async function describeTake(dir, file) {
  * capture with a desynced stream must not take the gallery down with it, because
  * the gallery is where you would go to delete it.
  */
-export async function scanTakes(dir) {
+export async function scanTakes(dir, recordingPath = null) {
   let files;
   try {
     files = (await readdir(dir)).filter(isKnct).sort();
@@ -189,7 +246,7 @@ export async function scanTakes(dir) {
   const unreadable = [];
   for (const file of files) {
     try {
-      takes.push(await describeTake(dir, file));
+      takes.push(await describeTake(dir, file, recordingPath !== null && join(dir, file) === recordingPath));
     } catch (err) {
       unreadable.push({ id: captureIdFor(file), file, error: err.message });
     }
@@ -252,17 +309,23 @@ export class NodeLink {
  */
 export function reconcile(localTakes, nodeTakes) {
   const byHash = new Map();
+  // A take still being written has no hash yet, on purpose - see `describeTake`.
+  // Two of those would collide onto one key and become one entry, so an unhashed
+  // take is keyed by where it is and what it is called. That is not identity and it
+  // is not meant to be: a take mid-write cannot be reconciled with anything, because
+  // the bytes it would be reconciled on do not exist yet.
+  const keyOf = (take, side) => take.hash ?? `${side}:${take.id}`;
   for (const take of localTakes) {
-    byHash.set(take.hash, { ...take, state: 'local', local: take, remote: null });
+    byHash.set(keyOf(take, 'local'), { ...take, state: 'local', local: take, remote: null });
   }
   for (const take of nodeTakes ?? []) {
-    const held = byHash.get(take.hash);
+    const held = byHash.get(keyOf(take, 'remote'));
     if (held) {
       held.state = 'both';
       held.remote = take;
       continue;
     }
-    byHash.set(take.hash, { ...take, state: 'remote', local: null, remote: take });
+    byHash.set(keyOf(take, 'remote'), { ...take, state: 'remote', local: null, remote: take });
   }
   const out = [...byHash.values()];
   out.sort((a, b) => b.capturedAt - a.capturedAt);
@@ -278,10 +341,27 @@ export function reconcile(localTakes, nodeTakes) {
  * anyway since the rate depends on capture rate and compression.
  */
 export async function remaining(dir, bytesPerSec = FRAME_BYTES * NOMINAL_FPS) {
-  const fs = await statfs(dir);
+  let fs;
+  try {
+    fs = await statfs(dir);
+  } catch (err) {
+    // A directory that is not there answers `ENOENT: no such file or directory,
+    // statfs '/...'`, and that used to reach the operator raw through
+    // `/record/state` and `/library/all` - so a node whose captures directory is
+    // missing booted disarmed with nothing on screen saying why. The boot creates
+    // the directory now; this is what is left when it could not, and it says the
+    // thing rather than the errno.
+    return {
+      freeBytes: 0,
+      bytesPerSec,
+      secondsLeft: 0,
+      label: 'no room reported',
+      error: `there is no captures directory at ${dir}: ${err.message}`,
+    };
+  }
   const freeBytes = fs.bavail * fs.bsize;
   const secondsLeft = bytesPerSec > 0 ? freeBytes / bytesPerSec : Infinity;
-  return { freeBytes, bytesPerSec, secondsLeft, label: durationLabel(secondsLeft) };
+  return { freeBytes, bytesPerSec, secondsLeft, label: durationLabel(secondsLeft), error: null };
 }
 
 export function durationLabel(sec) {
@@ -363,21 +443,32 @@ export async function hashFile(path) {
  * copy that may since have been truncated - which is the one failure this tool
  * cannot afford. So the caller hands in the hash the surviving copy actually
  * reported, and this compares it to the take's own.
+ *
+ * **The take's own hash is re-derived here rather than read off the sidecar.** It
+ * used to come from `cachedIndex`, which is the manifest's cache - and the reclaim
+ * path above already re-hashes for the exact reason this one did not, that a listing
+ * may since have been truncated. So the irreversible action was carrying the weaker
+ * check: a same-size, same-modification-time substitution is invisible to the
+ * sidecar, the listing keeps reporting the old hash, and a delete built on that
+ * listing removed a file whose bytes nobody had looked at. That substitution is what
+ * `library-check` already constructs as the falsification control for reclaim, so
+ * the technique that would have caught this was sitting in the tool. Delete is the
+ * one thing here that cannot be undone; it pays for the read.
  */
 export async function removeTake(dir, id, { hash, verifiedElsewhere = null }) {
   if (!VALID_ID.test(id)) throw new Error(`unusable take id ${id}`);
   const path = join(dir, `${id}.knct`);
-  const index = await cachedIndex(path);
-  if (index.hash !== hash) {
+  const actual = await hashFile(path);
+  if (actual !== hash) {
     throw new Error(
-      `${id} is ${index.hash} here, not the ${hash} this removal named: `
+      `${id} is ${actual} here, not the ${hash} this removal named: `
       + 'the library moved underneath the request and nothing was removed',
     );
   }
-  if (verifiedElsewhere !== null && verifiedElsewhere !== index.hash) {
+  if (verifiedElsewhere !== null && verifiedElsewhere !== actual) {
     throw new Error(
       `refusing to reclaim ${id}: the copy that is supposed to survive reports `
-      + `${verifiedElsewhere}, not ${index.hash} - that is a different take, and this `
+      + `${verifiedElsewhere}, not ${actual} - that is a different take, and this `
       + 'would be deleting the last copy of both',
     );
   }
@@ -388,7 +479,7 @@ export async function removeTake(dir, id, { hash, verifiedElsewhere = null }) {
   // correction someone made on this machine.
   await unlink(indexPathFor(path)).catch(() => {});
   forgetCapture(path);
-  return { removed: `${id}.knct`, hash: index.hash };
+  return { removed: `${id}.knct`, hash: actual };
 }
 
 // ------------------------------------------------- projects and the preset library
@@ -403,6 +494,11 @@ export class DocumentStore {
   constructor(dir, kind) {
     this.dir = dir;
     this.kind = kind;
+    // Every write and every removal this store has ever done. Monotonic, never
+    // reset, and the reason it exists is `markWriteCount` above: a handler that
+    // writes and puts the bytes back is invisible to a before-and-after reading of
+    // the contents, and this is the quantity no restore can undo.
+    this.writes = 0;
   }
 
   pathFor(name) {
@@ -446,15 +542,44 @@ export class DocumentStore {
   }
 
   /**
-   * Writes a document, stamping the format version on the way in.
+   * Writes a document, after checking this build can interpret it.
+   *
+   * **A version that is present and is not this one is refused, never restamped.**
+   * This used to spread `{ ...body, version: PROJECT_VERSION }`, which took a
+   * `version: 2` document, wrote `version: 1` over the top and kept every v2 field
+   * underneath - so a project from a future build landed in the store looking like
+   * one this build authored, and the loader that refuses four kinds of bad version
+   * never saw a wrong one. That is precisely the failure the version field was
+   * chosen over an authored buffer height to prevent: a version answers "can this
+   * build faithfully interpret this document", and a writer that answers it by
+   * overwriting the question is not answering it.
+   *
+   * An **absent** version is stamped rather than refused, because for a document
+   * this build authored the store is the writer of record - a preset is saved as a
+   * mode and a set of values and gets its version here. What that admits is an
+   * unversioned blob becoming a version 1 document, and the load path is the second
+   * gate on that: it refuses seventeen malformed shapes field by field.
    *
    * Written aside and renamed, for the same reason step 2's sidecar is: a crash
    * partway through a write must not leave a file that parses and describes
    * something that was never saved.
    */
   async write(name, body) {
-    await mkdir(this.dir, { recursive: true });
+    if (body?.version !== undefined && body.version !== PROJECT_VERSION) {
+      throw new Error(
+        `this ${this.kind} says version ${JSON.stringify(body.version)}, and this build writes `
+        + `version ${PROJECT_VERSION}: refused rather than restamped, because a document this build `
+        + 'cannot faithfully interpret is exactly what the version field exists to catch',
+      );
+    }
+    // Counted past both refusals and before anything touches the disk. A version this
+    // build cannot interpret and a name that is not a name both wrote nothing, so
+    // neither counts; a write that fails partway may well have landed, so it does.
+    // `pathFor` moved above the `mkdir` for the same reason it moved above the count -
+    // an unusable name should not leave a directory behind either.
     const path = this.pathFor(name);
+    this.writes++;
+    await mkdir(this.dir, { recursive: true });
     const text = `${JSON.stringify({ ...body, version: PROJECT_VERSION }, null, 2)}\n`;
     await writeFile(`${path}.tmp`, text);
     await rename(`${path}.tmp`, path);
@@ -462,7 +587,11 @@ export class DocumentStore {
   }
 
   async remove(name) {
-    await unlink(this.pathFor(name));
+    // Below `pathFor` for the reason `write` is: a name that cannot name a document
+    // removed nothing, so it must not count as a write.
+    const path = this.pathFor(name);
+    this.writes++;
+    await unlink(path);
     return { removed: name };
   }
 }

@@ -1094,19 +1094,40 @@ function writeControl(name, value) {
 // would be machinery for a problem nobody has.
 let paramWritten = () => {};
 
+/**
+ * The registry's door, and every way in goes through it.
+ *
+ * **`PARAMS[name]` is not a membership test.** `PARAMS` is an object literal, so it
+ * inherits from `Object.prototype` - and `constructor`, `toString`, `valueOf` and
+ * `__proto__` all answer something truthy there. Gating on truthiness let every one
+ * of those names through where `wibble` was refused, so a project file naming
+ * `__proto__` as a track put `__proto__` in `tracks`, `normalise` read `min`, `max`
+ * and `step` off a function and made NaN out of undefined, and the page threw
+ * somewhere mid-render. That is a failure *inside* the evaluator instead of a
+ * decision at the door, which is the entire class of thing the door exists for.
+ *
+ * `Object.hasOwn` asks the question that was meant: is this one of the parameters
+ * this build declares. One helper rather than four spellings of the check, because
+ * four spellings is how three of them came to be `PARAMS[name]` and one `name in
+ * PARAMS` - which is the same hole written two ways.
+ */
+function specOf(name) {
+  if (!Object.hasOwn(PARAMS, name)) throw new Error(`unknown parameter ${JSON.stringify(name)}`);
+  return PARAMS[name];
+}
+
 const params = {
   spec(name) {
-    const spec = PARAMS[name];
-    if (!spec) throw new Error(`unknown parameter ${name}`);
+    const spec = specOf(name);
     return { default: spec.def, min: spec.min, max: spec.max, step: spec.step, kind: spec.kind, tag: spec.tag };
   },
   names(tag) {
     return Object.keys(PARAMS).filter((n) => !tag || PARAMS[n].tag === tag);
   },
   get(name) {
-    if (!(name in PARAMS)) throw new Error(`unknown parameter ${name}`);
+    const spec = specOf(name);
     const v = values.get(name);
-    return PARAMS[name].kind === 'pose' ? { ...v, position: [...v.position], quaternion: [...v.quaternion] } : v;
+    return spec.kind === 'pose' ? { ...v, position: [...v.position], quaternion: [...v.quaternion] } : v;
   },
   /**
    * What `set` would store, without storing it. A key holds a parameter's value,
@@ -1115,14 +1136,11 @@ const params = {
    * positions the slider cannot express, differing for a reason nothing records.
    */
   normalise(name, value) {
-    const spec = PARAMS[name];
-    if (!spec) throw new Error(`unknown parameter ${name}`);
-    return normalise(name, spec, value);
+    return normalise(name, specOf(name), value);
   },
   /** The single write path. Everything - UI, presets, step 5's tracks - goes here. */
   set(name, value) {
-    const spec = PARAMS[name];
-    if (!spec) throw new Error(`unknown parameter ${name}`);
+    const spec = specOf(name);
     const v = normalise(name, spec, value);
     values.set(name, v);
     spec.apply(v);
@@ -5212,17 +5230,29 @@ let recordState = { armed: false, recording: false, takeId: null, startedAt: nul
 function paintRecord(storage) {
   if (!ui.recGo) return;
   const rec = recordState.recording;
+  // A server that cannot record at all says so on the button rather than offering
+  // one that fails when pressed. The replay server is the case, and it is one click
+  // away in the setup this repo documents: before this the button was unconditional,
+  // and pressing it on a replay opened a take, threw on every frame, and took the
+  // live stream down while `/record/state` went on reporting a healthy recording.
+  const blocked = recordState.cannotRecord ?? null;
+  ui.recGo.disabled = Boolean(blocked);
+  ui.recGo.title = blocked ?? '';
   ui.recGo.textContent = rec ? 'stop' : 'record';
   ui.recGo.setAttribute('aria-pressed', String(rec));
   ui.recMark.disabled = !rec;
-  ui.recNote.textContent = rec
+  ui.recNote.textContent = blocked ?? (rec
     ? `${recordState.takeId} · ${recordState.frames} frames`
-    : (recordState.armed ? 'armed, waiting for the sensor' : 'not recording');
+      + (recordState.dropped ? ` · ${recordState.dropped} dropped to a slow disk` : '')
+    : (recordState.armed ? 'armed, waiting for the sensor' : 'not recording'));
   if (storage) {
-    ui.recSpace.textContent = `${storage.label} left at current settings`;
+    // A directory that is not there is a different problem from one that is full,
+    // and the operator gets the sentence rather than the errno that used to arrive
+    // here raw.
+    ui.recSpace.textContent = storage.error ?? `${storage.label} left at current settings`;
     // The warning is load-bearing rather than polish: with manual-only deletion the
     // card genuinely fills, and unattended the failure lands mid-shoot.
-    ui.recSpace.classList.toggle('low', storage.secondsLeft < 15 * 60);
+    ui.recSpace.classList.toggle('low', Boolean(storage.error) || storage.secondsLeft < 15 * 60);
   }
 }
 
@@ -5238,7 +5268,12 @@ if (ui.recGo) {
   ui.recGo.addEventListener('click', async () => {
     ui.recGo.disabled = true;
     try {
-      const res = await fetch(recordState.recording || recordState.armed ? '/record/stop' : '/record/start', { method: 'POST' });
+      // The content type is not decoration: a route that changes something refuses
+      // a request that does not declare JSON, because that declaration is the one
+      // thing a page you merely visit cannot make without asking permission first.
+      const res = await fetch(recordState.recording || recordState.armed ? '/record/stop' : '/record/start', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
       const body = await res.json();
       if (body.error) ui.recNote.textContent = body.error;
     } finally {

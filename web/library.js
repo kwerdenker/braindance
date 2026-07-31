@@ -54,6 +54,22 @@ async function jsonOf(url, init) {
   return body;
 }
 
+/**
+ * Every call on this page that changes something, in one shape.
+ *
+ * The method and the JSON content type are both required by the server now, and the
+ * content type is the load-bearing half: a page you merely visit can send a
+ * cross-origin POST without asking permission, but it cannot declare
+ * `application/json` while doing it. Written once here because three call sites each
+ * spelling out their own headers is three chances for one of them to be the request
+ * that gets refused in front of an operator.
+ */
+const post = (url, body) => jsonOf(url, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body ?? {}),
+});
+
 // ------------------------------------------------------------------ the skim frame
 
 /**
@@ -139,8 +155,15 @@ function buildTile(take) {
   // genuinely different takes under one name, the library lists them as two
   // entries, and a tile keyed by name would be two tiles one selector cannot tell
   // apart - which is the same mistake the reconciliation refuses one layer down.
-  tile.dataset.hash = take.hash;
+  tile.dataset.hash = take.hash ?? '';
   tile.dataset.state = take.state;
+  // A take the recorder still has open. It is deliberately unscanned - no hash, no
+  // frame count, no duration - because scanning a file that is still growing costs a
+  // full read and a sha256 of a multi-gigabyte take against the disk the recorder is
+  // writing to, and produces numbers that stop being true immediately. So its tile
+  // says what it is rather than drawing zeros that look like facts.
+  const shooting = take.recording === true;
+  tile.dataset.recording = String(shooting);
   const divisor = DIVISOR[take.state] ?? 1;
   const marks = take.marks ?? [];
   const durationMs = Math.max(1, take.durationSec * 1000);
@@ -150,17 +173,18 @@ function buildTile(take) {
       ${divisor > 1 ? `<span class="coarse">decimated ÷${divisor}</span>` : ''}</div>
     <div class="bar"><span class="done"></span><span class="pos"></span></div>
     <div class="meta">
-      <div class="top"><span class="name">${take.id}</span><span class="dur">${mmss(take.durationSec)}</span></div>
+      <div class="top"><span class="name">${take.id}</span><span class="dur">${shooting ? '···' : mmss(take.durationSec)}</span></div>
       <div class="sub">
         <span class="state ${take.state}"><i></i>${take.state === 'remote' ? 'node' : take.state}</span>
         <span>${gb(take.bytes)}</span>
-        <span>${take.frames} frames</span>
+        <span>${shooting ? 'recording now' : `${take.frames} frames`}</span>
         <span>${marks.length ? `${marks.length} mark${marks.length === 1 ? '' : 's'}` : 'no marks'}</span>
-        <span>${take.hash.slice(0, 15)}…</span>
+        <span>${shooting ? 'no hash until it closes' : `${take.hash.slice(0, 15)}…`}</span>
         <span>${stamp(take.capturedAt)}${take.dateSource === 'mtime' ? ' (file date)' : ''}</span>
         ${take.truncated ? '<span class="flag">truncated — writer stopped mid-frame</span>' : ''}
-        ${take.hasHello ? '' : '<span class="flag">no sensor hello — intrinsics unknown</span>'}
-        ${take.frames < 2 ? '<span class="flag">under two frames — nothing to bracket</span>' : ''}
+        ${take.hasHello === false ? '<span class="flag">no sensor hello — intrinsics unknown</span>' : ''}
+        ${!shooting && take.frames < 2 ? '<span class="flag">under two frames — nothing to bracket</span>' : ''}
+        ${shooting ? '<span class="flag">still being written — stop the take to open, download or remove it</span>' : ''}
       </div>
       <div class="acts"></div>
     </div>`;
@@ -192,8 +216,16 @@ function buildTile(take) {
     return b;
   };
 
-  if (take.state === 'remote') {
-    button('Download', 'primary', () => run(tile, `downloading ${take.id}`, () => jsonOf(`/library/download/${take.id}`, { method: 'POST' })));
+  if (shooting) {
+    // Every action on this tile needs a hash the take does not have yet, and the
+    // server refuses all three for exactly that reason. Buttons that are there and
+    // say why beat buttons that are missing: the library runs on the node's touch
+    // panel, where a control that vanishes reads as the page being broken.
+    const why = 'this take is still being recorded, so it has no hash to verify anything against';
+    button('Open', 'primary', () => {}, true, why);
+    button('Delete', 'danger', () => {}, true, why);
+  } else if (take.state === 'remote') {
+    button('Download', 'primary', () => run(tile, `downloading ${take.id}`, () => post(`/library/download/${take.id}`)));
   } else {
     // A take that cannot be opened says so on the button rather than throwing when
     // pressed. Two frames is the floor for a pair source and a hello is what
@@ -204,10 +236,10 @@ function buildTile(take) {
       : take.frames < 2 ? 'a take needs two frames to bracket a position' : '';
     button('Open', 'primary', () => { location.href = `/?take=${encodeURIComponent(take.id)}`; }, !take.openable, why);
   }
-  if (take.state === 'both') {
-    button('Reclaim', '', () => askReclaim(tile, take));
+  if (!shooting) {
+    if (take.state === 'both') button('Reclaim', '', () => askReclaim(tile, take));
+    button('Delete', 'danger', () => askDelete(tile, take));
   }
-  button('Delete', 'danger', () => askDelete(tile, take));
 
   // ---- skimming
   const canvas = tile.querySelector('canvas');
@@ -274,11 +306,17 @@ function buildTile(take) {
     const r = skim.getBoundingClientRect();
     setT((clientX - r.left) / r.width);
   };
-  skim.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse' || e.buttons) fromX(e.clientX); });
-  skim.addEventListener('pointerdown', (e) => { skim.setPointerCapture(e.pointerId); fromX(e.clientX); });
-  skim.addEventListener('pointerleave', () => setT(0));
-  bar.addEventListener('pointerdown', (e) => fromX(e.clientX));
-  requestAnimationFrame(() => setT(0));
+  // A take still being recorded has no frame count to index a position into - it is
+  // listed without being scanned - so it gets no skim at all rather than a scrub bar
+  // that divides by a null. The tile still says what it is; there is simply nothing
+  // to scrub through yet.
+  if (!shooting) {
+    skim.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse' || e.buttons) fromX(e.clientX); });
+    skim.addEventListener('pointerdown', (e) => { skim.setPointerCapture(e.pointerId); fromX(e.clientX); });
+    skim.addEventListener('pointerleave', () => setT(0));
+    bar.addEventListener('pointerdown', (e) => fromX(e.clientX));
+    requestAnimationFrame(() => setT(0));
+  }
 
   return tile;
 }
@@ -305,35 +343,53 @@ document.getElementById('cGo').addEventListener('click', () => {
   confirmAction?.();
 });
 
+/**
+ * The delete confirm, which now says what the server will actually do.
+ *
+ * **A `both` take cannot be deleted here, and the dialog used to promise it could.**
+ * It read "a copy exists on both machines; this removes the one here", and
+ * `serveRemoval` answers that exact request with a 409 - delete is the last copy,
+ * reclaim is a copy while another survives, and they are two actions rather than one
+ * action with two buttons. So the operator pressed Delete, agreed to something, and
+ * got a refusal. It errs safe, which is why it survived a review, but a confirm that
+ * describes an outcome the server declines is a confirm nobody can trust the next
+ * time it says something irreversible.
+ *
+ * So a `both` take gets the explanation and no destructive button at all. Pointing
+ * at Reclaim rather than quietly performing one: reclaim removes the copy on the
+ * *node*, which is the opposite end from the one this dialog was offering, and
+ * silently substituting it would be the wrong action confirmed under the right name.
+ */
 function askDelete(tile, take) {
-  const onlyCopy = take.state !== 'both';
-  document.getElementById('cTitle').textContent = 'Delete take';
+  const alsoOnNode = take.state === 'both';
+  document.getElementById('cTitle').textContent = alsoOnNode ? 'Two copies exist' : 'Delete take';
   document.getElementById('cBody').innerHTML =
     `<b>${take.id}</b> · ${mmss(take.durationSec)} · ${gb(take.bytes)}`
     + (take.marks?.length ? ` · ${take.marks.length} marks` : ' · no marks')
-    + `<br>on ${take.state === 'remote' ? library.node?.name : take.state === 'both' ? `this ${library.here} and ${library.node?.name}` : `this ${library.here}`}.`;
-  document.getElementById('cWarn').textContent = onlyCopy
-    ? 'This is the only copy. Deleting it cannot be undone, and any project built on it loses its footage.'
-    : 'A copy exists on both machines; this removes the one here.';
-  document.getElementById('cGo').textContent = 'Delete';
-  confirmAction = () => run(tile, `deleting ${take.id}`, () => jsonOf(`/library/delete/${take.id}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    // The hash goes with the request, so a confirm built against one listing
-    // cannot remove a take that changed since it was drawn.
-    body: JSON.stringify({ hash: take.hash, confirm: true }),
-  }));
+    + `<br>on ${take.state === 'remote' ? library.node?.name : alsoOnNode ? `this ${library.here} and ${library.node?.name}` : `this ${library.here}`}.`;
+  document.getElementById('cWarn').textContent = alsoOnNode
+    ? `Delete removes the last copy, and this take has two - so it is refused while ${library.node?.name} still holds one. `
+      + 'Reclaim removes the copy over there, after re-hashing the one here.'
+    : 'This is the only copy. Deleting it cannot be undone, and any project built on it loses its footage.';
+  const go = document.getElementById('cGo');
+  go.textContent = 'Delete';
+  go.disabled = alsoOnNode;
+  // The hash goes with the request, so a confirm built against one listing cannot
+  // remove a take that changed since it was drawn.
+  confirmAction = alsoOnNode ? null : () => run(tile, `deleting ${take.id}`,
+    () => post(`/library/delete/${take.id}`, { hash: take.hash, confirm: true }));
   dlg.showModal();
 }
 
 function askReclaim(tile, take) {
+  document.getElementById('cGo').disabled = false;
   document.getElementById('cTitle').textContent = `Reclaim on ${library.node?.name}`;
   document.getElementById('cBody').innerHTML =
     `Free <b>${gb(take.bytes)}</b> on ${library.node?.name} by removing its copy of <b>${take.id}</b>. `
     + `The copy here is re-hashed before anything is removed, and stays.`;
   document.getElementById('cWarn').textContent = '';
   document.getElementById('cGo').textContent = 'Reclaim';
-  confirmAction = () => run(tile, `reclaiming ${take.id}`, () => jsonOf(`/library/reclaim/${take.id}`, { method: 'POST' }));
+  confirmAction = () => run(tile, `reclaiming ${take.id}`, () => post(`/library/reclaim/${take.id}`));
   dlg.showModal();
 }
 
@@ -406,6 +462,27 @@ globalThis.__library = {
     empty: false,
   })),
   emptyLine: () => grid.querySelector('.empty')?.textContent ?? null,
+  /**
+   * What a tile's confirm actually says, opened by pressing the tile's own button.
+   *
+   * Read off the dialog rather than off the function that fills it, because the
+   * defect this exists for was a promise in the copy: the confirm offered to remove
+   * one of two copies and the server answered that request with a 409. A check that
+   * asserted what `askDelete` was called with could not have seen it.
+   */
+  confirmFor: (hash, act) => {
+    const tile = grid.querySelector(`.tile[data-hash="${hash}"]`);
+    const button = [...tile.querySelectorAll('.act')].find((b) => b.textContent === act);
+    button.click();
+    const out = {
+      title: document.getElementById('cTitle').textContent,
+      warn: document.getElementById('cWarn').textContent,
+      go: document.getElementById('cGo').textContent,
+      goDisabled: document.getElementById('cGo').disabled,
+    };
+    dlg.close();
+    return out;
+  },
   /** How many frames a tile has drawn. Waited on rather than slept against. */
   draws: (hash) => Number(grid.querySelector(`.tile[data-hash="${hash}"]`)?.dataset.draws ?? 0),
 

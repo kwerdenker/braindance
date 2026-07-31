@@ -62,6 +62,7 @@ import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import { chmodSync, cpSync, mkdirSync, readdirSync, rmSync, symlinkSync, existsSync, readFileSync, writeFileSync, appendFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { createConnection } from 'node:net';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { MessageParser, TYPE_HELLO, TYPE_FRAME, encodeMessage } from '../server/protocol.js';
@@ -111,14 +112,10 @@ const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const MUTATIONS = {
   // The library joins on the filename instead of the hash. Two names for one take
   // become two takes, and the payoff of hash-referencing captures is gone.
-  'reconcile-by-filename': { file: 'server/library.js', edits: [
-    ['    byHash.set(take.hash, { ...take, state: \'local\', local: take, remote: null });',
-      '    byHash.set(take.id, { ...take, state: \'local\', local: take, remote: null });'],
-    ['    const held = byHash.get(take.hash);',
-      '    const held = byHash.get(take.id);'],
-    ['    byHash.set(take.hash, { ...take, state: \'remote\', local: null, remote: take });',
-      '    byHash.set(take.id, { ...take, state: \'remote\', local: null, remote: take });'],
-  ] },
+  'reconcile-by-filename': { file: 'server/library.js', edits: [[
+    "  const keyOf = (take, side) => take.hash ?? `${side}:${take.id}`;",
+    '  const keyOf = (take) => take.id;',
+  ]] },
   // The index cache stops testing whether the sidecar still describes the file, so
   // a take whose bytes changed keeps reporting the hash it had before.
   'manifest-trusts-cache': { file: 'server/capture.js', edits: [[
@@ -163,7 +160,7 @@ const MUTATIONS = {
   // than a measured fix, and a mutation that does nothing reads as a check that
   // found nothing.
   'recorder-skips-hello': { file: 'server/recorder.js', edits: [[
-    '    stream.write(encodeMessage(TYPE_HELLO, Buffer.from(helloPayload)));',
+    '    stream.write(helloMessage);',
     '    /* mutation: the take begins at the first frame */',
   ]] },
   // A grabber restart no longer ends the take, so the next hello and a timestamp
@@ -256,6 +253,264 @@ const MUTATIONS = {
   ]] },
   // The gallery skims a remote take at full resolution, promising a smoothness the
   // link does not have.
+  // ---- the mutating routes, one term per mutation, so a failing row says which
+  // term broke rather than that something did.
+  //
+  // A route reaches its handler only by being an entry in the table, and an entry
+  // reaches a handler that changes something only through `requireMutation`. The two
+  // guard mutations take the origin and content-type terms out one at a time.
+  //
+  // **The method one cannot be narrowed and its rows are not one per term, so it is
+  // said here rather than left to read as if it were.** Letting a GET reach the write
+  // branch on its own moves nothing: `requireMutation` is still in the path and still
+  // answers 405 to a GET, so the page under test is unchanged and a mutation that
+  // does nothing reads as a check that found nothing. The second edit is therefore
+  // load-bearing, and it removes the gate rather than the method term - so this one
+  // trips all three guard rows. The catch is real and the extra coverage is welcome;
+  // what would be wrong is a comment claiming a diagnosis this mutation does not give.
+  'writes-take-any-method': { file: 'server/index.js', edits: [
+    ['    if (!reading && r.write) {', '    if (r.write) {'],
+    ['      if (!requireMutation(req, res, r.write.methods)) return true;',
+      '      /* mutation: whatever method arrived is fine */'],
+  ] },
+  'origin-unchecked': { file: 'server/http-guard.js', edits: [[
+    'export function originAllowed(req) {\n  const origin = req.headers.origin;',
+    'export function originAllowed(req) {\n  return true; /* mutation: any page may act on this server */\n  const origin = req.headers.origin;',
+  ]] },
+  'content-type-unchecked': { file: 'server/http-guard.js', edits: [[
+    "const JSON_TYPE = /^application\\/json\\s*(?:;|$)/i;",
+    'const JSON_TYPE = /^/; /* mutation: anything a no-cors fetch can send is fine */',
+  ]] },
+  // **The control for the enumeration itself: a mutating handler *added* in a `read`
+  // slot.** This is the shape the rule names, and it is a different shape from
+  // moving one - the sweep used to rest on a hardcoded floor,
+  // `mutating.length >= 10 && writeOnly.length >= 7`, which moving a route trips
+  // because the counts fall and which adding one cannot trip at all. Planted against
+  // that build, this route went through the whole suite at 241 of 241, exit 0, with
+  // `planted-by-a-read-route.json` on disk afterwards.
+  //
+  // It writes a *project*, deliberately, because that is the store the old sweep did
+  // not watch: the shooting server was spawned with no `--projects`, so the document
+  // stores lived outside the one directory being snapshotted. What catches it now is
+  // the snapshot of all five stores taken across a drive of every read route.
+  'read-route-writes': { file: 'server/index.js', edits: [[
+    "  { path: '/library/routes', pattern: /^\\/library\\/routes$/, read: serveRoutes },",
+    "  { path: '/library/routes', pattern: /^\\/library\\/routes$/, read: serveRoutes },\n"
+    + "  { path: '/library/sweep-probe', pattern: /^\\/library\\/sweep-probe$/, read: (req, res) => {\n"
+    + "    PROJECTS.write('planted-by-a-read-route', { planted: true })\n"
+    + '      .then(() => sendJson(res, { planted: true }), (err) => sendJson(res, { error: err.message }, 500));\n'
+    + '  } },',
+  ]] },
+  // **The plant a contents comparison cannot see, and the reason the write count is a
+  // row of its own.** A read route that writes a document and removes it again inside
+  // the same request. Both readings the sweep takes are outside the request, and what
+  // they compare - the names, sizes and modification times of the files that are there
+  // - is byte-for-byte what it was, because the file this wrote is gone by the time the
+  // second reading happens and nothing that survived was touched. Only the monotonic
+  // count moves, by two.
+  //
+  // Written this way after the obvious version was measured and found dishonest. That
+  // one overwrote the seeded document and restored its timestamp with `utimesSync`, and
+  // it failed *both* rows - because APFS keeps modification times to the nanosecond,
+  // `utimesSync` takes a `Date` that keeps milliseconds, and the snapshot caught the
+  // 0.13ms the restore could not put back. That is the filesystem's timestamp
+  // resolution catching it rather than the sweep's design, and on a filesystem with
+  // coarser stamps the same plant walks through - so a control resting on it would have
+  // been asserting the platform. Write-then-remove needs no timestamp restored at all.
+  'read-route-restores': { file: 'server/index.js', edits: [[
+    "  { path: '/library/writes', pattern: /^\\/library\\/writes$/, read: serveWriteCounts },",
+    "  { path: '/library/writes', pattern: /^\\/library\\/writes$/, read: serveWriteCounts },\n"
+    + "  { path: '/library/sweep-probe', pattern: /^\\/library\\/sweep-probe$/, read: async (req, res) => {\n"
+    + "    await PROJECTS.write('planted-then-removed', { version: 1, body: {} });\n"
+    + "    await PROJECTS.remove('planted-then-removed');\n"
+    + '    sendJson(res, { restored: true });\n'
+    + '  } },',
+  ]] },
+  // **The plant that destroys the shoot.** A read route appending to the file the
+  // recorder has open - the one place where three of this sweep's observations are
+  // switched off at once, since the open take's size and modification time are out of
+  // the snapshot by name, no write counter covers the captures directory, and the
+  // recorder's state field does not move for a foreign append. Against the build
+  // before this, it passed 251 assertions at exit 0 while ruining the take.
+  //
+  // 0x07 rather than anything structured, so the damage is a desync the scan names
+  // rather than a plausible frame, and 64KB so it is unambiguously more than one
+  // write's worth of in-flight noise.
+  'plant-open-take': { file: 'server/index.js', edits: [
+    ["import { createReadStream, mkdirSync, readdirSync, statSync } from 'node:fs';",
+      "import { appendFileSync, createReadStream, mkdirSync, readdirSync, statSync } from 'node:fs';"],
+    ["  { path: '/library/writes', pattern: /^\\/library\\/writes$/, read: serveWriteCounts },",
+      "  { path: '/library/writes', pattern: /^\\/library\\/writes$/, read: serveWriteCounts },\n"
+      + "  { path: '/library/sweep-probe', pattern: /^\\/library\\/sweep-probe$/, read: (req, res) => {\n"
+      + '    appendFileSync(recorder.openPath, Buffer.alloc(65536, 0x07));\n'
+      + '    sendJson(res, { appended: true });\n'
+      + '  } },'],
+  ] },
+  // The other half of the captures directory, and the reason it is a mutation rather
+  // than a sentence: the open take is excluded from the snapshot *by name*, so every
+  // other file in there should still be covered - and "should" is what this repo
+  // measures. A read route unlinking a take that is not the one being recorded.
+  'plant-unlink-closed-take': { file: 'server/index.js', edits: [
+    ["import { createReadStream, mkdirSync, readdirSync, statSync } from 'node:fs';",
+      "import { createReadStream, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs';"],
+    ["  { path: '/library/writes', pattern: /^\\/library\\/writes$/, read: serveWriteCounts },",
+      "  { path: '/library/writes', pattern: /^\\/library\\/writes$/, read: serveWriteCounts },\n"
+      + "  { path: '/library/sweep-probe', pattern: /^\\/library\\/sweep-probe$/, read: (req, res) => {\n"
+      + "    const victim = readdirSync(CAPTURES_DIR).find((f) => f.endsWith('.knct')\n"
+      + '      && join(CAPTURES_DIR, f) !== recorder.openPath);\n'
+      + '    if (victim) unlinkSync(join(CAPTURES_DIR, victim));\n'
+      + '    sendJson(res, { removed: victim ?? null });\n'
+      + '  } },'],
+  ] },
+  // A mutating handler *moved* behind a `read`. Kept beside the plant above rather
+  // than described as the control, which it is not: what catches this one is the
+  // recorder having moved, since a `GET /record/stop` ends the take.
+  'stop-route-reads': { file: 'server/index.js', edits: [[
+    "  { path: '/record/stop', pattern: /^\\/record\\/stop$/, write: { methods: ['POST'], run: serveRecordStop } },",
+    "  { path: '/record/stop', pattern: /^\\/record\\/stop$/, read: serveRecordStop },",
+  ]] },
+  // Marks for a take that is not here, which created its sidecar in the captures
+  // directory out of a caller's own JSON.
+  'marks-without-a-take': { file: 'server/index.js', edits: [[
+    '  if (!takeIsHere(path)) {\n    sendJson(res, { error: `no take ${id} here, so there is nothing to mark` }, 404);\n    return;\n  }',
+    '  /* mutation: any id may have marks */',
+  ]] },
+  // The document store restamps the version instead of checking it, so a project
+  // from a build this one is not lands looking like one this build wrote.
+  'store-restamps-version': { file: 'server/library.js', edits: [[
+    '    if (body?.version !== undefined && body.version !== PROJECT_VERSION) {',
+    '    if (false) {',
+  ]] },
+  // A replay server records. The frames come off a file on a loop, so their stamps
+  // repeat, and one take is one continuous stream with monotonic stamps.
+  'replay-can-record': { file: 'server/index.js', edits: [[
+    '  cannotRecord: REPLAY\n    ?', '  cannotRecord: false\n    ?',
+  ]] },
+  // The demonstrated failure, whole: recording a replay is allowed *and* the replay
+  // hands `handleMessage` a payload with no framing. One open take then turns every
+  // frame into a throw that lands in the replay tick's catch - no frame reaches any
+  // client, the status flaps between lost and live, and `/record/state` reports a
+  // healthy recording throughout.
+  //
+  // Both edits in one mutation on purpose. Removing the framing on its own moves
+  // nothing, because the refusal above means `recorder.write` is never reached - a
+  // mutation that does nothing, wearing the appearance of one that does, which is
+  // the shape this repo has been caught by before. What the pair proves is that the
+  // framing is load-bearing rather than decorative: with the door open, it is the
+  // only thing between the replay loop and a throw per frame.
+  'replay-records-a-bare-payload': { file: 'server/index.js', edits: [
+    ['  cannotRecord: REPLAY\n    ?', '  cannotRecord: false\n    ?'],
+    ['        handleMessage({ type: TYPE_FRAME, payload, raw: encodeMessage(TYPE_FRAME, payload) });',
+      '        handleMessage({ type: TYPE_FRAME, payload });'],
+  ] },
+  // `forgetCapture` drops the map entry and leaves the descriptor to the collector,
+  // which on this Node is a process death rather than an untidy count.
+  'forget-leaks-descriptor': { file: 'server/capture.js', edits: [
+    ['  pending?.then((capture) => {\n    capture.doomed = true;\n    if (capture.leases === 0) capture.close().catch(() => {});\n  }, () => {});',
+      '  pending?.then((capture) => { if (capture.leases === 0) capture.close().catch(() => {}); }, () => {});'],
+    ['    if (capture.doomed && capture.leases === 0) await capture.close().catch(() => {});',
+      '    /* mutation: the last lease lets go and nothing closes anything */'],
+  ] },
+  // A take that dies mid-write drops the marks pressed during it.
+  'mid-write-drops-marks': { file: 'server/recorder.js', edits: [[
+    '        flushMarks(failed);', '        /* mutation: the marks go nowhere */',
+  ]] },
+  // The flush moves out of the `finally`, so a close that rejects loses them - the
+  // second way the same orphaning arrived.
+  'close-flush-outside-finally': { file: 'server/recorder.js', edits: [[
+    '    try {\n      await once(take.stream, \'close\');\n    } finally {',
+    '    {\n      await once(take.stream, \'close\');\n    }\n    {',
+  ]] },
+  // The write stream's backpressure is discarded again, so a stalling card becomes
+  // heap that grows until the process is killed.
+  'recorder-ignores-backpressure': { file: 'server/recorder.js', edits: [[
+    '    if (take.stream.writableLength > MAX_TAKE_BUFFER) {', '    if (false) {',
+  ]] },
+  // The counters go back to reporting what was accepted rather than what drained, so
+  // the monitor reads healthy for exactly as long as the failure is invisible.
+  'recorder-counts-accepted': { file: 'server/recorder.js', edits: [[
+    '  const written = take.stream.bytesWritten;', '  const written = take.accepted;',
+  ]] },
+  // The in-flight queue is drained only when something asks for state, which is the
+  // shape the previous round shipped: nothing removes an entry until an operator
+  // opens the monitor, so the queue is bounded by the length of the take and the
+  // drain that finally runs is quadratic in it. The stall is synchronous, so the
+  // grabber sees backpressure and drops depth packets at the device.
+  'settle-drains-on-poll-only': { file: 'server/recorder.js', edits: [[
+    `    // Drained on the frame path rather than only when something asks for state, and
+    // that placement is what makes the queue bounded by the ceiling below instead of
+    // by the length of the take. \`settle\` carries the measurement and the mechanism.
+    settle(take);`,
+    '    /* mutation: the queue is drained only when something asks for state */',
+  ]] },
+  // The head advances and the array is never compacted, which leaves the depth
+  // correct and the allocation growing with the take - and puts every operation over
+  // that array back to scaling with the take's length.
+  'settle-never-compacts': { file: 'server/recorder.js', edits: [[
+    `  if (take.inFlightHead > 0 && take.inFlightHead * 2 >= take.inFlight.length) {
+    take.inFlight.splice(0, take.inFlightHead);
+    take.inFlightHead = 0;
+  }`,
+    '  /* mutation: the head moves and the array is never compacted */',
+  ]] },
+  // The transition into dropping goes back to being silent, so the only thing
+  // carrying it is the panel's five-second poll - and after the queue drains on
+  // every write, no monitor has to be open for the drop to happen at all.
+  'drop-transition-silent': { file: 'server/recorder.js', edits: [[
+    `        // stays green costs the take.
+        this.onChange(this.state);`,
+    '        /* mutation: the drop is left to the five-second poll */',
+  ]] },
+  // The push moves out from behind the transition flag and fires per dropped frame,
+  // which is a socket write in the frame path on the one machine that cannot afford
+  // one. Without this the "pushed once" row would only ever be exercised by the
+  // mutation above, which fires it zero times.
+  'drop-transition-per-frame': { file: 'server/recorder.js', edits: [[
+    `      take.dropped++;
+      if (!take.stalling) {`,
+    `      take.dropped++;
+      this.onChange(this.state);
+      if (!take.stalling) {`,
+  ]] },
+  // The buffer ceiling shrinks to an eighth. Every row that reads the ceiling out of
+  // the build still passes - which is the point - and the take now survives about
+  // half a second of a stalled card rather than four and a half.
+  'ceiling-too-small': { file: 'server/recorder.js', edits: [[
+    'export const MAX_TAKE_BUFFER = 64 * 1024 * 1024;',
+    'export const MAX_TAKE_BUFFER = 8 * 1024 * 1024;',
+  ]] },
+  // The manifest scans the take being written, which is a full read and a sha256 of
+  // a growing multi-gigabyte file per request, against the recorder's own disk.
+  'manifest-scans-open-take': { file: 'server/library.js', edits: [[
+    '  if (recording) {\n    return {', '  if (false) {\n    return {',
+  ]] },
+  // The boot stops making the captures directory, which is the state a reflashed
+  // node comes up in.
+  'boot-without-captures-dir': { file: 'server/index.js', edits: [[
+    '  mkdirSync(CAPTURES_DIR, { recursive: true });',
+    '  /* mutation: the captures directory is assumed */',
+  ]] },
+  // Delete goes back to trusting the sidecar where reclaim re-hashes, so the
+  // irreversible action carries the weaker check.
+  'delete-trusts-sidecar': { file: 'server/library.js', edits: [[
+    '  const actual = await hashFile(path);', '  const actual = (await cachedIndex(path)).hash;',
+  ]] },
+  // The decimation path stops checking that a frame's two declared lengths describe
+  // the frame, so an overstated colour length returns the uninitialised tail of an
+  // `allocUnsafe` buffer.
+  'decimate-skips-length-check': { file: 'server/capture.js', edits: [[
+    '    if (16 + depthBytes + colorBytes !== payload.length) {', '    if (false) {',
+  ]] },
+  // The registry's door goes back to testing truthiness on an object literal, which
+  // accepts every name on `Object.prototype`.
+  'registry-gate-by-truthiness': { file: 'web/main.js', edits: [[
+    '  if (!Object.hasOwn(PARAMS, name)) throw new Error(`unknown parameter ${JSON.stringify(name)}`);',
+    '  if (!PARAMS[name]) throw new Error(`unknown parameter ${JSON.stringify(name)}`);',
+  ]] },
+  // The delete confirm promises to remove a copy the server refuses to remove.
+  'confirm-promises-both-delete': { file: 'web/library.js', edits: [[
+    "  const alsoOnNode = take.state === 'both';", '  const alsoOnNode = false;',
+  ]] },
   'skim-ignores-state': { file: 'web/library.js', edits: [[
     'const DIVISOR = { local: 1, both: 1, remote: 4 };',
     'const DIVISOR = { local: 1, both: 1, remote: 1 };',
@@ -326,6 +581,32 @@ function writeTake(dir, id, { frames = 8, withHello = true, truncate = false, st
   return path;
 }
 
+/**
+ * A take whose second frame declares more colour bytes than it carries.
+ *
+ * The reachable version is a writer that died between the header and the payload,
+ * or a take truncated by a card pulled - the scan indexes what landed, and the
+ * frame's own two lengths then no longer add up to the frame. The decimation path
+ * builds a new buffer out of those two numbers with `allocUnsafe` and copies the
+ * colour block into it, so an overstated length left the tail of the served frame
+ * as whatever was in that memory: this process's own recycled heap, handed to
+ * whoever asked for a frame.
+ */
+function writeBadLengthTake(dir, id) {
+  const good = SRC.frames[0];
+  const bent = Buffer.from(good);
+  // The framing is untouched, so the scan walks the file cleanly and indexes the
+  // frame - which is what makes this a bad *frame* rather than a bad file. Only the
+  // colour length inside the payload moves, and it moves upward.
+  const payloadAt = 12;
+  const colorBytes = bent.readUInt32LE(payloadAt + 4);
+  bent.writeUInt32LE(colorBytes + 4096, payloadAt + 4);
+  const body = Buffer.concat([encodeMessage(TYPE_HELLO, SRC.hello), SRC.frames[1], bent, SRC.frames[2]]);
+  const path = join(dir, `${id}.knct`);
+  writeFileSync(path, body);
+  return path;
+}
+
 const markLine = (rec) => `${JSON.stringify(rec)}\n`;
 
 /**
@@ -380,6 +661,7 @@ function buildFixture() {
   writeTake(macCaps, 'truncated-take', { frames: 6, truncate: true });
   writeTake(macCaps, 'no-hello-take', { frames: 6, withHello: false });
   writeTake(macCaps, 'one-frame-take', { frames: 1 });
+  writeBadLengthTake(macCaps, 'bad-length-take');
 
   // Mark counts the tile renders differently: none, exactly one, and several - plus
   // a mark at source zero and a mark past the end of the footage, which are the two
@@ -449,6 +731,34 @@ function stopServers() {
 }
 
 /**
+ * Waits until a frame has actually come off the sensor, and answers how long it took.
+ *
+ * **The socket, because nothing over HTTP says this.** `/record/state` reports armed
+ * and recording, which are what the operator asked for rather than what the sensor is
+ * doing, and a wait written against them is a wait on the wrong quantity - section 4c
+ * had one keyed on `armed === false`, true from boot, which granted a fixed 255ms
+ * while claiming to wait for the hello. A binary message on the live channel is a
+ * frame that was captured, parsed and fanned out, which is the condition the sections
+ * that call this actually need.
+ */
+async function liveFrame(url, timeoutMs = 20000) {
+  const began = Date.now();
+  const ws = new WebSocket(url.replace('http', 'ws'));
+  try {
+    await new Promise((done, fail) => {
+      const timer = setTimeout(() => fail(new Error(`no frame from ${url} within ${timeoutMs}ms`)), timeoutMs);
+      const finish = (err) => { clearTimeout(timer); if (err) fail(err); else done(); };
+      ws.on('message', (data, isBinary) => { if (isBinary) finish(); });
+      ws.on('error', finish);
+      ws.on('close', () => finish(new Error(`the live channel on ${url} closed before a frame arrived`)));
+    });
+  } finally {
+    ws.close();
+  }
+  return Date.now() - began;
+}
+
+/**
  * A real filesystem with a few megabytes on it, or null where this tool does not
  * know how to make one.
  *
@@ -481,6 +791,65 @@ async function smallFilesystem() {
       }
     },
   };
+}
+
+/**
+ * Whether a line in a server's log means this run went wrong.
+ *
+ * **The generic pattern cannot see the recorder's fatal line, and the allowlist was
+ * hiding it twice over.** `!/refus|cannot open/i` dropped
+ * `[recorder] cannot open <path>: <errno> - recording is off`, which is the single
+ * message meaning a shooting node stopped - and it would have been dropped anyway,
+ * because every errno that produces it (ENOSPC, EACCES, ENOENT, ENOTDIR) spells out
+ * a message containing neither "Error" nor "throw" nor "unhandled". So removing it
+ * from the allowlist is not enough; the line needs a pattern of its own.
+ *
+ * `recording is off` is that pattern, and it is the right one rather than a
+ * convenient one: it is the phrase all three recorder failures end with - the open
+ * that could not happen, the write that died mid-take, and the names that ran out -
+ * and every one of them means footage stopped being written on a machine that
+ * believed it was shooting.
+ *
+ * The two benign lines are anchored to their prefixes instead of matched by
+ * substring, so `[server] cannot open` stays benign while `[recorder] cannot open`
+ * does not.
+ */
+const BENIGN_LOG = [
+  /^\[server\] cannot open /, // the replay reader saying the file it was pointed at is not there
+  /refusing to start a take/, // the low-space gate, which is a decision rather than a failure
+];
+const FATAL_LOG = [
+  /Error|throw|unhandled/i,
+  /recording is off/, // every recorder failure ends here, and none of them says "Error"
+  /no free take name/,
+];
+const looksFatal = (line) => FATAL_LOG.some((re) => re.test(line)) && !BENIGN_LOG.some((re) => re.test(line));
+
+// The predicate's own falsification control, run before anything else so a sweep
+// that has been quietly blinded says so in the first three lines rather than by
+// passing a mutated tree. Every case here is a real line one of these servers emits.
+function checkLogPredicate() {
+  console.log('\n[library] the log sweep can see the line that matters');
+  const cases = [
+    ['[recorder] cannot open /caps/2026-07-31-take1.knct: ENOSPC: no space left on device - recording is off', true],
+    ['[recorder] cannot open /caps/x.knct: EACCES: permission denied, open \'/caps/x.knct\' - recording is off', true],
+    ['[recorder] take 2026-07-31-take2 failed mid-write: EIO: i/o error - recording is off', true],
+    ['[recorder] no free take name after 64 tries - recording is off', true],
+    ['[server] capture request failed: Error: short read at 4096', true],
+    ['[server] cannot open /nope/missing.knct: ENOENT: no such file or directory', false],
+    ['[recorder] refusing to start a take: 8s left at current settings, under the 2m minimum', false],
+    ['[recorder] 2026-07-31-take1 is already taken, trying the next name', false],
+    ['[server] 24.8 fps  12.2 MB/s  dropped=0  clients=1', false],
+    ['[recorder] take 2026-07-31-take3 open', false],
+  ];
+  const wrong = cases.filter(([line, want]) => looksFatal(line) !== want);
+  check(wrong.length === 0,
+    'the sweep flags every recorder line that means a shooting node stopped, and none of the ordinary ones',
+    wrong.length ? wrong.map(([l]) => l.slice(0, 52)).join(' | ') : `${cases.length} lines, ${cases.filter((c) => c[1]).length} fatal`);
+  // Named on its own, because this is the one the old predicate dropped and the
+  // reason it dropped it was two independent failures agreeing.
+  check(looksFatal('[recorder] cannot open /caps/take1.knct: ENOTDIR: not a directory - recording is off'),
+    'including `[recorder] cannot open`, which the old allowlist excluded by name and the old pattern could not have matched anyway');
 }
 
 const getJson = async (url, init) => (await fetch(url, init)).json();
@@ -563,18 +932,46 @@ const browser = await chromium.launch({ headless: !HEADED, args: ['--use-gl=angl
 
 try {
   await runChecks();
+} catch (err) {
+  // Recorded rather than thrown. An exception out of here used to end the process
+  // with no verdict line and no assertion count - which reads as a caught mutation
+  // to anything counting exit codes and as nothing at all to anything counting rows.
+  // Several of this step's own mutations end in a server that has died, and a dead
+  // server is a failure this tool has to be able to *say*.
+  console.log(`\n  FAIL  the run did not finish: ${err.message}`);
+  assertions++;
+  failures++;
 } finally {
   await browser.close();
   stopServers();
 }
 
+// The verdict, and a skipped claim reaches all three of it: the count line, the
+// word, and the status this process exits with.
+//
+// It used to reach only the count line. On any platform that cannot make a small
+// filesystem - which is every platform but this one - the run printed an
+// unqualified `[library] PASS` and exited 0 with the low-space refusal never
+// exercised, so "it never silently passes" was a claim about macOS being read as a
+// claim about the tool. A CI job checks the exit code and nothing else, so the
+// status is where it has to land.
+//
+// Code 2 rather than 1, because "some claims were not tested here" and "a claim
+// failed" are different answers and collapsing them would make an unprovable
+// platform look like a broken build. Anything checking `!== 0` now treats a run with
+// an unproven claim as not-a-pass, which is the intended reading.
 const note = skipped.length ? `, ${skipped.length} claim${skipped.length === 1 ? '' : 's'} unproven here (${skipped.join(', ')})` : '';
 if (failures) console.log(`\n[library] ${assertions} assertions, ${failures} failed${note}`);
 else console.log(`\n[library] ${assertions} assertions, none failed${note}`);
-console.log(`[library] ${failures ? `FAIL (${failures})` : 'PASS'}`);
-process.exit(failures ? 1 : 0);
+const verdict = failures ? `FAIL (${failures})`
+  : skipped.length ? `PASS WITH ${skipped.length} CLAIM${skipped.length === 1 ? '' : 'S'} UNPROVEN HERE (${skipped.join('; ')})`
+    : 'PASS';
+console.log(`[library] ${verdict}`);
+process.exit(failures ? 1 : skipped.length ? 2 : 0);
 
 async function runChecks() {
+  checkLogPredicate();
+
   // ------------------------------------------------------------- 1. the manifest
   console.log('\n[library] the manifest carries step 2\'s hash, and stops carrying a stale one');
   {
@@ -699,6 +1096,27 @@ async function runChecks() {
       'and the capture timestamp is the frame\'s own at every divisor');
     check(sizes[1].total === sizes[1].depthBytes + sizes[1].colorBytes + 16,
       'divisor 1 is the payload unchanged, so the editor\'s path is what it was');
+
+    // A frame whose two declared lengths do not describe the frame. Only the depth
+    // length was checked, so an overstated colour length sized a fresh
+    // `allocUnsafe` buffer larger than the copy that follows fills - and what came
+    // back past the copy was uninitialised memory rather than picture.
+    const bentUrl = `${macUrl}/capture/bad-length-take/frame/1`;
+    const bent = await fetch(`${bentUrl}?decimate=4`);
+    check(bent.status >= 400,
+      'a frame whose declared lengths overrun the payload is refused rather than sampled past',
+      `${bent.status} ${(await bent.text()).slice(0, 80)}`);
+    // The control, and it is what says this arm is about the *frame* rather than
+    // about the take: the same take's other frames are fine, so the scan indexed
+    // the file and the refusal is per frame.
+    const beside = await fetch(`${bentUrl.replace('/frame/1', '/frame/0')}?decimate=4`);
+    check(beside.ok, 'while the sound frames beside it in the same take still decimate',
+      `frame 0 came back ${beside.status}`);
+    // And at divisor 1 nothing is rebuilt, so the file's own bytes come back exactly
+    // as the format promises - which is why the check lives on the decimation path.
+    const verbatim = await fetch(bentUrl);
+    check(verbatim.ok, 'and the undecimated read still returns the bytes the file holds, unchanged',
+      `frame 1 undecimated came back ${verbatim.status}`);
 
     // **Which samples come back, not how many.** A byte count cannot tell a grid
     // sampled on both axes from one strided through the flat array: the count is
@@ -898,9 +1316,14 @@ async function runChecks() {
       'with strictly ascending timestamps, which a run across a restart seam would break');
     check(scanned.every((t) => Number.isFinite(t.hello?.startedAt)),
       'the hello carries a wall clock, which the frame stamps cannot supply');
-    check(scanned.every((t, i) => i === 0 || t.hello.startedAt > scanned[i - 1].hello.startedAt),
+    // Optional access for the same reason section 4c has it: a build with no hello at
+    // the head of a take leaves `t.hello` null here, and reading through it ended the
+    // run in this section - so `recorder-skips-hello` was caught on the two rows
+    // above and then took every section after it out of the run, which is a mutation
+    // whose real reach nobody was measuring.
+    check(scanned.every((t, i) => i === 0 || t.hello?.startedAt > scanned[i - 1].hello?.startedAt),
       'and it advances take to take, so a library can sort by when it was shot',
-      scanned.map((t) => t.hello.startedAt).join(' '));
+      scanned.map((t) => t.hello?.startedAt ?? 'none').join(' '));
 
     const listed = (await getJson(`${recUrl}/library/takes`)).takes;
     const byFile = Object.fromEntries(listed.map((t) => [t.file, t]));
@@ -923,10 +1346,16 @@ async function runChecks() {
     ], MAC_PORT + 5);
     // Waited for rather than slept against: a start before the sensor has said hello
     // arms without opening a take, which is correct and is not what this measures.
-    for (let i = 0; i < 40; i++) {
-      await new Promise((done) => { setTimeout(done, 250); });
-      if ((await getJson(`${markUrl}/record/state`)).armed === false) break;
-    }
+    //
+    // **The condition is a frame arriving, and it used to be the opposite of one.**
+    // The loop here broke on `armed === false`, which is true from boot on a server
+    // nobody has armed - so it left after a single 250ms tick while its comment
+    // claimed it was waiting for the sensor. Measured 5 of 5: the loop returned at
+    // 255ms and the first frame arrived at 257-506ms, negative margin every run, and
+    // the row below then failed with `null` for reasons that had nothing to do with
+    // what it tests. A gate that goes red for unrelated reasons is how people learn
+    // to re-run until green.
+    await liveFrame(markUrl, 20000);
     const started = await post(`${markUrl}/record/start`);
     check(started.recording === true && typeof started.takeId === 'string',
       'record opens a take on a running sensor', String(started.takeId));
@@ -941,17 +1370,24 @@ async function runChecks() {
     check(stopped?.frames > 0 && stopped.hash?.startsWith('sha256:'),
       'stop closes the take, scans it and gives it the hash a project would name it by',
       `${stopped?.frames} frames`);
-    const listed = (await getJson(`${markUrl}/library/takes`)).takes.find((t) => t.id === stopped.id);
-    check(listed?.marks.length === 1 && listed.marks[0].label === 'the moment',
+    // Read through optional access from here down, and that is about the *tool*
+    // rather than about the take. A mutation that stops `/record/stop` from working
+    // leaves `stopped` undefined, and `stopped.id` then threw - which ended the run
+    // in this section and left every section after it unrun, while the exit code
+    // still looked like a mutation being caught. `stop-route-reads` was caught that
+    // way, by a TypeError twelve hundred lines above the arm whose comment claimed
+    // the credit.
+    const listed = (await getJson(`${markUrl}/library/takes`)).takes.find((t) => t.id === stopped?.id);
+    check(listed?.marks?.length === 1 && listed.marks[0].label === 'the moment',
       'and the mark is on the take in the library, not inside the capture',
       JSON.stringify(listed?.marks));
     // Marks are stamped raw and never pre-rolled - people press a few hundred
     // milliseconds after the thing happens, and a constant baked in at capture time
     // would be a guess. What is checked is that it lands inside the take.
-    check(listed.marks[0].sourceMs > 0 && listed.marks[0].sourceMs < listed.durationSec * 1000 + 500,
+    check(listed?.marks?.[0]?.sourceMs > 0 && listed.marks[0].sourceMs < listed.durationSec * 1000 + 500,
       'stamped inside the footage it flags rather than at an arbitrary offset',
-      `${listed.marks[0].sourceMs}ms into ${(listed.durationSec * 1000).toFixed(0)}ms`);
-    check(existsSync(join(markDir, `${stopped.id}.marks.jsonl`)),
+      listed?.marks?.[0] ? `${listed.marks[0].sourceMs}ms into ${(listed.durationSec * 1000).toFixed(0)}ms` : 'no mark landed');
+    check(Boolean(stopped?.id) && existsSync(join(markDir, `${stopped.id}.marks.jsonl`)),
       'in an append-only sidecar beside the take, which is byte-identical to what the writer produced');
     for (const p of servers.filter((s) => s.port === MAC_PORT + 5)) p.child.kill('SIGKILL');
   }
@@ -1008,8 +1444,14 @@ async function runChecks() {
     // The arm has to have fired. Two names refused is what makes the three
     // assertions above about the retry rather than about a recorder that simply
     // picked a free name the ordinary way.
+    // Corroboration, and labelled as corroboration. This is a `console.warn` scrape,
+    // and an implementation that logged twice without retrying would satisfy it -
+    // so it cannot be the thing that proves the retry happened. What proves that is
+    // the row above: the recorder landed on `take3` while `take1` and `take2` sat
+    // there byte-identical, which no implementation reaches without having been
+    // refused by both and stepped past both.
     check((clashLog.match(/is already taken/g) ?? []).length === 2,
-      'and the refusal fired twice, so this measured the retry rather than an ordinary open',
+      'and the log agrees, with two refusals - corroboration for the take3 row above, which is what carries the claim',
       `${(clashLog.match(/is already taken/g) ?? []).length} refusals in the log`);
   }
 
@@ -1153,6 +1595,35 @@ async function runChecks() {
       Object.entries(counts).map(([k, v]) => `${k}:${v.label.trim()}=${v.shown}`).join(' '));
     check(Object.keys(counts).join(',') === 'all,local,remote,both',
       'and the tabs are exactly the states a take can be in', Object.keys(counts).join(','));
+
+    // **What the confirm promises against what the server does.** A `both` take's
+    // delete dialog offered "a copy exists on both machines; this removes the one
+    // here", and `serveRemoval` answers that exact request with a 409 - delete is
+    // the last copy, reclaim is a copy while another survives. It errs safe, which
+    // is why it survived review, and a confirm that describes an outcome the server
+    // declines is a confirm nobody can trust the next time it says something is
+    // irreversible. So the page's own dialog is read here and the server is asked
+    // the same question, and the two have to agree.
+    const bothHash = tiles.find((t) => t.state === 'both')?.hash;
+    const bothTakeId = tiles.find((t) => t.state === 'both')?.id;
+    check(bothHash !== undefined, 'a take in state both is on screen to ask about', String(bothTakeId));
+    const bothConfirm = await page.evaluate(`globalThis.__library.confirmFor(${JSON.stringify(bothHash)}, 'Delete')`);
+    const serverSays = await post(`${macUrl}/library/delete/${bothTakeId}`,
+      { hash: one(bothTakeId)?.hash ?? bothHash, confirm: true });
+    check(/exists on .* as well|reclaim removes a copy/.test(serverSays.error ?? ''),
+      'the server refuses to delete a take that exists in two places, which is the behaviour the dialog has to describe',
+      (serverSays.error ?? 'ACCEPTED').slice(0, 70));
+    check(!/removes the one here/.test(bothConfirm.warn) && /refused|two/.test(bothConfirm.warn),
+      'and the confirm says so rather than promising to remove the copy here',
+      bothConfirm.warn.slice(0, 90));
+    check(bothConfirm.goDisabled === true,
+      'with no destructive button to press, so the operator is not agreeing to something that will be declined');
+    const localConfirm = await page.evaluate(`globalThis.__library.confirmFor(${JSON.stringify(one('local-clip').hash)}, 'Delete')`);
+    // The control: the case delete *is* for still offers it, or the row above would
+    // pass against a dialog that had simply been disabled everywhere.
+    check(localConfirm.goDisabled === false && /only copy/.test(localConfirm.warn),
+      'while a take that really is the last copy still warns and still offers the button',
+      localConfirm.warn.slice(0, 70));
 
     check(errors.length === 0, 'the gallery raises no page errors', errors.slice(0, 2).join(' | '));
     await page.close();
@@ -1336,7 +1807,32 @@ async function runChecks() {
       ['a scalar key that is a string', 'p.tracks.bloom = [{t:0,value:"0.5"}];'],
       ['a scalar key that is null', 'p.tracks.bloom = [{t:0,value:null}];'],
       ['a key at an undefined time', 'p.tracks.bloom = [{t:undefined,value:0.5}];'],
+      // **The registry's door, probed where the answer is different.** The one name
+      // this list used to try was `nosuchthing`, which is the case the code handled
+      // correctly - a probe placed exactly where the wrong implementation agrees
+      // with the right one. `PARAMS` is an object literal, so gating on
+      // `PARAMS[name]` truthiness accepted every name `Object.prototype` answers
+      // for: `__proto__` landed in `tracks`, `normalise` read min, max and step off
+      // a function and made NaN out of undefined, and the page threw mid-render -
+      // a failure inside the evaluator rather than a decision at the door, which is
+      // the whole class the door exists for.
       ['a track the registry does not know', 'p.tracks.nosuchthing = [{t:0,value:1}];'],
+      // `p.tracks.__proto__ = x` sets the *prototype* and creates no own property at
+      // all, so `Object.entries` never sees it and the loader is handed an unchanged
+      // document - a probe placed exactly where the wrong implementation and the
+      // right one agree, which is the trap this repo already has two entries for.
+      // `defineProperty` builds the own, enumerable property that `JSON.parse` puts
+      // there when a file on disk literally contains `"__proto__": [...]`, which is
+      // the shape this arrives in.
+      ['a track named __proto__',
+        "Object.defineProperty(p.tracks, '__proto__', { value: [{t:0,value:1}], enumerable: true, configurable: true, writable: true });"],
+      ['a track named constructor', 'p.tracks.constructor = [{t:0,value:1}];'],
+      ['a track named toString', 'p.tracks.toString = [{t:0,value:1}];'],
+      ['a track named valueOf', 'p.tracks.valueOf = [{t:0,value:1}];'],
+      ['a track named hasOwnProperty', 'p.tracks.hasOwnProperty = [{t:0,value:1}];'],
+      ['a parameter named constructor in the values', 'p.params.constructor = 1;'],
+      ['a parameter named __proto__ in the values',
+        "Object.defineProperty(p.params, '__proto__', { value: 1, enumerable: true, configurable: true, writable: true });"],
       ['a mode outside the modes that exist', 'p.mode = 9;'],
       ['an output rate of zero', 'p.outputFps = 0;'],
       ['a preset stamp that is not a name and a rev', 'p.appliedPreset = { name: 42 };'],
@@ -1351,6 +1847,45 @@ async function runChecks() {
     const good = await refuse('an unmodified project', '');
     check(good.message === 'ACCEPTED', 'and an unmodified project still loads',
       good.message === 'ACCEPTED' ? '' : good.message.slice(0, 80));
+
+    // Straight at the registry, because the load path is one of four doors into it
+    // and the other three were gated the same wrong way. `spec`, `get`, `normalise`
+    // and `set` each asked the question in their own words - three `PARAMS[name]`
+    // and one `name in PARAMS`, which is one hole written two ways.
+    const inherited = await page.evaluate(`(() => {
+      const k = globalThis.__kinect;
+      const names = ['constructor', 'toString', '__proto__', 'valueOf', 'hasOwnProperty'];
+      const out = {};
+      for (const name of names) {
+        out[name] = {};
+        for (const door of ['spec', 'get', 'normalise', 'set']) {
+          try {
+            k.params[door](name, 0.5);
+            out[name][door] = 'ACCEPTED';
+          } catch (e) {
+            out[name][door] = /unknown parameter/.test(e.message) ? 'refused' : 'threw: ' + e.message.slice(0, 40);
+          }
+        }
+      }
+      return out;
+    })()`);
+    const leaked = Object.entries(inherited)
+      .flatMap(([name, doors]) => Object.entries(doors).filter(([, v]) => v !== 'refused').map(([d, v]) => `${name}.${d}=${v}`));
+    check(leaked.length === 0,
+      'every door into the registry refuses a name that only exists on Object.prototype, and refuses it as an unknown parameter rather than throwing somewhere inside',
+      leaked.slice(0, 4).join(' ') || `${Object.keys(inherited).length} names x 4 doors, all refused`);
+    // The control: a real parameter still goes through all four, or the row above
+    // would pass against a registry that refused everything.
+    const real = await page.evaluate(`(() => {
+      const k = globalThis.__kinect;
+      try {
+        return { spec: typeof k.params.spec('bloom').max, normalised: k.params.normalise('bloom', 1.25), set: k.params.set('bloom', 1.25), got: k.params.get('bloom') };
+      } catch (e) { return { error: e.message }; }
+    })()`);
+    check(real.spec === 'number' && Number.isFinite(real.normalised) && real.got === real.set,
+      'while a parameter the registry does declare passes through all four unchanged',
+      JSON.stringify(real));
+    await page.evaluate('globalThis.__kinect.params.reset()');
 
     check(errors.length === 0, 'the document path raises no page errors', errors.slice(0, 2).join(' | '));
     await page.close();
@@ -1463,6 +1998,15 @@ async function runChecks() {
     await page.waitForFunction('globalThis.__kinect?.timeline?.transport() !== null', null, { timeout: 40000 });
     await page.evaluate('globalThis.__kinect.timeline.settled()');
 
+    // **`timeline.settled()` settles the transport, and the marks are not on it.**
+    // They arrive on the library's own fetch, so a read taken the instant the render
+    // queue drained came back `0 marks` beside `4 ticks` on a loaded machine - a row
+    // red for a reason that has nothing to do with what it tests, which is the same
+    // shape as section 4c's inverted wait. Waited for, and swallowed rather than
+    // thrown, so a build that genuinely loads none fails the row below with its own
+    // number instead of ending the section with a timeout.
+    await page.waitForFunction('globalThis.__kinect.library.marks().length > 0', null, { timeout: 15000 })
+      .catch(() => {});
     const marks = await page.evaluate('globalThis.__kinect.library.marks()');
     check(marks.length === 4, 'the take\'s marks are loaded with it', `${marks.length} marks`);
     check(marks.every((m, i) => i === 0 || m.sourceMs >= marks[i - 1].sourceMs),
@@ -1651,6 +2195,46 @@ async function runChecks() {
     check(nodeGone && existsSync(localPath),
       'the node\'s copy is gone and the hash-verified one here is not');
 
+    // **The same substitution, now on the delete path.** Reclaim re-derived the hash
+    // and delete read it off the sidecar, which meant the irreversible action was
+    // carrying the weaker check - and the technique that catches it was already
+    // sitting in this tool twenty lines up, built as reclaim's falsification
+    // control. Same size, same modification time, different bytes: the manifest
+    // cannot see it, the listing keeps reporting the hash the sidecar remembers,
+    // and a delete built on that listing removes a file whose bytes nobody looked at.
+    {
+      const victimPath = join(macCaps, 'no-hello-take.knct');
+      const victimSidecar = victimPath.replace(/\.knct$/, '.idx');
+      const listedBefore = (await getJson(`${macUrl}/library/takes`)).takes.find((t) => t.id === 'no-hello-take');
+      const original = readFileSync(victimPath);
+      const substituted = Buffer.from(original);
+      substituted.fill(0, substituted.length - 5000);
+      writeFileSync(victimPath, substituted);
+      const idx = JSON.parse(readFileSync(victimSidecar, 'utf8'));
+      writeFileSync(victimSidecar, JSON.stringify({
+        ...idx, bytes: statSync(victimPath).size, mtimeMs: statSync(victimPath).mtimeMs,
+      }));
+      const stillListed = (await getJson(`${macUrl}/library/takes`)).takes.find((t) => t.id === 'no-hello-take');
+      check(stillListed?.hash === listedBefore.hash,
+        'the substitution is invisible to the manifest here too, which is what makes this the same control',
+        `listing still reports ${String(stillListed?.hash).slice(7, 19)}`);
+      const refusedDelete = await post(`${macUrl}/library/delete/no-hello-take`,
+        { hash: listedBefore.hash, confirm: true });
+      check(/not the .*this removal named|moved underneath/.test(refusedDelete.error ?? ''),
+        'delete re-hashes the file it is about to unlink and refuses when the bytes are not what the library listed',
+        (refusedDelete.error ?? 'ACCEPTED').slice(0, 90));
+      check(existsSync(victimPath),
+        'and the file is still there - the only irreversible action does not run on a hash nobody re-derived');
+      // Restored, and the lying sidecar with it, so the delete below is a delete of
+      // a take whose bytes are what the library says.
+      writeFileSync(victimPath, original);
+      rmSync(victimSidecar, { force: true });
+      const honest = (await getJson(`${macUrl}/library/takes`)).takes.find((t) => t.id === 'no-hello-take');
+      const gone = await post(`${macUrl}/library/delete/no-hello-take`, { hash: honest.hash, confirm: true });
+      check(gone.removed === 'no-hello-take.knct' && !existsSync(victimPath),
+        'while a delete whose hash matches the bytes on disk goes through - the control that stops the row above being a delete that simply never works');
+    }
+
     // Delete: the last copy, and it is genuinely the last one afterwards.
     const last = (await getJson(`${macUrl}/library/all`)).takes.find((t) => t.id === 'one-frame-take');
     const deleted = await post(`${macUrl}/library/delete/one-frame-take`, { hash: last.hash, confirm: true });
@@ -1660,9 +2244,1004 @@ async function runChecks() {
       'and the library no longer lists it');
   }
 
+  // ------------------------------------------- 7. the routes that change something
+  //
+  // **Enumerated rather than named.** The review that produced this section found six
+  // routes dispatching on the path alone - `GET /record/stop` ending a shoot,
+  // `GET /library/reclaim/:id` destroying the node's copy - by poking them one at a
+  // time, which makes six a floor rather than a total and leaves the next route
+  // anybody adds outside whatever list gets written today. So the server serves its
+  // own route table at `/library/routes`, derived from the array the dispatcher
+  // walks rather than restated beside it, and this section iterates it: every route
+  // that changes something is asked the same three questions, and a route added
+  // later is asked them by existing.
+  //
+  // One row per term, because a cumulative row cannot say which term broke. The
+  // method probe carries a JSON content type and no foreign origin, so only the
+  // method is under test; the content-type probe carries the right method; the
+  // origin probe carries both. Each of the three mutations below fails its own rows
+  // and leaves the other two alone.
+  //
+  // And the fourth row is the falsification control: the same request in the shape
+  // the capture-node link actually uses - correct method, JSON, and **no `Origin`
+  // header at all**, because nothing in Node has an origin to declare - has to be
+  // let through. Without it, a guard that refused everything would pass the first
+  // three rows perfectly.
+  console.log('\n[library] every route that changes something requires its method, its type and its origin');
+  {
+    const guardDir = join(WORK, 'guarded');
+    mkdirSync(guardDir, { recursive: true });
+    writeTake(guardDir, 'guard-take', { frames: 6 });
+    // Given its own document directories rather than left on the defaults. The
+    // control probe below is a *successful* write - that is what makes it a control -
+    // so on the defaults it planted `no-such-document.json` in the staged tree's own
+    // `projects/` on every run, clean runs included. A proof tool that leaves files
+    // in a directory it did not make is a habit worth not starting.
+    const guardDocs = join(WORK, 'guard-docs');
+    const guardPresets = join(WORK, 'guard-presets');
+    const guardUrl = await startServer(root, [
+      '--captures', guardDir, '--name', 'guarded',
+      '--projects', guardDocs, '--presets', guardPresets,
+    ], MAC_PORT + 8);
+    const table = (await getJson(`${guardUrl}/library/routes`)).routes;
+    const mutating = table.filter((r) => r.mutates);
+    // A route that also answers GET is a legitimate read at that method, so the
+    // method row below is about the ones where a GET can only be somebody else's
+    // idea. What covers the rest is the read sweep further down: every route with a
+    // read handler is driven with a plain GET and the recorder and the captures
+    // directory have to be where they were.
+    const writeOnly = mutating.filter((r) => !r.read);
+    const readable = table.filter((r) => r.read);
+    // **A count of registered routes cannot answer "did a read handler mutate
+    // something", and this row used to be one.** It read
+    // `mutating.length >= 10 && writeOnly.length >= 7`, today's values - which
+    // *moving* a route into the read slot trips, because the counts fall, and which
+    // **adding** one cannot trip at all, because adding a read route moves neither
+    // number in the failing direction. So the floor was structurally blind to
+    // exactly the shape the rule names, and a planted mutating read route went
+    // through the whole suite at 241 of 241 with its file on disk afterwards.
+    //
+    // What replaces it is a coverage row further down - every entry in the table
+    // driven, with any route this sweep cannot build a concrete URL for named rather
+    // than skipped - and the resource rows beside it, which observe what moved.
+    // Coverage in one place, behaviour in another.
+    const swept = new Set();
+    console.log(`  ...   ${table.length} routes, ${mutating.length} mutating, `
+      + `${writeOnly.length} of those write-only, ${readable.length} answering GET`);
+
+    // A concrete URL for a route pattern. Ids that do not exist on purpose: the
+    // guard runs before the handler, so its verdict is visible either way, and a
+    // refusal that comes from the handler is a refusal this section is not about.
+    //
+    // **A path this cannot make concrete comes back null rather than half-built.** A
+    // route added later with a parameter nobody taught this about would otherwise be
+    // driven at a URL still carrying a literal `:foo`, match no pattern, answer 404
+    // and be recorded as swept - a route counted and not tested, which is the same
+    // bookkeeping-instead-of-resource failure the sweep below exists to close.
+    const concrete = (path, { id = 'no-such-take', name = 'no-such-document' } = {}) => {
+      const built = path
+        .replace(':id', id)
+        .replace(':name', name)
+        .replace(':a-:b', '0-1')
+        .replace(':n', '0');
+      return built.includes(':') ? null : built;
+    };
+    const urlFor = (path) => guardUrl + concrete(path);
+    const status = async (path, init) => (await fetch(urlFor(path), init)).status;
+    const GUARDED = new Set([403, 405, 415]);
+
+    const wrongMethod = [];
+    const wrongType = [];
+    const wrongOrigin = [];
+    const refusedOutright = [];
+    for (const r of mutating) {
+      swept.add(r.path);
+      const method = r.methods[0];
+      // Method: a GET that is otherwise perfectly formed. This is the shape a link
+      // prefetch or an `<img src>` produces, which is how `GET /record/stop` was
+      // reachable from any page anybody visited. Asked only of the routes that offer
+      // nothing to read, since a GET of `/projects/:name` is a project being read.
+      if (!r.read && await status(r.path, { headers: { 'Content-Type': 'application/json' } }) !== 405) wrongMethod.push(r.path);
+      // Content type: the right method, declaring text/plain. This is the only shape
+      // a cross-origin `no-cors` fetch can send, so it is the term that actually
+      // stops a hostile page.
+      if (await status(r.path, { method, headers: { 'Content-Type': 'text/plain' }, body: '{}' }) !== 415) wrongType.push(r.path);
+      // Origin: everything right except the page it claims to come from.
+      if (await status(r.path, {
+        method,
+        headers: { 'Content-Type': 'application/json', Origin: 'http://evil.invalid' },
+        body: '{}',
+      }) !== 403) wrongOrigin.push(r.path);
+      // The control. No `Origin` at all, which is every call across the node link.
+      if (GUARDED.has(await status(r.path, { method, headers: { 'Content-Type': 'application/json' }, body: '{}' }))) {
+        refusedOutright.push(r.path);
+      }
+    }
+    check(wrongMethod.length === 0,
+      `every route that only changes things refuses a GET (${writeOnly.length} of ${mutating.length} mutating routes)`,
+      wrongMethod.join(' ') || 'all 405');
+    check(wrongType.length === 0,
+      'every mutating route refuses a body that does not declare JSON', wrongType.join(' ') || 'all 415');
+    check(wrongOrigin.length === 0,
+      'every mutating route refuses a cross-origin caller', wrongOrigin.join(' ') || 'all 403');
+    check(refusedOutright.length === 0,
+      'and the shape the node link uses - right method, JSON, no Origin header - is let through, which is what stops this being a guard that refuses everything',
+      refusedOutright.join(' ') || `${mutating.length} routes reached their handler`);
+
+    // **A refusal has to mean the route did not act**, which a status code does not
+    // say on its own. Driven on the two the reviewer demonstrated, against a server
+    // that is genuinely recording, because "the take is still open afterwards" is
+    // the assertion a 405 cannot make.
+    const shootDir = join(WORK, 'guard-shooting');
+    const shootProjects = join(WORK, 'guard-shooting-projects');
+    const shootPresets = join(WORK, 'guard-shooting-presets');
+    for (const d of [shootDir, shootProjects, shootPresets]) {
+      rmSync(d, { recursive: true, force: true });
+      mkdirSync(d, { recursive: true });
+    }
+    // **All five stores, and a closed take beside the open one.** The read sweep
+    // below used to spawn this server on the default document directories, which put
+    // `projects/` and `presets/` outside the one directory it snapshotted - so three
+    // of the library's five stores were unobserved, and a route registered as a
+    // `read` whose handler wrote a project went through the entire suite at 241 of
+    // 241 with its file sitting on disk afterwards. Two of five is not a sweep.
+    //
+    // The closed take is the other half. Substituting the *recording* take's id into
+    // every `:id` looks like coverage and is not: `beingRecorded` answers 409 before
+    // the handler runs, so `/capture/:id/hello`, `/index`, `/file`, `/frame/:n` and
+    // `/frames/:a-:b` were driven and never executed - five routes counted as swept
+    // and not swept, and a mutation inside `serveIndex` unreachable however closely
+    // the directory was watched. Both ids are driven, and the row below asserts by
+    // name that every route got past the 409.
+    const closedTake = writeTake(shootDir, 'a-closed-take', { frames: 6 });
+    // Seeded documents, so `/projects/:name` and `/presets/:name` run their found
+    // path as well as their not-found one - a mutation in the branch that reads an
+    // existing document is unreached by a name that does not exist.
+    writeFileSync(join(shootProjects, 'seeded-project.json'), `${JSON.stringify({ version: 1, body: {} }, null, 2)}\n`);
+    writeFileSync(join(shootPresets, 'seeded-preset.json'), `${JSON.stringify({ version: 1, body: {} }, null, 2)}\n`);
+    const shootUrl = await startServer(root, [
+      '--captures', shootDir, '--name', 'shooting', '--record', '--no-color',
+      '--projects', shootProjects, '--presets', shootPresets,
+      '--grabber', `${join(REPO, 'tools/fake-grabber.mjs')} --source ${SAMPLE} --fps 40`,
+    ], MAC_PORT + 9);
+    let shooting = null;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((done) => { setTimeout(done, 250); });
+      shooting = await getJson(`${shootUrl}/record/state`);
+      if (shooting.recording) break;
+    }
+    check(shooting?.recording === true, 'a take is open, which is what makes the next two rows about behaviour rather than status codes',
+      String(shooting?.takeId));
+    const stopStatus = (await fetch(`${shootUrl}/record/stop`, { headers: { 'Content-Type': 'application/json' } })).status;
+    const afterStop = await getJson(`${shootUrl}/record/state`);
+    check(stopStatus === 405 && afterStop.recording === true && afterStop.takeId === shooting.takeId,
+      'a GET of /record/stop is refused and the take is still open - the refusal is a decision, not a status on a thing that already happened',
+      `${stopStatus}, still ${afterStop.takeId}`);
+
+    // Every read route driven, and every store this server owns asserted not to have
+    // moved. This is what stops a route hiding a mutation behind a `read` handler,
+    // which is the only way left to add one the guard above never sees - and it is
+    // the resources that are read, never a count of registered routes, because a
+    // count cannot answer whether a handler wrote something.
+    //
+    // **Both methods.** `serveRoute` treats HEAD as reading, which is correct and is
+    // why HEAD works at all - but a sweep that only sends GET is blind to a handler
+    // that mutates on HEAD, and the dispatcher would carry it there just the same.
+    //
+    // The snapshot is name, size and modification time for every file in all three
+    // directories, plus the document revisions the stores report, plus the recorder's
+    // own state. Modification time is in it deliberately: a plant that rewrites the
+    // same bytes leaves the name and the size where they were.
+    //
+    // **A before-and-after snapshot cannot see a write that is put back, so it is not
+    // what the next row rests on.** A handler that writes and restores inside the same
+    // request is invisible to any pair of readings taken outside it: the bytes match,
+    // and the modification time is one `utimes` call away from matching too. So the
+    // stores carry a monotonic write count, served at `/library/writes`, and that is
+    // the row - a count is the one thing a restore cannot undo. The contents comparison
+    // stays as the second opinion rather than the only one.
+    //
+    // One shape is still outside this, and it is outside the *drive* rather than the
+    // snapshot: a handler that mutates only on a query parameter. This sweep sends
+    // none, so any parameter at all is unswept, and no enumeration of the route table
+    // can find one that is not declared. A hole until measured otherwise.
+    //
+    // **Two things move for reasons that are not a read route, and both are named
+    // rather than left to weaken the row.** The take being recorded grows while this
+    // runs - measured 4.89MB to 6.35MB across one sweep - so its own bytes are out of
+    // the comparison while its presence stays in, and a sidecar appearing beside it is
+    // a separate row below. And reading a capture legitimately opens and caches a
+    // descriptor, which is the module's designed behaviour, so the count gets a bound
+    // rather than an equality: 22 to 28 across the same sweep, which is caching, where
+    // a route holding one per request would run away.
+    const snapshotDir = (dir, growing = null) => readdirSync(dir).sort().map((f) => {
+      if (f === growing) return `${f}:being-written`;
+      const st = statSync(join(dir, f));
+      return `${f}:${st.size}:${st.mtimeMs}`;
+    }).join(' ');
+    const snapshot = async () => JSON.stringify({
+      captures: snapshotDir(shootDir, `${shooting.takeId}.knct`),
+      projects: snapshotDir(shootProjects),
+      presets: snapshotDir(shootPresets),
+      // Revisions rather than names, and they are the stores' own: `DocumentStore.list`
+      // hashes the bytes on disk, so a plant that overwrites a document that is
+      // already there moves this where a listing of filenames would not.
+      projectRevs: (await getJson(`${shootUrl}/projects`)).projects?.map((d) => `${d.name}=${d.rev}`) ?? null,
+      presetRevs: (await getJson(`${shootUrl}/presets`)).presets?.map((d) => `${d.name}=${d.rev}`) ?? null,
+      recorder: await getJson(`${shootUrl}/record/state`).then((s) => `${s.recording}:${s.takeId}:${s.dropped}`),
+    });
+    const descriptorsNow = async () => (await getJson(`${shootUrl}/library/descriptors`)).real;
+
+    // Warmed first, and only these two, because scanning a *closed* take and writing
+    // its sidecar is what makes it a gallery entry - designed behaviour rather than a
+    // read that mutates. Warming exactly the two calls that do it, by name, keeps the
+    // snapshot below able to see a file appear: a blanket warm would have created the
+    // planted document too, and then only its modification time would have moved.
+    await fetch(`${shootUrl}/library/all`).catch(() => {});
+    await fetch(`${shootUrl}/capture/a-closed-take/index`).catch(() => {});
+
+    const before = await snapshot();
+    const writesBefore = JSON.stringify(await getJson(`${shootUrl}/library/writes`));
+    const fdBefore = await descriptorsNow();
+    const reached = new Map();
+    const unbuildable = [];
+    for (const r of readable) {
+      swept.add(r.path);
+      for (const id of [shooting.takeId, 'a-closed-take']) {
+        for (const name of ['seeded-project', 'nothing']) {
+          const path = concrete(r.path, { id, name: r.path.startsWith('/presets') ? name.replace('project', 'preset') : name });
+          if (path === null) { unbuildable.push(r.path); continue; }
+          for (const method of ['GET', 'HEAD']) {
+            const code = await fetch(shootUrl + path, { method }).then((x) => x.status).catch(() => 0);
+            // 409 is `beingRecorded` answering before the handler runs. Anything else
+            // means the handler executed - a 404 out of `readDocument` is the handler
+            // having looked - so "not 409" is the reached predicate and a 200 is not.
+            if (code !== 409) reached.set(r.path, `${code} on ${id === shooting.takeId ? 'the open take' : 'a closed take'}`);
+          }
+        }
+      }
+    }
+    // The fallthrough, driven inside the same window: a static file, an unclaimed
+    // path under every namespace the table owns, and a GET of a write-only route.
+    // Nothing downstream of `ROUTES` may write, and this is that assertion observed
+    // rather than assumed - the static server only reads today, and the day it does
+    // not, this window is where it shows.
+    const namespaces = [...new Set(table.map((r) => r.path.split('/')[1]))];
+    for (const path of ['/main.js', '/', '/no-such-file.js', ...namespaces.map((ns) => `/${ns}/no-such-route-here`)]) {
+      await fetch(shootUrl + path).catch(() => {});
+    }
+    await fetch(`${shootUrl}/record/stop`, { headers: { 'Content-Type': 'application/json' } }).catch(() => {});
+    const after = await snapshot();
+    const writesAfter = JSON.stringify(await getJson(`${shootUrl}/library/writes`));
+    const fdAfter = await descriptorsNow();
+
+    check(unbuildable.length === 0 && swept.size === table.length,
+      `all ${table.length} routes the server declares are driven, so a route added later is swept by existing`,
+      unbuildable.length ? `no concrete URL for ${unbuildable.join(' ')}`
+        : `${swept.size} of ${table.length} driven, ${readable.length} of them with GET and HEAD against an open and a closed take`);
+    check(reached.size === readable.length,
+      'and every one of them actually runs its handler rather than stopping at a 409 the fixture caused',
+      readable.filter((r) => !reached.has(r.path)).map((r) => r.path).join(' ')
+        || `${reached.size} reached: ${[...reached].map(([p, c]) => `${p} ${c}`).join(', ')}`.slice(0, 150));
+    // **The row a write-and-restore cannot pass.** Asserted before the contents
+    // comparison because it is the stronger of the two: the counts are monotonic, so a
+    // handler that writes a document and puts the bytes and the timestamp back still
+    // moves them, where the snapshot below sees a store that never changed.
+    check(writesAfter === writesBefore,
+      'not one of them writes a store even momentarily - a count no restore can undo, which is what a handler that writes and puts it back defeats a contents comparison with',
+      `${writesBefore} then ${writesAfter}`);
+    check(after === before,
+      'and none of it moves a byte in any of the five stores, their sidecars or the recorder',
+      after === before ? `${namespaces.length} namespaces and the file tree swept alongside, nothing moved`
+        : `${before}\n              then ${after}`);
+    // **The descriptor count is deliberately not a row here, and that is a measurement
+    // rather than an omission.** `/library/descriptors` reports `/dev/fd`, which counts
+    // sockets as well as captures, and this arm opens about seventy connections - so
+    // the delta came in at 6 on a clean run and at 9 under `origin-unchecked` and
+    // `content-type-unchecked`, two mutations that touch no descriptor at all. A row
+    // on it fired on five unrelated mutations, which is a gate going red for reasons
+    // that have nothing to do with what it tests. The descriptor bound has a section
+    // of its own further down, where a raw socket against a quiet server controls for
+    // exactly what this arm cannot.
+    console.log(`  ...   ${fdBefore} descriptors before the sweep, ${fdAfter} after `
+      + '(sockets included, which is why it is not a row - see section 9)');
+    // The sidecar is the tell, and it is the same one section 11 uses. `buildIndex`
+    // writes a `.idx` beside the take, so a read route that scanned the file the
+    // recorder has open would leave one - which is how this arm caught
+    // `/capture/:id/index` reaching that scan by a shorter road than the manifest.
+    check(!existsSync(join(shootDir, `${shooting.takeId}.idx`)),
+      'and the take still being written has no sidecar - the closed one beside it was scanned and this one was not',
+      readdirSync(shootDir).sort().join(' '));
+
+    // ---- and the shoot itself survived the sweep
+    //
+    // **Three observations are switched off at once for the file being recorded, so
+    // a read route appending to it passed every row above.** Its size and modification
+    // time are out of the snapshot by name, because they move on their own; no write
+    // counter covers the captures directory, since the counters are on the two document
+    // stores and the marks log; and the recorder's own state field is
+    // `recording:takeId:dropped`, which a foreign append does not move. Demonstrated:
+    // a read route appending 64KB to `recorder.openPath` gave 251 assertions, none
+    // failed, exit 0, with the take ruined - `stream desync at 6349028: expected magic
+    // KNCT, got 0x7070707` and nine surviving 4096-byte runs of 0x07 in the file.
+    //
+    // **The identity is section 10's, applied after the take closes rather than during
+    // it, and the timing is the whole reason.** Comparing the file's size against the
+    // recorder's own `bytes` while it is still recording is very nearly exact and not
+    // exact: measured 40 samples over two seconds on a 40fps take, `onDisk - bytes` was
+    // 0 every time - but that zero is a syscall-width window, not a guarantee, since the
+    // bytes reach the disk before the callback that moves `bytesWritten` runs. One
+    // sample landing inside it reddens the row by one frame for no reason, which is a
+    // gate that teaches people to re-run. After `close`, nothing is in flight and the
+    // identity is exact, which is why section 10 can assert it with `===`.
+    const shotPath = join(shootDir, `${shooting.takeId}.knct`);
+    const stopped = await post(`${shootUrl}/record/stop`);
+    const shotSize = existsSync(shotPath) ? statSync(shotPath).size : -1;
+    check(!stopped.error && Number.isFinite(stopped.stopped?.frames),
+      'the take the sweep ran alongside still scans as one continuous stream - foreign bytes in the middle of it are a desync rather than a frame',
+      stopped.error ? `close refused: ${String(stopped.error).slice(0, 100)}` : `${stopped.stopped?.frames} frames`);
+    check(stopped.stopped?.bytes === shotSize,
+      'and the file is exactly the bytes the recorder put there, which is the one reading a route writing to the open take cannot leave alone',
+      `${stopped.stopped?.bytes} counted, ${shotSize} on disk`);
+    for (const p of servers.filter((sv) => sv.port === MAC_PORT + 9)) p.child.kill('SIGKILL');
+
+    // Marks used to be creatable for a take that does not exist, which put an
+    // attacker-chosen `nosuchtake.marks.jsonl` in the captures directory - up to
+    // four megabytes a request, and tombstones waiting to delete real marks the
+    // moment a take of that name existed.
+    const ghost = await post(`${guardUrl}/capture/nosuchtake/marks`,
+      { marks: [{ id: 'x', sourceMs: 1, at: 1, label: 'planted' }] });
+    check(/nothing to mark|no take/.test(ghost.error ?? ''),
+      'marks on a take that is not here are refused rather than creating its sidecar',
+      (ghost.error ?? 'ACCEPTED').slice(0, 70));
+    check(!existsSync(join(guardDir, 'nosuchtake.marks.jsonl')),
+      'and nothing was written to the captures directory',
+      readdirSync(guardDir).join(' '));
+
+    // A document from a build this one is not. It came back stamped as version 1
+    // with its version 2 fields underneath, which is exactly what the version field
+    // was chosen over an authored buffer height to prevent.
+    const future = await post(`${guardUrl}/projects/from-the-future`, { version: 2, tracks: {}, futureField: 'kept' });
+    check(/version 2/.test(future.error ?? ''),
+      'a document from a future format version is refused rather than restamped as this one',
+      (future.error ?? 'ACCEPTED').slice(0, 80));
+    const stored = await getJson(`${guardUrl}/projects/from-the-future`);
+    check(stored.error !== undefined,
+      'and nothing was written, so a project this build cannot interpret never enters the store at all');
+    for (const p of servers.filter((sv) => sv.port === MAC_PORT + 8)) p.child.kill('SIGKILL');
+    // The control probe above is a write that succeeds, which is the point of it, so
+    // it leaves a document behind. Cleared here rather than left in a directory this
+    // section made: a proof tool whose clean run adds files is one nobody can use the
+    // filesystem to reason about.
+    rmSync(guardDocs, { recursive: true, force: true });
+    rmSync(guardPresets, { recursive: true, force: true });
+  }
+
+  // -------------------------------------------- 8. recording a replay is refused
+  //
+  // **This arm exists because no other arm crossed replay with record.** Every
+  // recording section spawns a server with a grabber and every replay section spawns
+  // one with no recorder, so both halves agreed about a combination neither of them
+  // stood in front of - which is the same shape as the descriptor section's own
+  // history two hundred lines up, and the reason that one carries its story beside
+  // the code.
+  //
+  // The record button on the viewer is unconditional, so this was one click in the
+  // setup this repo documents: the take opened, `recorder.write(undefined)` threw on
+  // every frame into the replay tick's catch, no frame reached any client, the
+  // status flapped between lost and live, and `/record/state` reported a healthy
+  // recording the whole time.
+  console.log('\n[library] a replay server refuses to record, and goes on streaming');
+  {
+    const replayCaps = join(WORK, 'replay-record-captures');
+    mkdirSync(replayCaps, { recursive: true });
+    const source = join(WORK, 'replay-source');
+    mkdirSync(source, { recursive: true });
+    const replaying = writeTake(source, 'replay-me', { frames: 40 });
+    const url = await startServer(root,
+      ['--captures', replayCaps, '--name', 'replaying', '--replay', replaying], MAC_PORT + 10);
+
+    const seen = { frames: 0, statuses: [] };
+    const ws = new WebSocket(url.replace('http', 'ws'));
+    ws.on('message', (data, isBinary) => {
+      if (isBinary) seen.frames++;
+      else {
+        try {
+          const msg = JSON.parse(data.toString('utf8'));
+          if (msg.status) seen.statuses.push(msg.status);
+        } catch { /* not a status message */ }
+      }
+    });
+    await new Promise((done, fail) => { ws.on('open', done); ws.on('error', fail); });
+    await new Promise((done) => { setTimeout(done, 1200); });
+    const before = seen.frames;
+    check(before > 0, 'the replay is streaming before anything presses record', `${before} frames in 1.2s`);
+
+    const state = await getJson(`${url}/record/state`);
+    check(typeof state.cannotRecord === 'string' && /replay/i.test(state.cannotRecord),
+      'the state says this server cannot record and why, which is what the button disables itself on',
+      String(state.cannotRecord).slice(0, 80));
+
+    const refused = await post(`${url}/record/start`);
+    check(/replay/i.test(refused.error ?? ''),
+      'pressing record on a replay is refused with the reason rather than opening a take',
+      (refused.error ?? 'ACCEPTED').slice(0, 80));
+    const during = await getJson(`${url}/record/state`);
+    check(during.recording === false && during.armed === false,
+      'and the recorder is left alone rather than half-armed',
+      JSON.stringify({ armed: during.armed, recording: during.recording }));
+
+    await new Promise((done) => { setTimeout(done, 1500); });
+    const after = seen.frames - before;
+    ws.close();
+    check(after > 0, 'the live stream is untouched afterwards - the frames kept arriving',
+      `${after} frames in the 1.5s after the refusal`);
+    check(!seen.statuses.includes('lost'),
+      'with no lost-sensor report, which is how the broken build presented itself',
+      seen.statuses.length ? `saw ${seen.statuses.join(' ')}` : 'no status changes');
+    check(readdirSync(replayCaps).filter((f) => f.endsWith('.knct')).length === 0,
+      'and no take was written - a 163-byte file holding a hello and nothing else is not a take',
+      readdirSync(replayCaps).join(' ') || 'empty');
+
+    // The button itself, in the page. `web/index.html` carries an unconditional
+    // record button, which is what made this one click away rather than one curl
+    // away - so a state field saying the server cannot record is only half the fix
+    // and the other half is visible or it is not there.
+    {
+      const { page, errors } = await openPage(browser, `${url}/`, { width: 900, height: 700 });
+      await page.waitForFunction('globalThis.__kinect !== undefined', null, { timeout: 40000 });
+      await page.waitForFunction("document.getElementById('recGo')?.disabled === true", null, { timeout: 20000 })
+        .catch(() => { /* asserted below, so a timeout is a failing row rather than a throw */ });
+      const button = await page.evaluate(`(() => {
+        const go = document.getElementById('recGo');
+        return { disabled: go.disabled, title: go.title, note: document.getElementById('recNote').textContent };
+      })()`);
+      check(button.disabled === true, 'the record button on a replay server is disabled in the page rather than only refused by the server',
+        JSON.stringify(button).slice(0, 90));
+      check(/replay/i.test(button.note) || /replay/i.test(button.title),
+        'and it says why, so the operator is not looking at a dead control with no explanation',
+        (button.note || button.title).slice(0, 80));
+      check(errors.length === 0, 'and the viewer raises no page errors on a server that cannot record',
+        errors.slice(0, 2).join(' | '));
+      await page.close();
+    }
+    for (const p of servers.filter((sv) => sv.port === MAC_PORT + 10)) p.child.kill('SIGKILL');
+  }
+
+  // --------------------------- 9. a descriptor outlives the map entry that held it
+  //
+  // **Counted off `/dev/fd` rather than off the module's own bookkeeping, and that
+  // is the whole method of this section.** `openCaptures.size` is what
+  // `/library/descriptors` used to report alone, and the bug here made that number
+  // *fall* - `forgetCapture` dropped the map entry while the `FileHandle` stayed
+  // open, so an arm watching the bookkeeping would have seen a descriptor being
+  // released at the exact moment one leaked. The general form is worth stating:
+  // **an assertion about a resource has to read the resource, not the accounting
+  // that claims to track it.**
+  //
+  // The reachable gesture is one the gallery performs constantly. Skimming leases a
+  // capture per pointer move, Delete is a button on the same tile, and on Node 26 a
+  // `FileHandle` collected unclosed throws `ERR_INVALID_STATE` out of the garbage
+  // collector at the top level - measured on v26.0.0, process gone, listener and
+  // every socket with it.
+  console.log('\n[library] a take removed while a reader holds it still gives its descriptor back');
+  {
+    const leaseDir = join(WORK, 'leased');
+    mkdirSync(leaseDir, { recursive: true });
+    // Big enough that the run cannot fit in socket buffers. At forty frames it did:
+    // the whole nineteen megabytes drained before the delete, the lease was already
+    // released, and the mutation that leaks a descriptor came back green because
+    // there was never a descriptor being held. Sized by frame count, since the
+    // sample was captured on a degraded link and its seconds are not a take's.
+    writeTake(leaseDir, 'leased-take', { frames: 200 });
+    const url = await startServer(root, ['--captures', leaseDir, '--name', 'leasing'], MAC_PORT + 11);
+    const take = (await getJson(`${url}/library/takes`)).takes.find((t) => t.id === 'leased-take');
+    const baseline = await getJson(`${url}/library/descriptors`);
+    check(Number.isInteger(baseline.real),
+      'the server reports the descriptors the kernel says it holds, not only the ones its own map remembers',
+      `open ${baseline.open}, real ${baseline.real}`);
+
+    // A reader that is genuinely mid-read: a raw socket asking for a long frame run
+    // and then reading nothing, so TCP backpressure stalls the pipeline and the
+    // lease is held for as long as this test wants it held.
+    const sock = createConnection(MAC_PORT + 11, 'localhost');
+    await new Promise((done, fail) => { sock.on('connect', done); sock.on('error', fail); });
+    // Read exactly enough to know the response started, then stop reading, so TCP
+    // backpressure stalls the pipeline and the lease stays held for as long as this
+    // section wants it held. Left in flowing mode for even 700ms the whole 97MB
+    // drained - Node's own socket buffering is larger than any of this - and the run
+    // then finished, released its lease, and left nothing for the removal below to
+    // happen underneath.
+    let received = 0;
+    sock.on('data', (c) => { received += c.length; sock.pause(); });
+    sock.write(`GET /capture/leased-take/frames/0-${take.frames - 1} HTTP/1.1\r\nHost: localhost:${MAC_PORT + 11}\r\nConnection: close\r\n\r\n`);
+    await new Promise((done) => { setTimeout(done, 1200); });
+    const held = await getJson(`${url}/library/descriptors`);
+    // **The precondition, asserted rather than assumed.** A run that finished has no
+    // lease left to hold anything, and every row below would then be measuring a
+    // capture nobody was reading. Partway through is the state this needs, and the
+    // byte count is what says it is partway through.
+    check(received > 0 && received < take.bytes * 0.9,
+      'the reader is genuinely mid-run rather than finished, which is what the rows below rest on',
+      `${(received / 1e6).toFixed(1)}MB of ${(take.bytes / 1e6).toFixed(1)}MB read, then stopped reading`);
+    check(held.real > baseline.real && held.open === 1,
+      'and it is holding the capture open, which is what the removal below has to happen underneath',
+      `open ${held.open}, real ${held.real} against ${baseline.real}`);
+
+    const removed = await post(`${url}/library/delete/leased-take`, { hash: take.hash, confirm: true });
+    const afterDelete = await getJson(`${url}/library/descriptors`);
+    check(removed.removed === 'leased-take.knct', 'the take is removed while the reader is still on it',
+      JSON.stringify(removed).slice(0, 60));
+    // **A precondition, and it was labelled a control, which it cannot be.** The
+    // reading here - map empty, descriptor still open - is what the fixed build and
+    // the leaking one both produce, because at this instant the reader still holds
+    // its lease and the descriptor is legitimately open in either. So nothing about
+    // this row can fail on the mutation beside it, and calling it the control
+    // overstated an arm that rests on the two rows after `sock.destroy()`, where the
+    // builds genuinely diverge.
+    //
+    // What it does say is why the arm reads `/dev/fd` at all: a check reading `open`
+    // alone sees it fall to zero here and would record a descriptor being released
+    // while the real count sat at 2. Stated as the precondition it is.
+    check(afterDelete.open === 0 && afterDelete.real === held.real && held.real > baseline.real,
+      'the module\'s own count drops to zero while the descriptor is genuinely still there - a precondition for the rows below rather than a catch, and the reason this arm reads /dev/fd',
+      `open ${afterDelete.open}, real ${afterDelete.real} against a baseline of ${baseline.real}`);
+
+    sock.destroy();
+    // **Polled inside a catch, because the failure mode is the server going away.**
+    // A leaked `FileHandle` does not sit there being counted: the collector finds it
+    // and throws `ERR_INVALID_STATE` at the top level, and the process is gone -
+    // measured here at between 300ms and one second after the reader let go. An
+    // unguarded poll then throws out of `runChecks` and the run ends with an exit
+    // code and *zero failed assertions*, which is the shape `CLAUDE.md` records as a
+    // crash wearing a catch's status. This turns it back into rows.
+    //
+    // **One reading at a fixed delay, and deliberately not a poll-until-it-passes.**
+    // A loop that retried until the count came back turned this into a race with the
+    // garbage collector: it closes the leaked handle on its way to throwing, so
+    // there is a window in which the count *has* returned to baseline and the
+    // process has not died yet - and a patient loop finds that window and calls it a
+    // pass. Measured flaky exactly that way, green on one run and two failed rows on
+    // the next against an identical mutated tree.
+    //
+    // 250ms is three orders of magnitude more than the fixed build needs - the close
+    // is one `fs.close` in a `finally` that runs when the socket errors - and it is
+    // comfortably inside the 300ms-to-1s window the collector was measured to take.
+    let settled = null;
+    let died = null;
+    await new Promise((done) => { setTimeout(done, 250); });
+    try {
+      settled = await getJson(`${url}/library/descriptors`);
+    } catch (err) {
+      died = err.message;
+    }
+    check(died === null,
+      'the server is still answering afterwards - an unclosed FileHandle is a process death on this Node, taking the listener and every socket with it',
+      died ?? 'still up');
+    check(died === null && settled.real <= baseline.real,
+      'and when the reader lets go the descriptor is closed rather than left for the collector to throw over',
+      died ? 'the server did not survive to be asked' : `real ${settled.real} against a baseline of ${baseline.real}`);
+    for (const p of servers.filter((sv) => sv.port === MAC_PORT + 11)) p.child.kill('SIGKILL');
+  }
+
+  // ------------------------------------------- 10. the recorder's own two failures
+  //
+  // **Driven in process rather than through a server, because both claims are about
+  // what happens inside one synchronous turn** and nothing reachable over HTTP can
+  // stand in the middle of one. The backpressure arm in particular needs frames
+  // handed over faster than any disk can take them, and a synchronous loop is the
+  // only thing that guarantees it: no I/O can complete while it runs, so every byte
+  // written is still in memory when it ends. That is a fixture rather than a race.
+  console.log('\n[library] the recorder holds its marks and bounds its buffer');
+  {
+    // A take whose sidecar was never written has no marks, which is a *failing*
+    // answer rather than a missing file. Read through this, or the two mutations
+    // that drop the flush take the whole run down with an ENOENT before any row is
+    // recorded - and an exit code with zero failed assertions reads as a caught
+    // mutation to anything counting statuses.
+    const marksOf = (id) => {
+      try {
+        return readFileSync(join(WORK, 'recorder-unit', `${id}.marks.jsonl`), 'utf8').trim().split('\n').filter(Boolean);
+      } catch {
+        return [];
+      }
+    };
+    // **Imported out of the staged tree rather than out of the repo**, which is what
+    // makes a server-file mutation reach this section at all. Pointed at `REPO` it
+    // loaded the unmutated recorder while the mutation sat in the copy nothing here
+    // was running, and five mutations came back green against code they never
+    // touched - a check measuring a build that was not under test.
+    const { Recorder, MAX_TAKE_BUFFER } = await import(pathToFileURL(join(root, 'server/recorder.js')).href);
+    const recDir = join(WORK, 'recorder-unit');
+    mkdirSync(recDir, { recursive: true });
+    const hello = SRC.hello.toString('utf8');
+
+    // ---- marks belong to the take, not to the recorder
+    //
+    // A take that dies mid-write used to null itself without flushing, and the marks
+    // pressed during it were still on the recorder when the *next* take closed - so
+    // take one lost the moment somebody flagged and take two gained one at a source
+    // time that means nothing there.
+    const one = new Recorder({ dir: recDir });
+    await one.start(null);
+    one.open(hello);
+    const firstTake = one.state.takeId;
+    one.write(SRC.frames[0]);
+    one.mark(1234, 'the moment');
+    // A card pulled mid-write, which is the reachable version of this: the stream
+    // errors, the take ends, and there is no next name that would help.
+    one.take.stream.destroy(new Error('the card was pulled'));
+    await new Promise((done) => { setTimeout(done, 400); });
+    check(one.state.recording === false && one.state.armed === false,
+      'a take that fails mid-write ends and says so rather than looking like it is still recording',
+      JSON.stringify({ armed: one.state.armed, recording: one.state.recording }));
+    const firstMarks = marksOf(firstTake);
+    check(firstMarks.length === 1 && JSON.parse(firstMarks[0]).sourceMs === 1234,
+      'and the mark pressed during it is in that take\'s sidecar, written on the way down',
+      firstMarks.join(' ').slice(0, 70));
+
+    // The other half: the next take must not inherit it.
+    const two = new Recorder({ dir: recDir });
+    await two.start(null);
+    two.open(hello);
+    const secondTake = two.state.takeId;
+    two.write(SRC.frames[1]);
+    await two.stop();
+    check(secondTake !== firstTake, 'the next take is a different file', `${firstTake} then ${secondTake}`);
+    check(!existsSync(join(recDir, `${secondTake}.marks.jsonl`)),
+      'and it carries no marks at all - the orphaned one did not travel forward into footage it does not describe');
+
+    // ---- a close that rejects still flushes
+    //
+    // The same orphaning arrived a second way: `once(stream, "close")` rejects when
+    // the stream errors during the flush, and the old shape had already nulled the
+    // take by then, so the marks sat in a list nothing would read again.
+    const three = new Recorder({ dir: recDir });
+    await three.start(null);
+    three.open(hello);
+    const thirdTake = three.state.takeId;
+    three.write(SRC.frames[2]);
+    three.mark(777, 'flagged as it died');
+    const stream = three.take.stream;
+    const closing = three.close('testing a close that fails').catch((err) => err);
+    stream.destroy(new Error('the card went away during the close'));
+    const outcome = await closing;
+    check(outcome instanceof Error, 'a close that fails partway through reports the failure rather than swallowing it',
+      String(outcome?.message ?? outcome).slice(0, 60));
+    const thirdMarks = marksOf(thirdTake);
+    check(thirdMarks.length === 1 && JSON.parse(thirdMarks[0]).sourceMs === 777,
+      'and the marks are still written, because the flush hangs off the take rather than off the close succeeding',
+      thirdMarks.join(' ').slice(0, 70));
+
+    // ---- backpressure, and numbers that mean durable
+    //
+    // **The requirement this arm holds the ceiling to is written down here rather
+    // than imported.** `MAX_TAKE_BUFFER` is the number under test, so the row
+    // bounding the observed peak against it passes at whatever ceiling the build
+    // cares to name - demonstrated at 8MB and again at 1MB, the whole suite green,
+    // the row printing "peak 1.5MB against a 1MB ceiling" while 297 of 300 frames
+    // went on the floor. A build that rides out 0.6 seconds of a stalled card was
+    // therefore indistinguishable from one that rides out 4.4.
+    //
+    // Two rows fix that, on two literals that are not the build's to move: the
+    // ceiling the design settled on, and the full rate the ride-out requirement is
+    // about. Both are written here as requirements the recorder must meet rather
+    // than as facts read off it.
+    //
+    // The bytes are **observed** - accumulated from the frames actually handed over
+    // and divided back out into a mean, rather than imported from `recorder.js` or
+    // multiplied out of one frame's nominal size. That matters on this fixture: its
+    // mean frame is about 475KB where the spec measured 486KB, so the shipped build
+    // accepts 139 frames where the spec's arithmetic says 135, and a hardcoded frame
+    // size would have made a correct build miss by 3%.
+    //
+    // **The 30 in the second row is the sensor's full rate, not the fixture's.** It
+    // is legitimate here for the same reason `CLAUDE.md` forbids it elsewhere: the
+    // requirement is "four seconds of a full-rate take", so 30 is what the claim is
+    // *about*. Nothing here is sized by duration - the sample runs at about 9.3fps
+    // and every fixture in this file is sized by frame count.
+    const CEILING_REQUIRED = 64 * 1024 * 1024;
+    const CEILING_TOLERANCE = 0.10;
+    const FULL_RATE_FPS = 30;
+    const RIDE_OUT_SEC = 4;
+
+    // The recorder's own pushes, so the transition into dropping can be asked about
+    // rather than assumed. Nothing here reads `state` - the getter drains the queue,
+    // which is the very thing two arms below are measuring.
+    const pushed = [];
+    const four = new Recorder({ dir: recDir, onChange: (s) => pushed.push(s) });
+    await four.start(null);
+    four.open(hello);
+    const burstTake = four.take.id;
+    const burstPath = join(recDir, `${burstTake}.knct`);
+    const BURST = 300;
+    let peak = 0;
+    let acceptedBytes = 0;
+    let acceptedFrames = 0;
+    const pushedBeforeBurst = pushed.length;
+    // Synchronous from end to end. Nothing drains while this runs, so the buffer
+    // grows monotonically and the ceiling is reached deterministically rather than
+    // whenever the disk happens to be slow.
+    for (let i = 0; i < BURST; i++) {
+      const frame = SRC.frames[i % SRC.frames.length];
+      four.write(frame);
+      // Read off the take rather than through `state`, for the same reason. Drops
+      // are contiguous once they start, because nothing can drain mid-turn, so this
+      // is exactly the footage accepted before the first one.
+      if (four.take.dropped === 0) {
+        acceptedBytes += frame.length;
+        acceptedFrames++;
+      }
+      peak = Math.max(peak, four.take.stream.writableLength);
+    }
+    const midBurst = four.state;
+    const onDiskMid = statSync(burstPath).size;
+    const meanFrameBytes = acceptedBytes / acceptedFrames;
+    check(Math.abs(acceptedBytes - CEILING_REQUIRED) <= CEILING_TOLERANCE * CEILING_REQUIRED,
+      `the buffer holds the 64MiB the design settled on, within ${(CEILING_TOLERANCE * 100).toFixed(0)}%`,
+      `${acceptedFrames} frames x ${(meanFrameBytes / 1024).toFixed(0)}KB observed mean = `
+      + `${(acceptedBytes / 1e6).toFixed(1)}MB accepted before the first drop, `
+      + `${((acceptedBytes / CEILING_REQUIRED - 1) * 100).toFixed(1)}% off ${(CEILING_REQUIRED / 1e6).toFixed(1)}MB`);
+    check(acceptedFrames / FULL_RATE_FPS >= RIDE_OUT_SEC,
+      `which is at least the ${RIDE_OUT_SEC}s of a stalled card the recorder is required to ride out`,
+      `${(acceptedFrames / FULL_RATE_FPS).toFixed(2)}s at the sensor's ${FULL_RATE_FPS}fps, `
+      + `${RIDE_OUT_SEC}s required`);
+    check(peak <= MAX_TAKE_BUFFER + SRC.frames[0].length,
+      `${BURST} frames handed over in one turn never buffer past the stated ceiling`,
+      `peak ${(peak / 1e6).toFixed(1)}MB against a ${(MAX_TAKE_BUFFER / 1e6).toFixed(0)}MB ceiling`);
+    // The transition, pushed. Left to the five-second poll, a node with nobody
+    // watching it drops footage for five seconds before anything says so - and after
+    // the queue drains on every write, no monitor has to be open for the drop to
+    // happen at all, so the poll is the only thing that would have carried it.
+    const drops = pushed.slice(pushedBeforeBurst).filter((s) => s.dropped > 0);
+    check(drops.length > 0,
+      'the moment the recorder starts dropping is pushed rather than left to the panel\'s five-second poll',
+      `${pushed.length - pushedBeforeBurst} pushes during the burst, ${drops.length} carrying a drop`);
+    check(drops.length === 1,
+      'and pushed once for the transition rather than once per dropped frame, which would put a socket write in the frame path',
+      `${drops.length} pushes for ${midBurst.dropped} dropped frames`);
+    check(midBurst.dropped > 0,
+      'and the frames past it are dropped and counted rather than queued into heap that grows until the process is killed',
+      `${midBurst.dropped} of ${BURST} dropped`);
+    // The monitor's numbers. Mid-turn nothing has reached the file, so a recorder
+    // reporting what it *accepted* reads healthy at exactly the moment it is holding
+    // sixty-four megabytes it may be about to lose.
+    check(midBurst.bytes === onDiskMid,
+      'the bytes the monitor reports are the bytes that reached the file, not the ones this process is holding',
+      `reports ${midBurst.bytes}, on disk ${onDiskMid}, buffered ${(midBurst.buffered / 1e6).toFixed(1)}MB`);
+    check(midBurst.frames === 0 && midBurst.buffered > 0,
+      'so a stalled card reads as stalled rather than as a healthy take',
+      `${midBurst.frames} frames durable with ${(midBurst.buffered / 1e6).toFixed(1)}MB waiting`);
+
+    const closed = await four.close('burst over');
+    const finalSize = statSync(burstPath).size;
+    check(closed.bytes === finalSize,
+      'and once the take closes the count is the file, exactly',
+      `${closed.bytes} against ${finalSize}`);
+    check(closed.frames === BURST - midBurst.dropped,
+      'with the frames that landed being the ones that were accepted - a dropped frame is a gap, not a miscount',
+      `${closed.frames} scanned, ${BURST} offered, ${midBurst.dropped} dropped`);
+
+    // ---- the in-flight queue is bounded by the ceiling, not by the take
+    //
+    // `write` pushes a frame end-offset per frame and `settle` is what removes them.
+    // Drained only when something asked for state, the queue held every frame of the
+    // take until an operator opened the monitor, and the drain that then ran was
+    // `shift()` in a loop - 48.9ms at 27,000 frames, 3,677ms at 216,000, about 4.1x
+    // per doubling. Synchronous, so stdin is not serviced while it runs, and the
+    // grabber answers that backpressure by dropping depth packets at the device.
+    //
+    // **Depth is asserted, never a stopwatch.** Absolute timings on this rig move by
+    // 2x with load - the same drain measured 3,677ms here and 7,632ms on the
+    // reviewer's machine - so a threshold in milliseconds would be a flake. The
+    // queue's depth is a count: bounded by what is not yet durable if the drain runs
+    // per frame, and equal to the whole take if it does not.
+    //
+    // **And the array behind the head is asserted separately**, because a head index
+    // that never compacts leaves the depth right and the allocation growing with the
+    // take - which is also the only way per-frame work can go back to scaling with
+    // the take's length. An array bounded by a constant bounds every operation over
+    // it, for any implementation rather than for the ones a timing probe happened to
+    // sample, so the bound is the cost claim rather than a proxy for it.
+    //
+    // Small frames on purpose, and the trade is worth naming: the queue records one
+    // end-offset per message and never reads a payload byte, so this claim is about
+    // message count, and 20,040 of the sample's own 486KB frames would be 9.7 GB of
+    // disk to say the same thing. Real frames stay where the claim is about bytes -
+    // the ceiling arm above.
+    const PER_CHUNK = 500;
+    const CHUNKS = 40;
+    const smallFrame = (n) => {
+      const payload = Buffer.alloc(1024);
+      payload.writeUInt32LE(1008, 0);
+      payload.writeUInt32LE(0, 4);
+      payload.writeBigUInt64LE(BigInt(n * 33), 8);
+      return encodeMessage(TYPE_FRAME, payload);
+    };
+    // Everything the stream is holding has reached the descriptor, so the next
+    // `settle` has every queued frame to drain and the depth read afterwards is the
+    // queue's own bookkeeping rather than a slow disk's backlog.
+    const flushed = async (stream) => {
+      for (let i = 0; i < 4000 && stream.writableLength > 0; i++) {
+        await new Promise((done) => { setTimeout(done, 0); });
+      }
+      return stream.writableLength;
+    };
+
+    const five = new Recorder({ dir: recDir });
+    await five.start(null);
+    five.open(hello);
+    const longTake = five.take.id;
+    let deepest = 0;
+    let longest = 0;
+    let stillWaiting = 0;
+    let written = 0;
+    for (let c = 0; c < CHUNKS; c++) {
+      for (let i = 0; i < PER_CHUNK; i++) five.write(smallFrame(written++));
+      stillWaiting = Math.max(stillWaiting, await flushed(five.take.stream));
+      // One more frame after the flush, because `settle` runs on the frame path: the
+      // entries a chunk left behind are drained by the next `write` and not by the
+      // disk finishing. Reading the depth before it would be reading a queue nothing
+      // had been given the chance to drain, which would pass against a build that
+      // never drains at all.
+      five.write(smallFrame(written++));
+      deepest = Math.max(deepest, five.take.inFlight.length - five.take.inFlightHead);
+      longest = Math.max(longest, five.take.inFlight.length);
+    }
+    // Held past the close, which nulls the recorder's reference. The last frame's
+    // entry is drained by the settle in `close`'s `finally` and not by the loop
+    // above - the drain runs on the frame path, so nothing follows the final write
+    // to run it - and a count read before that is one short of the file.
+    const longTakeState = five.take;
+    const droppedLong = five.take.dropped;
+    const longClosed = await five.close('the long take is over');
+    const counted = longTakeState.frames;
+    check(droppedLong === 0 && stillWaiting === 0,
+      `the disk kept up across all ${written} frames, which is what makes the next two rows about the queue rather than about the card`,
+      `${droppedLong} dropped, ${stillWaiting} bytes still waiting at the deepest flush`);
+    check(deepest <= 4,
+      'the queue holds only the frames not yet durable, so it is bounded by the buffer ceiling rather than by the length of the take',
+      `deepest ${deepest} live entries after ${written} frames`);
+    check(longest <= 8,
+      'and the array behind it is compacted rather than merely indexed past, so nothing grows with the take',
+      `longest ${longest} slots for ${written} frames`);
+    check(counted === written && longClosed.frames === written,
+      'with every frame counted exactly once on its way through - a drain that skipped or double-counted would move this and leave the depth alone',
+      `${counted} counted, ${longClosed.frames} scanned, ${written} written`);
+    rmSync(join(recDir, `${longTake}.knct`), { force: true });
+    rmSync(join(recDir, `${longTake}.idx`), { force: true });
+  }
+
+  // ---------------------------- 11. the manifest does not scan the take being written
+  //
+  // The staleness test `cachedIndex` uses is size and modification time, and both of
+  // those move continuously on a take that is still being written - so every
+  // `/library/*` request re-ran a full read plus sha256 over the in-progress take,
+  // sequentially, with no concurrency guard. The gallery on the node's own panel is
+  // the caller, and on a 4.4 GB take that is minutes of disk contention against the
+  // recorder's own writes.
+  //
+  // **Measured by the sidecar rather than by a stopwatch.** `buildIndex` writes a
+  // `.idx` beside the take, so "the manifest scanned it" leaves a file - which is
+  // deterministic where a timing threshold would be a flake, and is the same
+  // observer effect `CLAUDE.md` records from this step's own first draft.
+  console.log('\n[library] listing a library does not scan the take still being written');
+  {
+    const liveDir = join(WORK, 'while-recording');
+    mkdirSync(liveDir, { recursive: true });
+    const url = await startServer(root, [
+      '--captures', liveDir, '--name', 'shooting', '--record', '--no-color',
+      '--grabber', `${join(REPO, 'tools/fake-grabber.mjs')} --source ${SAMPLE} --fps 40`,
+    ], MAC_PORT + 12);
+    let open = null;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((done) => { setTimeout(done, 250); });
+      open = await getJson(`${url}/record/state`);
+      if (open.recording) break;
+    }
+    check(open?.recording === true, 'a take is open', String(open?.takeId));
+
+    // Polled the way the node's own gallery polls it.
+    let listed = null;
+    for (let i = 0; i < 8; i++) {
+      listed = (await getJson(`${url}/library/takes`)).takes.find((t) => t.id === open.takeId);
+      await new Promise((done) => { setTimeout(done, 120); });
+    }
+    check(!existsSync(join(liveDir, `${open.takeId}.idx`)),
+      'eight listings while the take is open write it no sidecar - nothing scanned it',
+      readdirSync(liveDir).join(' '));
+    check(listed?.recording === true && listed.hash === null && listed.frames === null,
+      'the take is listed and says it is being recorded, with no hash and no frame count - numbers over a growing file are not facts',
+      JSON.stringify({ recording: listed?.recording, hash: listed?.hash, frames: listed?.frames }));
+    check(listed?.openable === false,
+      'and it says it cannot be opened, so the tile has something to draw rather than zeros');
+
+    // Neither removal can verify anything about a file that is still arriving, and
+    // unlinking one underneath a running write stream loses the shoot in progress.
+    const refusedDelete = await post(`${url}/library/delete/${open.takeId}`, { hash: 'sha256:whatever', confirm: true });
+    check(/being recorded/.test(refusedDelete.error ?? ''),
+      'delete refuses the take the recorder has open', (refusedDelete.error ?? 'ACCEPTED').slice(0, 70));
+    check(existsSync(join(liveDir, `${open.takeId}.knct`)), 'and the file is still there');
+
+    // The tile, drawn. A take with a null hash and a null frame count is a shape the
+    // gallery had never been handed, and the fields it renders - the duration, the
+    // frame count, the hash prefix, the scrub bar's own divisor - all read one of
+    // them. So this is the page rather than the JSON: NaN in a tile is not something
+    // a manifest assertion can see.
+    {
+      const { page, errors } = await openPage(browser, `${url}/library.html`);
+      await page.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 });
+      const tile = await page.evaluate(`(() => {
+        const el = document.querySelector('.tile[data-recording="true"]');
+        if (!el) return null;
+        return {
+          id: el.dataset.id,
+          text: el.querySelector('.meta').textContent,
+          acts: [...el.querySelectorAll('.act')].map((b) => ({ label: b.textContent, disabled: b.disabled })),
+        };
+      })()`);
+      check(tile?.id === open.takeId, 'the take being recorded has a tile of its own', String(tile?.id));
+      check(!/NaN|null|undefined/.test(tile?.text ?? 'NaN'),
+        'and it renders no NaN, no null and no undefined where a scan\'s numbers would have gone',
+        (tile?.text ?? '').replace(/\s+/g, ' ').slice(0, 110));
+      check(/recording now/.test(tile?.text ?? ''), 'it says it is recording rather than showing zeros');
+      check((tile?.acts ?? []).length > 0 && tile.acts.every((a) => a.disabled),
+        'and every action on it is present and disabled - the library runs on a touch panel, where a control that vanishes reads as a broken page',
+        JSON.stringify(tile?.acts));
+      check(errors.length === 0, 'the gallery raises no page errors while a take is being written',
+        errors.slice(0, 2).join(' | '));
+      await page.close();
+    }
+
+    const stopped = (await post(`${url}/record/stop`)).stopped;
+    const afterStop = (await getJson(`${url}/library/takes`)).takes.find((t) => t.id === open.takeId);
+    check(existsSync(join(liveDir, `${open.takeId}.idx`)) && stopped?.hash?.startsWith('sha256:'),
+      'and once it closes it is scanned exactly once, which is what makes it a gallery entry',
+      `${stopped?.frames} frames, ${String(stopped?.hash).slice(7, 19)}`);
+    check(afterStop?.recording === false && afterStop.hash === stopped?.hash && afterStop.frames === stopped?.frames,
+      'the listing then carries the hash and the frame count the scan produced');
+    for (const p of servers.filter((sv) => sv.port === MAC_PORT + 12)) p.child.kill('SIGKILL');
+  }
+
+  // ------------------------------ 12. a node whose captures directory does not exist
+  //
+  // The state a reflashed capture node boots in, which is what step 9 provisions
+  // from. Without this the node came up disarmed and answered `/record/state` and
+  // `/library/all` with a raw `ENOENT ... statfs`, so the panel in the room showed an
+  // errno and nothing on it said the shoot could not start.
+  console.log('\n[library] a node with no captures directory makes one and says so');
+  {
+    const fresh = join(WORK, 'never-existed', 'captures');
+    rmSync(join(WORK, 'never-existed'), { recursive: true, force: true });
+    check(!existsSync(fresh), 'the directory genuinely is not there, which is what makes this a fixture');
+    const url = await startServer(root, [
+      '--captures', fresh, '--name', 'reflashed', '--no-color',
+      '--grabber', `${join(REPO, 'tools/fake-grabber.mjs')} --source ${SAMPLE} --fps 40`,
+    ], MAC_PORT + 13);
+    check(existsSync(fresh), 'the server creates it at boot rather than failing every request that needs it', fresh);
+
+    const state = await getJson(`${url}/record/state`);
+    check(state.storage?.error == null && /^(\d+h \d+m|\d+m \d+s|\d+s|unbounded)$/.test(state.storage?.label ?? ''),
+      'and the remaining-time report is a duration rather than an errno',
+      JSON.stringify(state.storage?.error ?? state.storage?.label));
+    const lib = await getJson(`${url}/library/all`);
+    check(Array.isArray(lib.takes) && lib.takes.length === 0 && lib.unreadable.length === 0,
+      'the library answers with an empty shelf rather than an error, which is the honest report for a node nobody has shot on yet');
+
+    let armed = null;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((done) => { setTimeout(done, 250); });
+      armed = await post(`${url}/record/start`);
+      if (armed.recording || armed.armed) break;
+    }
+    check(armed?.armed === true, 'and it can be armed, which is the whole point of provisioning it',
+      JSON.stringify({ armed: armed?.armed, error: armed?.error }));
+    for (const p of servers.filter((sv) => sv.port === MAC_PORT + 13)) p.child.kill('SIGKILL');
+  }
+
   for (const { log } of servers) {
     const text = log.join('');
-    const bad = text.split('\n').filter((l) => /Error|throw|unhandled/i.test(l) && !/refus|cannot open/i.test(l));
+    const bad = text.split('\n').filter(looksFatal);
     if (bad.length) {
       console.log(`\n[library] server log:\n  ${bad.slice(0, 4).join('\n  ')}`);
       failures++;
