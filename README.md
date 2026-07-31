@@ -158,21 +158,28 @@ static, with only 0.06% of pixels exceeding the snap threshold between frames.
 
 ## Building the native side
 
-Both builds are one-time. libfreenect2 installs into `vendor/prefix`:
+Both builds are one-time, and neither needs the network. libfreenect2's source is
+in this repo at `third_party/libfreenect2` — upstream v0.2.1 plus our one edit,
+see `third_party/UPSTREAM.md` — and builds into the gitignored `vendor/prefix`:
 
 ```bash
-git clone --depth 1 https://github.com/OpenKinect/libfreenect2.git vendor/libfreenect2
-git -C vendor/libfreenect2 apply ../../patches/*.patch
-cmake -S vendor/libfreenect2 -B vendor/libfreenect2/build \
+cmake -S third_party/libfreenect2 -B vendor/build \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DCMAKE_INSTALL_PREFIX="$PWD/vendor/prefix" \
   -DENABLE_CXX11=ON -DENABLE_OPENCL=ON -DENABLE_OPENGL=OFF -DENABLE_CUDA=OFF \
   -DTurboJPEG_INCLUDE_DIRS=/opt/homebrew/opt/jpeg-turbo/include \
   -DTurboJPEG_LIBRARIES=/opt/homebrew/opt/jpeg-turbo/lib/libturbojpeg.dylib
-cmake --build vendor/libfreenect2/build --target install -j8
+cmake --build vendor/build --target install -j8
 
 cmake -S native -B native/build && cmake --build native/build -j8
 ```
+
+On the Pi, swap `-DENABLE_OPENCL=ON -DENABLE_OPENGL=OFF` for `OFF`/`ON` — V3D has
+OpenGL and no OpenCL, and the grabber's `--pipeline` is guarded by whichever the
+library was actually compiled with rather than falling through silently.
+
+`node tools/vendor-check.mjs` proves the source is upstream v0.2.1 plus exactly
+the declared edit, offline, before you trust a build of it.
 
 Needs `brew install libusb jpeg-turbo cmake`. OpenGL is off deliberately — it only
 drives libfreenect2's own viewer, which we don't use, and it's the most deprecated
@@ -223,7 +230,7 @@ log line on stdout would desync the stream permanently.
 The browser needs `fx/fy/cx/cy` from the hello message to unproject; hardcoded
 intrinsics skew the cloud in a way that is hard to spot and hard to attribute.
 
-## The patch in `patches/`
+## The one edit we carry in libfreenect2
 
 libfreenect2 assembles each depth frame from ten sub-images and discards the
 whole frame unless all ten arrive. But the depth solve reads only sub-images
@@ -248,8 +255,12 @@ The interleaving matters: a first pass comparing four runs before against three
 after showed +23%, but drift between measurement sessions accounted for most of
 the difference. Sequential before/after is not trustworthy on this rig.
 
-The patch lives in `patches/` rather than in the tree because `vendor/` is
-gitignored. `docs/performance-investigation.md` has the full measurements.
+It lives in the vendored source itself, at
+`third_party/libfreenect2/src/depth_packet_stream_parser.cpp`, and
+`tools/vendor-check.mjs` pins its exact content so it cannot quietly revert.
+It used to be a `.patch` file applied to a gitignored clone, which meant the
+source existed in two representations that could disagree.
+`docs/performance-investigation.md` has the full measurements.
 
 ## Resolved: USB topology was the whole bottleneck
 

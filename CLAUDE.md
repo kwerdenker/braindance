@@ -18,6 +18,28 @@ This repo measures rather than reasons. Several inherited estimates in these doc
   whether the page cache was warm.
 - **Proxy evidence does not close a user-visible change.** Drive the real UI with
   `playwright-cli` and show it working. A passing unit test is not a rendered frame.
+- **Read a health number the measurement itself reports, and throw the run away when
+  it is wrong.** Delivered fps is that number for anything using the grabber: the
+  loop idles 55% of every interval, so a run that does not sustain ~30.0 was
+  competing for the machine and its per-segment timings are noise. A threading A/B
+  came back 22.75fps with registration p50 swinging 11.50/13.65/8.30ms across three
+  rounds of one arm, which reads as a wildly variable optimisation and was actually
+  Spotlight - `mds_stores` at 45% indexing the 280MB corpus and the build trees the
+  session had just created. `captures/` and `vendor/` now carry
+  `.metadata_never_index`. Re-run on a settled machine and the same comparison was
+  flat: all six arms 30.03-30.04fps, all three paired deltas the same sign.
+
+### A tight loop cannot measure an allocation
+
+Two arms that both hit the allocator back to back are not an A/B of allocation
+cost. `Registration::apply` new/deletes 9.2MB per call, and measured offline by
+applying one frame five times in a row, hoisting those buffers came out *slower*
+in all three paired rounds - because the allocator hands the same block straight
+back and the baseline arm was already effectively persistent, leaving buffer
+alignment as the only real variable. On the real loop, where 33ms and a JPEG
+encode sit between calls, the same change is worth 0.30ms of 5.71ms. **An offline
+harness is for correctness; `grabber --profile` on the sensor is for cost** - and a
+screening measurement that removes the effect will confidently report its absence.
 
 ### An instrument must enforce its claims, not assert them
 
@@ -246,7 +268,52 @@ node tools/keyframe-check.mjs --url http://localhost:8080 # step 5: tracks, reti
 node tools/keyframe-check.mjs --mutate pose-linear        # ... and must FAIL mutated
 node tools/export-check.mjs --url http://localhost:8080   # step 6: resolution, export, the file
 node tools/export-check.mjs --mutate pointsize-absolute   # ... and must FAIL mutated
+node tools/library-check.mjs --url http://localhost:8080  # step 7: library, recorder, routes
+node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL mutated
 ```
+
+`library-check` had no invocation line at all until this merge, while being referenced
+twice below it — so the list taught a six-tool sweep where there are seven. `plant-open-take`
+is the right mutation to name here rather than a milder one: it is the control for the hole
+that let a read route destroy the take being shot.
+
+The two below need no server, and `registration-check` needs no sensor either -
+it runs on a corpus of `Registration::apply` inputs dumped by
+`grabber --dump-corpus`.
+
+```
+node tools/vendor-check.mjs                          # third_party is upstream v0.2.1 + declared edits
+node tools/vendor-check.mjs --mutate oracle-drift    # ... and must FAIL mutated
+node tools/registration-check.mjs                    # our registration == upstream's, bit for bit
+node tools/registration-check.mjs --mutate one-lsb   # ... and must FAIL mutated
+```
+
+`registration-check` builds both sides every run - a pristine upstream prefix and
+ours - because a stale oracle `.dylib` turns the whole thing into a build compared
+against itself and nothing about a stale library looks wrong. It exits **2** for a
+build or runtime failure and **1** only when assertions fired, so a mutation that
+failed to compile can never be recorded as a mutation that was caught.
+
+`tools/prof-summary.mjs <profile> [warmup]` reads `grabber --profile` output and
+flags any run under 29.5fps as contended, because the segment timings from a run
+that dropped frames are noise. `tools/pi-registration-ab.sh` is the unrun runbook
+for measuring the threading on a capture node; it builds both arms, checks with
+`ldd` that they load different libraries, and refuses to report milliseconds from
+an arm that lost frames.
+
+The registration corpus is gitignored like every other capture. Regenerate it with
+the sensor attached, and vary the scene while it runs - a hand near the lens, a
+person against a far wall, something occluding something further - because the
+occlusion filter only does work at depth discontinuities:
+
+```
+./native/build/grabber --dump-corpus captures/reg-corpus --dump-count 40 --dump-every 45
+```
+
+Coverage is measurable rather than assumed: `registration-check --mutate
+filter-never-rejects` reports what fraction of pixels the filter actually
+rejects. The committed corpus's 72 frames sit at 6.93%; a first capture of one
+static-ish scene managed 6.55%.
 
 `export-check` needs ffmpeg and ffprobe (`--ffmpeg`, `--ffprobe`; 8.1.1 at
 `/opt/homebrew/bin`) and writes into `exports/`, which is gitignored.
@@ -258,15 +325,27 @@ node tools/export-check.mjs --mutate pointsize-absolute   # ... and must FAIL mu
 real small filesystem and only macOS gets one here. The verdict line says so too. Anything
 gating on `!== 0` therefore treats a Linux run as not-a-pass, which is the intended reading:
 "some claims were not tested here" and "a claim failed" are different answers and 1 already
-means the second.
+means the second. `registration-check` reserves 2 for the same reason on the other side of
+the merge — a build or runtime failure there is "the harness did not run", not "the harness
+found something" — so the convention was reached twice independently and the two paragraphs
+are describing one rule rather than two.
 
-`--mutate <name>` serves a deliberately broken `main.js` into the running server and is
-expected to exit non-zero. Both tools refuse a mutation whose text they cannot find exactly
-once, because a replacement that silently matched nothing would run the unmutated page and
-be recorded as the check having missed a bug it was never shown. **A mutation is a piece of
-source text, so a mutation stops matching the moment the code it names is edited** — three
-of `timeline-check`'s nine had to be re-anchored when step 5 rewrote the retime seam, and
-the refusal is what surfaced that rather than a silent pass.
+`--mutate <name>` serves a deliberately broken `main.js` into the running server, or for the
+two vendoring tools rebuilds a deliberately broken source tree. All six refuse a mutation
+whose text they cannot find exactly once, because a replacement that silently matched nothing
+would run the unmutated page and be recorded as the check having missed a bug it was never
+shown. **A mutation is a piece of source text, so a mutation stops matching the moment the
+code it names is edited** — three of `timeline-check`'s nine had to be re-anchored when step 5
+rewrote the retime seam, and the refusal is what surfaced that rather than a silent pass.
+
+**The two sides disagree about what a caught mutation exits, and the disagreement runs the
+dangerous way, so read the assertion count and never the code.** The four server tools exit
+non-zero when they catch one. `vendor-check` and `registration-check` invert it — caught is
+exit **0** with `caught, as required (N assertions fired)`, and exit **1** is `NOT CAUGHT`,
+the case that actually matters. So anything gating on "non-zero means caught" reads a genuine
+miss by the newer tools as a catch, which is the one direction that cannot be allowed to fail
+quietly. This is why the rule is worded the way it is: count failed assertions, never exit
+codes.
 
 `keyframe-check` runs its cheapest claim first, on a 60-second budget, and stops the run if
 it fails. That is not ordering by cost: an evaluator that announces its writes schedules a
@@ -287,6 +366,20 @@ rather than 30.** So size fixtures by *frame count*, not duration: five minutes 
 time is 1.38 GB where a real full-rate five-minute take is 4.42 GB. A fixture is the sample
 looped with rewritten monotonic stamps — real depth and real JPEGs, only the u64 at payload
 offset 8 moves. Say so whenever a number rests on one.
+
+## The Mac's USB topology reads worse than it measures
+
+`ioreg -p IOUSB -w0` shows the sensor as controller -> `USB3.0 Hub` -> `NuiSensor
+Adaptor` -> `Xbox NUI Sensor`, with a gigabit ethernet adapter on that same hub.
+Against the README's "1 hub, own controller" that looks like the degraded
+topology which measures 12.82fps, and it is not - **this rig sustains 30.02fps
+with 2 subsequence warnings in 1921 frames.** The `USB3.0 Hub` is a good
+high-speed one and the count is not the thing that matters.
+
+Note also that `system_profiler SPUSBDataType` returns *nothing at all* on this
+machine, so a check built on it reads as "no Kinect attached" whether one is
+attached or not. Use `ioreg`. And settle the question by running the grabber and
+reading delivered fps rather than by counting boxes in a tree.
 
 ## Two things that are easy to get backwards
 

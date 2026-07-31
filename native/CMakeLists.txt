@@ -8,8 +8,11 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # libfreenect2 is built from source into a prefix rather than installed system
-# wide, because the vendored tree carries our patches. vendor/prefix is where the
-# macOS build lands; -DFREENECT2_ROOT=... points at any other one - the Pi's is
+# wide, because the source we build is our own: third_party/libfreenect2 is
+# upstream v0.2.1 plus the sub-9 fix, tracked in this repo so a rebuild does not
+# depend on a clone of a branch that pins nothing. See third_party/UPSTREAM.md.
+# vendor/prefix is where that build lands and is gitignored - source is tracked,
+# artifacts are not. -DFREENECT2_ROOT=... points at any other prefix; the Pi's is
 # ~/freenect2. Its own freenect2Config.cmake is not used: it bakes the install
 # path in with NO_DEFAULT_PATH, so it would ignore the override.
 set(FREENECT2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../vendor/prefix"
@@ -46,6 +49,14 @@ endif()
 
 add_executable(grabber grabber.cpp)
 
+# The differential harness runner. Built from one source against two different
+# libfreenect2 prefixes - ours and a pristine upstream one - so the comparison
+# is between two independently linked libraries rather than between a library
+# and a renamed recompile of itself. It needs no turbojpeg and no device.
+add_executable(reg-runner harness/reg-runner.cpp)
+target_include_directories(reg-runner PRIVATE "${FREENECT2_INCLUDE_DIR}")
+target_link_libraries(reg-runner PRIVATE "${FREENECT2_LIBRARY}")
+
 target_include_directories(grabber PRIVATE
   "${FREENECT2_INCLUDE_DIR}"
   "${TURBOJPEG_INCLUDE_DIR}"
@@ -58,7 +69,11 @@ target_link_libraries(grabber PRIVATE
 
 # Let the binary find libfreenect2 without DYLD_LIBRARY_PATH or LD_LIBRARY_PATH
 get_filename_component(FREENECT2_LIBDIR "${FREENECT2_LIBRARY}" DIRECTORY)
-set_target_properties(grabber PROPERTIES
+# reg-runner needs this even more than grabber does: the whole harness rests on
+# the oracle build loading the oracle's libfreenect2 and ours loading ours, and
+# a runner that fell back to a system copy would compare a build against itself
+# and report a clean pass.
+set_target_properties(grabber reg-runner PROPERTIES
   BUILD_RPATH "${FREENECT2_LIBDIR}"
   INSTALL_RPATH "${FREENECT2_LIBDIR}"
 )

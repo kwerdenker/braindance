@@ -1469,6 +1469,88 @@ reused JPEG is therefore registered against the previous depth frame. Neither
 lever ships: at 15.05ms of a 33ms budget the headroom does not need buying, and
 both pay for it in image correctness.
 
+### A third lever, and this one pays nothing
+
+Both levers above buy time with image correctness, which is why neither ships.
+There is a third that buys the same time and costs nothing, because it changes
+how the work is done rather than what work is done — and it was found by looking
+at what `Registration::apply` actually is rather than at what it costs.
+
+**It is a scatter, not a per-pixel gather.** With the occlusion filter on — which
+is what the grabber uses, and what every figure above was measured on — `apply`
+is three passes: an 8.3MB init of a 1920x1080 filter map to `+inf`, then a
+scatter writing a min-z into a 5x3 window of that map for each of 217,088 depth
+pixels, and only then the per-pixel gather that builds `registered`. Different
+depth pixels legitimately write the same colour pixel; that collision *is* the
+occlusion test. So the 10.92ms that `enable_filter=false` saves above is the
+init plus the scatter, and the obvious parallelisation — splitting the depth
+loop across cores — is a data race rather than a speedup.
+
+Two changes follow from that, both **bit-identical to upstream** rather than
+merely close, which is the property the other two levers lack:
+
+| change | Mac reg p50 | saving |
+| --- | --- | --- |
+| baseline | 5.76 ms | — |
+| persistent scratch buffers | 5.41 ms | 0.30 ms |
+| + threaded scatter, 4 threads | 3.69 ms | **2.07 ms, 36%** |
+
+`apply` new/deletes 9.2MB of scratch on every call unless handed somewhere to
+put them, and it has out-parameters for exactly that. The scatter then bands
+across threads **by linear index rather than by row** — the loop never
+bounds-checks `cx` on its own, so at `cx < 2` a window's left edge is a negative
+offset landing in the previous row's tail, and threads owning adjacent row
+stripes would collide precisely there. Banded linearly there is no seam and no
+atomics are needed. Both measured as interleaved A/B/A/B/A/B against a build of
+upstream's own scatter, three rounds, ~1000 frames per arm after 60 of warmup,
+all six arms sustaining 30.03–30.04fps.
+
+**The 6.33ms above and the 5.76ms here are the same measurement, not a
+correction.** Registration's cost depends on how many depth pixels carry a valid
+reading, so it moves with the scene; the gap is within what scene content and
+session drift produce on this rig. That is the reason the comparison is paired
+and interleaved rather than read against a number recorded on another day.
+
+**The Pi picks the thread count, and it picked 2 — the Mac's answer was 4 and
+would have been the worst setting on the node.** Measured with
+`tools/pi-registration-ab.sh`, four cores, three interleaved rounds of a
+40-second window per arm, upstream running as a control inside every round:
+
+| arm | reg p50 | delivered fps | rounds losing frames |
+| --- | --- | --- | --- |
+| upstream | 13.49 ms | 29.66–29.84 | 0 of 3 |
+| **2 threads** | **11.87 ms** | **29.56–29.75** | **0 of 3** |
+| 3 threads | 10.03 ms | 27.31–28.69 | 3 of 3 |
+| 4 threads | 13.10 ms | 26.40–29.13 | 3 of 3 |
+
+Read the fps column first. Three threads has the fastest registration in the
+table and drops frames in every round, which makes it a trap rather than a
+result — a capture node that solves depth faster and records less of it is worse,
+and `reg` p50 alone would have called it the winner. Two holds rate and is worth
+12%. Four being *slower* than three is the tell that this is contention: adding a
+thread subtracted throughput, because on four cores these threads take CPU from
+the depth solve's own `AsyncPacketProcessor` and the GL depth processor, which on
+twelve Mac cores never had to compete at all.
+
+So the Mac's 36% was a measurement of a machine with nothing else to do. It stays
+in the record as what twelve idle cores can do with this work, not as a figure
+the project banks — the capture node's 12% is the one that means anything, since
+the Mac idles 27ms of every 33ms interval and has no headroom to want.
+
+**This is the fourth time a number on this project changed when it was finally
+measured on the machine that mattered**, after the ~17ms serial estimate, the
+4.5ms Mac registration figure and the 23% patch result. The pattern is not that
+the estimates were careless; it is that the rig they were reasoned from was never
+the rig under load.
+
+The driver this all lives in is now ours: `third_party/libfreenect2` is upstream
+v0.2.1 committed in-tree, because the old recipe cloned a *branch* and so pinned
+nothing — it built the right thing only because upstream has not committed since
+2020-03-01. `tools/vendor-check.mjs` proves the tree is upstream plus exactly the
+declared edits, offline, and `tools/registration-check.mjs` proves our
+registration matches upstream's bit for bit on a 72-frame corpus of real sensor
+input. See `third_party/UPSTREAM.md`.
+
 **What actually costs frames is the card, not the CPU.** With colour off the
 whole serial half is 0.74ms, so `Registration::apply` is very nearly the entire
 cost, and with colour on the loop still sits idle 55% of every interval. The

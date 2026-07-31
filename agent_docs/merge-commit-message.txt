@@ -30,7 +30,26 @@ closing a class rather than an instance, asserting against the resource rather t
 its bookkeeping, and confirming a mutation was caught for the reason claimed; the
 other side's rule that a run must be thrown away when the health number it reports
 is wrong, and that a tight loop cannot measure an allocation because the allocator
-hands the same block straight back.
+hands the same block straight back. git produced that union on its own - the two
+insertions turned out not to overlap after all, so the pre-planned conflict never
+materialised, and the union was verified by diffing the result against both parents
+and requiring zero removed lines from either rather than by reading it.
+
+Three edits go beyond the union because the merge makes them true. The proof-tools
+list gains the library-check invocation it has been missing since step 7 while being
+referenced twice below itself, so the list stopped teaching a six-tool sweep where
+there are seven. "Both tools refuse a mutation" becomes "all six". And the exit-code
+convention now has to be stated, because the two sides disagree about it in the
+dangerous direction: the four server tools exit non-zero when they catch a mutation,
+while vendor-check and registration-check exit 0 when caught and 1 when NOT caught.
+Anything gating on non-zero therefore reads a genuine miss by the newer tools as a
+catch. Nothing gates on it today - agent_docs/sweep-all.mjs counts failed assertions,
+which is the rule this repo already had - but the two tools are not sweepable by it
+for three independent reasons and that is worth knowing before the sweep moves into
+tools/: their refusal message reads "unknown mutation 'x'; have: a, b" where the
+regex wants "unknown mutation x - have a, b", and they print FAIL at column zero
+where the counter matches two leading spaces. So no combined "N caught" total can
+include them until that contract is one thing rather than two.
 
 One gap is recorded rather than fixed, and it is this repo's own signature failure
 aimed at the tool that proves the vendoring. vendor-check verifies the *source
@@ -43,6 +62,40 @@ rebuilds both prefixes every run precisely because "nothing about a stale librar
 looks wrong". The falsification control vendor-check needs is a prefix built from
 different source, which must FAIL. Until it has one, it proves what it says about
 the source and nothing about what is loaded.
+
+That control existed on disk at merge time and would have been destroyed by the
+rebuild, so it was preserved first. vendor/prefix carried a dylib built 2026-07-30
+from the old gitignored clone - upstream registration, no threading, no persistent
+scratch - which is exactly "a prefix built from different source". It is copied to
+the session scratchpad as prefix-stale-jul30 and the discriminating probe is the
+string LIBFREENECT2_REG_THREADS, the env override the threading edit introduces:
+absent from the stale dylib, present in one built from third_party. That probe was
+chosen by elimination against the artifact rather than by reasoning - nm -gU |
+grep -ci thread reads 0 on the stale library, and imported pthread symbols and
+std::thread machinery both read present on it too, because libfreenect2 already
+threads its packet processors. Three probes that do not discriminate, found by
+running them on the known-bad artifact before trusting the after-value.
+
+A second coverage gap is worth naming because it is the same rule as step 6's aspect
+ratio, landing on a new file. registration-check by default runs both sides through
+apply()'s four-argument form, but grabber.cpp ships the seven-argument one, passing
+bigdepth and colorDepthMap. So the documented invocation proves a call shape the
+product does not use, and the 1920x1082 sizing the grabber depends on - two rows
+taller than the image, because the scatter writes above and below it without a
+bounds check - is only exercised when --persistent-subject is passed. Nothing in
+CLAUDE.md, README.md or the handoff says to pass it. Both arms were run here on the
+72-frame corpus - 15,630,336 pixels per plane - and both compare exactly: undistorted
+0 differing with max abs 0 and 0 NaN-mismatched, registered 0 differing, on the
+four-argument arm and on the seven-argument one, with the subject's own stderr line
+reading persistent=1 on the second so the arm is not silently the first one twice.
+The gap is that only one of them was ever going to be run.
+
+The runner also prints an apply p50 per arm and those numbers are deliberately not
+quoted as the optimisation's cost. They are a repeated-apply loop over a corpus,
+which is the offline harness CLAUDE.md says is for correctness, and they were taken
+on a machine that had two libfreenect2 builds and library-check competing for it.
+The 2.07ms of 5.76ms in this body is the branch's own figure from grabber --profile
+on the real loop with a sensor, and that remains the only measurement of cost here.
 
 Two open items come across unchanged and are the branch's own, stated in its final
 commits and in third_party/UPSTREAM.md: no GPU registration path was built, and

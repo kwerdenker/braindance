@@ -20,6 +20,7 @@
 #include <chrono>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 
 #include <libfreenect2/config.h>
 #include <libfreenect2/libfreenect2.hpp>
@@ -33,6 +34,12 @@
 static const uint32_t MAGIC = 0x4B4E4354; // 'KNCT'
 static const uint32_t TYPE_HELLO = 1;
 static const uint32_t TYPE_FRAME = 2;
+
+// A corpus is deliberately not KNCT: the wire format carries u16 millimetre depth
+// and a JPEG, which are both lossy relative to what Registration::apply actually
+// consumes. Its own magic keeps the two from ever being read by the wrong reader.
+static const uint32_t CORPUS_MAGIC = 0x4B435250; // 'KCRP'
+static const uint32_t CORPUS_VERSION = 1;
 
 static const int DW = 512;
 static const int DH = 424;
@@ -64,6 +71,23 @@ static bool write_all(int fd, const void *buf, size_t len) {
     len -= (size_t)n;
   }
   return true;
+}
+
+// Corpus files are written whole and closed before the next frame is touched, so
+// a corpus interrupted mid-capture leaves complete frames rather than a trailing
+// half-frame the harness would have to guess about.
+static bool write_file(const std::string &path, const void *const *parts,
+                       const size_t *lens, size_t n) {
+  int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0) {
+    std::fprintf(stderr, "[grabber] cannot open %s: %s\n", path.c_str(), std::strerror(errno));
+    return false;
+  }
+  bool ok = true;
+  for (size_t i = 0; i < n && ok; i++) ok = write_all(fd, parts[i], lens[i]);
+  if (::close(fd) != 0) ok = false;
+  if (!ok) std::fprintf(stderr, "[grabber] short write to %s\n", path.c_str());
+  return ok;
 }
 
 static bool write_message(int fd, uint32_t type, const void *payload, uint32_t payloadLen) {
@@ -153,6 +177,15 @@ int main(int argc, char **argv) {
   float maxDepth = 9.0f;
   bool lowLight = true;
 
+  // Corpus dumping exists so the registration harness can run without a sensor.
+  // It writes the *inputs* to Registration::apply - the undistorted-depth source
+  // and the colour image - rather than its output, because a corpus of outputs
+  // could only ever agree with the build that produced it.
+  std::string dumpCorpus;
+  int dumpCount = 24;
+  int dumpEvery = 10;
+
+
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     if (a == "--no-color") wantColor = false;
@@ -163,6 +196,9 @@ int main(int argc, char **argv) {
     else if (a == "--max-depth" && i + 1 < argc) maxDepth = (float)std::atof(argv[++i]);
     else if (a == "--no-low-light") lowLight = false;
     else if (a == "--profile") profile = true;
+    else if (a == "--dump-corpus" && i + 1 < argc) dumpCorpus = argv[++i];
+    else if (a == "--dump-count" && i + 1 < argc) dumpCount = std::atoi(argv[++i]);
+    else if (a == "--dump-every" && i + 1 < argc) dumpEvery = std::atoi(argv[++i]);
     else if (a == "--help") {
       std::fprintf(stderr,
         "usage: grabber [--pipeline gl|cl|cpu] [--no-color] [--quality 1-100]\n"
@@ -198,6 +234,13 @@ int main(int argc, char **argv) {
         "  holds the colour camera at 30fps in a dim room at the cost of a darker\n"
         "  image. Left on, the camera lengthens its exposure and falls to 15fps.\n"
         "  Depth is unaffected either way - the two streams are decoupled.\n"
+        "\n"
+        "  --dump-corpus writes the inputs to Registration::apply into a\n"
+        "  directory - one raw file per frame plus the calibration - so the\n"
+        "  differential harness can run with no sensor attached. Frames are\n"
+        "  sampled every --dump-every (default 10) so a corpus spans real scene\n"
+        "  motion rather than a burst of near-identical images, and the grabber\n"
+        "  exits after --dump-count (default 24) of them.\n"
         "\n"
         "stdin commands, newline terminated, applied live:\n"
         "  low-light on|off\n",
@@ -290,6 +333,33 @@ int main(int argc, char **argv) {
   libfreenect2::Registration registration(ir, cp);
   libfreenect2::Frame undistorted(DW, DH, 4), registered(DW, DH, 4);
 
+  // 1920x1082, not 1080. apply() sizes its filter map as
+  // 1920*1080 + 1920*filter_height_half*2 with filter_height_half == 1, and the
+  // scatter writes into the row above and below the image so it needs no bounds
+  // check - so a 1080-row buffer is two rows short and it writes past the end.
+  libfreenect2::Frame bigdepth(1920, 1082, 4);
+  std::vector<int> colorDepthMap(DEPTH_PIXELS);
+
+  // The calibration goes out as the raw structs rather than as JSON on purpose.
+  // Registration builds its distortion and depth-to-colour maps from these floats
+  // in its constructor, so a value that shifted by one ulp on the way through a
+  // decimal round-trip would move the maps and make the harness report a
+  // difference that only ever existed in the corpus reader.
+  if (!dumpCorpus.empty()) {
+    if (::mkdir(dumpCorpus.c_str(), 0755) != 0 && errno != EEXIST) {
+      std::fprintf(stderr, "[grabber] cannot create %s: %s\n",
+                   dumpCorpus.c_str(), std::strerror(errno));
+      return 1;
+    }
+    const uint32_t head[4] = {CORPUS_MAGIC, CORPUS_VERSION,
+                              (uint32_t)sizeof(ir), (uint32_t)sizeof(cp)};
+    const void *parts[3] = {head, &ir, &cp};
+    const size_t lens[3] = {sizeof(head), sizeof(ir), sizeof(cp)};
+    if (!write_file(dumpCorpus + "/params.bin", parts, lens, 3)) return 1;
+    std::fprintf(stderr, "[grabber] corpus into %s: %d frames, every %d\n",
+                 dumpCorpus.c_str(), dumpCount, dumpEvery);
+  }
+
   // The browser needs the real intrinsics to unproject; hardcoded values skew the cloud.
   //
   // startedAt is the wall clock, and it is here rather than in the server because
@@ -334,6 +404,7 @@ int main(int argc, char **argv) {
   bool haveColor = false;
   uint64_t frameCount = 0;
   uint64_t colorCount = 0;
+  int dumped = 0;
 
   // Records are buffered and dumped at exit rather than printed per frame, so
   // the profiling I/O cannot land inside the loop it is measuring.
@@ -367,9 +438,37 @@ int main(int argc, char **argv) {
     libfreenect2::Frame *rgb = haveColor ? colorFrames[libfreenect2::Frame::Color] : nullptr;
     uint64_t tAcquired = now_us();
 
+    // Dumped before apply() rather than after, because these two frames are the
+    // harness's input and apply() writes into buffers it also reads maps from.
+    // Only frames carrying colour are usable: apply() refuses a null rgb, so a
+    // depth-only frame would sit in the corpus as a case nothing can run.
+    if (!dumpCorpus.empty() && rgb && frameCount % (uint64_t)dumpEvery == 0) {
+      char path[1024];
+      std::snprintf(path, sizeof(path), "%s/frame-%04d.bin", dumpCorpus.c_str(), dumped);
+      const uint32_t head[8] = {
+        CORPUS_MAGIC, CORPUS_VERSION,
+        (uint32_t)depth->width, (uint32_t)depth->height,
+        (uint32_t)rgb->width, (uint32_t)rgb->height,
+        (uint32_t)rgb->format, (uint32_t)rgb->bytes_per_pixel};
+      const void *parts[3] = {head, depth->data, rgb->data};
+      const size_t lens[3] = {sizeof(head),
+                              (size_t)depth->width * depth->height * depth->bytes_per_pixel,
+                              (size_t)rgb->width * rgb->height * rgb->bytes_per_pixel};
+      if (!write_file(path, parts, lens, 3)) return 1;
+      if (++dumped >= dumpCount) {
+        std::fprintf(stderr, "[grabber] corpus complete: %d frames\n", dumped);
+        g_stop = 1;
+      }
+    }
+
     const float *depthSrc;
     if (rgb) {
-      registration.apply(rgb, depth, &undistorted, &registered);
+      // The scratch buffers are passed in rather than left to apply(), which
+      // otherwise new/deletes an 8.3MB filter map and an 868KB offset map on
+      // every frame. Worth 0.30ms of registration's 5.71ms p50 on the Mac,
+      // measured as an interleaved A/B on the real loop - a tight loop cannot
+      // see it, because the allocator just hands the same block straight back.
+      registration.apply(rgb, depth, &undistorted, &registered, true, &bigdepth, colorDepthMap.data());
       depthSrc = (const float *)undistorted.data;
     } else {
       // Same undistortion the colour path applies, so geometry does not shift
