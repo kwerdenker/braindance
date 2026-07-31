@@ -242,6 +242,13 @@ not run is named as not run.
 6. **Responsive floor — passes at 320, 375, 414, 768, 800×480 and 1440.** No horizontal
    scroll on any study at any size, and no clickable label wrapping to two lines.
 7. **Console — clean.** No errors or warnings on any of the three.
-8. **Not run: the five-minute performance profile** on the record indicator, and no study has
-   been opened on the node's actual panel — 800×480 was emulated in Chrome, not run on the
-   Pi. Both belong on the real hardware rather than on a study.
+8. **Opened on the node's own panel — passes.** All three were served from the Pi and shown
+   full-screen in its Chromium, and `grim` captured them at a true 800×480. They render
+   identically to the emulated size: the recorder fits without scrolling in either axis, and
+   the library gives three columns with every tile's actions visible. One placeholder shows
+   through — the library's header reads `on mac` because the device label is hard-coded in
+   the study, and on the node it should say `on pi-01`.
+9. **Not run: the five-minute performance profile** on the record indicator, and no test of
+   actual finger input. Touch targets are sized and the gestures use Pointer Events, but
+   whether the skim reads well under a thumb is not something a remote screenshot can
+   answer.

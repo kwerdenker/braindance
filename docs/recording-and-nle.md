@@ -721,6 +721,34 @@ Moving a mark is an ordinary edit, and because marks live in the take's sidecar
 rather than in a project, a nudge is shared by every project built on that take —
 you correct it once.
 
+**Two machines can hold the same take and different marks, and the merge is a
+union with last-write-wins per mark.** The capture is immutable and identified by
+its content hash, so reconciling *it* is trivial. Marks are the opposite: mutable,
+outside the hash, and now editable from either machine, since the library runs on
+the node too. So a take that is `both` can genuinely diverge — someone flags a
+moment on the node after the take was already downloaded.
+
+The resolution falls out of properties this document already chose rather than
+needing new machinery. The sidecar is **append-only**, so two logs concatenate
+without locking or a merge algorithm. Each mark carries an **id**, so a move or a
+rename is just a later record superseding an earlier one with the same id. Sync
+is therefore: concatenate both logs, then for each id keep the record with the
+highest timestamp.
+
+```
+node:  {"id":"m3","sourceMs":4210,"label":"mark 3","at":1..}
+mac:   {"id":"m3","sourceMs":4180,"label":"the drop","at":2..}   ← wins, later
+       {"id":"m7","sourceMs":9900,"label":"mark 7","at":2..}     ← union, new
+```
+
+Two things make this safe here that would not be safe elsewhere. Marks are
+approximate signposts rather than cut points, so resolving to the wrong one of
+two nearby edits costs a scrub, not a mistake. And a deletion is a tombstone
+record like any other, so it cannot be resurrected by an older log arriving late.
+The alternative rules were both worse: making the node read-only after download
+removes the case marks exist for, and not syncing at all breaks the promise that
+you correct a mark once.
+
 **Record control rides the existing WebSocket channel.** The server already
 accepts JSON control messages and already broadcasts state back to every client
 (`server/index.js:106-121`), which is exactly the shape record needs: any
@@ -740,6 +768,16 @@ rather than for the footage:
 - **A look preset selector**, drawing on the same user-authored preset library the
   editor uses. Shooting against the look you intend to grade towards is the whole
   reason presets are a library rather than two hardcoded modes.
+
+  **The node keeps its own copy of that library on disk**, refreshed when an
+  editing machine connects. It has to, because the node serves its own recorder
+  page and may well be shooting with nothing connected to it — a scheme that
+  pushed presets over the WebSocket per session would leave a standalone node
+  with an empty selector, which is exactly the shoot where the operator cannot
+  go and fix it. Presets are content-hashed like captures, so the sync is the
+  same reconciliation the gallery already does: compare revisions, copy what is
+  missing. They are also tens of kilobytes of JSON rather than gigabytes, so
+  there is no reason to be clever about when it happens.
 - **A near and far preview range**, so the operator can cut the room away and see
   the subject as the shot will frame them.
 
@@ -1347,6 +1385,47 @@ between 49.9°C and 55.4°C across the first three gates, and between 48.3°C an
 `get_throttled` never moved off its historical `0x50000`. A sustained capture on a
 marginal supply is where this would resurface.
 
+### Gate 5: the whole path runs, and watching it live costs you frames
+
+The four gates above measured the grabber alone. Running the actual node — our
+`server/index.js` spawning our grabber, with a browser on the Mac connected over
+Wi-Fi — turned up the one finding here that changes a recommendation.
+
+**The path works.** The server starts the grabber with no `--pipeline` argument,
+the grabber selects `gl` because that is what its libfreenect2 contains, the
+device opens at SuperSpeed and streams, and the Mac's browser renders a live
+point cloud with the full viewer UI. This is also the first end-to-end proof of
+the pipeline-default fix: the node's previous copy of the server passed
+`--pipeline cl`, which no Pi build has, and would now fail outright rather than
+falling back.
+
+**Live view over Wi-Fi is link-limited to about 7fps**, not 30. The wireless link
+carries 3.4 MB/s against the 14.6 MB/s a full-rate stream needs, which is the
+3.8 MB/s measured earlier arriving at the same answer from the other direction.
+Nothing is wrong; the link is simply the ceiling, and this is why browsing a
+remote take goes through the decimation parameter rather than pretending.
+
+**The part worth acting on: a connected viewer degrades the capture itself.**
+Backpressure from the socket reaches back through the server's stdin pipe into
+the grabber, which then cannot service USB in time and drops depth packets.
+
+| | skipped depth packets / 12s | recorded rate |
+| --- | --- | --- |
+| no client connected | 2 | 29.98 fps |
+| one browser connected | 52 | 26.64 fps |
+
+Those are frames that never reach the file, so no amount of downloading recovers
+them — watching the monitor while recording quietly costs about 11% of the take.
+That turns "record locally, download deliberately" from a bandwidth convenience
+into a correctness rule, and it means the monitor needs to negotiate decimation
+*while recording* rather than only when browsing. A monitor showing every frame
+is the thing making frames disappear.
+
+**Both comparisons were sequential rather than interleaved**, which this document
+has been burned by before. The direction is not in doubt — a 26-fold difference
+in dropped packets is far outside any noise seen on this rig — but the 11% figure
+itself should be re-measured interleaved before anything is sized against it.
+
 ## Scope for a first version
 
 **One clip with keyframe tracks, and export is clip by clip.** No cuts, no
@@ -1376,6 +1455,25 @@ So a Linux node can record the array's audio alongside depth with no extra
 hardware, as a separate stream captured in parallel rather than through the
 grabber. macOS has no such driver, so audio there still has to come from
 elsewhere.
+
+**Recorded, not just enumerated.** The device name alone would only prove the
+kernel bound something, so five seconds were captured on the node and inspected:
+
+```
+Format: S32_LE   Channels: 4   Rates: 16000   Channel map: FL FR FC LFE
+```
+
+All four channels carry signal — RMS between −60 and −56 dBFS with peaks of 327
+to 467 on a quiet room, and levels that differ per channel, which is what a
+spaced array should give and what digital silence would not. Native format is
+**S32_LE at 16 kHz**, so capture should take it natively and let anything that
+wants 16-bit convert later; `plughw` will silently resample and narrow it if
+asked.
+
+The four channels are worth keeping rather than downmixing at capture. A mic
+array pointed across a room is the one part of this rig that could later support
+beamforming towards whatever the depth camera says is the subject, and that is
+impossible from a mixed track.
 
 **Audio is a sibling file, referenced with an offset, and mutes under a retime.**
 
@@ -1436,11 +1534,13 @@ sounds fine, is wrong. A clean mute is the honest behaviour.
    by hash, per-take download, and the remaining-time warning.
 8. **Job queue and headless worker.** Deferred and remote encoding, with the
    renderer class recorded on every job from the first one.
-9. **Capture node.** All four gates pass on a Pi 5, so this is a deployment
-   question rather than an open one. The grabber cross-builds and sustains
-   30.00fps depth with 15.00fps colour on 15.05ms of a 33ms serial budget. What
-   remains is the surrounding plumbing: `server/index.js:25` still defaults
-   `--pipeline` to `cl`, which no Pi build contains.
+9. **Capture node.** All five gates pass on a Pi 5, including the whole path with
+   a browser attached, so this is a deployment question rather than an open one.
+   The grabber cross-builds and sustains 30.00fps depth with 15.00fps colour on
+   15.05ms of a 33ms serial budget, and audio comes off the array natively at
+   4 × 16 kHz. What remains is not plumbing but a behaviour: the monitor has to
+   negotiate decimation *while recording*, because a full-rate viewer costs the
+   take about 11% of its frames.
 
 Takes as files, the wall-clock capture date, the restart-splits-the-take rule and
 the mark button are all small and can land anywhere before step 7 — though marks
