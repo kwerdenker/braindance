@@ -35,6 +35,21 @@ growth bound. When you write a proof tool, ask what a broken implementation woul
 to still pass it, and close that. **Every proof tool needs a falsification control**:
 something that must FAIL if the thing under test were not actually doing the work.
 
+### Mutation-test the instrument, don't just reason about it
+
+Deliberately break the thing under test, run the check, and confirm it fails on the
+assertions it should. This is the method that turns the rule above from an intention into a
+result, and it has now caught two flaws that reading the code did not:
+
+- A serialisation check whose `||` clause let it pass on key count alone.
+- A malformed-value table that passed its cases into the page through `JSON.stringify` —
+  which turns `NaN` and `undefined` into `null`, so three cases labelled as NaN were silently
+  testing null a second and third time. **If you send test values into a browser, send them
+  as source, not as JSON**, or your labels will claim coverage you do not have.
+
+Report which mutations you ran and what each one caught. A check nobody has broken on purpose
+is a check nobody knows the sensitivity of.
+
 ## Proof tools
 
 Each takes a running server and exits non-zero on failure.
