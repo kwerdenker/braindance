@@ -3,11 +3,13 @@
 
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { createReadStream, createWriteStream, readFileSync, statSync } from 'node:fs';
+import { createReadStream, createWriteStream, statSync } from 'node:fs';
+import { pipeline } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, normalize, extname, sep } from 'node:path';
+import { dirname, join, normalize, extname, sep, resolve } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { MessageParser, TYPE_HELLO, TYPE_FRAME } from './protocol.js';
+import { openCapture, captureIdFor } from './capture.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -44,13 +46,129 @@ const MIME = {
 
 const WEB_DIR = join(ROOT, 'web');
 const THREE_DIR = join(ROOT, 'node_modules/three');
+const CAPTURES_DIR = join(ROOT, 'captures');
 
 // A bare startsWith would also match a sibling like `web-private`, so the
 // separator has to be part of the comparison.
 const isInside = (dir, candidate) => candidate === dir || candidate.startsWith(dir + sep);
 
+// A capture is addressed by id - its file name without the extension - resolved
+// inside the captures directory. Ids arrive off the URL, so anything that could
+// name a path rather than a take is rejected outright rather than normalised and
+// hoped about; the leading character rules out `..` on its own.
+const VALID_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+// `--replay` may name a file anywhere, so the replayed take registers its own id.
+const captureAliases = new Map();
+
+function capturePathFor(id) {
+  if (captureAliases.has(id)) return captureAliases.get(id);
+  return VALID_ID.test(id) ? join(CAPTURES_DIR, `${id}.knct`) : null;
+}
+
+// The frame API: the browser asks for a frame or a run, the server preads it out
+// of the capture and returns the bytes unchanged. Two response shapes, because
+// the two calls want different things. A single frame is the payload alone -
+// byte for byte what `broadcastFrame` puts on the socket - so the pulled and the
+// pushed path hand the same decoder the same input. A run is the file's own
+// slice, framing included, because payloads concatenated have no boundaries left
+// to parse back and the headers that supply them are already interleaved.
+async function serveCapture(res, id, rest) {
+  const path = capturePathFor(id);
+  if (!path) {
+    res.writeHead(404).end('unknown capture');
+    return;
+  }
+
+  let capture;
+  try {
+    capture = await openCapture(path);
+  } catch (err) {
+    if (err.code === 'ENOENT') res.writeHead(404).end('unknown capture');
+    else res.writeHead(500).end(`capture unreadable: ${err.message}`);
+    return;
+  }
+
+  if (rest === 'index') {
+    const body = Buffer.from(JSON.stringify(capture.index));
+    res.writeHead(200, {
+      'Content-Type': MIME['.json'],
+      'Content-Length': body.length,
+      'Cache-Control': 'no-cache',
+    });
+    res.end(body);
+    return;
+  }
+
+  const inRange = (n) => Number.isInteger(n) && n >= 0 && n < capture.frameCount;
+
+  const one = /^frame\/(\d+)$/.exec(rest);
+  if (one) {
+    const n = Number(one[1]);
+    if (!inRange(n)) {
+      res.writeHead(404).end('no such frame');
+      return;
+    }
+    const payload = await capture.readFrame(n);
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': payload.length,
+      'Cache-Control': 'no-cache',
+    });
+    res.end(payload);
+    return;
+  }
+
+  const run = /^frames\/(\d+)-(\d+)$/.exec(rest);
+  if (run) {
+    const a = Number(run[1]);
+    const b = Number(run[2]);
+    if (!inRange(a) || !inRange(b) || a > b) {
+      res.writeHead(404).end('no such range');
+      return;
+    }
+    const { start, end } = capture.frameRunSpan(a, b);
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': end - start + 1,
+      'Cache-Control': 'no-cache',
+    });
+    // `pipeline` rather than `pipe`, because the headers are already out by the
+    // time anything can go wrong. A bare pipe leaves a read error as an unhandled
+    // stream event, which takes the whole process down - replay, socket fan-out
+    // and static server with it - and leaves a client that walked away mid-run
+    // holding a reader nobody stops. This tears down both ends either way; the
+    // response is truncated against its declared length, which is the only honest
+    // signal left once a 200 has been sent.
+    pipeline(capture.createFrameRunStream(a, b), res, (err) => {
+      if (err) console.error(`[server] frame run ${id} ${a}-${b} failed: ${err.message}`);
+    });
+    return;
+  }
+
+  res.writeHead(404).end('not found');
+}
+
 const httpServer = createServer((req, res) => {
-  const urlPath = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+  let urlPath;
+  try {
+    urlPath = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+  } catch {
+    // A malformed percent escape such as /%zz throws here, and an exception
+    // thrown out of this handler ends the process - taking replay, the socket
+    // fan-out and the viewer with it over a request nobody meant.
+    res.writeHead(400).end('bad request');
+    return;
+  }
+
+  const capture = /^\/capture\/([^/]+)\/(.+)$/.exec(urlPath);
+  if (capture) {
+    serveCapture(res, capture[1], capture[2]).catch((err) => {
+      console.error('[server] capture request failed:', err.message);
+      if (!res.headersSent) res.writeHead(500);
+      res.end('capture read failed');
+    });
+    return;
+  }
 
   let filePath;
   if (urlPath.startsWith('/vendor/three/')) {
@@ -258,55 +376,99 @@ function startLive() {
   });
 }
 
-function startReplay() {
-  let raw;
+async function startReplay() {
+  let capture;
   try {
-    raw = readFileSync(REPLAY);
-  } catch {
-    console.error(`[server] no capture at ${REPLAY} — record one first: npm run record`);
+    capture = await openCapture(REPLAY);
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      console.error(`[server] no capture at ${REPLAY} — record one first: npm run record`);
+    } else {
+      // Anything else is a real failure of the reader and has to say so. A
+      // blanket catch here used to report every error as a missing file, which
+      // is how a capture the old whole-file read simply refused to open came to
+      // look like a capture nobody had recorded.
+      console.error(`[server] cannot open ${REPLAY}: ${err.message}`);
+    }
+    return;
+  }
+
+  // The replayed take is reachable over the frame API under its own id even when
+  // it lives outside the captures directory.
+  captureAliases.set(captureIdFor(REPLAY), resolve(REPLAY));
+
+  const stamps = capture.index.frames.stampMs;
+  if (stamps.length === 0) {
+    console.error('[server] replay file contains no frames');
     return;
   }
 
   console.log(`[server] replaying ${REPLAY}`);
-  const parser = new MessageParser();
-  const messages = [];
-  for (const msg of parser.push(raw)) {
-    // Detach from the parser's backing buffer so the array stays valid.
-    messages.push({ type: msg.type, payload: Buffer.from(msg.payload) });
-  }
-  const hello = messages.find((m) => m.type === TYPE_HELLO);
-  if (hello) handleMessage(hello);
+  const hello = await capture.readHello();
+  if (hello) handleMessage({ type: TYPE_HELLO, payload: hello });
 
-  const frames = messages.filter((m) => m.type === TYPE_FRAME);
-  if (frames.length === 0) {
-    console.error('[server] replay file contains no frames');
-    return;
-  }
   // Replay the recorded arrival spacing rather than a uniform 30fps. A live
   // stream is deeply irregular - measured p50 64ms against p90 222ms - and
   // pacing every frame 33ms apart hands the viewer the one cadence that never
   // happens, so interpolation tuned against replay looks right here and stutters
   // on the sensor. Frame 0 anchors the loop; the gap after the last frame reuses
   // the median so the wrap does not stall.
-  const stamps = frames.map((f) => Number(f.payload.readBigUInt64LE(8)));
   const gaps = stamps.slice(1).map((t, i) => t - stamps[i]).filter((g) => g > 0 && g < 2000);
   const median = gaps.length ? gaps.slice().sort((a, b) => a - b)[gaps.length >> 1] : 33;
   gaps.push(median);
 
-  console.log(`[server] ${frames.length} frames loaded, median gap ${median}ms`);
+  console.log(
+    `[server] ${stamps.length} frames indexed, median gap ${median}ms, ${capture.index.hash}`,
+  );
+
+  // A replayed take is as live as this server gets, and saying so is what gives
+  // the lost state below something to mean.
+  setSensorState('live');
 
   let i = 0;
-  const tick = () => {
-    handleMessage(frames[i % frames.length]);
+  let failing = false;
+  const schedule = () => {
     const gap = gaps[i % gaps.length];
     i++;
     setTimeout(tick, gap);
+  };
+  // Each frame is read at the moment it is due, so replaying a five-minute take
+  // costs the same memory as replaying a nine-second one. The read is awaited
+  // before the timer is set, which adds its own duration to every gap - measured
+  // at 0.07 to 0.6ms against a 64ms median, so under 1% and inside the slop the
+  // old in-memory loop already had.
+  const tick = () => {
+    capture
+      .readFrame(i % stamps.length)
+      .then((payload) => {
+        if (failing) {
+          failing = false;
+          console.log('[server] replay reads recovered');
+          setSensorState('live');
+        }
+        handleMessage({ type: TYPE_FRAME, payload });
+        schedule();
+      })
+      .catch((err) => {
+        // A read that fails must not freeze the loop in silence. A viewer holding
+        // its last frame looks exactly like a paused take, so the state goes to
+        // lost the way it does when the grabber dies, and the loop keeps trying
+        // at the recorded cadence rather than stopping - a transient failure then
+        // recovers on its own. Logged on the transition only, or a take whose
+        // file went away would fill the console every 64ms.
+        if (!failing) {
+          failing = true;
+          console.error(`[server] replay read failed: ${err.message}`);
+          setSensorState('lost');
+        }
+        schedule();
+      });
   };
   tick();
 }
 
 httpServer.listen(PORT, () => {
   console.log(`[server] viewer on http://localhost:${PORT}`);
-  if (REPLAY) startReplay();
+  if (REPLAY) startReplay().catch((err) => console.error(`[server] replay failed: ${err.message}`));
   else startLive();
 });
