@@ -1469,6 +1469,66 @@ reused JPEG is therefore registered against the previous depth frame. Neither
 lever ships: at 15.05ms of a 33ms budget the headroom does not need buying, and
 both pay for it in image correctness.
 
+### A third lever, and this one pays nothing
+
+Both levers above buy time with image correctness, which is why neither ships.
+There is a third that buys the same time and costs nothing, because it changes
+how the work is done rather than what work is done — and it was found by looking
+at what `Registration::apply` actually is rather than at what it costs.
+
+**It is a scatter, not a per-pixel gather.** With the occlusion filter on — which
+is what the grabber uses, and what every figure above was measured on — `apply`
+is three passes: an 8.3MB init of a 1920x1080 filter map to `+inf`, then a
+scatter writing a min-z into a 5x3 window of that map for each of 217,088 depth
+pixels, and only then the per-pixel gather that builds `registered`. Different
+depth pixels legitimately write the same colour pixel; that collision *is* the
+occlusion test. So the 10.92ms that `enable_filter=false` saves above is the
+init plus the scatter, and the obvious parallelisation — splitting the depth
+loop across cores — is a data race rather than a speedup.
+
+Two changes follow from that, both **bit-identical to upstream** rather than
+merely close, which is the property the other two levers lack:
+
+| change | Mac reg p50 | saving |
+| --- | --- | --- |
+| baseline | 5.76 ms | — |
+| persistent scratch buffers | 5.41 ms | 0.30 ms |
+| + threaded scatter, 4 threads | 3.69 ms | **2.07 ms, 36%** |
+
+`apply` new/deletes 9.2MB of scratch on every call unless handed somewhere to
+put them, and it has out-parameters for exactly that. The scatter then bands
+across threads **by linear index rather than by row** — the loop never
+bounds-checks `cx` on its own, so at `cx < 2` a window's left edge is a negative
+offset landing in the previous row's tail, and threads owning adjacent row
+stripes would collide precisely there. Banded linearly there is no seam and no
+atomics are needed. Both measured as interleaved A/B/A/B/A/B against a build of
+upstream's own scatter, three rounds, ~1000 frames per arm after 60 of warmup,
+all six arms sustaining 30.03–30.04fps.
+
+**The 6.33ms above and the 5.76ms here are the same measurement, not a
+correction.** Registration's cost depends on how many depth pixels carry a valid
+reading, so it moves with the scene; the gap is within what scene content and
+session drift produce on this rig. That is the reason the comparison is paired
+and interleaved rather than read against a number recorded on another day.
+
+**None of this is measured on a Pi, which is the machine that wants the
+headroom.** The Mac idles 27ms of every 33ms interval, so 2ms buys nothing
+visible there. The Pi has four cores rather than twelve and registration is
+13.13ms of its 15.05ms serial half, so the scaling and the payoff are both open.
+`tools/pi-registration-ab.sh` is the runbook for settling it once step 9 has
+provisioned the node, and it reads **delivered fps rather than `reg` p50** as its
+verdict: four threads on four cores compete with the depth solve's own
+`AsyncPacketProcessor` and the GL processor, and that kind of oversubscription
+surfaces as dropped frames rather than as slower registration.
+
+The driver this all lives in is now ours: `third_party/libfreenect2` is upstream
+v0.2.1 committed in-tree, because the old recipe cloned a *branch* and so pinned
+nothing — it built the right thing only because upstream has not committed since
+2020-03-01. `tools/vendor-check.mjs` proves the tree is upstream plus exactly the
+declared edits, offline, and `tools/registration-check.mjs` proves our
+registration matches upstream's bit for bit on a 72-frame corpus of real sensor
+input. See `third_party/UPSTREAM.md`.
+
 **What actually costs frames is the card, not the CPU.** With colour off the
 whole serial half is 0.74ms, so `Registration::apply` is very nearly the entire
 cost, and with colour on the loop still sits idle 55% of every interval. The

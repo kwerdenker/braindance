@@ -202,6 +202,27 @@ against itself and nothing about a stale library looks wrong. It exits **2** for
 build or runtime failure and **1** only when assertions fired, so a mutation that
 failed to compile can never be recorded as a mutation that was caught.
 
+`tools/prof-summary.mjs <profile> [warmup]` reads `grabber --profile` output and
+flags any run under 29.5fps as contended, because the segment timings from a run
+that dropped frames are noise. `tools/pi-registration-ab.sh` is the unrun runbook
+for measuring the threading on a capture node; it builds both arms, checks with
+`ldd` that they load different libraries, and refuses to report milliseconds from
+an arm that lost frames.
+
+The registration corpus is gitignored like every other capture. Regenerate it with
+the sensor attached, and vary the scene while it runs - a hand near the lens, a
+person against a far wall, something occluding something further - because the
+occlusion filter only does work at depth discontinuities:
+
+```
+./native/build/grabber --dump-corpus captures/reg-corpus --dump-count 40 --dump-every 45
+```
+
+Coverage is measurable rather than assumed: `registration-check --mutate
+filter-never-rejects` reports what fraction of pixels the filter actually
+rejects. The committed corpus's 72 frames sit at 6.93%; a first capture of one
+static-ish scene managed 6.55%.
+
 `export-check` needs ffmpeg and ffprobe (`--ffmpeg`, `--ffprobe`; 8.1.1 at
 `/opt/homebrew/bin`) and writes into `exports/`, which is gitignored.
 
