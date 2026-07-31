@@ -24,6 +24,10 @@ const timelineEl = document.getElementById('timeline');
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
+// Named, because the editor's furniture lives on a second canvas over this one and
+// "the canvas" stopped being an unambiguous thing to ask for. This is the rendered
+// frame; the other one is chrome.
+renderer.domElement.id = 'stage';
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -57,40 +61,30 @@ controls.dampingFactor = 0.07;
 controls.autoRotateSpeed = 0.6;
 controls.target.copy(ORBIT_TARGET);
 
-// The program pose is a pure function of program time, so it holds no state and
-// has nothing to drift - which is the property step 5's keyframed path has to
-// keep, and the reason this placeholder is shaped the way it is rather than
-// animated off a clock. It is a slow orbit, one revolution per 100 seconds,
-// starting where the free camera starts. Nothing shows it until something calls
-// setViewCamera; the viewport draws the free camera by default.
-const PROGRAM_ORBIT = new THREE.Spherical()
-  .setFromVector3(new THREE.Vector3(0, 0.1, 1.6).sub(ORBIT_TARGET));
-const PROGRAM_ORBIT_RATE = (2 * Math.PI) / 100;
-const programSpherical = new THREE.Spherical();
 // Orienting is done on a camera-shaped scratch object rather than on a bare
 // Object3D, because three points cameras and lights down -Z and everything else
 // down +Z: the same lookAt on the wrong kind of object gives a pose facing the
 // other way, and it would look plausible right up until the frustum was drawn.
 const poseScratch = new THREE.PerspectiveCamera();
 
-// The placeholder hands back a pose as a value rather than moving the camera
-// itself, because the camera is a registry parameter like every other one and
-// everything reaches it through the same door. Step 5 replaces this function with
-// a curve read at t; nothing downstream of the registry has to change for that.
-function programPose(t) {
-  programSpherical.set(
-    PROGRAM_ORBIT.radius,
-    PROGRAM_ORBIT.phi,
-    PROGRAM_ORBIT.theta - t * PROGRAM_ORBIT_RATE,
-  );
-  poseScratch.position.setFromSpherical(programSpherical).add(ORBIT_TARGET);
-  poseScratch.lookAt(ORBIT_TARGET);
+// A pose as a value rather than as a camera that has been moved, because the
+// camera is a registry parameter like every other one and everything reaches it
+// through the same door. Step 4 fed this from a placeholder orbit; the camera
+// track feeds it now, and nothing downstream of the registry changed for that.
+function poseLookingAt(position, target = ORBIT_TARGET, fov = PROGRAM_FOV) {
+  poseScratch.position.copy(position);
+  poseScratch.lookAt(target);
   return {
     position: poseScratch.position.toArray(),
     quaternion: poseScratch.quaternion.toArray(),
-    fov: PROGRAM_FOV,
+    fov,
   };
 }
+
+// Where the program camera stands when nothing has keyed it: exactly where the
+// free camera starts, looking at the same point. A clip with no camera keys is a
+// locked-off shot rather than a camera at the origin staring into the void.
+const DEFAULT_POSE = poseLookingAt(new THREE.Vector3(0, 0.1, 1.6));
 
 // ---------------------------------------------------------------- gpu textures
 
@@ -841,12 +835,13 @@ const PARAMS = {
   renderScale: { def: 100, min: 40, max: 200, step: 5, kind: 'scalar', tag: 'view',
     apply: (v) => { renderScale = v / 100; resize(); } },
 
-  // The one composition parameter today, and the only pose. It is here so step 5
-  // reads the kind off the registry instead of keeping a second table beside the
-  // camera path, and so the render path writes the pose the same way a keyframe
-  // eventually will. Composition is edited in the world rather than on a slider,
-  // which is why it is the one parameter with no panel control.
-  camera: { def: programPose(0), kind: 'pose', tag: 'composition',
+  // The one composition parameter, and the only pose. The camera track reads its
+  // kind off this entry rather than off a second table beside the path editor, and
+  // the render path writes the evaluated pose through the same door every other
+  // value goes through. Composition is edited in the world rather than on a
+  // slider, which is why it is the one parameter with no panel control - the
+  // buttons that key it are not named after it, so the check below still holds.
+  camera: { def: DEFAULT_POSE, kind: 'pose', tag: 'composition',
     apply: (p) => {
       programCamera.position.fromArray(p.position);
       programCamera.quaternion.fromArray(p.quaternion);
@@ -909,6 +904,13 @@ function normalise(name, spec, value) {
         + `numeric fov, got ${JSON.stringify(value)}`,
       );
     }
+    // **Known gap, carried deliberately.** Four finite numbers are checked, not
+    // four numbers of unit length, so a quaternion that is not normalised is
+    // accepted and reaches the camera - where three renormalises silently on some
+    // paths and not others, and where slerping between one unit and one non-unit
+    // quaternion is not the rotation either of them names. No door produces one
+    // today: keys come from a camera's own quaternion or from a saved project that
+    // came from the same place. The fix is a length check here.
     return {
       position: value.position.slice(),
       quaternion: value.quaternion.slice(),
@@ -968,6 +970,17 @@ const params = {
     const v = values.get(name);
     return PARAMS[name].kind === 'pose' ? { ...v, position: [...v.position], quaternion: [...v.quaternion] } : v;
   },
+  /**
+   * What `set` would store, without storing it. A key holds a parameter's value,
+   * so it has to be the value the parameter would take - a key dragged in a lane
+   * and the same value typed into the slider landing a hair apart would be two
+   * positions the slider cannot express, differing for a reason nothing records.
+   */
+  normalise(name, value) {
+    const spec = PARAMS[name];
+    if (!spec) throw new Error(`unknown parameter ${name}`);
+    return normalise(name, spec, value);
+  },
   /** The single write path. Everything - UI, presets, step 5's tracks - goes here. */
   set(name, value) {
     const spec = PARAMS[name];
@@ -982,7 +995,14 @@ const params = {
     paramWritten(name, spec.tag);
     return v;
   },
+  /**
+   * A bulk write. Guarded, because the note on `evaluating` called this the door
+   * the flag did not cover: a preset assembled by hand rather than passed through
+   * `applyPreset` used to get no complaint at all. The evaluator writes key by key
+   * through `set` and never comes here, so closing this costs it nothing.
+   */
   apply(next) {
+    refuseDuringEvaluation('a bulk write');
     for (const [name, value] of Object.entries(next)) this.set(name, value);
     return this;
   },
@@ -1021,7 +1041,9 @@ for (const [name, spec] of Object.entries(PARAMS)) {
   if (!el) throw new Error(`parameter ${name} has no panel control`);
   panelControls.set(name, el);
   if (el.type === 'checkbox') {
-    el.addEventListener('change', () => params.set(name, el.checked));
+    // A checkbox has no drag, so its `change` is both the write and the end of the
+    // interaction.
+    el.addEventListener('change', () => { writeFromControl(name, el.checked); history.commit(); });
   } else {
     el.min = String(spec.min);
     el.max = String(spec.max);
@@ -1029,7 +1051,11 @@ for (const [name, spec] of Object.entries(PARAMS)) {
     // The string-to-number conversion belongs to the control rather than to the
     // registry: a slider's value is text because the DOM says so, and letting that
     // reach `normalise` would mean loosening it for every other caller too.
-    el.addEventListener('input', () => params.set(name, Number(el.value)));
+    el.addEventListener('input', () => writeFromControl(name, Number(el.value)));
+    // The other half of the `input`/`change` split, and the whole of what makes
+    // undo coalesce: one snapshot when the drag ends rather than one per pointer
+    // move. Nothing is pushed if the drag put the value back where it started.
+    el.addEventListener('change', () => history.commit());
   }
 }
 
@@ -1109,22 +1135,27 @@ const NEUTRAL = { bloom: 0, trails: 0, rgbSplit: 0, scanlines: 0, grain: 0, glit
 // deferred, and the stomping is what would have to be solved properly first.
 let clipMode = 0;
 
-function setMode(mode) {
-  refuseDuringEvaluation('mode selected');
-  const wasBlackwall = clipMode === 4;
+// The mode itself, without the look that comes with choosing it. Undo restores a
+// whole snapshot including the twelve values Blackwall wrote, so replaying the
+// preset on top of them would overwrite what was just restored with what the
+// preset happens to say today. This is the half both callers share rather than a
+// second path: `setMode` is this plus the preset a user asked for.
+function applyModeValue(mode) {
   clipMode = mode;
   uniforms.mode.value = mode;
-
-  if (mode === 4) {
-    applyPreset(BLACKWALL);
-    scene.fog.color.setHex(0x05070a);
-  } else if (wasBlackwall) {
-    applyPreset(NEUTRAL);
-  }
-
+  if (mode === 4) scene.fog.color.setHex(0x05070a);
   document.querySelectorAll('#modes button').forEach((b) => {
     b.setAttribute('aria-pressed', String(Number(b.dataset.mode) === mode));
   });
+}
+
+function setMode(mode) {
+  refuseDuringEvaluation('mode selected');
+  const wasBlackwall = clipMode === 4;
+  applyModeValue(mode);
+
+  if (mode === 4) applyPreset(BLACKWALL);
+  else if (wasBlackwall) applyPreset(NEUTRAL);
 
   // Asked for explicitly, because the mode is clip state and deliberately not a
   // registry parameter - so selecting Depth or Contour writes nothing the
@@ -1134,13 +1165,584 @@ function setMode(mode) {
 }
 
 document.querySelectorAll('#modes button').forEach((btn) => {
-  btn.addEventListener('click', () => setMode(Number(btn.dataset.mode)));
+  btn.addEventListener('click', () => {
+    setMode(Number(btn.dataset.mode));
+    // One click is one interaction, so the snapshot goes on at the end of it. The
+    // twelve look values Blackwall wrote are inside the same snapshot, which is
+    // the whole reason undo cannot be a command stack here.
+    history.commit();
+  });
 });
+
+// ------------------------------------------------------------ keyframe tracks
+
+// A track is keys on a registry parameter, stamped in program time. The kind is
+// read off the registry entry rather than declared again here, because two tables
+// that can disagree is exactly what the registry was built to remove - `wake`
+// being a scalar in one of them and a step in the other is a bug nothing would
+// catch until an export.
+//
+// Three kinds, and each is a different answer to "what is between two keys":
+//
+//   scalar  a cubic ease from one value to the next. The two handles are the same
+//           unit square CSS `cubic-bezier` uses, so the pair (1/3,1/3),(2/3,2/3)
+//           is exactly linear and every other pair bends the *timing* without
+//           moving either value.
+//   step    the earlier value, held. A checkbox has nothing between true and
+//           false, and half a segment spent at 0.5 would be refused by
+//           `normalise` anyway - loudly, in the middle of a render.
+//   pose    position, orientation and field of view moving together. Position
+//           runs a Catmull-Rom through the keys, because a camera cornering on
+//           straight lines reads as a mistake rather than as a move; orientation
+//           slerps, and fov lerps.
+
+// The handles of a linear segment. Named rather than written out at the four
+// places a key is made, because a key created with anything else silently eases.
+const EASE_OUT_LINEAR = [1 / 3, 1 / 3];
+const EASE_IN_LINEAR = [2 / 3, 2 / 3];
+
+// One coordinate of a unit cubic Bezier with its ends pinned at 0 and 1, which is
+// what lets a handle be two numbers instead of a control point.
+const bez = (a, b, u) => {
+  const v = 1 - u;
+  return 3 * v * v * u * a + 3 * v * u * u * b + u * u * u;
+};
+const bezSlope = (a, b, u) => {
+  const v = 1 - u;
+  return 3 * v * v * a + 6 * v * u * (b - a) + 3 * u * u * (1 - b);
+};
+
+/**
+ * The Bezier parameter at which the curve's x reaches `x`. Newton first because it
+ * converges in two or three steps over most of the range, then bisection, because
+ * Newton stalls exactly where an ease handle is interesting: a hold at the start
+ * of a segment is a near-zero derivative, and dividing by it walks off the curve.
+ */
+function easeParam(ax, bx, x) {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+  let u = x;
+  for (let i = 0; i < 8; i++) {
+    const err = bez(ax, bx, u) - x;
+    if (Math.abs(err) < 1e-9) return u;
+    const d = bezSlope(ax, bx, u);
+    if (d < 1e-6) break;
+    const next = u - err / d;
+    if (!(next > 0 && next < 1)) break;
+    u = next;
+  }
+  let lo = 0;
+  let hi = 1;
+  u = x;
+  for (let i = 0; i < 60; i++) {
+    const err = bez(ax, bx, u) - x;
+    if (Math.abs(err) < 1e-12) break;
+    if (err > 0) hi = u; else lo = u;
+    u = (lo + hi) / 2;
+  }
+  return u;
+}
+
+/** Where in a segment's value range a fraction of the way through it lands. */
+function easeAt(a, b, x) {
+  const u = easeParam(a[0], b[0], x);
+  return bez(a[1], b[1], u);
+}
+
+/** d(value fraction)/d(time fraction), which is what a retime slope is built from. */
+function easeSlopeAt(a, b, x) {
+  const u = easeParam(a[0], b[0], x);
+  const dx = bezSlope(a[0], b[0], u);
+  if (dx > 1e-6) return bezSlope(a[1], b[1], u) / dx;
+  // A vertical tangent is a legitimate handle placement, and the analytic ratio is
+  // infinite there. It used to report zero, which is the opposite of the truth and
+  // the wrong kind of wrong: this is the slope step 6's audio gate reads to decide
+  // whether the take is playing at 1.0, and a zero at the steepest point of a ramp
+  // would unmute exactly where it has to mute. Measured over a small window
+  // instead - large, finite, and in the right direction, which is what every
+  // caller can actually use.
+  const h = 1e-4;
+  const lo = Math.max(0, x - h);
+  const hi = Math.min(1, x + h);
+  return (easeAt(a, b, hi) - easeAt(a, b, lo)) / Math.max(1e-9, hi - lo);
+}
+
+/** The last key at or before `t`, or -1 when `t` sits before every key. */
+function keyBefore(keys, t) {
+  let lo = 0;
+  let hi = keys.length - 1;
+  if (hi < 0 || t < keys[0].t) return -1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (keys[mid].t <= t) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+// Outside the keys a look track holds its end values and the retime curve keeps
+// going. That difference is not a preference: a look with one bloom key is a
+// constant bloom, while a retime that flattened past its last key would freeze
+// the program there and make the take's tail unreachable.
+const HOLD_ENDS = 'hold';
+const EXTEND_ENDS = 'extend';
+
+function scalarAt(keys, t, ends) {
+  const n = keys.length;
+  if (n === 0) return 0;
+  if (n === 1) return keys[0].value;
+  const i = keyBefore(keys, t);
+  if (i < 0) {
+    if (ends === HOLD_ENDS) return keys[0].value;
+    return keys[0].value + (t - keys[0].t) * segmentSlope(keys, 0, 0);
+  }
+  if (i >= n - 1) {
+    if (ends === HOLD_ENDS) return keys[n - 1].value;
+    return keys[n - 1].value + (t - keys[n - 1].t) * segmentSlope(keys, n - 2, 1);
+  }
+  const a = keys[i];
+  const b = keys[i + 1];
+  const span = b.t - a.t;
+  // Coincident keys are a legal transient while one is being dragged onto
+  // another, and the later value is what a step would give, so it is what this
+  // gives rather than a division by zero.
+  if (span <= 0) return b.value;
+  return a.value + (b.value - a.value) * easeAt(a.easeOut, b.easeIn, (t - a.t) / span);
+}
+
+/** The slope of segment `i` at one of its ends, in value per program second. */
+function segmentSlope(keys, i, x) {
+  const a = keys[i];
+  const b = keys[i + 1];
+  const span = b.t - a.t;
+  if (span <= 0) return 0;
+  return ((b.value - a.value) / span) * easeSlopeAt(a.easeOut, b.easeIn, x);
+}
+
+function scalarSlopeAt(keys, t) {
+  const n = keys.length;
+  if (n < 2) return 0;
+  const i = keyBefore(keys, t);
+  if (i < 0) return segmentSlope(keys, 0, 0);
+  if (i >= n - 1) return segmentSlope(keys, n - 2, 1);
+  const span = keys[i + 1].t - keys[i].t;
+  if (span <= 0) return 0;
+  return segmentSlope(keys, i, (t - keys[i].t) / span);
+}
+
+function stepAt(keys, t) {
+  const i = keyBefore(keys, t);
+  return keys[i < 0 ? 0 : i].value;
+}
+
+// Catmull-Rom, written in its Hermite form with tangents divided by the *time*
+// between the neighbouring keys rather than by an assumed even spacing. The
+// textbook uniform formula is the same curve when keys are evenly spaced and a
+// different one when they are not: it reads the parameter as an index, so two
+// keys 0.2s apart and two keys 3s apart get the same tangent and the camera
+// lurches out of the tight pair. Keys land wherever the edit wants them, so the
+// non-uniform form is the only one that means what the spec says it means.
+function hermite(p0, p1, m0, m1, span, u) {
+  const u2 = u * u;
+  const u3 = u2 * u;
+  const h00 = 2 * u3 - 3 * u2 + 1;
+  const h10 = u3 - 2 * u2 + u;
+  const h01 = -2 * u3 + 3 * u2;
+  const h11 = u3 - u2;
+  return h00 * p0 + h10 * span * m0 + h01 * p1 + h11 * span * m1;
+}
+
+/**
+ * The tangent at key `i`, in metres per program second.
+ *
+ * At the ends the missing neighbour is the end key mirrored one segment *outside*
+ * the path rather than the end key sitting on top of itself. That is what makes
+ * this the non-uniform generalisation of the textbook formula rather than a
+ * near-miss of it: with the duplicate at the same instant the end tangent comes
+ * out twice what the uniform Catmull-Rom gives, so the curve would leave its first
+ * key at double speed and the two forms would disagree on evenly spaced keys - the
+ * one case where they have to agree exactly.
+ */
+function tangentAt(keys, i, axis) {
+  const n = keys.length;
+  const at = (k) => (k < 0
+    ? { t: 2 * keys[0].t - keys[1].t, value: keys[0].value }
+    : (k > n - 1
+      ? { t: 2 * keys[n - 1].t - keys[n - 2].t, value: keys[n - 1].value }
+      : keys[k]));
+  const lo = at(i - 1);
+  const hi = at(i + 1);
+  const span = hi.t - lo.t;
+  if (span <= 0) return 0;
+  return (hi.value.position[axis] - lo.value.position[axis]) / span;
+}
+
+const slerpA = new THREE.Quaternion();
+const slerpB = new THREE.Quaternion();
+
+function poseAt(keys, t) {
+  const n = keys.length;
+  if (n === 1) return keys[0].value;
+  const i = keyBefore(keys, t);
+  if (i < 0) return keys[0].value;
+  if (i >= n - 1) return keys[n - 1].value;
+  const a = keys[i];
+  const b = keys[i + 1];
+  const span = b.t - a.t;
+  if (span <= 0) return b.value;
+  const u = (t - a.t) / span;
+
+  const position = [0, 1, 2].map((axis) => hermite(
+    a.value.position[axis], b.value.position[axis],
+    tangentAt(keys, i, axis), tangentAt(keys, i + 1, axis),
+    span, u,
+  ));
+
+  // Slerp rather than a Catmull-Rom through the quaternions. The spec asks for the
+  // spline on position, and it asks for it there because that is where a straight
+  // line is visible as a corner; an orientation between two keys has no such
+  // corner to round off, and a spline through four quaternions can leave the unit
+  // sphere in ways that read as a roll nobody keyed.
+  slerpA.fromArray(a.value.quaternion);
+  slerpB.fromArray(b.value.quaternion);
+  slerpA.slerp(slerpB, u);
+
+  return {
+    position,
+    quaternion: slerpA.toArray(),
+    fov: a.value.fov + (b.value.fov - a.value.fov) * u,
+  };
+}
+
+class Track {
+  constructor(name) {
+    this.name = name;
+    // Off the registry, never declared here. See the note above.
+    this.kind = params.spec(name).kind;
+    this.keys = [];
+  }
+
+  get length() { return this.keys.length; }
+
+  /** The key at `t`, within half an output frame, or null. */
+  keyAt(t, tol) {
+    for (const key of this.keys) if (Math.abs(key.t - t) <= tol) return key;
+    return null;
+  }
+
+  /** Writes a key at `t`, replacing one already there. Returns it. */
+  setKey(t, value, tol) {
+    const existing = this.keyAt(t, tol);
+    if (existing) {
+      existing.value = value;
+      return existing;
+    }
+    const key = { t, value, easeOut: [...EASE_OUT_LINEAR], easeIn: [...EASE_IN_LINEAR] };
+    this.keys.push(key);
+    this.sort();
+    return key;
+  }
+
+  removeKey(key) {
+    const i = this.keys.indexOf(key);
+    if (i >= 0) this.keys.splice(i, 1);
+  }
+
+  sort() { this.keys.sort((x, y) => x.t - y.t); }
+
+  valueAt(t) {
+    if (this.kind === 'step') return stepAt(this.keys, t);
+    if (this.kind === 'pose') return poseAt(this.keys, t);
+    return scalarAt(this.keys, t, HOLD_ENDS);
+  }
+
+  serialise() {
+    return this.keys.map((k) => ({
+      t: k.t, value: k.value, easeOut: [...k.easeOut], easeIn: [...k.easeIn],
+    }));
+  }
+}
+
+// Only tracks that carry keys exist. An empty track is a parameter with a single
+// value, which the registry already holds, and keeping one per parameter would
+// mean the lane list and the track list had to be filtered into agreement
+// everywhere instead of being the same list.
+const tracks = new Map();
+
+function trackFor(name) {
+  let track = tracks.get(name);
+  if (!track) {
+    track = new Track(name);
+    tracks.set(name, track);
+  }
+  return track;
+}
+
+function dropTrackIfEmpty(name) {
+  const track = tracks.get(name);
+  if (track && track.keys.length === 0) tracks.delete(name);
+}
+
+// Every track written through the one door, at one program position. This is the
+// evaluator the note on `evaluating` asked for: it runs inside
+// `renderProgramFrame`, so the flag now spans exactly what its name claims, and a
+// preset or a mode selected from a track's own apply would be refused rather than
+// merely unlikely.
+//
+// The suppression is not optional and is the reason this is one function rather
+// than a loop at the call site. `params.set` announces every write, the timeline
+// answers an announcement by scheduling an accurate seek, and an evaluator
+// writing eight track values per frame without this would schedule eight seeks
+// per frame - each of which renders a pre-roll, which evaluates, which schedules
+// more. It never settles, and the symptom is a tab that gets slower rather than
+// an error.
+// The parameters a draft has borrowed, or null. The evaluator has to see this or
+// the borrow does not hold: `draftNow` zeroes fade, wake and trails and then calls
+// the render, and the evaluator inside it wrote any of the three that carried keys
+// straight back. A scrub over a clip with a keyed wake then drafted with the wake
+// live on freshly cleared accumulators - every point newborn, the whole cloud in
+// its ramp-in - which is neither the accumulator-free frame a draft is defined as
+// nor an image that existed at that position. It also broke the property two
+// drafts of one position are compared on.
+let borrowed = null;
+
+function evaluateTracks(t) {
+  if (tracks.size === 0) return;
+  withoutRepaint(() => {
+    for (const track of tracks.values()) {
+      if (track.keys.length === 0) continue;
+      if (borrowed && borrowed.has(track.name)) continue;
+      params.set(track.name, track.valueAt(t));
+    }
+  });
+}
+
+/**
+ * What a parameter is worth at a program position rather than right now: its
+ * track's value if it carries keys, the registry's if it does not, snapped either
+ * way so it is the value a render at that position would actually apply.
+ *
+ * This exists because "what is the look here" and "what is the look on screen" are
+ * different questions the moment anything is keyed, and a seek has to ask the
+ * first one about a position it has not rendered yet.
+ */
+function valueAtProgram(name, t) {
+  const track = tracks.get(name);
+  if (!track || track.keys.length === 0) return params.get(name);
+  return params.normalise(name, track.valueAt(t));
+}
+
+// Where a key lands, and how near an existing one has to be to count as the same
+// key. Half an output frame, because the playhead is an integer output frame and
+// two keys inside one of them cannot be told apart by anything downstream.
+const playheadSec = () => (timeline ? timeline.programSec : 0);
+const keyTolerance = () => 0.5 / (timeline ? timeline.outputFps : 30);
+
+/**
+ * A parameter written from its panel control. With keys on the track this writes
+ * the key at the playhead rather than the parameter alone - Final Cut's rule, and
+ * here it is not a convention but the only thing that works: the evaluator rewrites
+ * every keyed parameter on the very next render, so a bare `params.set` would be
+ * overwritten before the slider stopped moving and the control would appear to
+ * spring back on its own.
+ */
+function writeFromControl(name, value) {
+  const applied = params.set(name, value);
+  const track = tracks.get(name);
+  if (track && track.keys.length > 0) {
+    // The normalised value rather than the raw one, so the key holds exactly what
+    // the parameter holds. A key a hair off its own slider would put an
+    // interpolated value between two positions the slider cannot express.
+    track.setKey(playheadSec(), applied, keyTolerance());
+    lanesChanged();
+  }
+}
+
+/** Adds a key at the playhead, or removes the one already there. */
+function toggleKey(name) {
+  const track = trackFor(name);
+  const existing = track.keyAt(playheadSec(), keyTolerance());
+  if (existing) {
+    track.removeKey(existing);
+    dropTrackIfEmpty(name);
+  } else {
+    // The parameter's current value, so planting the first key on a track never
+    // changes the image. A key that moved the picture the moment it appeared would
+    // make keying a look a destructive act.
+    track.setKey(playheadSec(), params.get(name), keyTolerance());
+  }
+  lanesChanged();
+  requestRepaint();
+  history.commit();
+}
+
+// ------------------------------------------------------------------- the project
+
+// Everything an edit *is*, as one plain object. A project file, an undo snapshot
+// and step 6's export job all start here, which is why this is one function rather
+// than a serialiser per consumer that would each learn about a new track kind
+// separately.
+//
+// What is in it is document state and nothing else. `params.values()` already
+// defaults to look plus composition and leaves `view` out, so render scale and
+// auto-orbit are absent by construction rather than by a list kept in step with
+// the registry. The playhead, the free camera's orbit and which panel is open are
+// absent for the same reason: none of them is what the clip is.
+//
+// The mode is in it, and that is worth stating because the spec's undo table puts
+// "which layer is displayed" in the not-undoable column. That row sits beside
+// panel visibility and render scale - both of which the registry tags `view` - and
+// it was written before the section that settled the mode as clip state whose
+// selection *applies a preset*, which the same table lists as undoable. Leaving it
+// out would restore the twelve values Blackwall wrote while leaving Blackwall
+// selected: a state that never existed, which is the exact failure a whole-project
+// snapshot exists to make impossible.
+function serialiseProject() {
+  return {
+    mode: clipMode,
+    // Composition per the preset table - it is never in a preset and it is part of
+    // what the clip is - so it is document state and it is undoable.
+    outputFps: timeline ? timeline.outputFps : 30,
+    params: params.values(),
+    tracks: Object.fromEntries([...tracks].map(([name, track]) => [name, track.serialise()])),
+    retime: retime.serialise(),
+  };
+}
+
+function restoreProject(project) {
+  applyModeValue(project.mode);
+  params.apply(project.params);
+
+  tracks.clear();
+  for (const [name, keys] of Object.entries(project.tracks)) {
+    if (keys.length === 0) continue;
+    const track = trackFor(name);
+    track.keys = keys.map((k) => ({
+      t: k.t, value: k.value, easeOut: [...k.easeOut], easeIn: [...k.easeIn],
+    }));
+  }
+
+  retime.rate = project.retime.rate;
+  // The fourth door onto the curve, and the last unguarded one. A snapshot can only
+  // have come from a state the other three already vetted, so this cannot produce a
+  // falling curve today - but this is the door a project file loaded from disk will
+  // come through in step 7, and a guard that only covers the doors that exist now is
+  // a guard that stops covering the moment one is added.
+  const restored = project.retime.keys.map((k) => ({
+    t: k.t,
+    value: k.value,
+    easeOut: [...(k.easeOut ?? EASE_OUT_LINEAR)],
+    easeIn: [...(k.easeIn ?? EASE_IN_LINEAR)],
+  }));
+  retime.assertMonotonic(restored);
+  retime.keys = restored;
+
+  if (timeline && timeline.outputFps !== project.outputFps) {
+    // The playhead is not part of the document, so an undo that changed the output
+    // rate has to keep it where it is - and the playhead is an integer output
+    // frame, so leaving the frame number alone would move it in seconds. Held in
+    // program seconds across the change, which is the coordinate that means
+    // anything here, and rounded back onto the new grid.
+    const held = timeline.programSec;
+    timeline.outputFps = project.outputFps;
+    timeline.frame = timeline.frameAt(held);
+  }
+  timingChanged();
+}
+
+// Whole snapshots rather than a command stack, and the argument is that this one
+// cannot be got wrong. A command stack needs every mutation path to implement both
+// directions correctly, and the classic way an editor corrupts someone's work is
+// an undo that is not quite the inverse of its redo. A snapshot has no such
+// failure mode: whatever the mutation was, the state before it is already held.
+// The memory argument that normally favours commands does not apply - a project is
+// tens of kilobytes of JSON, so a hundred levels is a few megabytes.
+//
+// Pushed at the end of an interaction rather than per input event. The controls
+// already draw that line for us: `input` fires continuously through a drag and
+// `change` fires once on release, so a slider drag is one snapshot and not two
+// hundred.
+const UNDO_LIMIT = 100;
+
+const history = {
+  stack: [],
+  // What the document looked like at the end of the last interaction. Comparing
+  // against it is what makes a commit that changed nothing cost nothing - which
+  // is how orbiting, scrubbing and dropping render scale leave the stack alone
+  // without any of them having to know that the stack exists.
+  baseline: null,
+  restoring: false,
+
+  get depth() { return this.stack.length; },
+
+  snapshot() { return JSON.stringify(serialiseProject()); },
+
+  /** Starts the stack from whatever the clip already is. */
+  begin() {
+    this.stack.length = 0;
+    this.baseline = this.snapshot();
+    paintUndoCount();
+  },
+
+  commit() {
+    if (this.restoring) return false;
+    const now = this.snapshot();
+    if (now === this.baseline) return false;
+    this.stack.push(this.baseline);
+    if (this.stack.length > UNDO_LIMIT) this.stack.shift();
+    this.baseline = now;
+    // Said here rather than left to the next repaint. A commit is the end of an
+    // interaction and usually the last thing that happens in it - a node drag
+    // repaints on every pointer move and then commits on release - so a readout
+    // that waited for a repaint would sit one level behind for as long as nothing
+    // else moved.
+    paintUndoCount();
+    return true;
+  },
+
+  undo() {
+    const previous = this.stack.pop();
+    if (previous === undefined) return false;
+    // Playback walks the accumulators forward one output frame at a time and they
+    // cannot be walked back, so a retime curve restored underneath a running
+    // playhead asks the source to go backwards on the very next step - which it
+    // refuses, from inside the animation loop. Paused across the restore and
+    // re-seeked afterwards, which is the same thing the speed slider does and for
+    // the same reason. Playing again afterwards is deliberate: undo is about what
+    // the clip is, and stopping the transport is not part of what it undoes.
+    const resume = timeline ? timeline.playing : false;
+    if (resume) timeline.pause();
+    this.restoring = true;
+    try {
+      restoreProject(JSON.parse(previous));
+      this.baseline = previous;
+    } finally {
+      this.restoring = false;
+    }
+    // The playhead deliberately does not move. Undo is about what the clip is, and
+    // walking the playhead backwards on every press is the behaviour that teaches
+    // people not to trust it.
+    paintUndoCount();
+    if (resume) {
+      timeline.seek(timeline.programSec)
+        .then(() => timeline.play())
+        .catch(showTimelineError);
+    } else {
+      requestRepaint();
+    }
+    return true;
+  },
+};
 
 addEventListener('keydown', (e) => {
   if (e.key === 'h' || e.key === 'H') {
     const p = document.getElementById('panel');
     p.style.display = p.style.display === 'none' ? 'block' : 'none';
+    return;
+  }
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) {
+    e.preventDefault();
+    history.undo();
   }
 });
 
@@ -1346,32 +1948,185 @@ const noop = () => {};
 const counters = { renders: 0, stateAdvances: 0, resets: 0, drafts: 0, seeks: 0, requests: 0, framesFetched: 0 };
 
 // The one function mapping program time to source time. Everything above it works
-// in program time - the playhead, the look, the camera, every keyframe step 5 adds
-// - and everything below it works in source time, because that is what a capture
-// is addressed in. A constant slope is normal speed, a shallow one slow motion.
+// in program time - the playhead, the look, the camera, every keyframe - and
+// everything below it works in source time, because that is what a capture is
+// addressed in. A constant slope is normal speed, a shallow one slow motion, a
+// zero one a hold.
 //
-// Step 5 replaces the body with a curve read at t and nothing on either side
-// changes, which is the whole reason the mapping is a function here rather than a
-// multiplication inlined at the two call sites that need it. Export needs no
-// inverse of it, which is why the playhead lives in program time at all.
+// It is an ordinary track in program time, evaluated by the same scalar code every
+// look track goes through, and its value *is* a source second. That is what makes a
+// speed ramp another track rather than a case inside the renderer, and it is why
+// export needs no inverse: the playhead is already the coordinate the keys are in.
+//
+// `rate` is the slope wherever the curve has nothing to say - with no keys at all,
+// which is what a clip starts as, and with the single origin key the first ramp
+// creates. The speed slider writes it, so a clip with no retime keys behaves
+// exactly as it did before there was a curve.
 const retime = {
   rate: 1,
-  sourceSecAt(programSec) { return programSec * this.rate; },
+  // Ascending in `t`, and the first is always at program 0 once there are any. A
+  // curve that started somewhere else would leave the first frame of the edit to
+  // an extrapolation rule, so `keyRetime` plants the origin rather than letting
+  // that be implicit.
+  keys: [],
+
+  sourceSecAt(programSec) {
+    const keys = this.keys;
+    if (keys.length === 0) return programSec * this.rate;
+    if (keys.length === 1) return keys[0].value + (programSec - keys[0].t) * this.rate;
+    return scalarAt(keys, programSec, EXTEND_ENDS);
+  },
+
   // The local slope, in source seconds per program second. A pre-roll needs it to
   // turn fade and wake - which are source milliseconds and stay that way - into a
-  // number of output frames.
-  slopeAt(/* programSec */) { return this.rate; },
+  // number of output frames, and step 6's audio gate reads it to decide whether
+  // the take is playing at 1.0.
+  slopeAt(programSec) {
+    if (this.keys.length < 2) return this.rate;
+    return scalarSlopeAt(this.keys, programSec);
+  },
+
+  /**
+   * How many output frames back the curve has to reach for a pre-roll to cover
+   * `sourceSpanSec` of source time ending at `programSec`.
+   *
+   * This is the question the pre-roll actually has, and reading `slopeAt` at the
+   * target was the wrong answer to it the moment the slope stopped being
+   * constant: slope-at-a-point times a frame count is the tangent line, not the
+   * curve, so a ramp under-rolls on the shallow side and over-rolls on the steep
+   * one. A hold is the extreme of that - the slope there is zero, no multiple of
+   * it covers any source span at all, and the old arithmetic answered "no frames
+   * needed" for the one case that needs the most. The surface memory holds what it
+   * held before the hold began, so a correct pre-roll walks back *through* the
+   * hold to where source time was last moving, and that is what this counts.
+   *
+   * Walked frame by frame rather than integrated in closed form, because a
+   * pre-roll is a run of `renderProgramFrame` calls on the output frame grid and
+   * nothing else - the number wanted is how many of those, so counting them is
+   * the answer rather than an approximation of it.
+   */
+  framesBackFor(programSec, sourceSpanSec, outputFps, ceiling) {
+    if (!(sourceSpanSec > 0)) return { frames: 0, covered: true };
+    const at = this.sourceSecAt(programSec);
+    const limit = Math.max(0, Math.floor(ceiling));
+    for (let n = 1; n <= limit; n++) {
+      if (at - this.sourceSecAt(programSec - n / outputFps) >= sourceSpanSec - 1e-9) {
+        return { frames: n, covered: true };
+      }
+    }
+    // A whole edit's worth of output frames that never covered the span. Reported
+    // rather than rounded up to something plausible: the honest reading is that
+    // this look cannot be warmed up on this curve, and a caller that wants to seek
+    // anyway now knows its image is short rather than believing it is complete.
+    return { frames: limit, covered: false };
+  },
+
+  /**
+   * The program position a source position sits at. Export never needs it - that
+   * is the whole point of keying in program time - and it is here for the two
+   * places a source bound has to become a program bound: shortening a pre-roll to
+   * the source frames the cache can hold, and asking how long the program is.
+   *
+   * Answered by searching the keys, which is legitimate precisely because it is
+   * not on the render path. A curve with a hold in it is not injective, so this
+   * returns the *first* program time reaching the source position, and a curve
+   * that never reaches it returns where the curve ends.
+   */
+  programSecAt(sourceSec) {
+    const keys = this.keys;
+    if (keys.length === 0) return sourceSec / this.rate;
+    if (keys.length === 1) return keys[0].t + (sourceSec - keys[0].value) / this.rate;
+    if (sourceSec <= keys[0].value) {
+      const slope = segmentSlope(keys, 0, 0);
+      return slope > 0 ? keys[0].t - (keys[0].value - sourceSec) / slope : keys[0].t;
+    }
+    for (let i = 0; i < keys.length - 1; i++) {
+      if (keys[i + 1].value < sourceSec) continue;
+      // Bisected rather than solved, because the segment is an eased cubic and its
+      // inverse has no useful closed form. Fifty halvings of a segment is well
+      // under a microsecond and this runs once per seek, never once per frame.
+      let lo = keys[i].t;
+      let hi = keys[i + 1].t;
+      for (let k = 0; k < 50; k++) {
+        const mid = (lo + hi) / 2;
+        if (this.sourceSecAt(mid) < sourceSec) lo = mid;
+        else hi = mid;
+      }
+      return hi;
+    }
+    const last = keys[keys.length - 1];
+    const slope = segmentSlope(keys, keys.length - 2, 1);
+    // A curve that ends flat or falling never reaches any later source position,
+    // so the program ends with the curve. The footage past there is unreachable
+    // through this edit, which is a statement about the edit rather than a fault.
+    return slope > 0 ? last.t + (sourceSec - last.value) / slope : last.t;
+  },
+
   // How long a program is, given a source that long. It lives here rather than as
-  // a division at the transport, because a curve answers it by integrating and a
+  // a division at the transport, because a curve answers it by searching and a
   // caller reaching for `rate` would be a third door into a seam that promises
   // two - which is the drift this design keeps refusing one layer up.
-  programDurationFor(sourceSec) { return sourceSec / Math.abs(this.rate); },
-  // The program position a source position sits at. The inverse exists only while
-  // the slope is constant, and export never needs it - it is here so a seek can
-  // shorten a pre-roll to the source frames it can actually hold, which is the one
-  // place a source bound has to become a program bound. Step 5's curve answers it
-  // by searching its own keys, or refuses and the clamp reads the target instead.
-  programSecAt(sourceSec) { return sourceSec / this.rate; },
+  programDurationFor(sourceSec) { return Math.max(0, this.programSecAt(sourceSec)); },
+
+  /**
+   * Refuses a curve that runs downhill. Non-decreasing is the invariant: equal
+   * values are a hold and are legal, falling values are a reverse and are not.
+   *
+   * A reverse is not merely unimplemented, it is unreachable by construction. The
+   * surface memory and the afterimage are advanced one source frame at a time and
+   * neither can be walked back, so a descending segment asks the pair source to go
+   * backwards and it refuses - from inside the animation loop, which three then
+   * stops driving. The spec reaches for "a hold or a reverse" when arguing that
+   * keying in source time needs an inverse, which reads as though a reverse ought
+   * to be authorable; it is not, on this renderer, and that is a limitation rather
+   * than an oversight.
+   */
+  assertMonotonic(keys) {
+    for (const key of keys) {
+      // Handles first, because a curve can run downhill without any pair of key
+      // values doing so. Ascending keys with an outgoing y handle above 1 overshoot
+      // past the later value and come back down inside the segment, which is a
+      // reverse that a values-only check cannot see - and on a capture whose frames
+      // are 107ms apart a shallow one hides inside single brackets, so `mixT` walks
+      // backwards within a pair and the reverse renders silently rather than being
+      // refused. x is checked for a different reason: outside the unit range the
+      // timing curve is no longer single-valued in time, so the segment has two
+      // values at one instant.
+      //
+      // Inside the unit box both are safe, and that is a property rather than a
+      // hope: a cubic with ordinates 0, a, b, 1 has derivative
+      // `3[a s² + 2(b−a)st + (1−b)t²]` for s = 1−u, t = u, which is non-negative
+      // throughout [0,1]² - at worst zero, at a = 1, b = 0, where it is `3(1−2u)²`.
+      for (const [side, h] of [['easeOut', key.easeOut], ['easeIn', key.easeIn]]) {
+        if (!h.every((c) => c >= 0 && c <= 1)) {
+          throw new Error(
+            `the retime key at program ${key.t}s has a ${side} handle at `
+            + `[${h.join(', ')}]: a handle outside the unit box bends the curve back on `
+            + 'itself inside the segment, and source time cannot run backwards',
+          );
+        }
+      }
+    }
+    for (let i = 1; i < keys.length; i++) {
+      if (keys[i].value < keys[i - 1].value) {
+        throw new Error(
+          `the retime curve falls from ${keys[i - 1].value}s to ${keys[i].value}s between `
+          + `program ${keys[i - 1].t}s and ${keys[i].t}s: source time cannot run backwards, `
+          + 'because neither accumulator can',
+        );
+      }
+    }
+    return keys;
+  },
+
+  serialise() {
+    return {
+      rate: this.rate,
+      keys: this.keys.map((k) => ({
+        t: k.t, value: k.value, easeOut: [...k.easeOut], easeIn: [...k.easeIn],
+      })),
+    };
+  },
 };
 
 class LivePairSource {
@@ -1539,6 +2294,7 @@ function resetAccumulators() {
 // than running it repeatedly at earlier positions and throwing the results away.
 function renderProgramFrame(t) {
   counters.renders++;
+  chromeStale = true;
   evaluating = true;
   try {
     // The one place program time becomes source time. Live is the degenerate case
@@ -1555,11 +2311,13 @@ function renderProgramFrame(t) {
     uniforms.time.value = t;
     grade.uniforms.time.value = t;
 
-    // The pose goes in through the registry rather than onto the camera, which is
-    // what makes the camera a parameter with a kind rather than an object the
-    // render path happens to move. Step 5 swaps the placeholder for a curve and
-    // this line does not change.
-    withoutRepaint(() => params.set('camera', programPose(t)));
+    // Every track, look and camera alike, written through the registry rather than
+    // onto the uniforms and the camera object. That is what makes the camera a
+    // parameter with a kind rather than something the render path happens to move,
+    // and it is why a project file, a preset and an evaluated frame are the same
+    // operation. A clip with no keys writes nothing and the registry's own values
+    // stand, which is a locked-off camera and a static look.
+    evaluateTracks(t);
 
     const dt = Math.max(0, t - lastProgramTime);
     lastProgramTime = t;
@@ -1926,6 +2684,10 @@ const AFTERIMAGE_RESIDUAL = 0.01;
 // That is the whole of what makes a draft a single frame with no history.
 const BYPASSED = ['fade', 'wake', 'trails'];
 const BYPASS_ZERO = { fade: 0, wake: 0, trails: 0 };
+// The same three as a set, because the evaluator asks about one name per track and
+// a three-element `includes` per track per frame is a linear scan inside the render
+// loop for no reason.
+const BYPASSED_SET = new Set(BYPASSED);
 
 // The most output frames one tick may render to catch up. Enough to absorb a
 // hitch of a few frames, small enough that a machine which cannot sustain the
@@ -1935,6 +2697,23 @@ const CATCHUP_FRAMES = 4;
 // frames at 30fps: below that it is a hitch, above it the rate on screen is not
 // the rate the readout claims.
 const BEHIND_NOTICE_MS = 250;
+// How many times an operation re-plans itself around a curve that moved while it
+// was fetching, before standing down and leaving the job to the repaint the same
+// mutation queued. Two, which is the smallest number that absorbs one
+// interruption: a plan, a fetch during which the curve moves, a re-plan, and a
+// second fetch for the span the new curve wants. Past two it is chasing a hand
+// rather than absorbing an event - a drag rewrites the curve on every pointer move,
+// so no finite bound catches up with one, and standing down is the right answer
+// there rather than a longer chase. Measured at both ends rather than guessed: at
+// three an ordinary four-move drag hit the bound every time, and at one a single
+// interruption never landed at all.
+const SEEK_REPLANS = 2;
+// How many stand-downs in a row before this stops being contention and starts
+// being a seek that cannot converge for some other reason. A drag produces a
+// handful and then lands; nothing else should produce any. Without this the quiet
+// stand-down would be a silent stale image, which is the one outcome worse than an
+// error.
+const SEEK_OVERTAKEN_LIMIT = 12;
 
 class TimelineTransport {
   constructor(source) {
@@ -1958,6 +2737,9 @@ class TimelineTransport {
     // How far playback is running behind real time, in wall milliseconds. Never
     // closed by skipping - only reported.
     this.behindMs = 0;
+    // How many seeks in a row stood down because the curve moved under them. Reset
+    // by any seek that lands, so a drag's handful never accumulates into a fault.
+    this.overtaken = 0;
     // The tail of the operation chain, and whether one is running right now.
     this.queue = null;
     this.working = false;
@@ -2015,17 +2797,81 @@ class TimelineTransport {
    * says which parameter to reach for when a seek is slow.
    */
   preroll(programSec = this.programSec) {
-    const surfaceSec = uniforms.fadeTime.value + uniforms.wakeTime.value;
-    // How much source time one output frame advances. A hold has a slope of zero
-    // and no number of output frames covers a source duration at that speed, so
-    // the surface half is skipped there - correctly, because a hold is not
-    // advancing the surface memory either.
-    const sourcePerFrame = Math.abs(retime.slopeAt(programSec)) / this.outputFps;
-    const surface = sourcePerFrame > 0 ? Math.ceil(surfaceSec / sourcePerFrame) : 0;
-    const damp = afterimage.enabled ? afterimage.uniforms.damp.value : 0;
-    const trails = damp > 0 ? Math.ceil(Math.log(AFTERIMAGE_RESIDUAL) / Math.log(damp)) : 0;
-    const frames = Math.max(surface, trails);
-    return { surface, trails, frames, sec: frames / this.outputFps };
+    // Read from the tracks *at the target*, never off the uniforms. The uniforms
+    // hold whatever the last render left there, which is the look at wherever the
+    // playhead happened to be parked - so with fade, wake or trails keyed, a seek
+    // from a cheap position to an expensive one sized its warm-up for the cheap
+    // one and landed short. Measured before the fix: trails keyed 0 at 0s and 0.9
+    // at 8s, parked at 0 and seeking to 11s, computed 21 frames where the same
+    // seek run warm computed 44, and landed 62/255 away from its own playback over
+    // 12% of the frame. Sampling at the target is the right rule rather than a
+    // conservative one: a ghost is drawn while `age < fade + wake * strength` read
+    // from the uniforms *at draw time*, so it is the target's values that decide
+    // what is still on screen there.
+    const surfaceSec = (valueAtProgram('fade', programSec)
+      + valueAtProgram('wake', programSec)) / 1000;
+    // The surface half is a *window* on the curve rather than a slope times a
+    // count - see `framesBackFor`. The ceiling is the whole edit in output frames,
+    // because a pre-roll longer than the program it sits in cannot be rendered by
+    // anything; it is deliberately not the target, so a length the head of the
+    // take will clip is still reported at full and `seekNow` still says it
+    // clipped it.
+    const back = retime.framesBackFor(programSec, surfaceSec, this.outputFps, this.lastFrame);
+    // The trails half is a window too, and for the same reason the retime half is.
+    // Three's pass is `max(new, damp * old)` applied per output frame with *that
+    // frame's* damp, so what survives from before a pre-roll is the *product* of
+    // damp across the window - not `damp_at_target ^ n`. Sampling at the target
+    // reads the tangent again: with damp keyed 0.95 up to the target and 0.5 at it,
+    // the formula asked for 7 frames where the product needs 50, and the seek
+    // landed 50/255 away from its own playback over 8.7% of the frame. Measured on
+    // this page before the walk replaced it.
+    //
+    // The surface half genuinely is a point sample and stays one, which is worth
+    // stating because the two look alike. The state texture's contents do not
+    // depend on fade or wake at all - `advanceSurfaceState` reads only the gap and
+    // the snap threshold - and the *drawing* decision reads the uniforms at the
+    // frame being drawn. So covering fade plus wake of source time ending at the
+    // target is exactly sufficient there, and nothing earlier in the window can ask
+    // for more.
+    const back2 = this.trailsFramesBack(programSec);
+    const trails = back2.frames;
+    const frames = Math.max(back.frames, trails);
+    return {
+      surface: back.frames,
+      // False when a whole edit's worth of output frames still did not cover fade
+      // plus wake - a curve flat enough that the surface memory cannot be warmed
+      // from inside this program. The seek runs anyway and this is how it says the
+      // image it produced is short.
+      surfaceCovered: back.covered,
+      trails,
+      trailsCovered: back2.covered,
+      frames,
+      sec: frames / this.outputFps,
+    };
+  }
+
+  /**
+   * How many output frames back the afterimage has to be rebuilt from for nothing
+   * of what came before to still be visible.
+   *
+   * A pre-roll of `L` renders frames `N-L` to `N` from a cleared buffer, so what
+   * playback still carries from before `N-L` and this does not is scaled by the
+   * product of damp over frames `N-L+1..N`. That is the number to drive under the
+   * residual, and it is only `damp^L` while damp is constant - which is exactly
+   * what it is on a clip with no trails key, so this returns what the closed form
+   * returned and step 4's figures are unchanged.
+   */
+  trailsFramesBack(programSec) {
+    // Zero damp is the pass switched off entirely, so there is no history to
+    // rebuild rather than a very short one.
+    if (!(valueAtProgram('trails', programSec) > 0)) return { frames: 0, covered: true };
+    const ceiling = Math.max(1, this.lastFrame);
+    let product = 1;
+    for (let n = 1; n <= ceiling; n++) {
+      product *= valueAtProgram('trails', programSec - (n - 1) / this.outputFps);
+      if (product <= AFTERIMAGE_RESIDUAL) return { frames: n, covered: true };
+    }
+    return { frames: ceiling, covered: false };
   }
 
   /**
@@ -2038,7 +2884,11 @@ class TimelineTransport {
     return this.exclusive(() => this.seekNow(programSec, options));
   }
 
-  async seekNow(programSec, { frames } = {}) {
+  /**
+   * Which output frames a seek renders and which source frames they need. Split
+   * out because it has to be answered twice - see `seekNow`.
+   */
+  planSeek(programSec, frames) {
     const target = this.frameAt(programSec);
     const t = target / this.outputFps;
     const plan = this.preroll(t);
@@ -2059,7 +2909,45 @@ class TimelineTransport {
       start = Math.min(target, Math.ceil(retime.programSecAt(this.source.times[from]) * this.outputFps));
       length = target - start;
     }
-    await this.source.ensure(from, to);
+    return { target, t, plan, asked, length, start, from, to };
+  }
+
+  async seekNow(programSec, options = {}) {
+    // Planned, fetched, then planned again, and the second plan is not belt and
+    // braces. The retime curve is document state: dragging one of its keys
+    // rewrites it on every pointer move, and a fetch is awaited in the middle of
+    // this. So the span computed before the await can describe a program the page
+    // no longer has - and rendering it walks the source backwards, which the pair
+    // source refuses, correctly and far too late for anyone to do anything with.
+    // Bounded rather than a `while (true)`: the plan only keeps moving while the
+    // pointer is still down, and the repaint queued behind that pointer runs this
+    // again anyway, so giving up is losing one frame rather than losing the edit.
+    let planned = this.planSeek(programSec, options.frames);
+    for (let attempt = 0; !this.source.resident(planned.from, planned.to); attempt++) {
+      if (attempt >= SEEK_REPLANS) {
+        // Overtaken, not broken. The hand that moved the curve has already queued a
+        // repaint, so this operation is stale before it finishes and the useful
+        // thing to do is stand down quietly rather than shout - a drag rewrites the
+        // curve on every pointer move, and an error per move is an instrument
+        // crying wolf at its own user. Asking for a repaint here is what makes the
+        // quiet safe: it guarantees a successor, so standing down costs a frame
+        // rather than leaving a stale image nobody could attribute to anything.
+        this.overtaken++;
+        if (this.overtaken > SEEK_OVERTAKEN_LIMIT) {
+          this.overtaken = 0;
+          throw new Error(
+            `${SEEK_OVERTAKEN_LIMIT} seeks in a row were overtaken before they could land: `
+            + 'the span a seek plans is not becoming resident, which is not a moving curve',
+          );
+        }
+        requestRepaint();
+        return null;
+      }
+      await this.source.ensure(planned.from, planned.to);
+      planned = this.planSeek(programSec, options.frames);
+    }
+    const { target, t, plan, asked, from, to } = planned;
+    const { length, start } = planned;
 
     const began = performance.now();
     counters.seeks++;
@@ -2073,6 +2961,7 @@ class TimelineTransport {
     for (let k = start; k <= target; k++) renderProgramFrame(k / this.outputFps);
 
     this.lastCostMs = performance.now() - began;
+    this.overtaken = 0;
     this.frame = target;
     this.drafted = false;
     this.lastSeek = {
@@ -2114,10 +3003,21 @@ class TimelineTransport {
   }
 
   async draftNow(programSec) {
-    const target = this.frameAt(programSec);
-    const t = target / this.outputFps;
-    const i = this.sourceFrameAt(t);
-    await this.source.ensure(i, i + 1);
+    // The same re-plan a seek does, and for the same reason: a drag on a retime key
+    // rewrites the curve while this is awaiting its two frames, and the pair the
+    // old curve named is not the pair the new one wants.
+    let target = this.frameAt(programSec);
+    let t = target / this.outputFps;
+    let i = this.sourceFrameAt(t);
+    for (let attempt = 0; !this.source.resident(i, i + 1); attempt++) {
+      if (attempt >= SEEK_REPLANS) {
+        throw new Error(`the retime curve moved under ${SEEK_REPLANS} plans of a draft at ${programSec}s`);
+      }
+      await this.source.ensure(i, i + 1);
+      target = this.frameAt(programSec);
+      t = target / this.outputFps;
+      i = this.sourceFrameAt(t);
+    }
 
     const began = performance.now();
     // Borrow, render and hand back, none of it asking for a repaint: these three
@@ -2126,6 +3026,7 @@ class TimelineTransport {
     withoutRepaint(() => {
       const held = params.values(BYPASSED);
       params.apply(BYPASS_ZERO);
+      borrowed = BYPASSED_SET;
       try {
         // The reset is what lets a drag go backwards. Nothing here reads the
         // accumulators, so clearing them costs four target clears and removes the
@@ -2134,7 +3035,15 @@ class TimelineTransport {
         this.source.seekTo(i);
         advanceNavigation(t);
         renderProgramFrame(t);
+        // Inside the borrow, not after it. The top-down draws the same cloud the
+        // frame did, so drawing it once the three parameters were handed back
+        // would put a wake in the plan view that the picture beside it does not
+        // have - and two drafts of one position would then differ by whatever
+        // fade and wake happened to be, which is exactly what a draft is defined
+        // not to depend on.
+        drawChrome();
       } finally {
+        borrowed = null;
         params.apply(held);
       }
     });
@@ -2156,14 +3065,58 @@ class TimelineTransport {
     const next = this.frame + 1;
     if (next > this.lastFrame) return false;
     const t = next / this.outputFps;
-    if (!this.source.resident(this.source.applied + 1, this.sourceFrameAt(t) + 1)) return false;
+    const want = this.sourceFrameAt(t) + 1;
+    // A span that runs backwards is not "already resident", it is unwalkable - and
+    // the residency test cannot tell the difference, because it compares a low
+    // bound against a high one and passes vacuously the moment they cross. That
+    // gave a curve running downhill two different failures depending on what
+    // happened to be cached: with the frames resident, the pair source refused from
+    // inside the animation loop and took the page down; without them, this returned
+    // false forever and the prefetch below refused the same span the same vacuous
+    // way, so playback simply stopped advancing and said nothing at all. The second
+    // is the worse one. Named here, at the guard that was passing, so the tick can
+    // pause and surface it either way.
+    if (want < this.source.applied) {
+      throw new Error(
+        `playback at ${t.toFixed(3)}s wants source frame ${want} while the accumulators have `
+        + `consumed ${this.source.applied}: the retime curve runs backwards here`,
+      );
+    }
+    if (!this.source.resident(this.source.applied + 1, want)) return false;
     advanceNavigation(t);
     renderProgramFrame(t);
     this.frame = next;
     return true;
   }
 
+  /**
+   * One turn of the animation loop, and the only place in this file that catches
+   * broadly.
+   *
+   * Three's `setAnimationLoop` does not request another frame after its callback
+   * throws, so anything escaping here stops the page permanently - no playback, no
+   * scrubbing, no repaint, and with nothing persisted that is the whole editing
+   * session. The throw that reaches it is real: `StampedPairSource.at` refuses a
+   * backward walk, correctly, and a retime curve that runs downhill asks for one on
+   * the next step. The doors that could author such a curve are clamped now, so
+   * this is a backstop rather than the fix - but a backstop is exactly what the one
+   * function whose failure costs everything should have.
+   */
   tick(nowMs = performance.now()) {
+    try {
+      this.tickNow(nowMs);
+    } catch (err) {
+      // Paused rather than left running: whatever the accumulators are holding, the
+      // next step would ask for the same refusal again. Surfaced rather than
+      // swallowed, because a playhead that silently stopped is the wrong picture
+      // problem one layer up.
+      this.playing = false;
+      this.paint();
+      showTimelineError(err);
+    }
+  }
+
+  tickNow(nowMs) {
     if (!this.playing) return;
     // An exclusive operation is mid-walk, and stepping into it would advance the
     // accumulators underneath a reset that has already happened.
@@ -2235,6 +3188,12 @@ class TimelineTransport {
       if (++stalls > 200) throw new Error(`playback stalled at output frame ${this.frame}`);
       await (this.prefetch() ?? new Promise((r) => setTimeout(r, 0)));
     }
+    // In the same task as the last `step`, because the loop only awaits when a
+    // step could not run. That matters for one reason: paint is where the chrome
+    // is drawn, and a run that ended without it would leave the buffer differing
+    // from a seek's by the overlay alone - two arms of an equality disagreeing
+    // about furniture rather than about the image.
+    this.paint();
     return this.frame;
   }
 
@@ -2271,14 +3230,22 @@ const ui = {
   source: document.getElementById('tSource'),
   rate: document.getElementById('tRate'),
   rateOut: document.getElementById('tRateOut'),
+  rateKey: document.getElementById('tRateKey'),
   fps: document.getElementById('tFps'),
   preroll: document.getElementById('tPreroll'),
   cost: document.getElementById('tCost'),
+  undo: document.getElementById('tUndo'),
   behind: document.getElementById('tBehind'),
   bed: document.getElementById('tBed'),
+  rail: document.getElementById('tRail'),
+  beds: document.getElementById('tBeds'),
   ruler: document.getElementById('tRuler'),
   playhead: document.getElementById('tPlayhead'),
   note: document.getElementById('tNote'),
+  cameraGroup: document.getElementById('cameraGroup'),
+  camKey: document.getElementById('camKey'),
+  camClear: document.getElementById('camClear'),
+  camView: document.getElementById('camView'),
 };
 
 let timeline = null;
@@ -2294,13 +3261,33 @@ function showTimelineError(err) {
   console.error('[timeline]', err);
 }
 
+/**
+ * The program length the ruler and the lanes are drawn against.
+ *
+ * Frozen for the length of a lane drag, and that is not a nicety. The retime curve
+ * *is* the program length: dragging one of its keys down slows the clip, which
+ * lengthens the program, which rescales the ruler, which moves the key under a
+ * pointer that has not moved horizontally - and the new position is read back as a
+ * new program time, which slows it further. Measured before it was fixed: a
+ * twelve-pixel vertical drag walked one key from 15.0s to 48.3s in four moves, and
+ * the drag got faster the longer it went on.
+ */
+const rulerDuration = () => {
+  if (laneDrag) return laneDrag.duration;
+  return timeline ? timeline.duration : 1;
+};
+
+function paintUndoCount() {
+  ui.undo.textContent = String(history.depth);
+}
+
 function paintTimeline(t) {
   const program = t.programSec;
   ui.play.textContent = t.playing ? '❙❙' : '▶';
   ui.play.setAttribute('aria-label', t.playing ? 'Pause' : 'Play');
   ui.program.textContent = timecode(program);
   ui.source.textContent = timecode(retime.sourceSecAt(program));
-  ui.playhead.style.left = `${(program / Math.max(1e-6, t.duration)) * 100}%`;
+  ui.playhead.style.left = `${(program / Math.max(1e-6, rulerDuration())) * 100}%`;
   const plan = t.preroll(program);
   // Both halves, because which one wins is the whole point of computing it: the
   // surface half moves with fade, wake, speed and output rate, the trails half
@@ -2317,10 +3304,20 @@ function paintTimeline(t) {
   ui.behind.textContent = t.playing && t.behindMs > BEHIND_NOTICE_MS
     ? `${(t.behindMs / 1000).toFixed(1)}s behind`
     : '';
+  paintUndoCount();
+  paintLanes();
+  // Editor furniture - the camera path, its nodes and the top-down - is drawn
+  // here rather than inside `renderProgramFrame`, and the distinction is not
+  // cosmetic. That function is the seam: one image at one program position, and
+  // it is what an export hashes and what every equality in this repo compares.
+  // Chrome is not the frame. Drawing it here also means it lands in the same task
+  // as the render that produced the buffer, which is the only place it can land
+  // at all, since the drawing buffer is not preserved across a paint.
+  drawChrome();
 }
 
-function buildRuler(t) {
-  const total = Math.max(1e-6, t.duration);
+function buildRuler() {
+  const total = Math.max(1e-6, rulerDuration());
   const step = total > 120 ? 20 : total > 60 ? 10 : total > 20 ? 5 : 1;
   const ticks = [];
   for (let s = 0; s <= total; s += step) {
@@ -2415,7 +3412,7 @@ paramWritten = (name, tag) => {
 
 const programAtPointer = (e) => {
   const r = ui.bed.getBoundingClientRect();
-  return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * timeline.duration;
+  return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * rulerDuration();
 };
 
 let scrubbing = false;
@@ -2463,18 +3460,20 @@ ui.play.addEventListener('click', () => {
 ui.rate.addEventListener('input', () => {
   if (!timeline) return;
   // Speed is the retime's slope, which is document state rather than transport
-  // state - it is the one-key version of the curve step 5 draws. Changing it
-  // moves where the playhead's program time lands in the take, so the image has
-  // to be rebuilt at the position the playhead already holds.
+  // state - it is the one-key version of the curve, and the curve takes over the
+  // moment there are keys. Changing it moves where the playhead's program time
+  // lands in the take, so the image has to be rebuilt at the position the
+  // playhead already holds.
   retime.rate = Number(ui.rate.value);
-  ui.rateOut.textContent = `${retime.rate.toFixed(2)}×`;
   const wasPlaying = timeline.playing;
   timeline.pause();
-  buildRuler(timeline);
+  timingChanged();
   timeline.seek(Math.min(timeline.programSec, timeline.duration))
     .then(() => { if (wasPlaying) return timeline.play(); })
     .catch(showTimelineError);
 });
+
+ui.rate.addEventListener('change', () => history.commit());
 
 ui.fps.addEventListener('change', () => {
   if (!timeline) return;
@@ -2482,9 +3481,11 @@ ui.fps.addEventListener('change', () => {
   timeline.outputFps = Number(ui.fps.value);
   const wasPlaying = timeline.playing;
   timeline.pause();
+  timingChanged();
   timeline.seek(held)
     .then(() => { if (wasPlaying) return timeline.play(); })
     .catch(showTimelineError);
+  history.commit();
 });
 
 // Orbiting while the playhead is parked has the same shape as scrubbing: a drag
@@ -2505,6 +3506,852 @@ controls.addEventListener('end', () => {
   // flight would otherwise paint itself over the true image this asks for.
   draftWanted = null;
   timeline.seek(timeline.programSec).catch(showTimelineError);
+});
+
+// ------------------------------------------------------------ look in tracks
+
+// Look is edited here and composition is not, and the split is the same one that
+// decides what a preset contains. `bloom`, `wake` and the rest have no spatial
+// meaning, so they get conventional lanes with ease handles; inventing an in-world
+// metaphor for a scalar would buy novelty at the cost of being able to type 0.5.
+// The camera goes the other way for the same reason read backwards - see the world
+// surface below.
+//
+// Only parameters carrying keys get a lane. Nine permanent lanes was the first
+// shape of this and it spends the strip on rows that say nothing; five that are
+// all animated is the same information in half the height.
+
+const LANE_H = { scalar: 34, step: 22, pose: 22 };
+const RETIME_LANE_H = 40;
+// How far a curve is sampled across a lane. The viewBox is resolution-independent,
+// so this is a smoothness choice and not a pixel count.
+const CURVE_SAMPLES = 120;
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+// Which key is selected, as {owner, key}. `owner` is a parameter name or the
+// retime, and the pair is held rather than an index because sorting a track moves
+// indices out from under a drag.
+let selection = null;
+
+const svg = (name, attrs) => {
+  const el = document.createElementNS(SVG_NS, name);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+  return el;
+};
+
+/** The value range a lane draws against. */
+function laneRange(owner) {
+  if (owner === 'retime') {
+    const total = Math.max(1e-6, timeline ? timeline.source.duration : 1);
+    return { min: 0, max: total };
+  }
+  const spec = params.spec(owner);
+  return { min: spec.min, max: spec.max };
+}
+
+function laneRows() {
+  const rows = [];
+  if (retime.keys.length > 0) {
+    rows.push({ owner: 'retime', label: 'retime', kind: 'scalar', height: RETIME_LANE_H });
+  }
+  // Composition before look, and the camera first inside it, because that is the
+  // order the split is described in everywhere else in this design.
+  for (const name of ['camera', ...params.names('look')]) {
+    const track = tracks.get(name);
+    if (!track || track.keys.length === 0) continue;
+    rows.push({ owner: name, label: name, kind: track.kind, height: LANE_H[track.kind] });
+  }
+  return rows;
+}
+
+const keysOf = (owner) => (owner === 'retime' ? retime.keys : (tracks.get(owner)?.keys ?? []));
+
+function laneReadout(owner) {
+  if (owner === 'retime') return `${retime.slopeAt(playheadSec()).toFixed(2)}×`;
+  const value = params.get(owner);
+  if (typeof value === 'boolean') return value ? 'on' : 'off';
+  if (typeof value === 'number') return value >= 100 ? value.toFixed(0) : value.toFixed(2);
+  return `${keysOf(owner).length} keys`;
+}
+
+/**
+ * Rebuilds the lane rows. Called when the *set* of lanes or keys changes, never
+ * per frame - the playhead moving repaints readouts through `paintLanes` and
+ * touches no DOM structure, because rebuilding a lane under a drag would replace
+ * the element the pointer is captured on.
+ */
+function rebuildLanes() {
+  for (const el of [...ui.rail.children, ...ui.beds.children]) {
+    if (!el.classList.contains('ruler') && el !== ui.playhead) el.remove();
+  }
+  const rows = laneRows();
+  const duration = Math.max(1e-6, rulerDuration());
+
+  for (const row of rows) {
+    const rail = document.createElement('div');
+    rail.className = 'trow';
+    rail.style.height = `${row.height}px`;
+    const label = document.createElement('span');
+    label.textContent = row.label;
+    const value = document.createElement('b');
+    value.dataset.readout = row.owner;
+    value.textContent = laneReadout(row.owner);
+    rail.append(label, value);
+    ui.rail.appendChild(rail);
+
+    const bed = document.createElement('div');
+    bed.className = 'trow';
+    bed.style.height = `${row.height}px`;
+    const lane = document.createElement('div');
+    lane.className = 'tlane';
+    lane.dataset.owner = row.owner;
+    bed.appendChild(lane);
+    ui.beds.insertBefore(bed, ui.playhead);
+    drawLane(lane, row, duration);
+  }
+
+  ui.root.style.setProperty('--tlanes-h', `${rows.reduce((n, r) => n + r.height + 1, 0)}px`);
+  // The strip changed height, so the stage the renderer sizes itself to did too -
+  // and so did the canvas the furniture is drawn on, which is sized to the stage.
+  resize();
+  placeChrome();
+}
+
+function drawLane(lane, row, duration) {
+  const keys = keysOf(row.owner);
+  const x = (t) => (t / duration) * 100;
+
+  if (row.kind === 'scalar') {
+    // The curve itself, because a row of diamonds says where the keys are and
+    // nothing at all about the shape between them - and the shape is exactly what
+    // an ease handle edits. Drawn in a 0..1000 by 0..100 viewBox stretched to the
+    // lane, so it costs nothing to redraw at a different width.
+    const { min, max } = laneRange(row.owner);
+    const span = Math.max(1e-9, max - min);
+    const at = row.owner === 'retime'
+      ? (t) => retime.sourceSecAt(t)
+      : (t) => tracks.get(row.owner).valueAt(t);
+    // **Known gap, carried deliberately.** The curve is drawn from the raw eased
+    // value while the parameter itself is clamped to its range on the way in, so an
+    // overshooting ease handle near a bound draws a curve leaving the lane where
+    // the rendered value simply saturates. The lane is then a picture of a value
+    // the clip cannot hold. The fix is to draw through `params.normalise` the way
+    // the keys already are.
+    const points = [];
+    for (let i = 0; i <= CURVE_SAMPLES; i++) {
+      const t = (i / CURVE_SAMPLES) * duration;
+      const y = 100 - ((at(t) - min) / span) * 100;
+      points.push(`${(i / CURVE_SAMPLES) * 1000},${Math.max(-20, Math.min(120, y)).toFixed(2)}`);
+    }
+    const box = svg('svg', { viewBox: '0 0 1000 100', preserveAspectRatio: 'none' });
+    box.appendChild(svg('polyline', {
+      points: points.join(' '), fill: 'none', stroke: 'var(--accent)',
+      'stroke-width': 1.4, 'vector-effect': 'non-scaling-stroke',
+    }));
+    lane.appendChild(box);
+  }
+
+  for (const key of keys) {
+    const node = document.createElement('div');
+    node.className = 'tkey';
+    if (selection && selection.key === key) node.classList.add('sel');
+    node.style.left = `${x(key.t)}%`;
+    node.style.top = `${keyY(row, key)}%`;
+    node.dataset.role = 'key';
+    lane.appendChild(node);
+    node.__key = key;
+    node.__row = row;
+  }
+
+  if (row.kind !== 'scalar' || !selection || keys.indexOf(selection.key) < 0) return;
+  // Handles only on the selected key, and only where there is a segment for them
+  // to shape. Two of them at once on every key is a lane nobody can read.
+  const i = keys.indexOf(selection.key);
+  for (const side of ['easeOut', 'easeIn']) {
+    const seg = side === 'easeOut' ? i : i - 1;
+    if (seg < 0 || seg >= keys.length - 1) continue;
+    const handle = document.createElement('div');
+    handle.className = 'thandle';
+    const point = handlePoint(row, keys, seg, side);
+    handle.style.left = `${x(point.t)}%`;
+    handle.style.top = `${point.y}%`;
+    handle.dataset.role = 'handle';
+    handle.__key = selection.key;
+    handle.__row = row;
+    handle.__side = side;
+    handle.__seg = seg;
+    lane.appendChild(handle);
+  }
+}
+
+/** A key's vertical place in its lane, as a percentage from the top. */
+function keyY(row, key) {
+  if (row.kind !== 'scalar') return 50;
+  const { min, max } = laneRange(row.owner);
+  const v = typeof key.value === 'number' ? key.value : min;
+  return Math.max(0, Math.min(100, 100 - ((v - min) / Math.max(1e-9, max - min)) * 100));
+}
+
+/** Where an ease handle sits, in program seconds and lane percentage. */
+function handlePoint(row, keys, seg, side) {
+  const a = keys[seg];
+  const b = keys[seg + 1];
+  const h = side === 'easeOut' ? a.easeOut : b.easeIn;
+  const { min, max } = laneRange(row.owner);
+  const value = a.value + (b.value - a.value) * h[1];
+  return {
+    t: a.t + (b.t - a.t) * h[0],
+    y: Math.max(-15, Math.min(115, 100 - ((value - min) / Math.max(1e-9, max - min)) * 100)),
+  };
+}
+
+/**
+ * Holds a retime key inside its neighbours, in both time and value.
+ *
+ * The value half is what stops a reverse being authored - see
+ * `retime.assertMonotonic` for why one cannot be rendered. The time half is the
+ * same rule read the other way: a key dragged past its neighbour would sort into a
+ * different position and pair its value with the wrong side, producing a descent
+ * without any value having moved. Clamping rather than refusing, because a drag
+ * that stops at the neighbour reads as the curve resisting; one that throws
+ * mid-gesture reads as the editor breaking.
+ */
+function clampRetimeKey(keys, key) {
+  const i = keys.indexOf(key);
+  // The curve is anchored at the origin, so its first key holds still in time.
+  // Letting it slide would leave the head of the edit to an extrapolation rule,
+  // which is the thing planting the origin key exists to avoid.
+  if (i === 0) key.t = 0;
+  else {
+    const after = i < keys.length - 1 ? keys[i + 1].t : Infinity;
+    key.t = Math.max(keys[i - 1].t + KEY_GAP_SEC, Math.min(after - KEY_GAP_SEC, key.t));
+  }
+  const floor = i > 0 ? keys[i - 1].value : 0;
+  const ceiling = i < keys.length - 1 ? keys[i + 1].value : timeline.source.duration;
+  key.value = Math.max(floor, Math.min(ceiling, key.value));
+}
+
+// The least program time two retime keys may be apart. Zero would let two of them
+// land on the same instant, which is a segment of no duration and a slope of
+// infinity - legal arithmetic and an unreadable lane.
+const KEY_GAP_SEC = 1 / 240;
+
+/** Readouts only. Structure is `rebuildLanes`, and the two are kept apart on purpose. */
+function paintLanes() {
+  for (const el of ui.rail.querySelectorAll('b[data-readout]')) {
+    el.textContent = laneReadout(el.dataset.readout);
+  }
+  for (const [name, btn] of keyButtons) paintKeyButton(name, btn);
+  paintRateKey();
+}
+
+/** A lane appeared, moved or went away. */
+function lanesChanged() {
+  rebuildLanes();
+  paintLanes();
+}
+
+/** The retime curve or the output rate moved, so every position on the ruler did. */
+function timingChanged() {
+  if (!timeline) return;
+  ui.rate.value = String(retime.rate);
+  ui.rateOut.textContent = `${retime.rate.toFixed(2)}×`;
+  // The slider is the one-key version of the curve, so once the curve has keys it
+  // has nothing left to say: it would set a slope only the extrapolated ends read.
+  // Saying so is better than leaving a live control that moves nothing visible.
+  ui.rate.disabled = retime.keys.length > 0;
+  ui.fps.value = String(timeline.outputFps);
+  buildRuler();
+  lanesChanged();
+}
+
+// ------------------------------------------------------- dragging keys and handles
+
+// One pointer path for keys and handles in every lane, because they differ only in
+// what a drag writes. Attached to the lane column rather than per element, so a
+// rebuild between two pointer events cannot leave a listener on a node that is no
+// longer in the document.
+let laneDrag = null;
+
+function laneProgramAt(clientX) {
+  const r = ui.bed.getBoundingClientRect();
+  return Math.min(1, Math.max(0, (clientX - r.left) / r.width)) * rulerDuration();
+}
+
+// **Known gap, carried deliberately.** An undo landing between this pointerdown
+// and its pointerup rebuilds every track from the snapshot, so `laneDrag.key` is
+// left pointing at an object no track holds any more: the rest of the drag writes
+// into nothing and the release commits a document the drag never touched. It needs
+// a keyboard undo during a pointer drag, which no gesture produces by hand. The fix
+// is for the restore to cancel any drag in flight.
+ui.beds.addEventListener('pointerdown', (e) => {
+  const el = e.target.closest('.tkey, .thandle');
+  if (!el || !timeline) return;
+  e.preventDefault();
+  e.stopPropagation();
+  ui.beds.setPointerCapture(e.pointerId);
+  const lane = el.closest('.tlane');
+  laneDrag = {
+    el, row: el.__row, key: el.__key, side: el.__side, seg: el.__seg,
+    role: el.dataset.role, rect: lane.getBoundingClientRect(),
+    // Read before anything in the drag can change it - see `rulerDuration`.
+    duration: timeline.duration,
+  };
+  selection = { owner: el.__row.owner, key: el.__key };
+  lanesChanged();
+});
+
+ui.beds.addEventListener('pointermove', (e) => {
+  if (!laneDrag) return;
+  const { row, key, rect } = laneDrag;
+  const keys = keysOf(row.owner);
+  const { min, max } = laneRange(row.owner);
+  const frac = Math.min(1.15, Math.max(-0.15, (e.clientY - rect.top) / Math.max(1, rect.height)));
+  const value = min + (1 - frac) * (max - min);
+
+  if (laneDrag.role === 'key') {
+    key.t = Math.max(0, laneProgramAt(e.clientX));
+    if (row.kind === 'scalar') key.value = value;
+    if (row.owner === 'retime') clampRetimeKey(keys, key);
+    else {
+      if (row.kind === 'scalar') {
+        // Through the registry's own snapping without writing the parameter, so a
+        // key dragged in a lane and one written from the slider hold the same
+        // value. Writing it would also be wrong: the key being dragged is usually
+        // not the one at the playhead, and the evaluator would put the parameter
+        // back a frame later, so the panel would jump and snap back for no reason.
+        key.value = params.normalise(row.owner, key.value);
+      }
+      // A look track may go up and down and its keys may be dragged past one
+      // another, so it sorts. The retime cannot and does not - see the clamp.
+      tracks.get(row.owner).keys.sort((x, y) => x.t - y.t);
+    }
+    if (row.owner === 'retime') timingChanged();
+  } else {
+    const a = keys[laneDrag.seg];
+    const b = keys[laneDrag.seg + 1];
+    const dt = Math.max(1e-9, b.t - a.t);
+    const dv = b.value - a.value;
+    const h = laneDrag.side === 'easeOut' ? a.easeOut : b.easeIn;
+    // x stays inside the segment because the ease is a function of time within it:
+    // a handle past either end makes the timing curve fold back on itself and the
+    // value would run backwards through part of the segment.
+    h[0] = Math.min(1, Math.max(0, (laneProgramAt(e.clientX) - a.t) / dt));
+    if (Math.abs(dv) > 1e-9) h[1] = (value - a.value) / dv;
+    // A look handle may overshoot - a value that swings past its key and comes
+    // back is an ordinary creative choice. The retime's may not: y outside the unit
+    // range makes the eased source time leave the segment's own bounds and run
+    // downhill inside it, which is a reverse authored through the back door.
+    if (row.owner === 'retime') h[1] = Math.min(1, Math.max(0, h[1]));
+  }
+  lanesChanged();
+  requestRepaint();
+});
+
+for (const type of ['pointerup', 'pointercancel']) {
+  ui.beds.addEventListener(type, () => {
+    if (!laneDrag) return;
+    const wasRetime = laneDrag.row.owner === 'retime';
+    laneDrag = null;
+    // The ruler was held still for the drag, so this is where it catches up with
+    // however much longer or shorter the curve has made the program.
+    if (wasRetime) timingChanged();
+    else lanesChanged();
+    // One drag is one interaction, which is the whole of the coalescing rule.
+    history.commit();
+  });
+}
+
+// --------------------------------------------------- the keyframe controls
+
+// One per look parameter, stamped from the registry the same way the sliders are.
+// View parameters deliberately get none: render scale and auto-orbit are not part
+// of the clip, so there is nothing there to key and a control implying otherwise
+// would be the split leaking.
+const keyButtons = new Map();
+
+function makeKeyButton(name) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'kf';
+  btn.setAttribute('aria-label', `${name} keyframe`);
+  btn.appendChild(document.createElement('i'));
+  btn.addEventListener('click', () => toggleKey(name));
+  keyButtons.set(name, btn);
+  return btn;
+}
+
+function paintKeyButton(name, btn) {
+  const track = tracks.get(name);
+  const state = !track || track.keys.length === 0
+    ? 'none'
+    : (track.keyAt(playheadSec(), keyTolerance()) ? 'here' : 'some');
+  btn.dataset.kf = state;
+}
+
+for (const name of params.names('look')) {
+  const el = panelControls.get(name);
+  const btn = makeKeyButton(name);
+  if (el.type === 'checkbox') {
+    // The control is the whole `<label class="check">`, and a button inside a
+    // label would toggle the checkbox when clicked, so the two become siblings in
+    // a row rather than the button being appended into it.
+    const label = el.parentElement;
+    const row = document.createElement('div');
+    row.className = 'checkrow';
+    label.replaceWith(row);
+    row.append(label, btn);
+  } else {
+    el.parentElement.appendChild(btn);
+  }
+  btn.dataset.kf = 'none';
+}
+
+// The retime's own key control, beside the speed slider rather than in a lane,
+// because the lane only exists once there is a curve to draw in it.
+ui.rateKey.addEventListener('click', () => {
+  if (!timeline) return;
+  const t = playheadSec();
+  const tol = keyTolerance();
+  const existing = retime.keys.find((k) => Math.abs(k.t - t) <= tol);
+  // **Known gap, carried deliberately.** Removing the origin key from a curve with
+  // three or more keys leaves a first key that is not at program 0, so the head of
+  // the edit falls back to the extrapolation rule the origin exists to remove.
+  // Nothing renders wrong - the curve is still monotonic and still evaluable - but
+  // the clip's first frame starts reading from a source time nobody chose. The fix
+  // is to refuse to remove the origin while anything sits after it.
+  if (existing && retime.keys.length > 1) {
+    retime.keys.splice(retime.keys.indexOf(existing), 1);
+    // The origin key is only meaningful with something after it.
+    if (retime.keys.length === 1 && retime.keys[0].t === 0) retime.keys.length = 0;
+  } else if (!existing) {
+    // The source time the curve already maps to, so planting a key never moves the
+    // image. The origin comes with the first one, which is what keeps the curve
+    // anchored at the head of the edit rather than at an extrapolation.
+    if (retime.keys.length === 0 && t > 0) {
+      retime.keys.push({
+        t: 0, value: retime.sourceSecAt(0),
+        easeOut: [...EASE_OUT_LINEAR], easeIn: [...EASE_IN_LINEAR],
+      });
+    }
+    retime.keys.push({
+      t, value: retime.sourceSecAt(t),
+      easeOut: [...EASE_OUT_LINEAR], easeIn: [...EASE_IN_LINEAR],
+    });
+    retime.keys.sort((x, y) => x.t - y.t);
+  }
+  timingChanged();
+  requestRepaint();
+  history.commit();
+});
+
+function paintRateKey() {
+  const t = playheadSec();
+  const tol = keyTolerance();
+  ui.rateKey.dataset.kf = retime.keys.length === 0
+    ? 'none'
+    : (retime.keys.some((k) => Math.abs(k.t - t) <= tol) ? 'here' : 'some');
+}
+
+// --------------------------------------------- composition in the world
+
+// A camera move is the one thing you cannot judge from a graph. Editing
+// `position.x` as a curve while the actual question is where it flies through the
+// room is the classic mistake, so the path draws in the view and in a top-down
+// orthographic, and its keys are nodes you drag in space.
+//
+// **None of it is drawn into the rendered frame, and that is load-bearing rather
+// than tidy.** The first version of this scissored a top-down into a corner of the
+// same canvas, and it broke the step 4 check that ties a program position to the
+// bytes of one capture frame: one arm renders through the transport and the other
+// pushes a frame's depth straight into the texture, so the arm that painted
+// carried furniture the arm that did not could never have. That is the general
+// case rather than an accident of one check - `renderProgramFrame` is what an
+// export hashes and what every equality in this repo compares, and chrome is not
+// the frame. So the furniture lives on a 2D canvas of its own, over the stage,
+// and the rendered image underneath is exactly what it was.
+//
+// The plan view then costs no readback either. The current depth frame is already
+// on the CPU - `bindDepth` copies it into the DataTexture's own array - so the
+// top-down projects that directly, subsampled, using the same intrinsics the
+// shader unprojects with. A scatter is also the honest thing for a plan view to
+// be: it answers where the subject is standing, and a wake or a bloom is not a
+// place.
+
+const chromeCanvas = document.createElement('canvas');
+chromeCanvas.id = 'chrome';
+chromeCanvas.hidden = true;
+document.body.appendChild(chromeCanvas);
+const chromeCtx = chromeCanvas.getContext('2d');
+
+const INSET = { w: 176, h: 118, margin: 8 };
+// Metres across the plan view's shorter axis.
+const TOP_SPAN = 7;
+// Centred a little deeper than the orbit target, so the sensor at the origin sits
+// inside the frame rather than on its edge - the plan is unreadable without it,
+// because everything in it is a distance from there.
+const TOP_CENTRE = { x: 0, z: -2.6 };
+// Every fourth pixel each way, so the plan is thirteen thousand points rather than
+// two hundred and seventeen thousand. At a hundred and eighteen pixels tall the
+// rest would land on top of each other anyway, and this runs on the main thread on
+// every paint.
+const PLAN_STRIDE = 4;
+const FRUSTUM_LEN = 0.55;
+
+// Whether the furniture is on screen at all. Off in the live viewer, because there
+// is no clip there to compose.
+let chromeOn = false;
+// Whether anything has rendered since the furniture was last drawn, so a paint
+// that produced no image does not redraw a path over a frame that never changed.
+let chromeStale = false;
+
+const scratchVec = new THREE.Vector3();
+
+function stageSize() {
+  const size = renderer.getSize(new THREE.Vector2());
+  return { w: size.x, h: size.y };
+}
+
+function insetRect() {
+  const { w, h } = stageSize();
+  return { x: w - INSET.w - INSET.margin, y: INSET.margin, w: INSET.w, h: INSET.h, stage: { w, h } };
+}
+
+function cameraKeys() {
+  const track = tracks.get('camera');
+  return track ? track.keys : [];
+}
+
+/** World x/z to a point in the plan view, and back. Screen up is deeper into the room. */
+function planScale(rect) { return rect.h / TOP_SPAN; }
+
+function planPoint(rect, x, z) {
+  const s = planScale(rect);
+  return {
+    x: rect.x + rect.w / 2 + (x - TOP_CENTRE.x) * s,
+    y: rect.y + rect.h / 2 + (z - TOP_CENTRE.z) * s,
+  };
+}
+
+function planWorld(rect, px, py) {
+  const s = planScale(rect);
+  return {
+    x: TOP_CENTRE.x + (px - rect.x - rect.w / 2) / s,
+    z: TOP_CENTRE.z + (py - rect.y - rect.h / 2) / s,
+  };
+}
+
+/** A point projected through a perspective camera into stage pixels, or null behind it. */
+function projectThrough(position, camera, rect) {
+  scratchVec.fromArray(position).project(camera);
+  // `project` divides by w, and w is negative behind the camera - which flips the
+  // sign and puts a point that is behind you on screen in front of you. z outside
+  // the unit cube is the readable form of that test.
+  if (scratchVec.z < -1 || scratchVec.z > 1) return null;
+  return {
+    x: rect.x + ((scratchVec.x + 1) / 2) * rect.w,
+    y: rect.y + ((1 - scratchVec.y) / 2) * rect.h,
+    z: scratchVec.z,
+  };
+}
+
+/** The sampled camera path, in world space. Empty below two keys - a point is not a path. */
+const PATH_SAMPLES = 120;
+
+function pathPoints() {
+  const keys = cameraKeys();
+  if (keys.length < 2) return [];
+  const from = keys[0].t;
+  const to = keys[keys.length - 1].t;
+  const out = [];
+  for (let i = 0; i < PATH_SAMPLES; i++) {
+    out.push(poseAt(keys, from + ((to - from) * i) / (PATH_SAMPLES - 1)).position);
+  }
+  return out;
+}
+
+/**
+ * The program camera's frustum as world-space segments. Read off the camera the
+ * registry posed rather than off the track, so what is drawn is what would be
+ * rendered - including a clip with no keys at all, whose pose is a single value.
+ */
+function frustumSegments() {
+  programCamera.updateMatrixWorld(true);
+  const half = Math.tan((programCamera.fov * Math.PI) / 360) * FRUSTUM_LEN;
+  const wide = half * programCamera.aspect;
+  const corners = [[-wide, -half], [wide, -half], [wide, half], [-wide, half]].map(([x, y]) => scratchVec
+    .set(x, y, -FRUSTUM_LEN).applyMatrix4(programCamera.matrixWorld).toArray());
+  const apex = programCamera.position.toArray();
+  const segments = corners.map((corner) => [apex, corner]);
+  for (let i = 0; i < 4; i++) segments.push([corners[i], corners[(i + 1) % 4]]);
+  return segments;
+}
+
+function strokePolyline(points) {
+  let started = false;
+  chromeCtx.beginPath();
+  for (const p of points) {
+    if (!p) { started = false; continue; }
+    if (started) chromeCtx.lineTo(p.x, p.y);
+    else chromeCtx.moveTo(p.x, p.y);
+    started = true;
+  }
+  chromeCtx.stroke();
+}
+
+function drawNodes(project) {
+  const keys = cameraKeys();
+  keys.forEach((key, i) => {
+    const p = project(key.value.position);
+    if (!p) return;
+    chromeCtx.beginPath();
+    chromeCtx.arc(p.x, p.y, 3.5, 0, Math.PI * 2);
+    chromeCtx.fillStyle = '#0d1014';
+    chromeCtx.fill();
+    chromeCtx.strokeStyle = selection && selection.owner === 'camera' && cameraKeys()[i] === selection.key
+      ? '#e8ecf1' : '#5ad1c4';
+    chromeCtx.lineWidth = 1.4;
+    chromeCtx.stroke();
+  });
+}
+
+/** The point cloud from above, straight off the depth texture's own array. */
+function drawPlanCloud(rect) {
+  const depth = depthCurr.image.data;
+  const fx = uniforms.focal.value.x;
+  const cx = uniforms.center.value.x;
+  const near = uniforms.nearClip.value;
+  const far = uniforms.farClip.value;
+  const s = planScale(rect);
+  chromeCtx.fillStyle = 'rgba(232, 236, 241, 0.55)';
+  for (let row = 0; row < DH; row += PLAN_STRIDE) {
+    for (let col = 0; col < DW; col += PLAN_STRIDE) {
+      const mm = depth[row * DW + col];
+      if (mm === 0) continue;
+      const z = mm * 0.001;
+      if (z < near || z > far) continue;
+      // libfreenect2's pinhole model, the same one the vertex shader unprojects
+      // with, and reading the same two uniforms so there is one set of intrinsics
+      // rather than two that can drift.
+      const wx = ((col + 0.5 - cx) / fx) * z;
+      const px = rect.x + rect.w / 2 + (wx - TOP_CENTRE.x) * s;
+      const py = rect.y + rect.h / 2 + (-z - TOP_CENTRE.z) * s;
+      if (px < rect.x || px > rect.x + rect.w || py < rect.y || py > rect.y + rect.h) continue;
+      chromeCtx.fillRect(px, py, 1, 1);
+    }
+  }
+}
+
+function drawChrome() {
+  if (!chromeOn || !chromeStale) return;
+  chromeStale = false;
+  const { w, h } = stageSize();
+  const dpr = Math.min(devicePixelRatio, 2);
+  if (chromeCanvas.width !== Math.round(w * dpr) || chromeCanvas.height !== Math.round(h * dpr)) {
+    chromeCanvas.width = Math.round(w * dpr);
+    chromeCanvas.height = Math.round(h * dpr);
+  }
+  chromeCanvas.style.width = `${w}px`;
+  chromeCanvas.style.height = `${h}px`;
+  chromeCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  chromeCtx.clearRect(0, 0, w, h);
+
+  const stage = { x: 0, y: 0, w, h };
+  const path = pathPoints();
+
+  // ── over the picture: the path, its nodes and the shot the program camera has.
+  chromeCtx.lineWidth = 1.4;
+  chromeCtx.strokeStyle = 'rgba(90, 209, 196, 0.85)';
+  strokePolyline(path.map((p) => projectThrough(p, viewCamera, stage)));
+  chromeCtx.strokeStyle = 'rgba(255, 157, 90, 0.9)';
+  chromeCtx.lineWidth = 1;
+  for (const [a, b] of frustumSegments()) {
+    strokePolyline([projectThrough(a, viewCamera, stage), projectThrough(b, viewCamera, stage)]);
+  }
+  drawNodes((p) => projectThrough(p, viewCamera, stage));
+
+  // ── the top-down. A camera move is the one thing you cannot judge from inside
+  // the camera, so this is where the path is actually edited.
+  const rect = insetRect();
+  chromeCtx.save();
+  chromeCtx.beginPath();
+  chromeCtx.rect(rect.x, rect.y, rect.w, rect.h);
+  chromeCtx.fillStyle = 'rgba(13, 16, 20, 0.92)';
+  chromeCtx.fill();
+  chromeCtx.clip();
+
+  // Range rings a metre apart, so the plan reads as distances rather than as a
+  // picture that happens to be small.
+  chromeCtx.strokeStyle = 'rgba(255, 255, 255, 0.09)';
+  chromeCtx.lineWidth = 1;
+  const origin = planPoint(rect, 0, 0);
+  for (let m = 1; m <= 6; m++) {
+    chromeCtx.beginPath();
+    chromeCtx.arc(origin.x, origin.y, m * planScale(rect), Math.PI, 2 * Math.PI);
+    chromeCtx.stroke();
+  }
+
+  drawPlanCloud(rect);
+
+  chromeCtx.strokeStyle = 'rgba(90, 209, 196, 0.9)';
+  chromeCtx.lineWidth = 1.4;
+  strokePolyline(path.map((p) => planPoint(rect, p[0], p[2])));
+  chromeCtx.strokeStyle = 'rgba(255, 157, 90, 0.9)';
+  chromeCtx.lineWidth = 1;
+  for (const [a, b] of frustumSegments()) {
+    strokePolyline([planPoint(rect, a[0], a[2]), planPoint(rect, b[0], b[2])]);
+  }
+  drawNodes((p) => planPoint(rect, p[0], p[2]));
+
+  // The sensor itself, because every distance in this view is measured from it.
+  chromeCtx.fillStyle = '#e8ecf1';
+  chromeCtx.fillRect(origin.x - 3, origin.y - 1.5, 6, 3);
+
+  chromeCtx.restore();
+  chromeCtx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+  chromeCtx.lineWidth = 1;
+  chromeCtx.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.w - 1, rect.h - 1);
+  chromeCtx.fillStyle = '#6d7683';
+  chromeCtx.font = '9px ui-monospace, Menlo, monospace';
+  chromeCtx.fillText('TOP-DOWN', rect.x + 5, rect.y + rect.h - 5);
+}
+
+function placeChrome() {
+  chromeCanvas.hidden = !chromeOn;
+  if (!chromeOn) return;
+  chromeStale = true;
+  drawChrome();
+}
+addEventListener('resize', placeChrome);
+
+// ------------------------------------------------ dragging a node in space
+
+// Hit-testing by projecting each node to the screen rather than by raycasting.
+// The same code then serves both views - the plan is a second projection of the
+// same four points - and a raycaster would need a camera the plan view does not
+// have, since it is drawn on a 2D canvas rather than by the renderer.
+const NODE_GRAB_PX = 9;
+
+/** Where a node lands, in stage pixels, in whichever view is asked for. */
+function nodeScreenPoint(position, plan) {
+  if (plan) {
+    const rect = insetRect();
+    return planPoint(rect, position[0], position[2]);
+  }
+  return projectThrough(position, viewCamera, { x: 0, y: 0, ...stageSize() });
+}
+
+/** Which view a pointer is in. The plan wins where they overlap - it is on top. */
+function viewUnder(clientX, clientY) {
+  const canvas = renderer.domElement.getBoundingClientRect();
+  const x = clientX - canvas.left;
+  const y = clientY - canvas.top;
+  if (x < 0 || y < 0 || x > canvas.width || y > canvas.height) return null;
+  const inset = insetRect();
+  const plan = x >= inset.x && x <= inset.x + inset.w && y >= inset.y && y <= inset.y + inset.h;
+  return { plan, x, y };
+}
+
+function nodeUnder(view) {
+  let best = null;
+  cameraKeys().forEach((key, i) => {
+    const p = nodeScreenPoint(key.value.position, view.plan);
+    if (!p) return;
+    const d = Math.hypot(p.x - view.x, p.y - view.y);
+    if (d <= NODE_GRAB_PX && (!best || d < best.d)) best = { key, i, d, depth: p.z ?? 0 };
+  });
+  return best;
+}
+
+let nodeDrag = null;
+
+// Captured on the window rather than on the canvas, and this is the one part of
+// the gesture that is not obvious. OrbitControls listens on the canvas too, and
+// two listeners on the same element fire in registration order whatever their
+// capture flag says - so a canvas-level listener could not stop the controls from
+// also seeing the press, and the node would move while the view orbited under it.
+// Catching the event a level up is what makes `stopPropagation` mean anything.
+addEventListener('pointerdown', (e) => {
+  if (!chromeOn || e.target !== renderer.domElement) return;
+  const view = viewUnder(e.clientX, e.clientY);
+  if (!view) return;
+  const hit = nodeUnder(view);
+  if (!hit) return;
+  e.preventDefault();
+  e.stopPropagation();
+  renderer.domElement.setPointerCapture(e.pointerId);
+  controls.enabled = false;
+  selection = { owner: 'camera', key: hit.key };
+  nodeDrag = { plan: view.plan, hit, pointerId: e.pointerId };
+}, true);
+
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (!nodeDrag) return;
+  const canvas = renderer.domElement.getBoundingClientRect();
+  const x = e.clientX - canvas.left;
+  const y = e.clientY - canvas.top;
+  const p = nodeDrag.hit.key.value.position;
+  // The plan view moves a node across the floor and leaves its height alone,
+  // because a top-down drag says nothing about height and inventing one from it
+  // would silently drop the camera every time a path was tidied up. The 3D view
+  // moves it in the plane it is already in, facing the viewer, which is the only
+  // unambiguous reading one pointer has there.
+  if (nodeDrag.plan) {
+    const world = planWorld(insetRect(), x, y);
+    p[0] = world.x;
+    p[2] = world.z;
+  } else {
+    const size = stageSize();
+    scratchVec.set((x / size.w) * 2 - 1, 1 - (y / size.h) * 2, nodeDrag.hit.depth).unproject(viewCamera);
+    p[0] = scratchVec.x;
+    p[1] = scratchVec.y;
+    p[2] = scratchVec.z;
+  }
+  requestRepaint();
+});
+
+for (const type of ['pointerup', 'pointercancel']) {
+  renderer.domElement.addEventListener(type, () => {
+    if (!nodeDrag) return;
+    nodeDrag = null;
+    controls.enabled = viewCamera === freeCamera;
+    history.commit();
+  });
+}
+
+ui.camKey.addEventListener('click', () => {
+  if (!timeline) return;
+  const track = trackFor('camera');
+  // The pose you are looking from, which is what makes orbiting to a shot and
+  // keying it one gesture. The free camera is navigation everywhere else in this
+  // design; here it is the viewfinder, and the copy is one-way.
+  freeCamera.updateMatrixWorld(true);
+  track.setKey(playheadSec(), {
+    position: freeCamera.position.toArray(),
+    quaternion: freeCamera.quaternion.toArray(),
+    fov: freeCamera.fov,
+  }, keyTolerance());
+  lanesChanged();
+  requestRepaint();
+  history.commit();
+});
+
+ui.camClear.addEventListener('click', () => {
+  const track = tracks.get('camera');
+  const key = track?.keyAt(playheadSec(), keyTolerance());
+  if (!key) return;
+  track.removeKey(key);
+  dropTrackIfEmpty('camera');
+  lanesChanged();
+  requestRepaint();
+  history.commit();
+});
+
+ui.camView.addEventListener('click', () => {
+  const program = viewCamera === freeCamera;
+  setViewCamera(program ? programCamera : freeCamera);
+  ui.camView.setAttribute('aria-pressed', String(program));
+  requestRepaint();
 });
 
 /**
@@ -2536,10 +4383,17 @@ async function openTake(id) {
   timeline = new TimelineTransport(source);
   document.body.classList.add('editing');
   ui.root.hidden = false;
-  ui.rateOut.textContent = `${retime.rate.toFixed(2)}×`;
-  ui.fps.value = String(timeline.outputFps);
-  resize();
-  buildRuler(timeline);
+  ui.cameraGroup.hidden = false;
+  // The path, its nodes and the top-down go on with the timeline and only with it.
+  // A live viewer has no clip to compose and the pinned drive hashes images, so
+  // furniture in either would be furniture nobody asked for in pixels somebody is
+  // comparing.
+  chromeOn = true;
+  placeChrome();
+  timingChanged();
+  // The stack starts from whatever the clip already is, so the first undo has
+  // somewhere honest to land rather than an empty document.
+  history.begin();
   await timeline.seek(0);
   renderer.setAnimationLoop(() => timeline.tick());
   return timeline;
@@ -2604,11 +4458,75 @@ globalThis.__kinect = {
   renderer, composer, scene, freeCamera, programCamera, controls, uniforms, material,
   bloom, afterimage, grade, geometry, resetAccumulators, renderProgramFrame,
 
-  // The registry and the two bulk writes a user gesture performs. Both refuse
-  // while a frame is being evaluated - see the note on `evaluating` for exactly
-  // how far that reaches and where step 5 has to extend it.
+  // The registry and the two bulk writes a user gesture performs. All three refuse
+  // while a frame is being evaluated, which now means exactly what it says: the
+  // evaluator runs inside `renderProgramFrame`, so the flag spans it.
   params, applyPreset, setMode, presets: { BLACKWALL, NEUTRAL },
   mode: () => clipMode,
+
+  /**
+   * Keys, the curve and the undo stack. Every number a check reads comes from
+   * here rather than from the DOM, because a lane is a view on a track the same
+   * way a slider is a view on the registry - and asserting against the view would
+   * pass on a page that drew the right diamonds over the wrong curve.
+   */
+  keyframes: {
+    /** Writes a whole set of tracks at once. The keys are the tool's, not the page's. */
+    setTracks(spec) {
+      tracks.clear();
+      for (const [name, keys] of Object.entries(spec)) {
+        if (keys.length === 0) continue;
+        const track = trackFor(name);
+        track.keys = keys.map((k) => ({
+          t: k.t,
+          value: k.value,
+          easeOut: [...(k.easeOut ?? EASE_OUT_LINEAR)],
+          easeIn: [...(k.easeIn ?? EASE_IN_LINEAR)],
+        }));
+        track.sort();
+      }
+      lanesChanged();
+    },
+    setRetime({ rate = 1, keys = [] }) {
+      retime.rate = rate;
+      // Built first, then checked, then stored. The guard reads handles, so it has
+      // to see the ones a key will actually have rather than the ones it arrived
+      // with - a key written without them is linear, not handleless, and asking the
+      // guard to know that would put the defaults in two places.
+      const built = keys.map((k) => ({
+        t: k.t,
+        value: k.value,
+        easeOut: [...(k.easeOut ?? EASE_OUT_LINEAR)],
+        easeIn: [...(k.easeIn ?? EASE_IN_LINEAR)],
+      }));
+      retime.assertMonotonic(built);
+      retime.keys = built;
+      timingChanged();
+    },
+    /** What a track says at a program position, without rendering anything. */
+    valueAt(name, t) { return tracks.get(name)?.valueAt(t) ?? null; },
+    names() { return [...tracks.keys()]; },
+    toggle: toggleKey,
+    lanes: () => laneRows().map((r) => ({ owner: r.owner, kind: r.kind, keys: keysOf(r.owner).length })),
+    project: serialiseProject,
+    undo: {
+      depth: () => history.depth,
+      commit: () => history.commit(),
+      pop: () => history.undo(),
+      begin: () => history.begin(),
+    },
+    /** The furniture, so a check can prove it is out of the frame and not merely small. */
+    chrome: {
+      on: () => chromeOn,
+      set(on) { chromeOn = on; placeChrome(); },
+      inset: insetRect,
+    },
+    camera: {
+      keys: () => cameraKeys().map((k) => ({ t: k.t, value: k.value })),
+      /** Where a path node lands on screen, which is what a drag has to hit. */
+      project(i, plan) { return nodeScreenPoint(cameraKeys()[i].value.position, plan); },
+    },
+  },
   // No control switches the viewport yet - the free camera is what the live
   // viewer shows. This is how the program camera is reached until step 5 gives
   // it a path worth looking at and the top-down view a reason to draw its frustum.
@@ -2656,6 +4574,7 @@ globalThis.__kinect = {
         drafted: t.drafted,
         lastSeek: t.lastSeek,
         lastCostMs: t.lastCostMs,
+        overtaken: t.overtaken,
         behindMs: t.behindMs,
         preroll: t.preroll(),
         applied: t.source.applied,

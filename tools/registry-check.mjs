@@ -231,8 +231,8 @@ const SCRAMBLE = {
 const NO_PIXEL_EFFECT = {
   spin: 'auto-orbit only advances when the animation loop calls controls.update, '
     + 'and a pinned run has replaced the loop',
-  camera: 'the placeholder recomputes the program pose from t inside the render, '
-    + 'so a pose written before it does not survive it - step 5 keyframes it',
+  camera: 'nothing draws the program camera on the pinned run - the viewport is the '
+    + 'free camera - so a pose reaches the camera object and no pixel',
 };
 
 // ---------------------------------------------------------------- page helpers
@@ -357,10 +357,19 @@ const MODE_WALK = [4, 0, 1, 2, 3, 4, 2];
 
 // The program pose at a few positions, read in the same task as the render so the
 // live loop cannot re-render at 0 underneath the reading. Nothing draws the
-// program camera yet, which is exactly why this is worth comparing: the pose moved
+// program camera here, which is exactly why it is worth reading: the pose moved
 // from a mutation to a value the registry applies, and three orients cameras down
-// -Z where it orients everything else down +Z - so a slip here would be invisible
-// until step 5 drew the frustum from the top-down view.
+// -Z where it orients everything else down +Z, so a slip would be invisible until
+// something drew the frustum.
+//
+// **This is no longer compared against the earlier revision, and the reason is a
+// deletion rather than a tolerance.** At that revision the pose came from a
+// placeholder orbit - a slow revolution, one turn per hundred seconds - which step
+// 5 replaced with the camera track the design always called for. There is nothing
+// left to compare it to: with no camera keys the pose is now a clip's single
+// static value, which is the deliberate behaviour and is asserted as such below.
+// The moving case is proved in `keyframe-check`, against a track rather than
+// against a placeholder.
 const readPoses = `(() => {
   const k = globalThis.__kinect;
   const out = {};
@@ -391,10 +400,25 @@ await beforeArm.page.close();
 const afterArm = await walkModes({});
 await afterArm.page.close();
 
+// The camera is left out of the landing comparison, alone among the twenty-five,
+// and only here. Every other parameter lands on the same uniform it landed on
+// before the registry existed, so an equality is a regression test. The camera's
+// landing site at that revision was a placeholder orbit computed from `t` inside
+// the render, and step 5 deleted it - so the two arms are being asked to agree
+// about a value one of them derives from something the other does not have. The
+// pose is still swept, still restored and still checked against what the camera
+// object holds, further down; it is only this one before/after that has nothing
+// left to say.
+const GOLDEN_SKIP = new Set(['camera']);
+
 for (const stage of Object.keys(beforeArm.out)) {
   const a = beforeArm.out[stage];
   const b = afterArm.out[stage];
   const differing = Object.keys(a).filter((field) => !eq(a[field], b[field]));
+  if (differing.includes('landing')) {
+    const sub = Object.keys(a.landing).filter((n) => !GOLDEN_SKIP.has(n) && !eq(a.landing[n], b.landing[n]));
+    if (sub.length === 0) differing.splice(differing.indexOf('landing'), 1);
+  }
   const detail = differing.map((field) => {
     const keys = typeof a[field] === 'object' && a[field]
       ? Object.keys(a[field]).filter((sub) => !eq(a[field][sub], b[field][sub]))
@@ -406,9 +430,14 @@ for (const stage of Object.keys(beforeArm.out)) {
   check(differing.length === 0, `${stage.padEnd(10)} identical to ${BEFORE_REV}`, detail);
 }
 
-check(eq(beforeArm.poses, afterArm.poses),
-  `the program pose at ${Object.keys(afterArm.poses).join('s and ')}s is identical to ${BEFORE_REV}`,
-  eq(beforeArm.poses, afterArm.poses) ? '' : `${show(beforeArm.poses)} -> ${show(afterArm.poses)}`);
+// With no camera keys the pose is a single value the clip holds, so two renders at
+// different program times land on the same place. That is the whole of the
+// locked-off case and it is worth asserting rather than assuming: a render that
+// still computed a pose from `t` would move here, which is the placeholder coming
+// back by accident.
+check(eq(afterArm.poses['0.7'], afterArm.poses['1.9']),
+  'with no camera keys the program pose is the clip\'s single value at every program time',
+  eq(afterArm.poses['0.7'], afterArm.poses['1.9']) ? '' : show(afterArm.poses));
 console.log(`  pose at 0.7s ${show(afterArm.poses['0.7'].position.map((x) => +x.toFixed(6)))} `
   + `q ${show(afterArm.poses['0.7'].quaternion.map((x) => +x.toFixed(6)))}`);
 
@@ -898,11 +927,21 @@ console.log('\n[registry] a preset can only be applied by a user action');
 
 console.log('\n[registry] the camera pose goes in through the registry, not around it');
 {
+  // Two keys a metre apart, so "moves with program time" is a claim about a track
+  // rather than about a placeholder that happened to animate. The wild pose is
+  // written first and has to lose: with keys on the track the evaluator overwrites
+  // it, which is the property that makes a keyed parameter keyed at all.
   const camera = await page.evaluate(`(() => {
     const k = globalThis.__kinect;
     const wild = ${JSON.stringify(SCRAMBLE.camera)};
     k.params.set('camera', wild);
     const written = [k.params.get('camera'), k.programCamera.position.toArray()];
+
+    const q = [0, 0, 0, 1];
+    k.keyframes.setTracks({ camera: [
+      { t: 0, value: { position: [-1, 0.2, 1], quaternion: q, fov: 50 } },
+      { t: 2, value: { position: [1, 0.2, 1], quaternion: q, fov: 50 } },
+    ] });
 
     k.drive.reset();
     k.drive.stepTo(0.4);
@@ -914,6 +953,7 @@ console.log('\n[registry] the camera pose goes in through the registry, not arou
     };
     k.drive.stepTo(0.9);
     const later = k.params.get('camera');
+    k.keyframes.setTracks({});
     return { written, stored, onCamera, later };
   })()`);
 
@@ -926,7 +966,7 @@ console.log('\n[registry] the camera pose goes in through the registry, not arou
     'after a render the registry holds the pose the camera is actually at',
     `${show(camera.stored.position)} vs ${show(camera.onCamera.position)}`);
   check(!eq(camera.stored.position, SCRAMBLE.camera.position),
-    'and it is the pose program time asked for, not the one the check wrote');
+    'and it is the pose the track asked for, not the one the check wrote');
   check(!eq(camera.stored.position, camera.later.position),
     'and it moves with program time', `${show(camera.stored.position)} -> ${show(camera.later.position)}`);
 }

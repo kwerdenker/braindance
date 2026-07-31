@@ -50,6 +50,28 @@ result, and it has now caught two flaws that reading the code did not:
 Report which mutations you ran and what each one caught. A check nobody has broken on purpose
 is a check nobody knows the sensitivity of.
 
+**A mutation that does nothing reads as a check that found nothing.** Step 5 produced one:
+a mutation meant to draw editor furniture into the rendered frame reached for `gl.scissor`
+and `gl.clear` directly, which three's own state cache overrode, so the pixels never changed
+and the check reported a clean pass. Rewritten through `renderer.setScissor` it fails at
+`max 189/255`. **Before believing a mutation was missed, confirm the mutation did something** -
+have it move a number the check already prints, or the verdict is about the mutation rather
+than about the check.
+
+**A mutation run that exits non-zero with zero failed assertions did not run.** Both tools
+refuse a mutation whose anchor text they cannot find, and Playwright occasionally dies with
+`Execution context was destroyed` partway through a run - and all three outcomes exit 1,
+which reads as a caught mutation to anything checking only the exit code. Seen twice on step
+5, on two different mutations in two different suite runs. **Count failed assertions, not
+exit codes**, and treat `fails=0` as a crash to investigate rather than a success to record.
+
+**Place a probe where its answer would be different, not where it is convenient.** A third
+flaw came out of this on step 5: a mutation replacing the pre-roll's window query with the
+tangent it replaced was caught by only one of five probe positions, because four of them sat
+inside a single straight segment of the retime curve where the tangent *is* the curve. The
+probes were moved onto the knees and onto an eased ramp and the same mutation now fails four.
+Ask what the wrong implementation would agree with, and probe somewhere it cannot.
+
 ## Proof tools
 
 Each takes a running server and exits non-zero on failure.
@@ -61,15 +83,26 @@ node tools/index-check.mjs --url http://localhost:8123   # step 2: index, hash, 
 node tools/registry-check.mjs --url http://localhost:8080 # step 3: one registry, sliders as views
 node tools/timeline-check.mjs --url http://localhost:8080 # step 4: seek equals playback
 node tools/timeline-check.mjs --mutate preroll-constant   # ... and must FAIL mutated
+node tools/keyframe-check.mjs --url http://localhost:8080 # step 5: tracks, retime curve, undo
+node tools/keyframe-check.mjs --mutate pose-linear        # ... and must FAIL mutated
 ```
 
 `--clock` refuses a rev whose `main.js` already contains the transport, so it needs
 `--before` pointing at a commit before step 1.
 
-`timeline-check --mutate <name>` serves a deliberately broken `main.js` into the running
-server and is expected to exit non-zero. It refuses a mutation whose text it cannot find
-exactly once, because a replacement that silently matched nothing would run the unmutated
-page and be recorded as the check having missed a bug it was never shown.
+`--mutate <name>` serves a deliberately broken `main.js` into the running server and is
+expected to exit non-zero. Both tools refuse a mutation whose text they cannot find exactly
+once, because a replacement that silently matched nothing would run the unmutated page and
+be recorded as the check having missed a bug it was never shown. **A mutation is a piece of
+source text, so a mutation stops matching the moment the code it names is edited** — three
+of `timeline-check`'s nine had to be re-anchored when step 5 rewrote the retime seam, and
+the refusal is what surfaced that rather than a silent pass.
+
+`keyframe-check` runs its cheapest claim first, on a 60-second budget, and stops the run if
+it fails. That is not ordering by cost: an evaluator that announces its writes schedules a
+seek per frame, each of which renders a pre-roll which evaluates, so the page never answers
+and never errors - it runs out of memory some minutes later, somewhere else. A bounded probe
+turns that into a sentence.
 
 ## Fixtures
 

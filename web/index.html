@@ -26,8 +26,12 @@
     --warn: #f0b04a;
 
     /* Fixed rather than content-sized, so the stage the renderer sizes itself to
-       does not change height when a readout grows a digit. */
+       does not change height when a readout grows a digit. Keyframe lanes are the
+       one thing allowed to grow it, and they do it through a second variable the
+       lane builder writes - a lane appearing is a structural change and should
+       move the stage, where a three-digit frame count should not. */
     --timeline-h: 104px;
+    --tlanes-h: 0px;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; background: #05070a; color: var(--ink);
@@ -72,6 +76,38 @@
   .check input:disabled { opacity: 0.4; }
   .check.disabled { opacity: 0.45; cursor: default; }
 
+  /* One keyframe control per look parameter — the Final Cut idiom. Hollow means
+     the parameter is a single value, outlined means it has keys elsewhere, filled
+     means there is one here at the playhead. Only look parameters get one: view
+     state is not part of the clip, so there is nothing there to key. */
+  .kf { flex: 0 0 18px; width: 18px; height: 18px; display: grid; place-items: center;
+    border: 0; background: transparent; padding: 0; cursor: pointer; }
+  .kf i { width: 7px; height: 7px; transform: rotate(45deg); border: 1px solid var(--faint); }
+  .kf:hover i { border-color: var(--ink); }
+  .kf[data-kf=some] i { border-color: var(--accent); }
+  .kf[data-kf=here] i { border-color: var(--accent); background: var(--accent); }
+  .kf:disabled { cursor: default; opacity: 0.35; }
+  .checkrow { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
+  .checkrow .check { margin-bottom: 0; flex: 1; }
+
+  .btnrow { display: flex; gap: 4px; margin-bottom: 6px; }
+  .btnrow button {
+    flex: 1; padding: 5px 4px; border: 1px solid var(--line); border-radius: 5px;
+    background: transparent; color: var(--dim); font: inherit; font-size: 10px; cursor: pointer;
+  }
+  .btnrow button:hover { border-color: var(--line-3); color: var(--ink); }
+  .btnrow button[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: #04231f; }
+  .btnrow button:disabled { opacity: 0.4; cursor: default; }
+
+  /* The camera path, its nodes and the top-down orthographic, on a canvas of their
+     own over the stage. Deliberately not in the rendered frame: that buffer is
+     what an export writes and what every equality in this repo compares, and
+     editor furniture inside it makes two arms of a comparison differ by lines
+     rather than by image. Pointer events pass straight through — the drag is
+     handled on the WebGL canvas underneath, which is also what owns orbiting. */
+  #chrome { position: fixed; top: 0; left: 0; z-index: 5; pointer-events: none; }
+  #chrome[hidden] { display: none; }
+
   /* ── timeline ──────────────────────────────────────────────────────────────
      A strip under the stage rather than over it: the bottom of the frame is
      where a subject's feet are, and grading against an occluded image is the
@@ -80,15 +116,22 @@
      program time with the playhead on it. The lanes, keys and retime curve that
      study also shows are step 5's. */
   #timeline {
-    position: fixed; left: 0; right: 0; bottom: 0; height: var(--timeline-h);
+    position: fixed; left: 0; right: 0; bottom: 0;
+    height: calc(var(--timeline-h) + var(--tlanes-h));
     display: flex; flex-direction: column; z-index: 10;
     background: var(--paper-1); border-top: 1px solid var(--line);
   }
   #timeline[hidden] { display: none; }
   body.editing #hint { display: none; }
-  body.editing #panel { max-height: calc(100vh - var(--timeline-h) - 32px); }
+  body.editing #panel { max-height: calc(100vh - var(--timeline-h) - var(--tlanes-h) - 32px); }
 
-  .tbar { flex: none; display: flex; align-items: center; gap: 16px;
+  /* Fixed height and one line of chips, both load-bearing. The strip's height is a
+     constant the stage is sized against, so a wrapping chip row would not make the
+     strip taller - it would push the lanes out of the bottom of it, and a key
+     dragged in a lane would land somewhere else because the lane had moved under
+     the pointer. Measured, not theorised: a slow retime ramp makes the pre-roll
+     readout long enough to wrap at 1280px, and that is exactly what it did. */
+  .tbar { flex: none; height: 51px; display: flex; align-items: center; gap: 16px;
     padding: 8px 12px; border-bottom: 1px solid var(--line); }
 
   .tplay {
@@ -107,8 +150,11 @@
      so it reads as a secondary value rather than as a second control. */
   .tclock.derived output { color: var(--dim); font-size: 12px; }
 
-  .tchips { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .tchips { margin-left: auto; display: flex; gap: 8px; flex-wrap: nowrap; align-items: center;
+    min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .tchips::-webkit-scrollbar { display: none; }
   .tchip {
+    flex: none;
     display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px;
     border: 1px solid var(--line); border-radius: 4px; background: var(--paper-2);
     font-size: 9px; color: var(--dim); white-space: nowrap;
@@ -123,16 +169,53 @@
   #tNote:empty, #tBehind:empty { display: none; }
 
   .tlanes { flex: 1; min-height: 0; display: grid; grid-template-columns: 96px minmax(0, 1fr); }
-  .trail { border-right: 1px solid var(--line); display: flex; align-items: center; padding: 0 8px; }
-  .trail span { color: var(--faint); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; }
+  .tcol { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .tcol.rail { border-right: 1px solid var(--line); }
+  .tcol.beds { position: relative; }
+
+  /* The ruler row keeps the height the strip already had, so a clip with no keys
+     is exactly the surface step 4 left behind. Every other row is fixed and adds
+     to it — only parameters that actually carry keys get one. */
+  .trow { position: relative; flex: none; border-top: 1px solid var(--line); }
+  .trow.ruler { flex: 1; min-height: 0; border-top: 0; }
+  .tcol.rail .trow { display: flex; align-items: center; justify-content: space-between;
+    gap: 6px; padding: 0 8px; overflow: hidden; }
+  .tcol.rail .trow span { color: var(--dim); font-size: 9px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .tcol.rail .trow.ruler span, .tcol.rail .trow.head span { color: var(--faint);
+    letter-spacing: 0.14em; text-transform: uppercase; }
+  .tcol.rail .trow b { color: var(--ink); font-weight: 500; font-size: 9px;
+    font-variant-numeric: tabular-nums; flex: none; }
+
   .tbed { position: relative; cursor: pointer; touch-action: none; }
   .truler { position: absolute; inset: 0; }
   .ttick { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--line-2); }
   .ttick label { position: absolute; top: 3px; left: 4px; font-size: 9px; color: var(--faint);
     font-variant-numeric: tabular-nums; }
-  .tplayhead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--ink); pointer-events: none; }
+  .tplayhead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--ink);
+    pointer-events: none; z-index: 3; }
   .tplayhead::before { content: ""; position: absolute; top: 0; left: -5px;
     border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 7px solid var(--ink); }
+
+  /* ── keyframe lanes ────────────────────────────────────────────────────────
+     A lane draws the curve it is a lane for, because ease handles need something
+     to hang off: a row of diamonds says where the keys are and nothing at all
+     about the shape between them, which is the half an ease handle edits. Step
+     and pose lanes are diamonds only — a boolean has no shape, and a camera move
+     is judged in the world rather than here. */
+  .tlane { position: relative; height: 100%; touch-action: none; }
+  .tlane svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  .tkey {
+    position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px;
+    background: var(--dim); transform: rotate(45deg); cursor: grab; z-index: 2;
+  }
+  .tkey:hover { background: var(--ink); }
+  .tkey.sel { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-low); }
+  .thandle {
+    position: absolute; width: 7px; height: 7px; margin: -3.5px 0 0 -3.5px;
+    border-radius: 50%; background: var(--paper-1); border: 1px solid var(--accent);
+    cursor: grab; z-index: 2;
+  }
 </style>
 </head>
 <body>
@@ -149,6 +232,20 @@
         <button data-mode="3" aria-pressed="false">Contour</button>
         <button data-mode="4" aria-pressed="false" class="wide">BLACKWALL</button>
       </div>
+    </div>
+
+    <div class="group" id="cameraGroup" hidden>
+      <label>Camera &middot; composition</label>
+      <div class="btnrow">
+        <button id="camKey" type="button">key here</button>
+        <button id="camClear" type="button">clear key</button>
+      </div>
+      <div class="btnrow">
+        <button id="camView" type="button" aria-pressed="false">look through it</button>
+      </div>
+      <div id="camNote">A key takes the pose you are orbiting from. The path draws in
+        the view and in the top-down; drag a node in either to move it. Composition is
+        edited in the world, so there is no slider for it.</div>
     </div>
 
     <div class="group">
@@ -221,18 +318,24 @@
         <div class="tclock derived"><small>source &middot; derived</small><output id="tSource">00:00.000</output></div>
       </div>
       <div class="tchips">
-        <label class="tchip">speed<input id="tRate" type="range" min="0.1" max="4" step="0.05" value="1"><b id="tRateOut">1.00&times;</b></label>
+        <label class="tchip">speed<input id="tRate" type="range" min="0.1" max="4" step="0.05" value="1"><b id="tRateOut">1.00&times;</b>
+          <button class="kf" id="tRateKey" type="button" aria-label="Retime keyframe"><i></i></button></label>
         <label class="tchip">out fps<select id="tFps"><option>24</option><option>30</option><option>60</option><option>120</option></select></label>
         <span class="tchip">pre-roll <b id="tPreroll">&mdash;</b></span>
         <span class="tchip">last <b id="tCost">&mdash;</b></span>
+        <span class="tchip">undo <b id="tUndo">0</b></span>
         <span class="tchip warn" id="tBehind"></span>
         <span class="tchip" id="tNote"></span>
       </div>
     </div>
     <div class="tlanes">
-      <div class="trail"><span>program</span></div>
-      <div class="tbed" id="tBed">
-        <div class="truler" id="tRuler"></div>
+      <div class="tcol rail" id="tRail">
+        <div class="trow ruler"><span>program</span></div>
+      </div>
+      <div class="tcol beds" id="tBeds">
+        <div class="trow ruler tbed" id="tBed">
+          <div class="truler" id="tRuler"></div>
+        </div>
         <div class="tplayhead" id="tPlayhead" style="left: 0%"></div>
       </div>
     </div>

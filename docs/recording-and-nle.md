@@ -111,6 +111,22 @@ source time each output frame wants. That requires the curve to stay monotonic,
 so a hold or a reverse breaks it. Program time has no inverse to compute, which
 is why a speed ramp is just another track rather than a special case.
 
+**A hold works; a reverse does not, and the reason is the accumulators rather
+than the coordinate.** That sentence names a reverse as something the *inverse*
+approach cannot express, and program time indeed has no trouble describing one —
+but nothing downstream can render it. Surface memory and the afterimage are
+walked forward one source frame at a time and neither can be stepped backwards,
+which is the same property that makes a seek cost pre-roll. Rendering a reverse
+would mean clearing and re-rolling from scratch for every output frame in the
+region, which is a different design rather than a missing feature.
+
+So the retime curve is **constrained monotonic non-decreasing at the editing
+doors** — a key cannot be dragged below its predecessor, and an ease handle
+cannot overshoot into a descending segment. A curve that descends is refused
+where it is authored rather than caught where it is rendered, because the failure
+at render time is the backward-seek guard firing inside the animation loop, and
+that is a dead page rather than a bad frame.
+
 **Frame index is not a usable coordinate here.** It is tempting because lookup
 becomes `floor`/`ceil` with no search, but this sensor's arrival spacing was
 measured at p50 64ms against p90 222ms on a degraded link. Capture frames are not
@@ -533,9 +549,19 @@ failure mode: whatever the mutation was, the previous state is already captured.
 | --- | --- |
 | keyframes on any track | playhead position |
 | camera path nodes | orbiting to inspect the cloud |
-| retime curve | which layer is displayed |
-| marks | panel visibility, render scale |
+| retime curve | panel visibility, render scale |
+| marks | |
 | preset application | |
+| the clip's mode | |
+
+**The mode moved columns, and the reason is that it stopped being a display
+setting.** This table first listed "which layer is displayed" as view state, back
+when the mode was a step track. Once the mode became a property of the clip its
+selection *applies a preset*, which this same table lists as undoable — and the
+two cannot be split. Selecting Blackwall writes twelve look values; an undo that
+restored those twelve while leaving Blackwall selected would reconstruct a state
+that never existed, which is the one failure a whole-project snapshot is supposed
+to make impossible.
 
 This distinction is sharper in this editor than in most, because the camera does
 two unrelated jobs. Orbiting to look at something is navigation and must leave no

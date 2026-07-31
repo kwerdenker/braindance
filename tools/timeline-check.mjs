@@ -96,7 +96,7 @@ const CONTROL_MIN_PCT = 1.0;
 const MUTATIONS = {
   // The pre-roll stops being a function of anything.
   'preroll-constant': [[
-    'const frames = Math.max(surface, trails);',
+    'const frames = Math.max(back.frames, trails);',
     'const frames = 8;',
   ]],
   // Nothing is rendered ahead of the target.
@@ -106,8 +106,13 @@ const MUTATIONS = {
   ]],
   // Program time stops being scaled into source time.
   'rate-ignored': [[
-    'sourceSecAt(programSec) { return programSec * this.rate; }',
-    'sourceSecAt(programSec) { return programSec; }',
+    `  sourceSecAt(programSec) {
+    const keys = this.keys;
+    if (keys.length === 0) return programSec * this.rate;
+    if (keys.length === 1) return keys[0].value + (programSec - keys[0].t) * this.rate;
+    return scalarAt(keys, programSec, EXTEND_ENDS);
+  },`,
+    '  sourceSecAt(programSec) { return programSec; },',
   ]],
   // The blend fraction snaps to a frame, so an output rate above the capture
   // rate repeats frames instead of interpolating between them. Anchored on the
@@ -1078,7 +1083,10 @@ console.log('\n== 4b. 60 fps out of a capture whose median gap is 64ms ==');
 // exactly a frame nothing here rendered.
 console.log('\n== 5. a look change while paused rebuilds the image and the estimate ==');
 {
-  const canvas = page.locator('canvas');
+  // `#stage` rather than `canvas`: step 5 put the camera path and the top-down on
+  // a second canvas over this one, deliberately outside the rendered frame, and a
+  // bare tag selector now matches both. This is the same element it always was.
+  const canvas = page.locator('#stage');
   const image = async () => createHash('sha256').update(await canvas.screenshot()).digest('hex').slice(0, 16);
   const chip = () => page.evaluate("document.getElementById('tPreroll').textContent");
   const planned = () => page.evaluate('globalThis.__kinect.timeline.transport().preroll()');
