@@ -437,10 +437,21 @@ RegistrationImpl::RegistrationImpl(Freenect2Device::IrCameraParams depth_p, Free
   scatter_base.reserve(512 * 424);
   scatter_z.reserve(512 * 424);
 
-  // Thread count is an environment variable purely so the A/B that justifies
-  // this can run both arms from one binary, interleaved, the way this repo
-  // measures. It is not a tuning knob anybody is expected to set.
-  threads = 4;
+  // Two, and the number is measured on the capture node rather than chosen.
+  //
+  // A sweep on a Pi 5 - four cores, upstream control holding rate in all three
+  // rounds - says 2 is the only count that speeds registration up without
+  // costing frames. Three is fastest at 10.03ms against upstream's 13.49 and
+  // drops frames in 3 of 3 rounds; four is both slower than three, 13.10ms, and
+  // drops the most, down to 26.40fps. That non-monotonicity is the tell: at four
+  // threads on four cores this is competing with the depth solve's own
+  // AsyncPacketProcessor and the GL processor, so adding a thread subtracts
+  // throughput. Two lands at 11.87ms and holds 29.56-29.75fps.
+  //
+  // An M2 Max preferred four, at 5.76ms to 3.69ms, but twelve cores meant
+  // nothing contended there and it idles 27ms of every 33ms interval anyway, so
+  // it has no headroom to want. The constrained machine picks the default.
+  threads = 2;
   if(const char *e = std::getenv("LIBFREENECT2_REG_THREADS")){
     const int v = std::atoi(e);
     if(v >= 1 && v <= 64) threads = v;

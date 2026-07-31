@@ -36,7 +36,7 @@ const DECLARED_EDITS = new Map([
   }],
   ['src/registration.cpp', {
     why: 'thread the occlusion filter, banded by linear index',
-    ours: 'defd45cc77a672f2951008dc30c37f578d47b114',
+    ours: '229c0f6d0346f133259c6d37b8fbb56b80f3d832',
   }],
 ]);
 

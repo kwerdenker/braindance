@@ -1511,15 +1511,37 @@ reading, so it moves with the scene; the gap is within what scene content and
 session drift produce on this rig. That is the reason the comparison is paired
 and interleaved rather than read against a number recorded on another day.
 
-**None of this is measured on a Pi, which is the machine that wants the
-headroom.** The Mac idles 27ms of every 33ms interval, so 2ms buys nothing
-visible there. The Pi has four cores rather than twelve and registration is
-13.13ms of its 15.05ms serial half, so the scaling and the payoff are both open.
-`tools/pi-registration-ab.sh` is the runbook for settling it once step 9 has
-provisioned the node, and it reads **delivered fps rather than `reg` p50** as its
-verdict: four threads on four cores compete with the depth solve's own
-`AsyncPacketProcessor` and the GL processor, and that kind of oversubscription
-surfaces as dropped frames rather than as slower registration.
+**The Pi picks the thread count, and it picked 2 — the Mac's answer was 4 and
+would have been the worst setting on the node.** Measured with
+`tools/pi-registration-ab.sh`, four cores, three interleaved rounds of a
+40-second window per arm, upstream running as a control inside every round:
+
+| arm | reg p50 | delivered fps | rounds losing frames |
+| --- | --- | --- | --- |
+| upstream | 13.49 ms | 29.66–29.84 | 0 of 3 |
+| **2 threads** | **11.87 ms** | **29.56–29.75** | **0 of 3** |
+| 3 threads | 10.03 ms | 27.31–28.69 | 3 of 3 |
+| 4 threads | 13.10 ms | 26.40–29.13 | 3 of 3 |
+
+Read the fps column first. Three threads has the fastest registration in the
+table and drops frames in every round, which makes it a trap rather than a
+result — a capture node that solves depth faster and records less of it is worse,
+and `reg` p50 alone would have called it the winner. Two holds rate and is worth
+12%. Four being *slower* than three is the tell that this is contention: adding a
+thread subtracted throughput, because on four cores these threads take CPU from
+the depth solve's own `AsyncPacketProcessor` and the GL depth processor, which on
+twelve Mac cores never had to compete at all.
+
+So the Mac's 36% was a measurement of a machine with nothing else to do. It stays
+in the record as what twelve idle cores can do with this work, not as a figure
+the project banks — the capture node's 12% is the one that means anything, since
+the Mac idles 27ms of every 33ms interval and has no headroom to want.
+
+**This is the fourth time a number on this project changed when it was finally
+measured on the machine that mattered**, after the ~17ms serial estimate, the
+4.5ms Mac registration figure and the 23% patch result. The pattern is not that
+the estimates were careless; it is that the rig they were reasoned from was never
+the rig under load.
 
 The driver this all lives in is now ours: `third_party/libfreenect2` is upstream
 v0.2.1 committed in-tree, because the old recipe cloned a *branch* and so pinned

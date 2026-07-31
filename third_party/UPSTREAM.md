@@ -74,24 +74,45 @@ showed p99 10.80 ms against 7.32 ms — which is thread scheduling jitter and is
 the thing to watch if this is ever on a latency budget rather than a throughput
 one.
 
-Bit-identical at 3, 4 and 7 threads. The odd counts are the ones worth running:
-the band chunking is `(hi - lo + threads - 1) / threads` clamped by a `min`, so a
-thread count that does not divide the range evenly is where an off-by-one would
-show, and `LIBFREENECT2_REG_THREADS` accepts anything from 1 to 64.
+Bit-identical at 2, 3, 4 and 7 threads. The odd counts are the ones worth
+running: the band chunking is `(hi - lo + threads - 1) / threads` clamped by a
+`min`, so a thread count that does not divide the range evenly is where an
+off-by-one would show, and `LIBFREENECT2_REG_THREADS` accepts anything from 1
+to 64.
 
-**This has not been measured on a Pi, which is the machine it is for.** The Mac
-idles 27 ms of every 33 ms interval, so 2 ms buys nothing a user can see there.
-The Pi's registration is 13.13 ms of a 15.05 ms serial half, and it has four
-cores rather than twelve, so both the scaling and the payoff need measuring on it
-before any claim is made. `LIBFREENECT2_REG_THREADS` exists so that measurement
-can run both arms from one binary; it defaults to 4 and is not a tuning knob.
+### The Pi picks the default, and it is 2
 
-**On the Pi, read delivered fps rather than `reg` p50.** Four threads on four
-cores puts this in competition with the depth solve's own `AsyncPacketProcessor`
-thread and the GL processor, which had twelve cores to spread across here and
-never contended. Oversubscription of that kind surfaces as dropped frames, not as
-slower registration, so a run that improves `reg` while falling below ~30.0 fps
-has made things worse and the segment timing will not say so.
+The M2 Max preferred four threads. **On the capture node four is the worst
+threaded configuration there is.** Measured with `tools/pi-registration-ab.sh` on
+a Pi 5, four cores, three interleaved rounds of a 40-second window per arm, with
+the upstream build as a control inside every round:
+
+| arm | reg p50 | delivered fps | rounds losing frames |
+| --- | --- | --- | --- |
+| upstream | 13.49 ms | 29.66–29.84 | 0 of 3 |
+| **2 threads** | **11.87 ms** | **29.56–29.75** | **0 of 3** |
+| 3 threads | 10.03 ms | 27.31–28.69 | 3 of 3 |
+| 4 threads | 13.10 ms | 26.40–29.13 | 3 of 3 |
+
+Read the fps column first. Three threads has the fastest registration in the
+table and drops frames every single round, so it is a trap rather than a
+result — a capture node that solves depth faster and records less of it has been
+made worse. Two is the only count that speeds registration up while holding rate,
+and it is worth 1.62 ms of 13.49, about 12%, with all three paired deltas the
+same sign.
+
+**Four being slower than three is the tell.** Adding a thread subtracted
+throughput, which only happens when the threads are taking CPU from something
+else that needs it — here the depth solve's own `AsyncPacketProcessor` and the GL
+depth processor, which on twelve Mac cores never had to compete for anything. So
+the Mac's 36% was measuring a machine with nothing else to do, and a default
+chosen there would have shipped the single worst setting to the node that
+actually needs the headroom.
+
+The Mac keeps whatever 2 threads gives it, unmeasured and not worth measuring: it
+idles 27 ms of every 33 ms interval, so it has no headroom to want. The
+constrained machine decides. `LIBFREENECT2_REG_THREADS` exists so the sweep can
+run every arm from one binary; it is not a tuning knob.
 
 ### `src/depth_packet_stream_parser.cpp` — accept 9-of-10 sub-images
 
