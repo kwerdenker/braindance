@@ -210,7 +210,7 @@ const MUTATIONS = {
   // The document version stops being checked, so a file whose point size is in the
   // old unit loads silently and draws 1.8x wrong at every output size.
   'accept-any-version': { file: 'web/main.js', edits: [[
-    '  if (project.version !== PROJECT_VERSION && project.version !== 1) {',
+    '  if (project.version !== PROJECT_VERSION) {',
     '  if (false) {',
   ]] },
   // The retime guard comes off the file door. This is the door step 5 named and
@@ -1879,10 +1879,6 @@ async function runChecks() {
     const good = await refuse('an unmodified project', '');
     check(good.message === 'ACCEPTED', 'and an unmodified project still loads',
       good.message === 'ACCEPTED' ? '' : good.message.slice(0, 80));
-    // Version 1 documents migrate to version 2 and gain the default in/out points.
-    const v1 = await refuse('a version 1 project', 'p.version = 1; delete p.in; delete p.out;');
-    check(v1.message === 'ACCEPTED', 'and a version 1 project migrates',
-      v1.message === 'ACCEPTED' ? '' : v1.message.slice(0, 80));
 
     // Straight at the registry, because the load path is one of four doors into it
     // and the other three were gated the same wrong way. `spec`, `get`, `normalise`
@@ -2485,8 +2481,8 @@ async function runChecks() {
     // Seeded documents, so `/projects/:name` and `/presets/:name` run their found
     // path as well as their not-found one - a mutation in the branch that reads an
     // existing document is unreached by a name that does not exist.
-    writeFileSync(join(shootProjects, 'seeded-project.json'), `${JSON.stringify({ version: 1, body: {} }, null, 2)}\n`);
-    writeFileSync(join(shootPresets, 'seeded-preset.json'), `${JSON.stringify({ version: 1, body: {} }, null, 2)}\n`);
+    writeFileSync(join(shootProjects, 'seeded-project.json'), `${JSON.stringify({ version: 2, body: {} }, null, 2)}\n`);
+    writeFileSync(join(shootPresets, 'seeded-preset.json'), `${JSON.stringify({ version: 2, body: {} }, null, 2)}\n`);
     const shootUrl = await startServer(root, [
       '--captures', shootDir, '--name', 'shooting', '--record', '--no-color',
       '--projects', shootProjects, '--presets', shootPresets,

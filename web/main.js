@@ -2035,23 +2035,15 @@ function restoreKey(owner, k) {
  * non-unit quaternion renders a camera move nobody drew. A `pointSize` from before
  * step 6's rebase draws 1.8x wrong at every size.
  */
-function migrateProject(project) {
-  if (project.version !== 1) return project;
-  // Version 1 had no in/out points; version 2 gives them their defaults. The
-  // copy keeps the original object untouched, which matters for callers that
-  // compare the returned document.
-  return { ...project, version: 2, in: 0, out: null };
-}
-
 function restoreProject(project) {
   if (!project || typeof project !== 'object') {
     throw new Error(`a project is an object, got ${JSON.stringify(project)}`);
   }
   // The version gate, first, because everything below it is interpreted *in* the
-  // version. Version 1 is migrated up; anything else that is not the current
-  // version is refused, because a document whose units cannot be recovered is one
-  // that renders wrong with nothing to say why.
-  if (project.version !== PROJECT_VERSION && project.version !== 1) {
+  // version. A document that is not this build's version is refused, because a
+  // document whose units cannot be recovered is one that renders wrong with
+  // nothing to say why.
+  if (project.version !== PROJECT_VERSION) {
     throw new Error(
       `this project is version ${JSON.stringify(project.version)} and this build reads `
       + `version ${PROJECT_VERSION}: point size is pixels at 1080p in version ${PROJECT_VERSION} `
@@ -2059,7 +2051,6 @@ function restoreProject(project) {
       + 'an unversioned file',
     );
   }
-  project = migrateProject(project);
   if (!Number.isInteger(project.mode) || project.mode < 0 || project.mode > 4) {
     throw new Error(`mode is ${JSON.stringify(project.mode)}: the clip's mode is a whole number from 0 to 4`);
   }
@@ -4883,9 +4874,7 @@ function presetFromCurrentLook(names) {
  */
 function applyStoredPreset(doc) {
   refuseDuringEvaluation('a stored preset applied');
-  // Version 1 presets carry the same look units as version 2, and they have no
-  // composition fields to migrate, so applying one is safe. Anything else is not.
-  if (doc.body.version !== PROJECT_VERSION && doc.body.version !== 1) {
+  if (doc.body.version !== PROJECT_VERSION) {
     throw new Error(
       `preset ${doc.name} is version ${JSON.stringify(doc.body.version)} and this build reads `
       + `${PROJECT_VERSION}: point size is pixels at 1080p here and was pixels at the drawing `
