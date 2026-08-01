@@ -248,8 +248,10 @@ const HASH_A = `sha256:${'a'.repeat(64)}`;
 // rev; the first draft used `mode: 'rgb'` and failed the render row while every
 // queue row passed, which is a check reporting the wrong thing broken.
 const PROJECT = {
-  version: 1,
+  version: 2,
   mode: 0,
+  in: 0,
+  out: null,
   outputFps: 30,
   params: {},
   tracks: {},

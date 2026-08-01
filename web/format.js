@@ -31,5 +31,10 @@
  * move will be a track kind, an easing rule or an audio reference, and none of those
  * is a scale factor. So a file this build does not recognise is refused, naming the
  * version it found, rather than opened on a best guess.
+ *
+ * **Version 2 adds clip in/out points in program seconds.** They are composition,
+ * not look, so they sit in the project and not in a preset. `in` defaults to 0 and
+ * `out` defaults to null, meaning the end of the clip. The version is the same
+ * "can this build faithfully interpret this document" signal as before.
  */
-export const PROJECT_VERSION = 1;
+export const PROJECT_VERSION = 2;

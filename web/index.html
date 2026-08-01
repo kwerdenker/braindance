@@ -241,6 +241,16 @@
   .tplayhead::before { content: ""; position: absolute; top: 0; left: -5px;
     border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 7px solid var(--ink); }
 
+  /* In/out markers. They live on the same coordinate as the playhead and can be
+     dragged to set the clip range. A triangle points inward so the two do not
+     collide when they are close. */
+  .tcut { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--accent);
+    cursor: ew-resize; z-index: 4; }
+  .tcut::before { content: ""; position: absolute; top: 0; left: -5px;
+    border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 7px solid var(--accent); }
+  .tcut.tcut-out::before { left: -4px; border-left: 4px solid var(--accent); border-right: 4px solid transparent; border-top: 0; border-bottom: 7px solid var(--accent); top: auto; bottom: 0; }
+  .tcut.tcut-in::before { left: -4px; border-left: 4px solid transparent; border-right: 4px solid var(--accent); border-top: 0; border-bottom: 7px solid var(--accent); top: auto; bottom: 0; }
+
   /* ── keyframe lanes ────────────────────────────────────────────────────────
      A lane draws the curve it is a lane for, because ease handles need something
      to hang off: a row of diamonds says where the keys are and nothing at all
@@ -425,6 +435,8 @@
           <div class="truler" id="tRuler"></div>
           <div class="tmarks" id="tMarks"></div>
         </div>
+        <div class="tcut tcut-in" id="tIn" style="left: 0%"></div>
+        <div class="tcut tcut-out" id="tOut" style="left: 100%"></div>
         <div class="tplayhead" id="tPlayhead" style="left: 0%"></div>
       </div>
     </div>

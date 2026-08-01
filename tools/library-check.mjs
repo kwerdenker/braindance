@@ -210,7 +210,7 @@ const MUTATIONS = {
   // The document version stops being checked, so a file whose point size is in the
   // old unit loads silently and draws 1.8x wrong at every output size.
   'accept-any-version': { file: 'web/main.js', edits: [[
-    '  if (project.version !== PROJECT_VERSION) {',
+    '  if (project.version !== PROJECT_VERSION && project.version !== 1) {',
     '  if (false) {',
   ]] },
   // The retime guard comes off the file door. This is the door step 5 named and
@@ -1806,7 +1806,7 @@ async function runChecks() {
     // The saved file is a file on disk with a version on it, not a blob the page
     // interprets for itself.
     const saved = JSON.parse(readFileSync(join(WORK, 'projects/round-trip.json'), 'utf8'));
-    check(saved.version === 1, 'the file carries the format version', `version ${saved.version}`);
+    check(saved.version === 2, 'the file carries the format version', `version ${saved.version}`);
     check(JSON.parse(readFileSync(join(WORK, 'projects/own-footage.json'), 'utf8')).take?.hash?.startsWith('sha256:'),
       'and a project saved from the editor names its footage by content hash rather than by path');
 
@@ -1823,7 +1823,7 @@ async function runChecks() {
     const cases = [
       ['a project with no version', 'delete p.version;'],
       ['a project from an older version', 'p.version = 0;'],
-      ['a project from a newer version', 'p.version = 2;'],
+      ['a project from a newer version', 'p.version = 3;'],
       ['a version that is not a number', 'p.version = "1";'],
       ['a retime curve that falls', 'p.retime.keys = [{t:0,value:0},{t:1,value:2},{t:2,value:0.5}];'],
       ['a retime handle outside the unit box',
@@ -1879,6 +1879,10 @@ async function runChecks() {
     const good = await refuse('an unmodified project', '');
     check(good.message === 'ACCEPTED', 'and an unmodified project still loads',
       good.message === 'ACCEPTED' ? '' : good.message.slice(0, 80));
+    // Version 1 documents migrate to version 2 and gain the default in/out points.
+    const v1 = await refuse('a version 1 project', 'p.version = 1; delete p.in; delete p.out;');
+    check(v1.message === 'ACCEPTED', 'and a version 1 project migrates',
+      v1.message === 'ACCEPTED' ? '' : v1.message.slice(0, 80));
 
     // Straight at the registry, because the load path is one of four doors into it
     // and the other three were gated the same wrong way. `spec`, `get`, `normalise`
@@ -1948,7 +1952,7 @@ async function runChecks() {
 
     const onDisk = readFileSync(join(WORK, 'presets/hand-tuned.json'), 'utf8');
     const doc = JSON.parse(onDisk);
-    check(doc.version === 1, 'a preset carries the format version too');
+    check(doc.version === 2, 'a preset carries the format version too');
     // Step 3's carried note: the registry excludes the mode as clip state, so a
     // preset saved as `values(names('look'))` alone would neither capture nor
     // restore it - and the spec lists mode first among presettable look.
@@ -2684,9 +2688,10 @@ async function runChecks() {
 
     // A document from a build this one is not. It came back stamped as version 1
     // with its version 2 fields underneath, which is exactly what the version field
-    // was chosen over an authored buffer height to prevent.
-    const future = await post(`${guardUrl}/projects/from-the-future`, { version: 2, tracks: {}, futureField: 'kept' });
-    check(/version 2/.test(future.error ?? ''),
+    // was chosen over an authored buffer height to prevent. Version 2 is this build,
+    // so the future is now version 3.
+    const future = await post(`${guardUrl}/projects/from-the-future`, { version: 3, tracks: {}, futureField: 'kept' });
+    check(/version 3/.test(future.error ?? ''),
       'a document from a future format version is refused rather than restamped as this one',
       (future.error ?? 'ACCEPTED').slice(0, 80));
     const stored = await getJson(`${guardUrl}/projects/from-the-future`);

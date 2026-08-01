@@ -1488,6 +1488,12 @@ const NEUTRAL = { bloom: 0, trails: 0, rgbSplit: 0, scanlines: 0, grain: 0, glit
 // deferred, and the stomping is what would have to be solved properly first.
 let clipMode = 0;
 
+// Clip in/out points are program seconds, not frames, so they survive an output-fps
+// change. `out` is null when the clip runs to the end of the program. The transport
+// and the export read these directly; the UI drags them on the ruler.
+let clipIn = 0;
+let clipOut = null;
+
 // The mode itself, without the look that comes with choosing it. Undo restores a
 // whole snapshot including the twelve values Blackwall wrote, so replaying the
 // preset on top of them would overwrite what was just restored with what the
@@ -1500,6 +1506,17 @@ function applyModeValue(mode) {
   document.querySelectorAll('#modes button').forEach((b) => {
     b.setAttribute('aria-pressed', String(Number(b.dataset.mode) === mode));
   });
+}
+
+function setClipInOut(values) {
+  const { in: inn, out } = values;
+  if (inn !== undefined) clipIn = inn;
+  if (out !== undefined) clipOut = out;
+  if (timeline) {
+    if (timeline.programSec < clipIn) timeline.seek(clipIn).catch(showTimelineError);
+    else if (clipOut !== null && timeline.programSec > clipOut) timeline.seek(clipOut).catch(showTimelineError);
+    else timeline.paint();
+  }
 }
 
 function setMode(mode) {
@@ -1957,6 +1974,8 @@ function serialiseProject() {
     mode: clipMode,
     // Composition per the preset table - it is never in a preset and it is part of
     // what the clip is - so it is document state and it is undoable.
+    in: clipIn,
+    out: clipOut,
     outputFps: timeline ? timeline.outputFps : 30,
     // The shape the clip was framed for. A composition and its aspect are one thing:
     // reopening a 65:24 shot at 1920x1080 would be a different shot wearing the same
@@ -2016,16 +2035,23 @@ function restoreKey(owner, k) {
  * non-unit quaternion renders a camera move nobody drew. A `pointSize` from before
  * step 6's rebase draws 1.8x wrong at every size.
  */
+function migrateProject(project) {
+  if (project.version !== 1) return project;
+  // Version 1 had no in/out points; version 2 gives them their defaults. The
+  // copy keeps the original object untouched, which matters for callers that
+  // compare the returned document.
+  return { ...project, version: 2, in: 0, out: null };
+}
+
 function restoreProject(project) {
   if (!project || typeof project !== 'object') {
     throw new Error(`a project is an object, got ${JSON.stringify(project)}`);
   }
   // The version gate, first, because everything below it is interpreted *in* the
-  // version. A file with no version predates the field, which means it predates
-  // the point at which `pointSize` stopped being drawing-buffer pixels - so its
-  // look cannot be reconstructed from what it contains, and opening it on a guess
-  // would render a size nobody authored and record no reason why.
-  if (project.version !== PROJECT_VERSION) {
+  // version. Version 1 is migrated up; anything else that is not the current
+  // version is refused, because a document whose units cannot be recovered is one
+  // that renders wrong with nothing to say why.
+  if (project.version !== PROJECT_VERSION && project.version !== 1) {
     throw new Error(
       `this project is version ${JSON.stringify(project.version)} and this build reads `
       + `version ${PROJECT_VERSION}: point size is pixels at 1080p in version ${PROJECT_VERSION} `
@@ -2033,6 +2059,7 @@ function restoreProject(project) {
       + 'an unversioned file',
     );
   }
+  project = migrateProject(project);
   if (!Number.isInteger(project.mode) || project.mode < 0 || project.mode > 4) {
     throw new Error(`mode is ${JSON.stringify(project.mode)}: the clip's mode is a whole number from 0 to 4`);
   }
@@ -2048,6 +2075,12 @@ function restoreProject(project) {
     throw new Error(`outputSize is ${JSON.stringify(project.outputSize)}: it reads as WIDTHxHEIGHT`);
   }
   setTargetSize(project.outputSize ?? DEFAULT_EXPORT_SIZE, { fromDocument: true });
+  if (project.in !== undefined && (!Number.isFinite(project.in) || project.in < 0)) {
+    throw new Error(`in is ${JSON.stringify(project.in)}: the clip's in point is a non-negative number of program seconds`);
+  }
+  if (project.out !== undefined && project.out !== null && (!Number.isFinite(project.out) || project.out < project.in)) {
+    throw new Error(`out is ${JSON.stringify(project.out)}: the clip's out point is null or a program-seconds value not less than in`);
+  }
   if (!project.params || typeof project.params !== 'object') {
     throw new Error('a project carries a params object');
   }
@@ -2123,6 +2156,7 @@ function restoreProject(project) {
     timeline.frame = timeline.frameAt(held);
   }
   timingChanged();
+  setClipInOut({ in: project.in ?? 0, out: project.out ?? null });
 }
 
 // Whole snapshots rather than a command stack, and the argument is that this one
@@ -3367,8 +3401,13 @@ class TimelineTransport {
 
   get lastFrame() { return Math.max(0, Math.floor(this.duration * this.outputFps)); }
 
+  /** Clip range in program seconds, read from the document. */
+  get clipInSec() { return Math.max(0, Number(clipIn) || 0); }
+  get clipOutSec() { return clipOut === null ? this.duration : Math.min(this.duration, clipOut); }
+
   frameAt(programSec) {
-    return Math.max(0, Math.min(this.lastFrame, Math.round(programSec * this.outputFps)));
+    const clamped = Math.max(this.clipInSec, Math.min(this.clipOutSec, programSec));
+    return Math.max(0, Math.min(this.lastFrame, Math.round(clamped * this.outputFps)));
   }
 
   sourceFrameAt(programSec) {
@@ -3680,6 +3719,7 @@ class TimelineTransport {
     const next = this.frame + 1;
     if (next > this.lastFrame) return false;
     const t = next / this.outputFps;
+    if (t > this.clipOutSec + 1e-9) return false;
     const want = this.sourceFrameAt(t) + 1;
     // A span that runs backwards is not "already resident", it is unwalkable - and
     // the residency test cannot tell the difference, because it compares a low
@@ -3752,7 +3792,7 @@ class TimelineTransport {
       rendered++;
     }
     if (rendered > 0) this.paint();
-    else if (this.frame >= this.lastFrame) this.pause();
+    else if (this.frame >= this.lastFrame || this.programSec >= this.clipOutSec - 1e-9) this.pause();
     // Anything still owed after the cap is a deficit the machine is not going to
     // repay, and it is surfaced rather than absorbed: a link too slow to feed the
     // playhead and a renderer too slow to draw it both look like smooth playback
@@ -3818,6 +3858,11 @@ class TimelineTransport {
     // A draft is not the image playback would have produced, so playing on from
     // one would start the afterimage off a picture that never existed.
     if (this.drafted) await this.seek(this.programSec);
+    // Keep playback inside the clip's in/out points. Starting from outside the
+    // range snaps to the in point; reaching the out point stops.
+    if (this.programSec < this.clipInSec || this.programSec > this.clipOutSec) {
+      await this.seek(this.clipInSec);
+    }
     this.playing = true;
     this.nextDueMs = performance.now();
     this.paint();
@@ -4029,8 +4074,10 @@ async function exportClip(options = {}) {
     // The rate first, because the frame grid every position below is named in is
     // the output rate's grid.
     timeline.outputFps = fps;
-    const from = Math.max(0, Math.trunc(options.from ?? 0));
-    const to = Math.min(timeline.lastFrame, Math.trunc(options.to ?? timeline.lastFrame));
+    const inFrame = timeline.frameAt(Number(clipIn) || 0);
+    const outFrame = timeline.frameAt(clipOut === null ? timeline.duration : clipOut);
+    const from = Math.max(inFrame, Math.min(outFrame, Math.trunc(options.from ?? inFrame)));
+    const to = Math.max(inFrame, Math.min(outFrame, Math.trunc(options.to ?? outFrame)));
     if (to < from) throw new Error(`an export of frames ${from}..${to} has nothing in it`);
 
     // Composition comes from the camera track, so the export renders what the
@@ -4113,6 +4160,8 @@ const ui = {
   beds: document.getElementById('tBeds'),
   ruler: document.getElementById('tRuler'),
   playhead: document.getElementById('tPlayhead'),
+  in: document.getElementById('tIn'),
+  out: document.getElementById('tOut'),
   note: document.getElementById('tNote'),
   cameraGroup: document.getElementById('cameraGroup'),
   camKey: document.getElementById('camKey'),
@@ -4203,6 +4252,9 @@ function paintTimeline(t) {
   ui.program.textContent = timecode(program);
   ui.source.textContent = timecode(retime.sourceSecAt(program));
   ui.playhead.style.left = `${(program / Math.max(1e-6, rulerDuration())) * 100}%`;
+  const rangeDur = Math.max(1e-6, rulerDuration());
+  ui.in.style.left = `${(Math.min(clipIn, rangeDur) / rangeDur) * 100}%`;
+  ui.out.style.left = `${(Math.min(clipOut ?? rangeDur, rangeDur) / rangeDur) * 100}%`;
   const plan = t.preroll(program);
   // Both halves, because which one wins is the whole point of computing it: the
   // surface half moves with fade, wake, speed and output rate, the trails half
@@ -4367,6 +4419,41 @@ for (const type of ['pointerup', 'pointercancel']) {
     // well-understood convention rather than a surprise.
     timeline.seek(programAtPointer(e)).catch(showTimelineError);
   });
+}
+
+let handleDrag = null;
+
+for (const handle of [ui.in, ui.out]) {
+  handle.addEventListener('pointerdown', (e) => {
+    if (!timeline) return;
+    handle.setPointerCapture(e.pointerId);
+    handleDrag = handle === ui.in ? 'in' : 'out';
+    timeline.pause();
+    e.stopPropagation();
+  });
+  handle.addEventListener('pointermove', (e) => {
+    if (handleDrag !== (handle === ui.in ? 'in' : 'out')) return;
+    const t = programAtPointer(e);
+    if (handle === ui.in) {
+      clipIn = Math.max(0, Math.min(t, clipOut ?? timeline.duration));
+    } else {
+      clipOut = clipOut === null ? t : Math.max(clipIn, Math.min(t, timeline.duration));
+    }
+    timeline.paint();
+  });
+  for (const type of ['pointerup', 'pointercancel']) {
+    handle.addEventListener(type, (e) => {
+      if (handleDrag !== (handle === ui.in ? 'in' : 'out')) return;
+      handleDrag = null;
+      const t = programAtPointer(e);
+      if (handle === ui.in) {
+        setClipInOut({ in: Math.max(0, Math.min(t, clipOut ?? timeline.duration)) });
+      } else {
+        setClipInOut({ out: Math.max(clipIn, Math.min(t, timeline.duration)) });
+      }
+      history.commit();
+    });
+  }
 }
 
 ui.play.addEventListener('click', () => {
@@ -4796,7 +4883,9 @@ function presetFromCurrentLook(names) {
  */
 function applyStoredPreset(doc) {
   refuseDuringEvaluation('a stored preset applied');
-  if (doc.body.version !== PROJECT_VERSION) {
+  // Version 1 presets carry the same look units as version 2, and they have no
+  // composition fields to migrate, so applying one is safe. Anything else is not.
+  if (doc.body.version !== PROJECT_VERSION && doc.body.version !== 1) {
     throw new Error(
       `preset ${doc.name} is version ${JSON.stringify(doc.body.version)} and this build reads `
       + `${PROJECT_VERSION}: point size is pixels at 1080p here and was pixels at the drawing `
