@@ -649,7 +649,13 @@ try {
       // A server with no grabber for the exact rows: nothing arrives, so an injected
       // frame is the only thing that ever touches the textures and the readback is a
       // statement about `bindDepth` rather than about whatever landed last.
+      // The sample is linked in so the frame API can serve it, which is what the
+      // same-frame comparison further down needs: `?decimate=` on a take this server
+      // holds. The link rather than a copy because it is 280MB, and into `caps-5`
+      // rather than at the repo's own directory because the sidecar the first open
+      // builds should land in the staged tree and be deleted with it.
       mkdirSync(join(WORK, 'caps-5'), { recursive: true });
+      symlinkSync(SOURCE, join(WORK, 'caps-5', 'sample.knct'));
       await start(['--captures', join(WORK, 'caps-5'), '--name', 'render',
         '--projects', join(WORK, 'p5'), '--presets', join(WORK, 'q5')]);
       const browser = await pw.chromium.launch({ channel: 'chromium', headless: true });
@@ -718,6 +724,94 @@ try {
       }`})()`);
       ok('a depth block on no grid at all is refused, loudly, rather than half-written',
         typeof odd === 'string' && /divisor/.test(odd), odd ?? 'it was accepted');
+
+      // --- the same frame at four divisors, which is the shape question with the
+      // scene held still ---
+      //
+      // Every arm is frame 7 of the sample, so nothing in the room moved between them
+      // and sampling is the only thing that differs. The ÷k arms are built by
+      // `decimatePayload` on the way out of the frame API, and section 2 has already
+      // proved that is the same function and the same bytes the socket sends - so this
+      // asks the monitor's question without inheriting the monitor's timing.
+      //
+      // The sentinel wipe before each arm is what makes it sharp. Without it a broken
+      // build keeps the previous arm's full grid in the 93.8% it cannot reach, and the
+      // centroid of a cloud that is mostly the right answer is the right answer: 0.233
+      // against 0.224, which no tolerance worth having would separate. Wiped, the
+      // broken ÷4 arm is only the 13,568 samples it actually placed, and it places them
+      // in 27 of 424 rows.
+      const SAME_FRAME = `async (opts) => {
+        const kin = globalThis.__kinect;
+        const DW = 512, DH = 424;
+        const fx = kin.uniforms.focal.value.x, fy = kin.uniforms.focal.value.y;
+        const cx = kin.uniforms.center.value.x, cy = kin.uniforms.center.value.y;
+        // No near/far clip here on purpose: the clip is a viewer setting, and a row
+        // about where a sample lands should not move when somebody drags a slider.
+        const measure = () => {
+          const d = kin.uniforms.depthCurr.value.image.data;
+          let minY = 1e9, maxY = -1e9, minX = 1e9, maxX = -1e9, n = 0, sx = 0, sy = 0, sz = 0;
+          for (let i = 0; i < d.length; i++) {
+            const mm = d[i];
+            if (mm <= 0 || mm === 65535) continue;
+            const z = mm * 0.001;
+            const col = i % DW, row = (i / DW) | 0;
+            const X = (col + 0.5 - cx) / fx * z, Y = -(row + 0.5 - cy) / fy * z;
+            if (X < minX) minX = X; if (X > maxX) maxX = X;
+            if (Y < minY) minY = Y; if (Y > maxY) maxY = Y;
+            sx += X; sy += Y; sz += z; n++;
+          }
+          return { n, width: maxX - minX, height: maxY - minY,
+            centroid: [sx / n, sy / n, sz / n] };
+        };
+        const out = {};
+        for (const div of opts.divisors) {
+          const res = await fetch('/capture/' + opts.take + '/frame/' + opts.n + '?decimate=' + div);
+          if (!res.ok) return { error: 'frame ' + opts.n + ' at div ' + div + ': HTTP ' + res.status };
+          const buf = await res.arrayBuffer();
+          const depthBytes = new DataView(buf).getUint32(0, true);
+          const src = new Uint16Array(buf, 16, depthBytes / 2);
+          kin.drive.injectDepth(new Uint16Array(DW * DH).fill(65535));
+          kin.drive.injectDepth(new Uint16Array(DW * DH).fill(65535));
+          kin.drive.injectDepth(src);
+          out[div] = Object.assign({ samples: src.length }, measure());
+        }
+        return out;
+      }`;
+      const same = await page.evaluate(
+        `(${SAME_FRAME})(${JSON.stringify({ take: 'sample', n: 7, divisors: [1, 2, 4, 8] })})`,
+      );
+      ok('the frame API served frame 7 of the sample at every divisor this compares',
+        !same.error, same.error ?? '');
+      if (!same.error) {
+        const base = same[1];
+        for (const div of [2, 4, 8]) {
+          const arm = same[div];
+          const drift = Math.hypot(...arm.centroid.map((v, i) => v - base.centroid[i]));
+          const taller = arm.height / base.height;
+          const kept = arm.n / base.n;
+          // **Two gated terms, and a third reported rather than gated, all three set
+          // from measurement on both sides.** Frame 7 of the sample, honest build
+          // against `bind-ignores-grid`:
+          //
+          //   div | centroid drift | points kept | height
+          //   ÷2  | 0.0021 / 0.6806 | 1.001 / 0.250 | 0.958 / 0.545
+          //   ÷4  | 0.0051 / 0.8524 | 1.001 / 0.063 | 0.961 / 0.602
+          //   ÷8  | 0.0148 / 0.9026 | 0.997 / 0.016 | 0.847 / 0.617
+          //
+          // The centroid separates by a factor of 46 and the point count by 4 to 64,
+          // so 0.05m and 5% each sit an order of magnitude clear of both sides. The
+          // height does not: honest, it falls from 0.958 to 0.847 as the divisor rises,
+          // because the extent is an extremum and ÷8 throws away 63 samples of every 64
+          // - so the honest ÷8 value is nearer the broken one than it is to its own ÷2.
+          // A gate there would be calibrated on the gap rather than on the property, so
+          // it is printed and left ungated. That is the same reasoning that took the
+          // height out of the live rows above, arrived at from the other side.
+          ok(`the same frame at ÷${div} (${arm.samples} samples) reconstructs the same scene as at ÷1`,
+            drift < 0.05 && Math.abs(kept - 1) < 0.05,
+            `centroid ${drift.toFixed(4)}m away, ${arm.n} points against ${base.n} `
+            + `(x${kept.toFixed(3)}), and ${(taller * 100).toFixed(1)}% as tall`);
+        }
+      }
 
       await stopAll();
 
@@ -803,20 +897,17 @@ try {
           arm[1].sentinel === 0, `${arm[1].sentinel} of ${arm[1].of} texels never arrived`);
         ok(`round ${round + 1}: and so does a ÷4 stream - the divisor is a network concession, not a smaller picture`,
           arm[4].sentinel === 0, `${arm[4].sentinel} of ${arm[4].of} texels never arrived`);
-        // The extent rather than the centroid, and the choice is measured rather than
-        // assumed. A centroid taken over the whole texture barely moves on the broken
-        // build - 0.233 against 0.224 - because the 93.8% that is frozen *is* the right
-        // scene, just an old one, so it drowns the misplaced part in its own average.
-        // The wipe above is what makes the extent sharp instead: everything still
-        // holding the sentinel is skipped, so this measures only what the stream
-        // delivered, and a ÷4 stream that lands in 27 of 424 rows delivers a cloud a
-        // little over half as tall. Measured x0.569 and x0.579 under
-        // `bind-ignores-grid` against x0.976 and x0.997 here, so the gate has room on
-        // both sides rather than being read off whichever run was handy.
-        const ratio = arm[4].height / arm[1].height;
-        ok(`round ${round + 1}: and the scene it reconstructs stands as tall as the full-rate one`,
-          ratio > 0.85 && ratio < 1.15,
-          `${arm[1].height.toFixed(3)}m tall at ÷1, ${arm[4].height.toFixed(3)}m at ÷4, x${ratio.toFixed(3)}`);
+        // The reconstructed *shape* is deliberately not compared here, and that is a
+        // correction rather than an omission. It was, on the height of the cloud, and
+        // the row was noise: these two arms are 2.4 seconds apart and the sample is a
+        // person moving, so a real scene change sat inside every comparison. Across six
+        // runs the honest build produced x0.883 to x1.153 - and 1.153 failed a gate set
+        // at 1.15 under `grant-not-echoed`, a mutation that cannot touch geometry at
+        // all. A row that goes red for a neighbouring reason is how a gating check
+        // teaches people to re-run until green, so the shape question moved to the
+        // same-frame comparison below, where both arms are one moment and there is
+        // nothing left to move. What stays here is exact: a sentinel a real frame
+        // cannot forge, and whether the stream cleared it.
       }
       ok('both rounds agree, so neither is a single pair that happened to land well',
         rounds.every((r) => r[4].sentinel === 0),

@@ -14,6 +14,9 @@ exports
 projects
 presets
 .library-check
+# The staged tree monitor-check builds and deletes. It only survives a run that
+# threw, which is exactly when it is worth looking at and never worth committing.
+.monitor-check
 
 # Render-queue records. The queue is state a machine accumulates, not source.
 jobs
