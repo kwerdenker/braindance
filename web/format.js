@@ -36,5 +36,12 @@
  * not look, so they sit in the project and not in a preset. `in` defaults to 0 and
  * `out` defaults to null, meaning the end of the clip. The version is the same
  * "can this build faithfully interpret this document" signal as before.
+ *
+ * **Version 3 splits the document into look and composition.** Look holds the
+ * mode, static params and keyed tracks for look parameters; composition holds the
+ * retime curve and the camera track. Deliverables (in/out points, output fps,
+ * output size and codec) now live in their own store, not inside the project.
+ * Saved projects also carry an undo history (`history.stack` and
+ * `history.baseline`) so a reload can restore it.
  */
-export const PROJECT_VERSION = 2;
+export const PROJECT_VERSION = 3;

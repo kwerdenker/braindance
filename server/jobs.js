@@ -146,7 +146,7 @@ export class JobStore {
    * the original" is a claim about identified footage, and a job naming a take by
    * id would reproduce whatever is at that id today.
    */
-  async enqueue({ project, capture, renderer = null, output, width, height, fps, codec = 'h264' }) {
+  async enqueue({ project, deliverable = null, capture, renderer = null, output, width, height, fps, codec = 'h264' }) {
     // The project is the document *body* - what `serialiseProject()` returns and
     // what `restoreProject` takes - not the `{ name, rev, body }` envelope the
     // document store hands back. One shape, checked here, because accepting both
@@ -184,6 +184,7 @@ export class JobStore {
       const body = {
         version: JOB_VERSION,
         project,
+        deliverable,
         capture,
         renderer: renderer ?? null,
         output: String(output),

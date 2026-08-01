@@ -908,6 +908,9 @@ function setTargetSize(text, { fromDocument = false } = {}) {
     ui.exportSize.value = `${w}x${h}`;
   }
   void fromDocument;
+  ensureActiveDeliverable();
+  activeDeliverable.outputSize = `${w}x${h}`;
+  paintDeliverable();
   resize();
   return true;
 }
@@ -1494,6 +1497,11 @@ let clipMode = 0;
 let clipIn = 0;
 let clipOut = null;
 
+// The active deliverable holds the export settings (in/out, output fps, output size,
+// codec). It is separate from the project, so one edit can spawn several deliverables
+// without the deliverable state being undoable project state.
+let activeDeliverable = null;
+
 // The mode itself, without the look that comes with choosing it. Undo restores a
 // whole snapshot including the twelve values Blackwall wrote, so replaying the
 // preset on top of them would overwrite what was just restored with what the
@@ -1508,10 +1516,42 @@ function applyModeValue(mode) {
   });
 }
 
+function ensureActiveDeliverable() {
+  if (activeDeliverable) return;
+  activeDeliverable = {
+    version: 1,
+    in: 0,
+    out: null,
+    outputFps: timeline ? timeline.outputFps : 30,
+    outputSize: `${targetSize.w}x${targetSize.h}`,
+    codec: 'h264',
+  };
+}
+
+function setActiveDeliverable(deliverable) {
+  activeDeliverable = deliverable;
+}
+
+function applyDeliverable(deliverable) {
+  setActiveDeliverable(deliverable);
+  setClipInOut({ in: deliverable.in, out: deliverable.out });
+  setTargetSize(deliverable.outputSize);
+  if (timeline) {
+    timeline.outputFps = deliverable.outputFps;
+    if (ui.fps) ui.fps.value = String(deliverable.outputFps);
+  }
+  timingChanged();
+  paintDeliverable();
+}
+
 function setClipInOut(values) {
   const { in: inn, out } = values;
   if (inn !== undefined) clipIn = inn;
   if (out !== undefined) clipOut = out;
+  ensureActiveDeliverable();
+  activeDeliverable.in = clipIn;
+  activeDeliverable.out = clipOut;
+  paintDeliverable();
   if (timeline) {
     if (timeline.programSec < clipIn) timeline.seek(clipIn).catch(showTimelineError);
     else if (clipOut !== null && timeline.programSec > clipOut) timeline.seek(clipOut).catch(showTimelineError);
@@ -1968,28 +2008,46 @@ function toggleKey(name) {
 // selected: a state that never existed, which is the exact failure a whole-project
 // snapshot exists to make impossible.
 
-function serialiseProject() {
+function serialiseProjectBody() {
   return {
     version: PROJECT_VERSION,
-    mode: clipMode,
-    // Composition per the preset table - it is never in a preset and it is part of
-    // what the clip is - so it is document state and it is undoable.
-    in: clipIn,
-    out: clipOut,
-    outputFps: timeline ? timeline.outputFps : 30,
-    // The shape the clip was framed for. A composition and its aspect are one thing:
-    // reopening a 65:24 shot at 1920x1080 would be a different shot wearing the same
-    // keys, which is the silent reinterpretation the point-size rebase already taught
-    // this repo to refuse rather than absorb.
+    look: {
+      mode: clipMode,
+      // Look parameters only; the registry separates look from view and from the
+      // camera, so an undo snapshot or a render job does not carry render scale or
+      // the free camera's orbit.
+      params: params.values(params.names('look')),
+      tracks: Object.fromEntries(
+        params.names('look')
+          .filter((n) => tracks.has(n))
+          .map((n) => [n, tracks.get(n).serialise()]),
+      ),
+    },
+    composition: {
+      // Retime is the source-to-program mapping, and the camera track is the one
+      // pose track. The split is only on disk; the editor still uses one tracks map.
+      retime: retime.serialise(),
+      camera: tracks.get('camera')?.serialise() ?? [],
+    },
+    // The framing the clip was composed for. Deliverables reference this too, but the
+    // editor size itself is document state because the point-size rebase makes the
+    // look resolution-relative.
     outputSize: `${targetSize.w}x${targetSize.h}`,
-    params: params.values(),
-    tracks: Object.fromEntries([...tracks].map(([name, track]) => [name, track.serialise()])),
-    retime: retime.serialise(),
     // Provenance, not a reference. The values above are already copied in, so this
     // changes nothing about what renders - it only records which revision of which
     // look this clip was built from, which is what lets a gallery see that three
     // clips are on one revision and two are on an older one.
     appliedPreset,
+  };
+}
+
+function serialiseProject() {
+  return {
+    ...serialiseProjectBody(),
+    // History is saved with the project so undo survives a reload, but it is never
+    // inside an undo snapshot or a render job - a snapshot containing its own
+    // history would recurse.
+    history: { stack: [...history.stack], baseline: history.baseline },
   };
 }
 
@@ -2051,11 +2109,14 @@ function restoreProject(project) {
       + 'an unversioned file',
     );
   }
-  if (!Number.isInteger(project.mode) || project.mode < 0 || project.mode > 4) {
-    throw new Error(`mode is ${JSON.stringify(project.mode)}: the clip's mode is a whole number from 0 to 4`);
+  if (!project.look || typeof project.look !== 'object') {
+    throw new Error('a project carries a look object');
   }
-  if (!Number.isFinite(project.outputFps) || project.outputFps <= 0) {
-    throw new Error(`outputFps is ${JSON.stringify(project.outputFps)}: it has to be a positive number`);
+  if (!project.composition || typeof project.composition !== 'object') {
+    throw new Error('a project carries a composition object');
+  }
+  if (!Number.isInteger(project.look.mode) || project.look.mode < 0 || project.look.mode > 4) {
+    throw new Error(`mode is ${JSON.stringify(project.look.mode)}: the clip's mode is a whole number from 0 to 4`);
   }
   // Checked here rather than shrugged off, because a size that does not parse would
   // otherwise leave the editor framing at whatever the last clip was and quietly
@@ -2066,20 +2127,17 @@ function restoreProject(project) {
     throw new Error(`outputSize is ${JSON.stringify(project.outputSize)}: it reads as WIDTHxHEIGHT`);
   }
   setTargetSize(project.outputSize ?? DEFAULT_EXPORT_SIZE, { fromDocument: true });
-  if (project.in !== undefined && (!Number.isFinite(project.in) || project.in < 0)) {
-    throw new Error(`in is ${JSON.stringify(project.in)}: the clip's in point is a non-negative number of program seconds`);
+  if (!project.look.params || typeof project.look.params !== 'object') {
+    throw new Error('a project look carries a params object');
   }
-  if (project.out !== undefined && project.out !== null && (!Number.isFinite(project.out) || project.out < project.in)) {
-    throw new Error(`out is ${JSON.stringify(project.out)}: the clip's out point is null or a program-seconds value not less than in`);
+  if (!project.look.tracks || typeof project.look.tracks !== 'object') {
+    throw new Error('a project look carries a tracks object, empty if nothing is keyed');
   }
-  if (!project.params || typeof project.params !== 'object') {
-    throw new Error('a project carries a params object');
+  if (!project.composition.retime || !Array.isArray(project.composition.retime.keys) || !Number.isFinite(project.composition.retime.rate) || project.composition.retime.rate <= 0) {
+    throw new Error('a project composition carries a retime with a positive rate and an array of keys');
   }
-  if (!project.tracks || typeof project.tracks !== 'object') {
-    throw new Error('a project carries a tracks object, empty if nothing is keyed');
-  }
-  if (!project.retime || !Array.isArray(project.retime.keys) || !Number.isFinite(project.retime.rate)) {
-    throw new Error('a project carries a retime with a numeric rate and an array of keys');
+  if (!Array.isArray(project.composition.camera)) {
+    throw new Error('a project composition carries a camera track as an array of keys');
   }
 
   // Built whole before anything is written, so a project that fails halfway leaves
@@ -2088,22 +2146,28 @@ function restoreProject(project) {
   // is what rejects a scalar that is a string, a step that is not a boolean and -
   // since this step - a quaternion that is not of unit length. Routing keys through
   // it is the whole of why a hand-edited camera track cannot reach `poseAt`.
-  const restoredTracks = [];
-  for (const [name, keys] of Object.entries(project.tracks)) {
-    if (!Array.isArray(keys)) throw new Error(`track ${name} is not an array of keys`);
+  const restoredLook = [];
+  for (const [name, keys] of Object.entries(project.look.tracks)) {
+    if (!Array.isArray(keys)) throw new Error(`look track ${name} is not an array of keys`);
     if (keys.length === 0) continue;
     // Names the registry does not know are refused rather than dropped. A track
     // silently discarded is an edit silently lost, and the file is more likely to
     // be from a build this one cannot read than to be harmlessly extra.
     params.spec(name);
-    restoredTracks.push([name, keys.map((k) => {
+    restoredLook.push([name, keys.map((k) => {
       const key = restoreKey(`track ${name}`, k);
       key.value = params.normalise(name, key.value);
       return key;
     })]);
   }
 
-  const restoredRetime = project.retime.keys.map((k) => {
+  const restoredCamera = project.composition.camera.map((k) => {
+    const key = restoreKey('track camera', k);
+    key.value = params.normalise('camera', key.value);
+    return key;
+  });
+
+  const restoredRetime = project.composition.retime.keys.map((k) => {
     const key = restoreKey('the retime curve', k);
     if (!Number.isFinite(key.value)) {
       throw new Error(`the retime key at ${key.t}s maps to ${JSON.stringify(key.value)}: source time is a number`);
@@ -2126,28 +2190,34 @@ function restoreProject(project) {
     throw new Error(`appliedPreset is ${JSON.stringify(stamp)}: it is null, or a name and a rev`);
   }
 
-  applyModeValue(project.mode);
-  params.apply(project.params);
+  // A saved project may carry its undo history. Undo snapshots and render jobs do
+  // not, and this is the only place a file arrives with one, so it is restored here.
+  if (project.history !== undefined) {
+    if (!project.history || typeof project.history !== 'object' || !Array.isArray(project.history.stack)) {
+      throw new Error('a project history is an object with a stack array');
+    }
+    if (project.history.baseline !== null && typeof project.history.baseline !== 'string') {
+      throw new Error('a project history baseline is a string or null');
+    }
+  }
+
+  applyModeValue(project.look.mode);
+  params.apply(project.look.params);
   appliedPreset = stamp;
 
   tracks.clear();
-  for (const [name, keys] of restoredTracks) trackFor(name).keys = keys;
+  for (const [name, keys] of restoredLook) trackFor(name).keys = keys;
+  trackFor('camera').keys = restoredCamera;
 
-  retime.rate = project.retime.rate;
+  retime.rate = project.composition.retime.rate;
   retime.keys = restoredRetime;
 
-  if (timeline && timeline.outputFps !== project.outputFps) {
-    // The playhead is not part of the document, so an undo that changed the output
-    // rate has to keep it where it is - and the playhead is an integer output
-    // frame, so leaving the frame number alone would move it in seconds. Held in
-    // program seconds across the change, which is the coordinate that means
-    // anything here, and rounded back onto the new grid.
-    const held = timeline.programSec;
-    timeline.outputFps = project.outputFps;
-    timeline.frame = timeline.frameAt(held);
-  }
   timingChanged();
-  setClipInOut({ in: project.in ?? 0, out: project.out ?? null });
+
+  if (project.history) {
+    history.stack = [...project.history.stack];
+    history.baseline = project.history.baseline;
+  }
 }
 
 // Whole snapshots rather than a command stack, and the argument is that this one
@@ -2175,7 +2245,7 @@ const history = {
 
   get depth() { return this.stack.length; },
 
-  snapshot() { return JSON.stringify(serialiseProject()); },
+  snapshot() { return JSON.stringify(serialiseProjectBody()); },
 
   /** Starts the stack from whatever the clip already is. */
   begin() {
@@ -2197,6 +2267,21 @@ const history = {
     // that waited for a repaint would sit one level behind for as long as nothing
     // else moved.
     paintUndoCount();
+    // Auto-save the project after every change. Fire-and-forget: a failed save is
+    // logged in the UI but it must not block the interaction that caused it.
+    const workingBody = { ...serialiseProject(), take: { id: openTakeId, hash: openTakeHash } };
+    fetch('/projects/__working__', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(workingBody),
+    }).then(async (res) => {
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        ui.note.textContent = `auto-save failed: ${text.slice(0, 80)}`;
+      }
+    }).catch((err) => {
+      ui.note.textContent = `auto-save failed: ${err.message}`;
+    });
     return true;
   },
 
@@ -4045,12 +4130,21 @@ const rendererClass = () => {
  * because every screen-space term is resolution-relative now - that is the whole
  * reason this step comes after the one above it.
  */
+function parseSize(text) {
+  const [w, h] = String(text).split('x').map(Number);
+  return { w: w > 0 ? w : 0, h: h > 0 ? h : 0 };
+}
+
 async function exportClip(options = {}) {
   if (!timeline) throw new Error('there is no clip open to export');
   if (exporting) throw new Error('an export is already running');
-  const width = Math.trunc(options.width ?? 1920);
-  const height = Math.trunc(options.height ?? 1080);
-  const fps = options.fps ?? timeline.outputFps;
+  ensureActiveDeliverable();
+  const d = activeDeliverable;
+  const deliverableSize = parseSize(options.outputSize ?? d.outputSize ?? `${targetSize.w}x${targetSize.h}`);
+  const width = Math.trunc(options.width ?? deliverableSize.w);
+  const height = Math.trunc(options.height ?? deliverableSize.h);
+  const fps = options.fps ?? d.outputFps ?? timeline.outputFps;
+  const codec = options.codec ?? d.codec ?? 'h264';
 
   const restore = {
     outputFps: timeline.outputFps,
@@ -4065,8 +4159,10 @@ async function exportClip(options = {}) {
     // The rate first, because the frame grid every position below is named in is
     // the output rate's grid.
     timeline.outputFps = fps;
-    const inFrame = timeline.frameAt(Number(clipIn) || 0);
-    const outFrame = timeline.frameAt(clipOut === null ? timeline.duration : clipOut);
+    const inSec = options.in !== undefined ? options.in : d.in;
+    const outSec = options.out !== undefined ? options.out : d.out;
+    const inFrame = timeline.frameAt(Number(inSec) || 0);
+    const outFrame = timeline.frameAt(outSec === null ? timeline.duration : outSec);
     const from = Math.max(inFrame, Math.min(outFrame, Math.trunc(options.from ?? inFrame)));
     const to = Math.max(inFrame, Math.min(outFrame, Math.trunc(options.to ?? outFrame)));
     if (to < from) throw new Error(`an export of frames ${from}..${to} has nothing in it`);
@@ -4099,13 +4195,13 @@ async function exportClip(options = {}) {
       height,
       fps,
       frames: to - from + 1,
-      codec: options.codec ?? 'h264',
+      codec,
       // A job is a project file plus a capture named by content hash plus output
       // settings, and it records the renderer class it was made on. There is one
       // render machine today so the field constrains nothing - but a job record
       // without it cannot be retrofitted once old jobs exist, and provenance is
       // exactly what is wanted on the day two workers disagree about an image.
-      project: serialiseProject(),
+      project: serialiseProjectBody(),
       capture: timeline.source.index.hash,
       renderer: rendererClass(),
     });
@@ -4161,6 +4257,9 @@ const ui = {
   exportSize: buildExportMenu(document.getElementById('tExportSize')),
   exportGo: document.getElementById('tExport'),
   exportNote: document.getElementById('tExportNote'),
+  deliverable: document.getElementById('tDeliverable'),
+  deliverableNew: document.getElementById('tDeliverableNew'),
+  deliverableReadout: document.getElementById('tDeliverableReadout'),
   marks: document.getElementById('tMarks'),
   markCount: document.getElementById('tMarkCount'),
   mark: document.getElementById('tMark'),
@@ -4236,6 +4335,17 @@ function paintUndoCount() {
   ui.undo.textContent = String(history.depth);
 }
 
+function paintDeliverable() {
+  if (!ui.deliverableReadout) return;
+  if (!activeDeliverable) {
+    ui.deliverableReadout.textContent = 'none';
+    return;
+  }
+  const out = activeDeliverable.out ?? rulerDuration();
+  const outStr = activeDeliverable.out === null ? 'end' : timecode(out);
+  ui.deliverableReadout.textContent = `${activeDeliverable.outputSize} @ ${activeDeliverable.outputFps}fps ${activeDeliverable.codec} [${timecode(activeDeliverable.in)} - ${outStr}]`;
+}
+
 function paintTimeline(t) {
   const program = t.programSec;
   ui.play.textContent = t.playing ? '❙❙' : '▶';
@@ -4263,6 +4373,7 @@ function paintTimeline(t) {
     ? `${(t.behindMs / 1000).toFixed(1)}s behind`
     : '';
   paintUndoCount();
+  paintDeliverable();
   paintLanes();
   // Editor furniture - the camera path, its nodes and the top-down - is drawn
   // here rather than inside `renderProgramFrame`, and the distinction is not
@@ -4474,7 +4585,11 @@ ui.rate.addEventListener('change', () => history.commit());
 ui.fps.addEventListener('change', () => {
   if (!timeline) return;
   const held = timeline.programSec;
-  timeline.outputFps = Number(ui.fps.value);
+  const fps = Number(ui.fps.value);
+  timeline.outputFps = fps;
+  ensureActiveDeliverable();
+  activeDeliverable.outputFps = fps;
+  paintDeliverable();
   const wasPlaying = timeline.playing;
   timeline.pause();
   timingChanged();
@@ -4860,7 +4975,7 @@ let appliedPreset = null;
  * the registry subset instead of assuming the subset is the whole preset.
  */
 function presetFromCurrentLook(names) {
-  return { mode: clipMode, values: params.values(names ?? params.names('look')) };
+  return { version: PROJECT_VERSION, mode: clipMode, values: params.values(names ?? params.names('look')) };
 }
 
 /**
@@ -4903,6 +5018,26 @@ async function refreshProjects() {
   ui.project.replaceChildren(new Option('—', ''));
   for (const doc of list) ui.project.appendChild(new Option(doc.name, doc.name));
   return list;
+}
+
+async function refreshDeliverables() {
+  const list = await documentsIn('deliverables');
+  const current = ui.deliverable.value;
+  ui.deliverable.replaceChildren(new Option('—', ''));
+  for (const doc of list) ui.deliverable.appendChild(new Option(doc.name, doc.name));
+  if (list.some((d) => d.name === current)) ui.deliverable.value = current;
+  return list;
+}
+
+async function saveDeliverable(name, deliverable) {
+  const res = await fetch(`/deliverables/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(deliverable),
+  });
+  const saved = await res.json();
+  if (saved.error) throw new Error(saved.error);
+  return saved;
 }
 
 // ------------------------------------------------------- dragging keys and handles
@@ -5498,13 +5633,11 @@ ui.camClear.addEventListener('click', () => {
 // the answers too.
 ui.exportGo.addEventListener('click', async () => {
   if (exporting) return;
-  const [width, height] = ui.exportSize.value.split('x').map(Number);
   ui.exportGo.disabled = true;
-  sayExport(`export ${width}x${height} starting`);
+  const { outputSize } = activeDeliverable || {};
+  sayExport(`export ${outputSize ?? '1920x1080'} starting`);
   try {
     const done = await exportClip({
-      width,
-      height,
       onProgress: (n, total) => {
         sayExport(`export ${Math.round((n / total) * 100)}% · frame ${n}/${total}`);
       },
@@ -5523,7 +5656,7 @@ ui.exportGo.addEventListener('click', async () => {
 
 // Changing the export size reframes the editor, because the point of letterboxing
 // the stage is that the two are never allowed to disagree.
-ui.exportSize.addEventListener('change', () => setTargetSize(ui.exportSize.value));
+ui.exportSize.addEventListener('change', () => { setTargetSize(ui.exportSize.value); history.commit(); });
 setTargetSize(DEFAULT_EXPORT_SIZE, { fromDocument: true });
 
 ui.mark.addEventListener('click', () => { markHere().catch(showTimelineError); });
@@ -5598,6 +5731,34 @@ ui.projectOpen.addEventListener('click', async () => {
   }
 });
 
+ui.deliverable.addEventListener('change', async () => {
+  const name = ui.deliverable.value;
+  if (!name) return;
+  try {
+    const doc = await (await fetch(`/deliverables/${encodeURIComponent(name)}`)).json();
+    if (doc.error) throw new Error(doc.error);
+    applyDeliverable(doc.body);
+    history.commit();
+    ui.note.textContent = `deliverable ${name}`;
+  } catch (err) {
+    showTimelineError(err);
+  }
+});
+
+ui.deliverableNew.addEventListener('click', async () => {
+  const name = prompt('name this deliverable', `deliverable-${Date.now()}`);
+  if (!name) return;
+  ensureActiveDeliverable();
+  try {
+    await saveDeliverable(name, activeDeliverable);
+    await refreshDeliverables();
+    ui.deliverable.value = name;
+    ui.note.textContent = `saved deliverable ${name}`;
+  } catch (err) {
+    showTimelineError(err);
+  }
+});
+
 /**
  * Loads a project file onto the open take. This is the untrusted door: everything
  * before now came from a state this page had already vetted, and a file has not.
@@ -5627,10 +5788,20 @@ async function loadProjectNamed(name) {
   const resume = timeline ? timeline.playing : false;
   if (resume) timeline.pause();
   restoreProject(doc.body);
-  // The stack restarts from the loaded document rather than keeping the previous
-  // clip's history. Undoing across a project load would walk back into an edit of
-  // something else, which is the shape of undo people learn not to trust.
-  history.begin();
+  // The stack is restored from the file when it was saved; otherwise it restarts
+  // from the loaded document. Undoing across a project load would walk back into an
+  // edit of something else, which is the shape of undo people learn not to trust.
+  if (doc.body.history) {
+    history.stack = [...doc.body.history.stack];
+    history.baseline = doc.body.history.baseline;
+  } else {
+    history.begin();
+  }
+  paintUndoCount();
+  // A freshly loaded project gets a default deliverable unless one is already
+  // selected, so export always has a target.
+  ensureActiveDeliverable();
+  applyDeliverable(activeDeliverable);
   await timeline.seek(timeline.programSec);
   if (resume) timeline.play();
   ui.project.value = name;
@@ -5823,6 +5994,9 @@ async function openTake(id) {
   await loadMarks(id);
   await refreshPresets().catch(() => {});
   await refreshProjects().catch(() => {});
+  await refreshDeliverables().catch(() => {});
+  ensureActiveDeliverable();
+  applyDeliverable(activeDeliverable);
   timingChanged();
   // The stack starts from whatever the clip already is, so the first undo has
   // somewhere honest to land rather than an empty document.
@@ -6054,9 +6228,12 @@ globalThis.__kinect = {
     PROJECT_VERSION,
     restoreProject,
     serialiseProject,
+    serialiseProjectBody,
     loadProject: loadProjectNamed,
     applyStoredPreset,
     presetFromCurrentLook,
+    setActiveDeliverable,
+    activeDeliverable: () => activeDeliverable,
     appliedPreset: () => appliedPreset,
     marks: () => takeMarks.map((m) => ({ ...m })),
     markHere,

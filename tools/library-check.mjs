@@ -325,7 +325,7 @@ const MUTATIONS = {
     "  { path: '/library/writes', pattern: /^\\/library\\/writes$/, read: serveWriteCounts },",
     "  { path: '/library/writes', pattern: /^\\/library\\/writes$/, read: serveWriteCounts },\n"
     + "  { path: '/library/sweep-probe', pattern: /^\\/library\\/sweep-probe$/, read: async (req, res) => {\n"
-    + "    await PROJECTS.write('planted-then-removed', { version: 1, body: {} });\n"
+    + "    await PROJECTS.write('planted-then-removed', { version: 3, look: { mode: 0, params: {}, tracks: {} }, composition: { retime: { rate: 1, keys: [] }, camera: [] }, outputSize: '1920x1080', appliedPreset: null });\n"
     + "    await PROJECTS.remove('planted-then-removed');\n"
     + '    sendJson(res, { restored: true });\n'
     + '  } },',
@@ -402,7 +402,7 @@ const MUTATIONS = {
   // The document store restamps the version instead of checking it, so a project
   // from a build this one is not lands looking like one this build wrote.
   'store-restamps-version': { file: 'server/library.js', edits: [[
-    '    if (body?.version !== undefined && body.version !== PROJECT_VERSION) {',
+    '    if (body?.version !== undefined && body.version !== this.version) {',
     '    if (false) {',
   ]] },
   // A replay server records. The frames come off a file on a loop, so their stamps
@@ -1806,7 +1806,7 @@ async function runChecks() {
     // The saved file is a file on disk with a version on it, not a blob the page
     // interprets for itself.
     const saved = JSON.parse(readFileSync(join(WORK, 'projects/round-trip.json'), 'utf8'));
-    check(saved.version === 2, 'the file carries the format version', `version ${saved.version}`);
+    check(saved.version === 3, 'the file carries the format version', `version ${saved.version}`);
     check(JSON.parse(readFileSync(join(WORK, 'projects/own-footage.json'), 'utf8')).take?.hash?.startsWith('sha256:'),
       'and a project saved from the editor names its footage by content hash rather than by path');
 
@@ -1823,22 +1823,22 @@ async function runChecks() {
     const cases = [
       ['a project with no version', 'delete p.version;'],
       ['a project from an older version', 'p.version = 0;'],
-      ['a project from a newer version', 'p.version = 3;'],
+      ['a project from a newer version', 'p.version = 4;'],
       ['a version that is not a number', 'p.version = "1";'],
-      ['a retime curve that falls', 'p.retime.keys = [{t:0,value:0},{t:1,value:2},{t:2,value:0.5}];'],
+      ['a retime curve that falls', 'p.composition.retime.keys = [{t:0,value:0},{t:1,value:2},{t:2,value:0.5}];'],
       ['a retime handle outside the unit box',
-        'p.retime.keys = [{t:0,value:0,easeOut:[0.4,1.9],easeIn:[0.6,0]},{t:2,value:1,easeOut:[0.4,0],easeIn:[0.6,0]}];'],
+        'p.composition.retime.keys = [{t:0,value:0,easeOut:[0.4,1.9],easeIn:[0.6,0]},{t:2,value:1,easeOut:[0.4,0],easeIn:[0.6,0]}];'],
       ['a camera key whose quaternion is not unit length',
-        'p.tracks.camera = [{t:0,value:{position:[0,0,3],quaternion:[0,0,0,1.4],fov:55}},{t:1,value:{position:[1,0,3],quaternion:[0,0,0,1],fov:55}}];'],
+        'p.composition.camera = [{t:0,value:{position:[0,0,3],quaternion:[0,0,0,1.4],fov:55}},{t:1,value:{position:[1,0,3],quaternion:[0,0,0,1],fov:55}}];'],
       ['a camera key whose quaternion is all zeros',
-        'p.tracks.camera = [{t:0,value:{position:[0,0,3],quaternion:[0,0,0,0],fov:55}}];'],
+        'p.composition.camera = [{t:0,value:{position:[0,0,3],quaternion:[0,0,0,0],fov:55}}];'],
       ['a camera key with a short position',
-        'p.tracks.camera = [{t:0,value:{position:[0,0],quaternion:[0,0,0,1],fov:55}}];'],
+        'p.composition.camera = [{t:0,value:{position:[0,0],quaternion:[0,0,0,1],fov:55}}];'],
       ['a camera key whose fov is NaN',
-        'p.tracks.camera = [{t:0,value:{position:[0,0,3],quaternion:[0,0,0,1],fov:NaN}}];'],
-      ['a scalar key that is a string', 'p.tracks.bloom = [{t:0,value:"0.5"}];'],
-      ['a scalar key that is null', 'p.tracks.bloom = [{t:0,value:null}];'],
-      ['a key at an undefined time', 'p.tracks.bloom = [{t:undefined,value:0.5}];'],
+        'p.composition.camera = [{t:0,value:{position:[0,0,3],quaternion:[0,0,0,1],fov:NaN}}];'],
+      ['a scalar key that is a string', 'p.look.tracks.bloom = [{t:0,value:"0.5"}];'],
+      ['a scalar key that is null', 'p.look.tracks.bloom = [{t:0,value:null}];'],
+      ['a key at an undefined time', 'p.look.tracks.bloom = [{t:undefined,value:0.5}];'],
       // **The registry's door, probed where the answer is different.** The one name
       // this list used to try was `nosuchthing`, which is the case the code handled
       // correctly - a probe placed exactly where the wrong implementation agrees
@@ -1848,8 +1848,8 @@ async function runChecks() {
       // a function and made NaN out of undefined, and the page threw mid-render -
       // a failure inside the evaluator rather than a decision at the door, which is
       // the whole class the door exists for.
-      ['a track the registry does not know', 'p.tracks.nosuchthing = [{t:0,value:1}];'],
-      // `p.tracks.__proto__ = x` sets the *prototype* and creates no own property at
+      ['a track the registry does not know', 'p.look.tracks.nosuchthing = [{t:0,value:1}];'],
+      // `p.look.tracks.__proto__ = x` sets the *prototype* and creates no own property at
       // all, so `Object.entries` never sees it and the loader is handed an unchanged
       // document - a probe placed exactly where the wrong implementation and the
       // right one agree, which is the trap this repo already has two entries for.
@@ -1857,16 +1857,16 @@ async function runChecks() {
       // there when a file on disk literally contains `"__proto__": [...]`, which is
       // the shape this arrives in.
       ['a track named __proto__',
-        "Object.defineProperty(p.tracks, '__proto__', { value: [{t:0,value:1}], enumerable: true, configurable: true, writable: true });"],
-      ['a track named constructor', 'p.tracks.constructor = [{t:0,value:1}];'],
-      ['a track named toString', 'p.tracks.toString = [{t:0,value:1}];'],
-      ['a track named valueOf', 'p.tracks.valueOf = [{t:0,value:1}];'],
-      ['a track named hasOwnProperty', 'p.tracks.hasOwnProperty = [{t:0,value:1}];'],
-      ['a parameter named constructor in the values', 'p.params.constructor = 1;'],
+        "Object.defineProperty(p.look.tracks, '__proto__', { value: [{t:0,value:1}], enumerable: true, configurable: true, writable: true });"],
+      ['a track named constructor', 'p.look.tracks.constructor = [{t:0,value:1}];'],
+      ['a track named toString', 'p.look.tracks.toString = [{t:0,value:1}];'],
+      ['a track named valueOf', 'p.look.tracks.valueOf = [{t:0,value:1}];'],
+      ['a track named hasOwnProperty', 'p.look.tracks.hasOwnProperty = [{t:0,value:1}];'],
+      ['a parameter named constructor in the values', 'p.look.params.constructor = 1;'],
       ['a parameter named __proto__ in the values',
-        "Object.defineProperty(p.params, '__proto__', { value: 1, enumerable: true, configurable: true, writable: true });"],
-      ['a mode outside the modes that exist', 'p.mode = 9;'],
-      ['an output rate of zero', 'p.outputFps = 0;'],
+        "Object.defineProperty(p.look.params, '__proto__', { value: 1, enumerable: true, configurable: true, writable: true });"],
+      ['a mode outside the modes that exist', 'p.look.mode = 9;'],
+      ['a retime rate of zero or less', 'p.composition.retime.rate = 0;'],
       ['a preset stamp that is not a name and a rev', 'p.appliedPreset = { name: 42 };'],
     ];
     const results = [];
@@ -1948,7 +1948,7 @@ async function runChecks() {
 
     const onDisk = readFileSync(join(WORK, 'presets/hand-tuned.json'), 'utf8');
     const doc = JSON.parse(onDisk);
-    check(doc.version === 2, 'a preset carries the format version too');
+    check(doc.version === 3, 'a preset carries the format version too');
     // Step 3's carried note: the registry excludes the mode as clip state, so a
     // preset saved as `values(names('look'))` alone would neither capture nor
     // restore it - and the spec lists mode first among presettable look.
@@ -2459,11 +2459,12 @@ async function runChecks() {
     const shootDir = join(WORK, 'guard-shooting');
     const shootProjects = join(WORK, 'guard-shooting-projects');
     const shootPresets = join(WORK, 'guard-shooting-presets');
-    for (const d of [shootDir, shootProjects, shootPresets]) {
+    const shootDeliverables = join(WORK, 'guard-shooting-deliverables');
+    for (const d of [shootDir, shootProjects, shootPresets, shootDeliverables]) {
       rmSync(d, { recursive: true, force: true });
       mkdirSync(d, { recursive: true });
     }
-    // **All five stores, and a closed take beside the open one.** The read sweep
+    // **All six stores, and a closed take beside the open one.** The read sweep
     // below used to spawn this server on the default document directories, which put
     // `projects/` and `presets/` outside the one directory it snapshotted - so three
     // of the library's five stores were unobserved, and a route registered as a
@@ -2481,11 +2482,19 @@ async function runChecks() {
     // Seeded documents, so `/projects/:name` and `/presets/:name` run their found
     // path as well as their not-found one - a mutation in the branch that reads an
     // existing document is unreached by a name that does not exist.
-    writeFileSync(join(shootProjects, 'seeded-project.json'), `${JSON.stringify({ version: 2, body: {} }, null, 2)}\n`);
-    writeFileSync(join(shootPresets, 'seeded-preset.json'), `${JSON.stringify({ version: 2, body: {} }, null, 2)}\n`);
+    const SEEDED_PROJECT = {
+      version: 3,
+      look: { mode: 0, params: {}, tracks: {} },
+      composition: { retime: { rate: 1, keys: [] }, camera: [] },
+      outputSize: '1920x1080',
+      appliedPreset: null,
+    };
+    writeFileSync(join(shootProjects, 'seeded-project.json'), `${JSON.stringify(SEEDED_PROJECT, null, 2)}\n`);
+    writeFileSync(join(shootPresets, 'seeded-preset.json'), `${JSON.stringify({ version: 3, mode: 0, values: {} }, null, 2)}\n`);
     const shootUrl = await startServer(root, [
       '--captures', shootDir, '--name', 'shooting', '--record', '--no-color',
       '--projects', shootProjects, '--presets', shootPresets,
+      '--deliverables', shootDeliverables,
       '--grabber', `${join(REPO, 'tools/fake-grabber.mjs')} --source ${SAMPLE} --fps 40`,
     ], MAC_PORT + 9);
     let shooting = null;
@@ -2547,11 +2556,13 @@ async function runChecks() {
       captures: snapshotDir(shootDir, `${shooting.takeId}.knct`),
       projects: snapshotDir(shootProjects),
       presets: snapshotDir(shootPresets),
+      deliverables: snapshotDir(shootDeliverables),
       // Revisions rather than names, and they are the stores' own: `DocumentStore.list`
       // hashes the bytes on disk, so a plant that overwrites a document that is
       // already there moves this where a listing of filenames would not.
       projectRevs: (await getJson(`${shootUrl}/projects`)).projects?.map((d) => `${d.name}=${d.rev}`) ?? null,
       presetRevs: (await getJson(`${shootUrl}/presets`)).presets?.map((d) => `${d.name}=${d.rev}`) ?? null,
+      deliverableRevs: (await getJson(`${shootUrl}/deliverables`)).deliverables?.map((d) => `${d.name}=${d.rev}`) ?? null,
       recorder: await getJson(`${shootUrl}/record/state`).then((s) => `${s.recording}:${s.takeId}:${s.dropped}`),
     });
     const descriptorsNow = async () => (await getJson(`${shootUrl}/library/descriptors`)).real;
@@ -2684,10 +2695,10 @@ async function runChecks() {
 
     // A document from a build this one is not. It came back stamped as version 1
     // with its version 2 fields underneath, which is exactly what the version field
-    // was chosen over an authored buffer height to prevent. Version 2 is this build,
-    // so the future is now version 3.
-    const future = await post(`${guardUrl}/projects/from-the-future`, { version: 3, tracks: {}, futureField: 'kept' });
-    check(/version 3/.test(future.error ?? ''),
+    // was chosen over an authored buffer height to prevent. Version 3 is this build,
+    // so the future is now version 4.
+    const future = await post(`${guardUrl}/projects/from-the-future`, { version: 4, tracks: {}, futureField: 'kept' });
+    check(/version 4/.test(future.error ?? ''),
       'a document from a future format version is refused rather than restamped as this one',
       (future.error ?? 'ACCEPTED').slice(0, 80));
     const stored = await getJson(`${guardUrl}/projects/from-the-future`);

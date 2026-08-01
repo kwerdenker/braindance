@@ -148,6 +148,7 @@ const captureAliases = new Map();
 // which is exactly the shoot where the operator cannot go and fix it.
 const PROJECTS = new DocumentStore(resolve(flag('--projects', join(ROOT, 'projects'))), 'project');
 const PRESETS = new DocumentStore(resolve(flag('--presets', join(ROOT, 'presets'))), 'preset');
+const DELIVERABLES = new DocumentStore(resolve(flag('--deliverables', join(CAPTURES_DIR, '..', 'deliverables'))), 'deliverable', 1);
 // The render queue's records. A flag for the same reason the document stores take
 // one: a capture node and an editing machine are the same program, and running
 // both on one host is how the two-machine behaviour gets tested at all.
@@ -868,7 +869,7 @@ function serveRoutes(req, res) {
  * only honest witness. Which one to trust is decided by what the failure can forge.
  */
 const serveWriteCounts = (req, res) => sendJson(res, {
-  projects: PROJECTS.writes, presets: PRESETS.writes, marks: markWriteCount(), jobs: JOBS.writes,
+  projects: PROJECTS.writes, presets: PRESETS.writes, deliverables: DELIVERABLES.writes, marks: markWriteCount(), jobs: JOBS.writes,
 });
 
 // ---- the render queue
@@ -1112,6 +1113,13 @@ const ROUTES = [
     pattern: /^\/presets\/([^/]+)$/,
     read: (req, res, args) => readDocument(res, PRESETS, args[0]),
     write: { methods: ['PUT', 'POST', 'DELETE'], run: (req, res, args) => writeDocument(req, res, PRESETS, args[0]) },
+  },
+  { path: '/deliverables', pattern: /^\/deliverables\/?$/, read: (req, res) => listDocuments(res, DELIVERABLES) },
+  {
+    path: '/deliverables/:name',
+    pattern: /^\/deliverables\/([^/]+)$/,
+    read: (req, res, args) => readDocument(res, DELIVERABLES, args[0]),
+    write: { methods: ['PUT', 'POST', 'DELETE'], run: (req, res, args) => writeDocument(req, res, DELIVERABLES, args[0]) },
   },
 
   // ---- recording

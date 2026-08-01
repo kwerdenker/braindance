@@ -210,6 +210,11 @@ try {
         // carries the body, which the queue checks at enqueue - so this hands over
         // exactly one shape rather than guessing between two.
         globalThis.__kinect.library.restoreProject(j.project);
+        // A job may now also carry a deliverable. If it does, the worker adopts it
+        // as the active deliverable and lets `exportClip` resolve the export
+        // settings from there. Older jobs carry explicit width/height/fps/codec and
+        // still need to work, so those override when no deliverable is present.
+        if (j.deliverable) globalThis.__kinect.library.setActiveDeliverable(j.deliverable);
         // **Settled before exporting, or the restore's own repaint lands inside
         // the export's first seek.** `ExportTransport` counts how many times each
         // program position reaches the sink and throws on anything but one,
@@ -235,7 +240,13 @@ try {
         await transport.seek(transport.programSec);
         await globalThis.__kinect.timeline.settled();
         return globalThis.__kinect.export.run({
-          name: j.output, width: j.width, height: j.height, fps: j.fps, codec: j.codec,
+          name: j.output,
+          width: j.width,
+          height: j.height,
+          fps: j.fps,
+          codec: j.codec,
+          in: j.deliverable?.in,
+          out: j.deliverable?.out,
         });
       }, job);
       if (errors.length) throw new Error(`the page errored during the render: ${errors[0]}`);

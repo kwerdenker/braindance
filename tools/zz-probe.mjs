@@ -179,8 +179,10 @@ if (MUTATE) {
 
 const caps = join(WORK, 'captures');
 const jobsDir = join(WORK, 'jobs');
+const deliverablesDir = join(WORK, 'deliverables');
 const exportsDir = join(root, 'exports');
 mkdirSync(caps, { recursive: true });
+mkdirSync(deliverablesDir, { recursive: true });
 if (!existsSync(SAMPLE)) {
   console.error(`no capture at ${SAMPLE} - this check needs one take to render`);
   process.exit(2);
@@ -203,7 +205,8 @@ const startServer = async () => {
     // A render worker's server has no live source by construction: it renders
     // takes off disk. The `--replay` here was copied from the checks that need a
     // stream and was making the fixture contend with the thing under test.
-    '--projects', join(WORK, 'projects'), '--presets', join(WORK, 'presets')],
+    '--projects', join(WORK, 'projects'), '--presets', join(WORK, 'presets'),
+    '--deliverables', deliverablesDir],
   { stdio: ['ignore', 'pipe', 'pipe'] });
   servers.push(child);
   const log = [];
@@ -240,15 +243,26 @@ const HASH_A = `sha256:${'a'.repeat(64)}`;
 // rev; the first draft used `mode: 'rgb'` and failed the render row while every
 // queue row passed, which is a check reporting the wrong thing broken.
 const PROJECT = {
-  version: 2,
-  mode: 0,
+  version: 3,
+  look: {
+    mode: 0,
+    params: {},
+    tracks: {},
+  },
+  composition: {
+    retime: { rate: 1, keys: [] },
+    camera: [],
+  },
+  outputSize: '1920x1080',
+  appliedPreset: null,
+};
+const DELIVERABLE = {
+  version: 1,
   in: 0,
   out: null,
   outputFps: 30,
-  params: {},
-  tracks: {},
-  retime: { rate: 1, keys: [] },
-  appliedPreset: null,
+  outputSize: '640x400',
+  codec: 'h264',
 };
 // **The default output is unique per call, and that is load bearing.**
 // It used to be the constant `check`, so once the queue learned to refuse an
@@ -258,7 +272,7 @@ const PROJECT = {
 // neighbouring reason reads exactly like the one being tested.
 let outputSeq = 0;
 const enqueue = (over = {}) => post('/jobs', {
-  project: PROJECT, capture: HASH_A, output: `check${++outputSeq}`, width: 640, height: 400, fps: 30, ...over,
+  project: PROJECT, deliverable: DELIVERABLE, capture: HASH_A, output: `check${++outputSeq}`, width: 640, height: 400, fps: 30, ...over,
 });
 // And a refusal is asserted by what it says, not only by its status, for the same
 // reason: 400 is the answer to several different questions.

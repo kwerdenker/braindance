@@ -31,8 +31,10 @@ import { cachedIndex, forgetCapture, indexPathFor, captureIdFor, readHelloOnce }
 
 // A capture is addressed by id, and an id arrives off a URL or out of a node's
 // manifest, so it is checked against this before it is ever joined to a path. The
-// leading character rules out `..` on its own; the rest rules out a separator.
-export const VALID_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+// leading character rules out `..` on its own; the rest rules out a separator. An
+// underscore is allowed so the editor's reserved auto-save name `__working__` is
+// a valid document name.
+export const VALID_ID = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 
 // One constant, shared with the page rather than restated here. See web/format.js
 // for what version 1 means and why it is a version rather than an authored buffer
@@ -526,9 +528,10 @@ export async function removeTake(dir, id, { hash, verifiedElsewhere = null }) {
  * two that drift.
  */
 export class DocumentStore {
-  constructor(dir, kind) {
+  constructor(dir, kind, version = PROJECT_VERSION) {
     this.dir = dir;
     this.kind = kind;
+    this.version = version;
     // Every write and every removal this store has ever done. Monotonic, never
     // reset, and the reason it exists is `markWriteCount` above: a handler that
     // writes and puts the bytes back is invisible to a before-and-after reading of
@@ -600,10 +603,10 @@ export class DocumentStore {
    * something that was never saved.
    */
   async write(name, body) {
-    if (body?.version !== undefined && body.version !== PROJECT_VERSION) {
+    if (body?.version !== undefined && body.version !== this.version) {
       throw new Error(
         `this ${this.kind} says version ${JSON.stringify(body.version)}, and this build writes `
-        + `version ${PROJECT_VERSION}: refused rather than restamped, because a document this build `
+        + `version ${this.version}: refused rather than restamped, because a document this build `
         + 'cannot faithfully interpret is exactly what the version field exists to catch',
       );
     }
@@ -615,7 +618,7 @@ export class DocumentStore {
     const path = this.pathFor(name);
     this.writes++;
     await mkdir(this.dir, { recursive: true });
-    const text = `${JSON.stringify({ ...body, version: PROJECT_VERSION }, null, 2)}\n`;
+    const text = `${JSON.stringify({ ...body, version: this.version }, null, 2)}\n`;
     await writeFile(`${path}.tmp`, text);
     await rename(`${path}.tmp`, path);
     return { name, rev: `sha256:${createHash('sha256').update(text).digest('hex')}`, bytes: text.length };
