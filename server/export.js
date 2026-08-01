@@ -20,7 +20,7 @@
 
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, writeFile, stat, unlink, rename } from 'node:fs/promises';
+import { mkdir, writeFile, stat, rm, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 
 // Absolute rather than resolved off PATH: this is the encoder the export was
@@ -153,15 +153,17 @@ export function handleExportSocket(ws, { outDir, log = console.log }) {
     send({ error: message });
     if (child && child.exitCode === null) child.kill('SIGKILL');
     // A killed encoder leaves a file that opens and is not a video, so it goes -
-    // but the only file this run may remove is the scratch file it wrote itself.
-    // Reaching for `job.output` here was a real bug with an ordinary path into it:
-    // the export name defaults to the take's id, so "tweak the look and export
-    // again" reuses it, and a second run that died after a frame deleted the good
-    // file from the first while leaving that run's sidecar behind - a job record
-    // asserting a successful export of a path with nothing at it. It did not need
-    // the encode to fail either: an ffmpeg that never spawned took the same branch
-    // and deleted a file this run had not written a byte of.
-    if (job) await unlink(job.temp).catch(() => {});
+    // but the only files this run may remove are the ones in its own scratch
+    // directory. Reaching for `job.output` here was a real bug with an ordinary
+    // path into it: the export name defaults to the take's id, so "tweak the look
+    // and export again" reuses it, and a second run that died after a frame deleted
+    // the good file from the first while leaving that run's sidecar behind - a job
+    // record asserting a successful export of a path with nothing at it. It did not
+    // need the encode to fail either: an ffmpeg that never spawned took the same
+    // branch and deleted a file this run had not written a byte of. The scratch now
+    // lives in a per-export temp directory, so the whole directory is removed and
+    // nothing outside it is touched.
+    if (job) await rm(job.temp, { recursive: true, force: true }).catch(() => {});
     ws.close();
   };
 
@@ -173,25 +175,25 @@ export function handleExportSocket(ws, { outDir, log = console.log }) {
 
     await mkdir(outDir, { recursive: true });
     const ext = CODECS[codec].ext;
-    const output = join(outDir, `${msg.name}.${ext}`);
+    // A unique directory per export makes `rename(temp, final)` target a fresh
+    // path, so the video and its sidecar land together without replacing any
+    // existing artifact. The requested name is the base for both the directory
+    // and the file inside it.
+    const dirName = `${msg.name}.${process.pid}-${++sequence}`;
+    const outputDir = join(outDir, dirName);
+    const output = join(outputDir, `${msg.name}.${ext}`);
     const frameBytes = width * height * 4;
-    // The encoder writes beside the output and never onto it. `finish` renames the
-    // scratch file into place once ffmpeg has exited 0, so an export either
-    // replaces the previous one entirely or leaves it exactly as it was - and a
-    // failed run has nothing to reach for, which is what makes the "do not delete
-    // what you did not write" rule in `fail` structural rather than remembered.
-    // The extension is carried into the scratch name because it is how ffmpeg
-    // picks the muxer; naming it `.part` alone would make the command line depend
-    // on an `-f` this file has never needed.
-    const temp = join(outDir, `${msg.name}.${process.pid}-${++sequence}.part.${ext}`);
+    const temp = join(outDir, `${dirName}.part`);
+    const scratchFile = join(temp, `${msg.name}.${ext}`);
     job = {
-      width, height, fps, frames, codec, frameBytes, output, temp, began: Date.now(),
+      width, height, fps, frames, codec, frameBytes, output, outputDir, temp, scratchFile, name: msg.name, began: Date.now(),
       project: msg.project ?? null,
       capture: msg.capture ?? null,
       renderer: msg.renderer ?? null,
     };
 
-    const args = ffmpegArgs({ width, height, fps, codec, into: temp });
+    await mkdir(temp, { recursive: true });
+    const args = ffmpegArgs({ width, height, fps, codec, into: scratchFile });
     log(`[export] ${FFMPEG} ${args.join(' ')}`);
     child = spawn(FFMPEG, args, { stdio: ['pipe', 'ignore', 'pipe'] });
     child.stderr.on('data', (chunk) => stderr.push(chunk.toString('utf8')));
@@ -262,7 +264,7 @@ export function handleExportSocket(ws, { outDir, log = console.log }) {
 
   const finish = async () => {
     if (finished) return;
-    const st = await stat(job.temp);
+    const st = await stat(job.scratchFile);
     // The renderer class travels with the job from the very first one. There is a
     // single render machine today so the field constrains nothing - but a job
     // record without it cannot be retrofitted once old jobs exist, and provenance
@@ -279,23 +281,21 @@ export function handleExportSocket(ws, { outDir, log = console.log }) {
       codec: job.codec,
       created: new Date(job.began).toISOString(),
     };
-    // The sidecar is written beside the scratch file and renamed with it, so the
-    // record and the video it describes become one outcome. Written before
-    // anything moves and renamed after the video, because the failure to leave
-    // room for is a record that outlives the file it names: that is the shape the
-    // old code shipped, where a dead run deleted the video and left the previous
-    // run's job.json asserting a successful export of a path with nothing at it.
-    // Both renames are within `outDir`, so each is atomic; the window between them
-    // is two syscalls on the same directory and the video is the one that lands
-    // first.
-    await writeFile(`${job.temp}.job.json`, `${JSON.stringify(record, null, 2)}\n`);
-    // Past this line nothing may remove the scratch file, because the next two
-    // statements are what turn it into the output. Before it, a throw in the stat
-    // or the write still reaches `fail`, which cleans the scratch file up and
-    // tells the browser.
+    // The sidecar is written inside the scratch directory, and then the whole
+    // directory is renamed to the final unique directory. A directory rename is
+    // one syscall on the same filesystem, so the video and its record land
+    // together; there is no window in which one exists and the other does not.
+    // Because the final directory is unique per export, the rename never replaces
+    // an existing artifact, and a failed run still reaches `fail` which removes
+    // only the scratch directory.
+    const sidecar = join(job.temp, `${job.name}.${CODECS[job.codec].ext}.job.json`);
+    await writeFile(sidecar, `${JSON.stringify(record, null, 2)}\n`);
+    // Past this line nothing may remove the scratch directory, because the next
+    // statement is what turns it into the output. Before it, a throw in the stat
+    // or the write still reaches `fail`, which cleans the scratch directory up
+    // and tells the browser.
     finished = true;
-    await rename(job.temp, job.output);
-    await rename(`${job.temp}.job.json`, `${job.output}.job.json`);
+    await rename(job.temp, job.outputDir);
     const elapsed = Date.now() - job.began;
     log(`[export] ${job.output} ${job.frames} frames ${(st.size / 1e6).toFixed(1)}MB in ${(elapsed / 1000).toFixed(1)}s`);
     send({

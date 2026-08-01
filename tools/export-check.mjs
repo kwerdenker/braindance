@@ -333,28 +333,19 @@ const MUTATIONS = {
   // good export left there and leaves that export's job.json describing a path
   // with nothing at it.
   'export-fail-unlinks-output': { file: 'server/export.js', edits: [
+    // Make every export to the same name target the same directory, so a failed
+    // run is able to destroy the previous good artifact. Without this the unique
+    // per-attempt directory is a fresh path and `fail` cannot reach anything but
+    // its own scratch.
     [
-      '    const args = ffmpegArgs({ width, height, fps, codec, into: temp });',
-      '    const args = ffmpegArgs({ width, height, fps, codec, into: output });',
+      `    const dirName = \`\${msg.name}.\${process.pid}-\${++sequence}\`;\n    const outputDir = join(outDir, dirName);\n    const output = join(outputDir, \`\${msg.name}.\${ext}\`);\n    const frameBytes = width * height * 4;\n    const temp = join(outDir, \`\${dirName}.part\`);`,
+      `    const outputDir = join(outDir, msg.name);\n    const output = join(outputDir, \`\${msg.name}.\${ext}\`);\n    const frameBytes = width * height * 4;\n    const temp = join(outDir, \`\${msg.name}.part\`);`,
     ],
+    // The regression: a failed run removes the final directory rather than its own
+    // scratch directory, so it deletes the previous good video and sidecar.
     [
-      '    if (job) await unlink(job.temp).catch(() => {});',
-      '    if (job) await unlink(job.output).catch(() => {});',
-    ],
-    [
-      '    const st = await stat(job.temp);',
-      '    const st = await stat(job.output);',
-    ],
-    [
-      `    await writeFile(\`\${job.temp}.job.json\`, \`\${JSON.stringify(record, null, 2)}\\n\`);`,
-      '    /* mutation: the record is written where finish used to write it */',
-    ],
-    [
-      `    finished = true;
-    await rename(job.temp, job.output);
-    await rename(\`\${job.temp}.job.json\`, \`\${job.output}.job.json\`);`,
-      `    finished = true;
-    await writeFile(\`\${job.output}.job.json\`, \`\${JSON.stringify(record, null, 2)}\\n\`);`,
+      '    if (job) await rm(job.temp, { recursive: true, force: true }).catch(() => {});',
+      '    if (job) await rm(job.outputDir, { recursive: true, force: true }).catch(() => {});',
     ],
   ] },
 };
@@ -1588,8 +1579,16 @@ console.log('\n[6] a failed export leaves the previous file and its record exact
   // the server ever asks for it, so the file this claim is watching is one only
   // this claim writes.
   const NAME = 'check-atomic';
-  const OUT = join(outDir, `${NAME}.mp4`);
-  const SIDECAR = `${OUT}.job.json`;
+  // The actual file path is returned in the `ready` message, because the encoder
+  // now writes each export into a unique directory and `done.output` is the video
+  // file inside it.
+  // Start with no previous `check-atomic` artifact or scratch in the way, because
+  // the claim is about what this run leaves behind, not what an earlier run did.
+  for (const f of readdirSync(outDir).filter((f) => f.startsWith(NAME))) {
+    rmSync(join(outDir, f), { recursive: true, force: true });
+  }
+  let OUT = null;
+  let SIDECAR = null;
   // Small and cheap: this claim is about which files exist afterwards, and a 64x48
   // frame proves that exactly as well as a 1080p one. Even dimensions because h264
   // subsamples chroma, and h264 because that is the codec the menu defaults to.
@@ -1679,13 +1678,15 @@ console.log('\n[6] a failed export leaves the previous file and its record exact
     const good = await socketTo(server.port);
     good.send({ begin: SHAPE });
     const ready = await untilReady(good);
+    OUT = ready.output;
+    SIDECAR = `${OUT}.job.json`;
     for (let n = 0; n < SHAPE.frames; n++) good.send(frameOf(n));
     good.send({ end: true });
     const first = await settle(good);
     check(!!first.done && existsSync(OUT) && existsSync(SIDECAR),
       'a good export lands its file and its record together',
       first.done
-        ? `${first.done.frames} frames, ${first.done.bytes} bytes at ${ready.output}`
+        ? `${first.done.frames} frames, ${first.done.bytes} bytes at ${OUT}`
         : `no done message: ${first.error ?? 'the socket just closed'}`);
     if (!first.done || !existsSync(OUT) || !existsSync(SIDECAR)) {
       throw new Error('the good export did not produce a file to protect');
@@ -1737,10 +1738,10 @@ console.log('\n[6] a failed export leaves the previous file and its record exact
     // The falsification control for the cleanup half: the failed runs each wrote a
     // scratch file, and if either had left one behind, "the output is untouched"
     // would be true of a directory that had quietly filled up with half-muxed video.
-    const leftovers = readdirSync(outDir).filter((f) => f.startsWith(`${NAME}.`) && f.includes('.part.'));
+    const leftovers = readdirSync(outDir).filter((f) => f.startsWith(`${NAME}.`) && (f.includes('.part.') || f.endsWith('.part')));
     check(leftovers.length === 0,
-      'and neither failed run left its scratch file behind',
-      leftovers.length ? leftovers.join(', ') : `nothing matching ${NAME}.*.part.* in exports/`);
+      'and neither failed run left its scratch behind',
+      leftovers.length ? leftovers.join(', ') : `nothing matching ${NAME}.*.part* in exports/`);
   } finally {
     await server.close();
     await noEncoder.close();
