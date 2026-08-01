@@ -241,7 +241,12 @@ try {
   // over SSH matches the remote shell running that very command, which on this node
   // has already killed an SSH session while leaving its target running. Listeners are
   // resolved by port through `ss`, whose pipeline contains no text matching itself.
-  await ssh(`${KILL_SERVER}; ${KILL_SAMPLER}; rm -f ${LOG} ${SAMPLES}; sleep 1`);
+  // The deployed unit is `Restart=always`, so killing the listener under it starts a
+  // fight this tool cannot win - it is stopped for the run and started again in the
+  // teardown, including when the run is thrown away. Leaving a capture node with its
+  // service down is the one side effect a measurement must not have.
+  await ssh(`sudo systemctl stop kinect-node 2>/dev/null || true; `
+    + `${KILL_SERVER}; ${KILL_SAMPLER}; rm -f ${LOG} ${SAMPLES}; sleep 1`);
   sshDetached(`cd ${DIR} && XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 `
     + `setsid node server/index.js --port ${PORT} --host 0.0.0.0 --record `
     + `--grabber "$PWD/native/build/grabber --log debug" < /dev/null > ${LOG} 2>&1`);
@@ -315,6 +320,9 @@ try {
       + `curl -s --max-time 5 -X POST -H 'Content-Type: application/json' -d '{}' `
       + `http://127.0.0.1:${PORT}/record/stop > /dev/null 2>&1; sleep 1; ${KILL_SERVER}`);
     if (!KEEP) await ssh(`rm -f ${DIR}/captures/*.knct ${DIR}/captures/*.idx || true`);
+    // Put the node back the way it was found, whatever this run decided.
+    await ssh('sudo systemctl start kinect-node 2>/dev/null || true');
+    console.log('[cost] kinect-node started again');
   } catch { /* the node going away during teardown is not a result */ }
 }
 

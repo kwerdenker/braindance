@@ -253,6 +253,48 @@ skipping was deliberate, because a deliberate exclusion comes with a justificati
 anybody looking twice. The fix was to assert the identity `bytes === on-disk size` after the
 take closes, where nothing is in flight and it is exact, with `plant-open-take` as the control.
 
+**A counter that reports zero may be counting a string nothing emits.** Step 9's
+monitor-cost harness grepped `not all subsequences received` — the phrase
+`grabber --help` itself names when describing the dropped-isochronous counter. The node
+emits `skipping depth packet` in quantity and the other one almost never, so the delta was
+**zero in every arm across two full runs**, and that got written into the design doc as the
+loss happening with no USB packet loss at all — a result that appeared to refute the
+mechanism the doc claimed. Counted properly it is 24 packets per 40s with no client against
+347 with a full-rate monitor. A zero delta from a wrong pattern is indistinguishable from a
+real absence, and an absence is the one result nobody re-checks because it looks like the
+instrument working. **Before believing a counter that reports no change, grep the raw log
+for what the system actually says and confirm the phrase appears at all** — a phrase in the
+tool's own help text is not evidence the running build emits it. This one was caught by
+reading journald after installing a systemd unit, entirely by accident, which is not a method.
+
+**A gate calibrated on earlier runs and then passed marginally by the run that matters is
+not a gate.** The same harness inherited `prof-summary`'s 29.5fps floor, which belongs to a
+profiling run that writes nothing; a continuously recording run legitimately sits under it,
+as the design doc already says at 29.86 over two minutes. Three windows at 28.90/29.19/28.83
+were thrown away as contended when a spread of 0.36 is what a settled rig looks like — the
+tell for contention in the thread-count sweep was *variance and non-monotonicity*, not the
+absolute level. The gate is baseline spread now. Note the trap in the fix as well: the
+threshold was set from two earlier runs' spreads and the run carrying the only correct packet
+data cleared it by 0.04, so that column is recorded as measured once rather than replicated.
+
+**Letterboxing the editor stage moved every pointer coordinate and every buffer-size
+expectation, and four proof tools found out one at a time.** `export-check` needed two
+separate fixes, `registry-check` failed its render-scale row, and `keyframe-check` failed
+four rows in a way that read as a missing feature — `camera.project()` answers in canvas
+coordinates and `page.mouse` takes viewport ones, which were the same number only while the
+canvas sat at the window's corner. **When a change moves where the canvas is, the tools that
+drive it by coordinate are all suspect, not just the ones that mention size.**
+
+**`await ssh(...)` cannot launch a long-lived remote process.** ssh does not return until the
+channel has no holders, and a backgrounded remote process holds it whatever `nohup` and
+`< /dev/null` are given — the symptom is a driver frozen with the server running perfectly
+well on the other side, and it cost two runs before the cause was read off the fact that the
+next log line never printed. Detach and poll for readiness. Likewise **a multi-line script
+through `bash -c "..."` loses twice**: the outer shell expands every `$(...)` before bash sees
+it, and JSON quoting carries newlines as two literal characters. Ship it base64. And on this
+node `pkill -f` matches the remote shell running your own command — resolve listeners by port
+through `ss`.
+
 ## Proof tools
 
 Each takes a running server and exits non-zero on failure.
@@ -269,7 +311,9 @@ node tools/keyframe-check.mjs --mutate pose-linear        # ... and must FAIL mu
 node tools/export-check.mjs --url http://localhost:8080   # step 6: resolution, export, the file
 node tools/export-check.mjs --mutate pointsize-absolute   # ... and must FAIL mutated
 node tools/library-check.mjs --url http://localhost:8080  # step 7: library, recorder, routes
-node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL mutated
+node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL
+node tools/monitor-check.mjs                              # step 9: the monitor's decimation, and the take it must not touch
+node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/guard-check.mjs                                # the socket's origin rule, and the bind
 node tools/guard-check.mjs --mutate upgrade-skips-origin  # ... and must FAIL mutated
 node tools/jobs-check.mjs                                 # step 8: the queue, the pin, and a real render
