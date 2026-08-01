@@ -115,6 +115,11 @@ const REF = { width: 1728, height: 1080 };
 // is exactly 1 here and a width-referenced one is 1.1111, and it divides the 8x5
 // grid evenly - 240x216 tiles - so no tile straddles a pixel.
 const HD = { width: 1920, height: 1080 };
+// And the same question at a non-16:9 aspect, because the 16:9 arm does not cover
+// the delivery the export menu also offers. 1440x1080 is 4:3, still 1080 tall so
+// a height-referenced build has k=1 here too, but a width-referenced one has
+// k = 1440/1728 = 0.8333. The grid divides evenly: 180x216 tiles.
+const NON_169 = { width: 1440, height: 1080 };
 // Asked of both builds as one drawn size, which is what makes that arm a comparison
 // of two images rather than of two arithmetics: 8 reference pixels at k=1 on this
 // build against 8 framebuffer pixels on a build that has no k. A multiple of the old
@@ -1166,6 +1171,7 @@ for (const [name, tol] of Object.entries(RES_TOLERANCE)) {
 let rebaseOld = null;
 let rebaseFullOld = null;
 let rebaseHdOld = null;
+let rebaseNon169Old = null;
 {
   const src = execFileSync('git', ['-C', REPO, 'show', `${BEFORE}:web/main.js`], { encoding: 'utf8', maxBuffer: 1e9 });
   if (src.includes('bufferHeight / 1080.0')) {
@@ -1208,6 +1214,14 @@ let rebaseHdOld = null;
   await setStage(before.page, HD);
   rebaseHdOld = await armAt(before.page, {
     label: 'rebase-hd-old', look: HD_LOOK,
+  });
+  // And the same cross-build at a non-16:9 aspect, so the 16:9 arm is not the only
+  // aspect the product ships in. The old build is still the no-reference control;
+  // here a height-referenced build has k=1 because the height is 1080, but a
+  // width-referenced one has k = 1440/1728 = 0.8333.
+  await setStage(before.page, NON_169);
+  rebaseNon169Old = await armAt(before.page, {
+    label: 'rebase-non169-old', look: HD_LOOK,
   });
   await before.close();
   for (const name of ['points', 'nobloom']) {
@@ -1325,6 +1339,31 @@ for (const [label, arm] of [['1728x1080', rebaseFullRef], ['1920x1200', rebaseFu
     + `k=${fixed(hdNew.kScale, 4)} against ${rebaseHdOld.pointSize} with no reference at ${BEFORE}, `
     + `drawn ${hdNew.sizes.smallest.toFixed(2)}..${hdNew.sizes.largest.toFixed(1)}px; `
     + `lit ${fixed(hdNew.lum.litPct, 4)}% against ${fixed(rebaseHdOld.lum.litPct, 4)}% is a ratio of `
+    + `${fixed(litRatio, 5)}, luminance ratio ${fixed(ratio, 5)}, `
+    + `worst of 40 tile means ${fixed(worst)}/255`);
+}
+
+// The same cross-build question at 4:3. The 16:9 arm is not enough on its own:
+// a width reference is wrong there by 11.1%, but at 4:3 with the same 1080 height it
+// is wrong by 16.7% in the other direction - and, more importantly, the export menu
+// also ships non-16:9 sizes. The grid is 180x216 tiles, so it still divides evenly.
+{
+  await setStage(main.page, NON_169);
+  const non169New = await armAt(main.page, {
+    label: 'rebase-non169-new', look: HD_LOOK,
+  });
+  const worst = Math.max(...non169New.tiles.map((v, i) => Math.abs(v - rebaseNon169Old.tiles[i])));
+  const ratio = non169New.lum.mean / rebaseNon169Old.lum.mean;
+  const litRatio = non169New.lum.litPct / rebaseNon169Old.lum.litPct;
+  const asked = non169New.pointSize === HD_POINT_SIZE && rebaseNon169Old.pointSize === HD_POINT_SIZE;
+  const clear = [non169New, rebaseNon169Old].every((a) => a.sizes.smallest >= 1 && a.sizes.largest <= 64);
+  check(asked && clear && Math.abs(litRatio - 1) <= 0.01 && Math.abs(ratio - 1) <= 0.01 && worst <= 1.0,
+    'and it holds at 4:3, where a width reference and a height reference are also different numbers',
+    `the page's own reference is ${fixed(non169New.refHeight, 1)} at a ${non169New.size.w}x${non169New.size.h} `
+    + `buffer, where a width-referenced build reads 900; pointSize ${non169New.pointSize} at `
+    + `k=${fixed(non169New.kScale, 4)} against ${rebaseNon169Old.pointSize} with no reference at ${BEFORE}, `
+    + `drawn ${non169New.sizes.smallest.toFixed(2)}..${non169New.sizes.largest.toFixed(1)}px; `
+    + `lit ${fixed(non169New.lum.litPct, 4)}% against ${fixed(rebaseNon169Old.lum.litPct, 4)}% is a ratio of `
     + `${fixed(litRatio, 5)}, luminance ratio ${fixed(ratio, 5)}, `
     + `worst of 40 tile means ${fixed(worst)}/255`);
 }
