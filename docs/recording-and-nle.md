@@ -1613,9 +1613,44 @@ into a correctness rule, and it means the monitor needs to negotiate decimation
 is the thing making frames disappear.
 
 **Both comparisons were sequential rather than interleaved**, which this document
-has been burned by before. The direction is not in doubt — a 26-fold difference
-in dropped packets is far outside any noise seen on this rig — but the 11% figure
-itself should be re-measured interleaved before anything is sized against it.
+has been burned by before, and the re-measurement more than doubled the number.
+Interleaved on the node, one grabber and one continuous recording, three rounds of
+three arms at 40s each with 4s of settling outside every window, the first 25s
+discarded, counters sampled once a second by the node itself and pulled afterwards
+so the driver never reads across the link under test:
+
+| arm | recorded fps (median) | cost against no client |
+| --- | --- | --- |
+| no client | 28.77 | — |
+| monitor ÷1 ×1 | 21.76 | **24.0%** |
+| monitor ÷4 ×3 | 27.46 | **3.4%** |
+
+Run twice on separate occasions, six paired rounds in all, every delta the same
+sign: 24.5%/24.0% for the full-rate monitor and 3.9%/3.4% for the decimated one. So
+a full-rate monitor costs about a quarter of the take rather than 11%, decimating
+to the cap recovers about six sevenths of that, and `tools/monitor-cost-ab.mjs` is
+what measures it.
+
+**The mechanism above is not the one that reproduced, and that is worth saying
+plainly.** libfreenect2's `not all subsequences received` fired **once in an
+eight-minute run and its count did not move in any arm** — not in the no-client arm,
+and not in the arm losing a quarter of its frames. So the frames are not being lost
+to dropped isochronous packets here. What the numbers are consistent with is the
+grabber blocking on its write to stdout while the server's pipe is full, and the
+frames piling up behind it being discarded by libfreenect2's own listener — a
+frame-level drop rather than a packet-level one. That is not proved and is not
+claimed; what is measured is that the loss is large, reproducible, and unaccompanied
+by any USB packet loss.
+
+The harness had to be thrown away twice, and both are recorded because neither would
+have been found by reading it. It first sampled the node over SSH at each window
+boundary, so its control channel shared the very link the full-rate arm exists to
+saturate — the sample closing that window was delayed by exactly the congestion being
+measured, and twenty minutes produced no window at all. And its baseline gate was
+`prof-summary`'s 29.5fps, borrowed from a profiling run that writes nothing; a
+continuously recording run legitimately sits under it, as this document already says
+at 29.86 over two minutes. The gate is the spread of the no-client arms now, since
+variance rather than level is what contention looked like in the thread-count sweep.
 
 ## Scope for a first version
 
@@ -1729,9 +1764,13 @@ sounds fine, is wrong. A clean mute is the honest behaviour.
    a browser attached, so this is a deployment question rather than an open one.
    The grabber cross-builds and sustains 30.00fps depth with 15.00fps colour on
    15.05ms of a 33ms serial budget, and audio comes off the array natively at
-   4 × 16 kHz. What remains is not plumbing but a behaviour: the monitor has to
-   negotiate decimation *while recording*, because a full-rate viewer costs the
-   take about 11% of its frames.
+   4 × 16 kHz. What remained was not plumbing but a behaviour: the monitor
+   negotiates decimation *while recording*, because a full-rate viewer costs the
+   take **24%** of its frames — the 11% above was sequential, and interleaved it is
+   more than twice that. The client asks for a depth divisor and a frame stride over
+   the socket already carrying the frames, nothing ever downgrades itself, and
+   `/record/start` refuses instead, naming the monitors and their cost. `÷4 ×3`
+   brings the cost to 3.4%.
 
 Takes as files, the wall-clock capture date, the restart-splits-the-take rule and
 the mark button are all small and can land anywhere before step 7 — though marks
