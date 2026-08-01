@@ -263,6 +263,16 @@ skipping was deliberate, because a deliberate exclusion comes with a justificati
 anybody looking twice. The fix was to assert the identity `bytes === on-disk size` after the
 take closes, where nothing is in flight and it is exact, with `plant-open-take` as the control.
 
+**A mutation can erase its own evidence.** `plant-open-take` originally appended its foreign
+bytes through a second file descriptor. After the recorder moved onto `createWriteStream`, that
+descriptor and the recorder's descriptor had independent offsets: the append extended the file,
+then the next real frame wrote from the recorder's older offset and overwrote all 64KB before the
+take closed. The mutated build passed 256 assertions because it no longer contained the damage
+the control claimed to plant. The control now writes through the recorder's own stream, between
+two real frames, so the foreign bytes survive to the scan. When a mutation is unexpectedly green,
+inspect the mutated artifact before weakening the assertion; the code change may have undone
+itself rather than escaped the observation.
+
 **Step 9 produced the same shape one step later, and this time the skipped object was the
 picture.** `monitor-check` had four sections and every arm in all four watched the server —
 what it grants, what it puts on the wire, what it writes to disk — so a viewer that rendered a

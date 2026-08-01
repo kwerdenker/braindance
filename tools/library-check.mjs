@@ -337,16 +337,18 @@ const MUTATIONS = {
   // recorder's state field does not move for a foreign append. Against the build
   // before this, it passed 251 assertions at exit 0 while ruining the take.
   //
-  // 0x07 rather than anything structured, so the damage is a desync the scan names
-  // rather than a plausible frame, and 64KB so it is unambiguously more than one
-  // write's worth of in-flight noise.
+  // Written through the recorder's own stream rather than appended through a second
+  // descriptor. The old plant used `appendFileSync`, and the next recorder frame
+  // wrote from the first descriptor's older offset and erased the plant before close
+  // — so the mutation healed itself and passed 256 assertions. Through this stream
+  // the foreign bytes stay ordered between two real frames. 0x07 rather than
+  // anything structured makes the damage a desync the scan names rather than a
+  // plausible frame, and 64KB makes it unambiguously more than in-flight noise.
   'plant-open-take': { file: 'server/index.js', edits: [
-    ["import { createReadStream, mkdirSync, readdirSync, statSync } from 'node:fs';",
-      "import { appendFileSync, createReadStream, mkdirSync, readdirSync, statSync } from 'node:fs';"],
     ["  { path: '/library/writes', pattern: /^\\/library\\/writes$/, read: serveWriteCounts },",
       "  { path: '/library/writes', pattern: /^\\/library\\/writes$/, read: serveWriteCounts },\n"
       + "  { path: '/library/sweep-probe', pattern: /^\\/library\\/sweep-probe$/, read: (req, res) => {\n"
-      + '    appendFileSync(recorder.openPath, Buffer.alloc(65536, 0x07));\n'
+      + '    recorder.take.stream.write(Buffer.alloc(65536, 0x07));\n'
       + '    sendJson(res, { appended: true });\n'
       + '  } },'],
   ] },
