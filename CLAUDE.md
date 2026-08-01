@@ -105,6 +105,16 @@ which reads as a caught mutation to anything checking only the exit code. Seen t
 5, on two different mutations in two different suite runs. **Count failed assertions, not
 exit codes**, and treat `fails=0` as a crash to investigate rather than a success to record.
 
+**And `fails=1` can be the same crash wearing the count.** Counting assertions is not enough
+on its own if the harness's own failure is one of the things it counts. `monitor-check` caught
+its `catch` in `failed++`, so `expand-shifts-by-a-block` on a machine busy with an unrelated
+export timed out waiting for the take, fired exactly one assertion — that timeout — and printed
+`caught, as required (1 assertion fired)`. Nothing about sample placement had been tested. Run
+again on a settled machine it fires eight, all of them the intended row. So a throw is now
+`crashed` rather than `failed`, and the verdict is `DID NOT RUN` with exit **2**, checked before
+the mutation verdict and before `untested`. **Read which assertions fired, not how many** — and
+a proof tool must never count its own crash as a finding in either direction.
+
 **A cumulative table hides which term is wrong.** Step 6 measured the look at two
 output sizes down one pipeline - points, then trails, then "grade" - and reverting
 any single grade term moved that row by less than the row's own sampling residual,
@@ -253,6 +263,20 @@ skipping was deliberate, because a deliberate exclusion comes with a justificati
 anybody looking twice. The fix was to assert the identity `bytes === on-disk size` after the
 take closes, where nothing is in flight and it is exact, with `plant-open-take` as the control.
 
+**Step 9 produced the same shape one step later, and this time the skipped object was the
+picture.** `monitor-check` had four sections and every arm in all four watched the server —
+what it grants, what it puts on the wire, what it writes to disk — so a viewer that rendered a
+÷4 frame as a *different scene* passed all 49 assertions. It did: `bindDepth` wrote the smaller
+grid into the head of the 512x424 texture, because `TypedArray.set` only objects to a source
+that is too **long**, and 93.8% of the grid then held the last full-rate frame while the live
+cloud collapsed into a band a metre above the optical axis. Nothing was excluded on purpose
+here — the monitor's own output simply never occurred to anyone as a thing to measure, which is
+the harder version, since there is no justification to argue with. **A tool named after a
+user-facing surface should have at least one arm pointed at that surface.** Section 5 drives a
+browser; `bind-ignores-grid` and `expand-shifts-by-a-block` are one control each, and the
+second exists because the first reddens every row and a control that fails everything cannot
+say which row carries the claim.
+
 **A counter that reports zero may be counting a string nothing emits.** Step 9's
 monitor-cost harness grepped `not all subsequences received` — the phrase
 `grabber --help` itself names when describing the dropped-isochronous counter. The node
@@ -312,8 +336,10 @@ node tools/export-check.mjs --url http://localhost:8080   # step 6: resolution, 
 node tools/export-check.mjs --mutate pointsize-absolute   # ... and must FAIL mutated
 node tools/library-check.mjs --url http://localhost:8080  # step 7: library, recorder, routes
 node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL
-node tools/monitor-check.mjs                              # step 9: the monitor's decimation, and the take it must not touch
+node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
+node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated
+node tools/monitor-check.mjs --mutate expand-shifts-by-a-block   # ... and must FAIL mutated
 node tools/guard-check.mjs                                # the socket's origin rule, and the bind
 node tools/guard-check.mjs --mutate upgrade-skips-origin  # ... and must FAIL mutated
 node tools/jobs-check.mjs                                 # step 8: the queue, the pin, and a real render

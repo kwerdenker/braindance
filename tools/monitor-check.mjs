@@ -18,7 +18,14 @@
 //  2. It is one mechanism. A socket frame at `÷k` is byte-identical to the same
 //     frame from the HTTP frame API at `÷k`, because both call `decimatePayload`.
 //     Two loops that agreed today would be two things to keep agreeing.
-//  3. **The take is untouched, and that is an identity rather than an assurance.**
+//  3. **A decimated frame renders as the same scene, coarser.** The design says a
+//     decimated frame is "the same parser, the same renderer and the same code path",
+//     and for two steps nothing here asked the renderer. It was not the same scene: a
+//     ÷4 block went straight into the head of a 512x424 texture, 93.8% of which then
+//     held the last full-rate frame while the live cloud collapsed into a band about
+//     a metre above the optical axis. Claims 1 and 2 passed throughout, because every
+//     arm in this file was pointed at the server. Section 5 drives a browser.
+//  4. **The take is untouched, and that is an identity rather than an assurance.**
 //     With a monitor watching at `÷4 ×3`, every frame in the closed take is byte
 //     for byte a frame the grabber emitted - checked against the *writer's own log*
 //     rather than against anything a reader produced, because step 7 established
@@ -37,10 +44,13 @@
 //
 //   node tools/monitor-check.mjs
 //   node tools/monitor-check.mjs --mutate decimate-reaches-recorder   # must FAIL
+//   node tools/monitor-check.mjs --mutate bind-ignores-grid           # must FAIL
+//   node tools/monitor-check.mjs --mutate expand-shifts-by-a-block    # must FAIL
 //
 // It spawns its own servers and needs none running. There is no Kinect on this
 // machine, so the stream is `tools/fake-grabber.mjs` - real KNCT framing over real
-// depth and real JPEGs read out of a capture, which is what claims 1 to 3 are about.
+// depth and real JPEGs read out of a capture, which is what claims 1, 2 and 4 are
+// about. Claim 3 needs a GPU browser; `--no-browser` drops it and says so.
 // **What it does not prove is the sensor half**: that a decimated monitor actually
 // stops the grabber dropping USB packets is a measurement on the node with the
 // hardware attached, it is in the commit body, and no row here stands in for it.
@@ -59,6 +69,11 @@ const argv = process.argv.slice(2);
 const flag = (name, dflt = null) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : dflt);
 const PORT = Number(flag('--port', '8341'));
 const MUTATE = flag('--mutate');
+// Section 5 needs a GPU browser, and it is the only section that does. `--no-browser`
+// drops it and says so in the verdict rather than passing quietly, on the same
+// reading as `jobs-check --no-render`: a claim nobody tested here is not a claim that
+// held. The five server-side mutations do not need it and run faster without.
+const NO_BROWSER = argv.includes('--no-browser');
 const WORK = join(REPO, '.monitor-check');
 const SOURCE = join(REPO, 'captures', 'sample.knct');
 
@@ -129,6 +144,23 @@ const MUTATIONS = {
     'const whole = (v, max) => (Number.isInteger(v) && v >= 1 && v <= max ? v : null);',
     'const whole = (v, max) => (typeof v === \'number\' ? v : null);',
   ]] },
+  // **The control for section 5, and it is the bug section 5 exists for.** The door
+  // writes the block it was handed into the head of the full grid and leaves the rest
+  // holding the last frame that filled it, which is what the viewer did until this
+  // merge. Both of section 5's exact rows go red and so does the live pair.
+  'bind-ignores-grid': { file: 'web/main.js', edits: [[
+    '  expandDepth(data, depthCurr.image.data);',
+    '  depthCurr.image.data.set(data);',
+  ]] },
+  // The whole grid is written, so nothing is stale and the wipe row is satisfied -
+  // and every sample is put on the ray of the block next to the one it was measured
+  // on. Kept separate from the mutation above precisely because that one fails
+  // everything: a control that reddens every row cannot say which row is carrying the
+  // claim, and the claim here is that a sample lands where it was measured.
+  'expand-shifts-by-a-block': { file: 'web/main.js', edits: [[
+    'for (let col = 0; col < DW; col++) dst[to + col] = src[from + ((col / grid.k) | 0)];',
+    'for (let col = 0; col < DW; col++) dst[to + col] = src[from + Math.min(grid.w - 1, (((col / grid.k) | 0) + 1))];',
+  ]] },
 };
 if (MUTATE && !MUTATIONS[MUTATE]) {
   console.error(`unknown mutation ${MUTATE} - have ${Object.keys(MUTATIONS).join(', ')}`);
@@ -142,7 +174,12 @@ rmSync(WORK, { recursive: true, force: true });
 mkdirSync(WORK, { recursive: true });
 cpSync(join(REPO, 'server'), join(WORK, 'server'), { recursive: true });
 cpSync(join(REPO, 'tools'), join(WORK, 'tools'), { recursive: true });
-for (const name of ['web', 'node_modules', 'vendor', 'captures']) {
+// `web/` is copied rather than linked because two of the mutations below are in
+// `main.js`. Through a symlink they would rewrite the repo's own source, which is the
+// one state a proof tool must never produce - and it would do it silently, since the
+// staged tree is deleted at the end of every run.
+cpSync(join(REPO, 'web'), join(WORK, 'web'), { recursive: true });
+for (const name of ['node_modules', 'vendor', 'captures']) {
   const from = join(REPO, name);
   if (existsSync(from)) symlinkSync(from, join(WORK, name));
 }
@@ -163,6 +200,13 @@ if (MUTATE) {
 
 // --- harness ---------------------------------------------------------------
 let checked = 0, failed = 0;
+// Set when a claim could not be tested here at all, which is a third answer and not a
+// quiet pass. See the exit-2 note in section 5.
+let untested = null;
+// Set when the run threw rather than when a claim failed. Separate from `failed` so
+// the verdict can say "the harness did not run" instead of counting its own timeout
+// as a caught mutation - see the catch at the bottom of this file.
+let crashed = null;
 const ok = (label, pass, detail = '') => {
   checked++;
   if (!pass) failed++;
@@ -245,6 +289,32 @@ const waitFor = async (cond, ms, what = 'condition') => {
   }
   throw new Error(`timed out after ${ms}ms waiting for ${what}`);
 };
+
+// The full chromium build rather than the bundled headless shell, for `export-check`'s
+// reason: the shell has no GPU and falls back to SwiftShader, and a renderer nothing
+// else in this repo reproduces is not the renderer the claim is about.
+async function loadPlaywright() {
+  const req = createRequire(import.meta.url);
+  const roots = [];
+  try {
+    const { execFileSync } = await import('node:child_process');
+    roots.push(execFileSync('npm', ['root', '-g'], { encoding: 'utf8' }).trim());
+  } catch { /* no global npm root: the local resolve below may still work */ }
+  const candidates = [async () => import('playwright')];
+  for (const root of roots) {
+    for (const name of ['playwright', '@playwright/cli/node_modules/playwright']) {
+      candidates.push(async () => import(`file://${req.resolve(join(root, name))}`));
+    }
+  }
+  for (const load of candidates) {
+    try {
+      const mod = await load();
+      const pw = mod.chromium ? mod : mod.default;
+      if (pw?.chromium) return pw;
+    } catch { /* try the next one */ }
+  }
+  return null;
+}
 
 const post = (path, body) => fetch(`http://127.0.0.1:${PORT}${path}`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}),
@@ -542,15 +612,248 @@ try {
     await post('/record/stop');
     try { remote.terminate(); } catch { /* already gone */ }
   }
+  await stopAll();
+
+  // ------------------------------- 5. what the renderer does with a decimated frame
+  //
+  // **The claim this file made for four sections and never once tested.** The design's
+  // sentence is that a decimated frame is "the same parser, the same renderer and the
+  // same code path", and every row above watches the server: what it grants, what it
+  // puts on the wire, what it writes to disk. Not one of them asks what happens to
+  // those bytes after a client has them, so a viewer that rendered a ÷4 frame as a
+  // different scene passed the whole file - and did, for two steps.
+  //
+  // It is the shape CLAUDE.md names: an object every observation skips. The monitor's
+  // *picture* is the thing a monitor is, and every arm here was pointed at the take.
+  //
+  // Two questions, and they are separate. Does an arriving frame reach the whole grid,
+  // and does each of its samples land on the ray it was measured on. The first alone
+  // passes on a build that fills the texture with anything at all; the second alone
+  // passes on a build that places six percent of the frame perfectly and leaves the
+  // rest frozen. `bind-ignores-grid` and `expand-shifts-by-a-block` are one control
+  // each, so a red row says which.
+  if (NO_BROWSER) {
+    console.log('\n[monitor] --no-browser: the renderer section did not run, so its claims are untested here');
+  } else {
+    console.log('\n[monitor] a decimated frame renders as the same scene, coarser');
+    // **Not an assertion, because a missing browser is not a finding.** As a failed
+    // row it would count toward `failed`, and the verdict block below reads any
+    // non-zero `failed` on a mutation run as the mutation having been caught - so a
+    // machine without playwright would record every control in this file as caught
+    // while testing none of them. That is the `fails=0` trap running backwards, and it
+    // is worse, because it reads as coverage. Exit 2 on `library-check`'s convention:
+    // untested is not passed, and it is not failed either.
+    const pw = await loadPlaywright();
+    if (!pw) untested = 'playwright is not installed, so nothing here drove a renderer';
+    if (pw) {
+      // A server with no grabber for the exact rows: nothing arrives, so an injected
+      // frame is the only thing that ever touches the textures and the readback is a
+      // statement about `bindDepth` rather than about whatever landed last.
+      mkdirSync(join(WORK, 'caps-5'), { recursive: true });
+      await start(['--captures', join(WORK, 'caps-5'), '--name', 'render',
+        '--projects', join(WORK, 'p5'), '--presets', join(WORK, 'q5')]);
+      const browser = await pw.chromium.launch({ channel: 'chromium', headless: true });
+      const page = await browser.newPage({ viewport: { width: 960, height: 600 } });
+      const pageErrors = [];
+      page.on('pageerror', (e) => pageErrors.push(e.message));
+      await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'load' });
+      await wait(1200);
+
+      // Values are generated inside the page from an index, and the expectation is
+      // computed from the same index by the reader rather than from anything the door
+      // produced - so a wrong mapping has nothing to agree with. 65535 is beyond the
+      // 9000mm the grabber clips at, which is what makes it a sentinel a real frame
+      // can never forge, here or in the live rows below.
+      const EXACT = `(opts) => {
+        const { k, DW, DH } = opts;
+        const w = Math.ceil(DW / k), h = Math.ceil(DH / k);
+        const f = (i) => (i % 60000) + 1;
+        const drive = globalThis.__kinect.drive;
+        // Twice, because the door alternates two textures and one wipe reaches only
+        // one of them - which is exactly why the stale half of this bug survived
+        // every frame that followed it rather than being overwritten next arrival.
+        drive.injectDepth(new Uint16Array(DW * DH).fill(65535));
+        drive.injectDepth(new Uint16Array(DW * DH).fill(65535));
+        const src = new Uint16Array(w * h);
+        for (let i = 0; i < src.length; i++) src[i] = f(i);
+        let refused = null;
+        try { drive.injectDepth(src); } catch (err) { refused = err.message; }
+        const dst = globalThis.__kinect.uniforms.depthCurr.value.image.data;
+        let sentinel = 0, misplaced = 0, firstBad = null;
+        for (let row = 0; row < DH; row++) {
+          for (let col = 0; col < DW; col++) {
+            const got = dst[row * DW + col];
+            if (got === 65535) sentinel++;
+            const want = f(((row / k) | 0) * w + ((col / k) | 0));
+            if (got !== want) {
+              misplaced++;
+              if (!firstBad) firstBad = { col, row, got, want };
+            }
+          }
+        }
+        return { w, h, samples: src.length, sentinel, misplaced, firstBad, refused, of: DW * DH };
+      }`;
+
+      // Every divisor the socket and the frame API accept, not a sample of them: a
+      // build that handled 4 and dropped a row at 3 is the bug wearing a fix's
+      // clothes, and the ceiling here is read off the server's own range check.
+      for (const k of [1, 2, 3, 4, 5, 7, 8, 11, 16]) {
+        const r = await page.evaluate(`(${EXACT})(${JSON.stringify({ k, DW: 512, DH: 424 })})`);
+        ok(`a ÷${k} frame (${r.w}x${r.h}, ${r.samples} samples) leaves no texel of the grid unwritten`,
+          r.sentinel === 0 && !r.refused,
+          r.refused ? `refused: ${r.refused}` : `${r.sentinel} of ${r.of} still hold the sentinel`);
+        ok(`and every texel of it carries the sample measured on that texel's own ray`,
+          r.misplaced === 0,
+          r.misplaced ? `${r.misplaced} of ${r.of} misplaced, first at col ${r.firstBad.col} row ${r.firstBad.row}: `
+            + `${r.firstBad.got} where the sample for that ray is ${r.firstBad.want}` : '');
+      }
+
+      // A length that is no divisor's grid is refused rather than written into the
+      // head of the texture, which is the general form of the bug: the old door took
+      // whatever it was handed because `TypedArray.set` only objects to a source that
+      // is too long.
+      const odd = await page.evaluate(`(${`() => {
+        try { globalThis.__kinect.drive.injectDepth(new Uint16Array(1234)); return null; }
+        catch (err) { return err.message; }
+      }`})()`);
+      ok('a depth block on no grid at all is refused, loudly, rather than half-written',
+        typeof odd === 'string' && /divisor/.test(odd), odd ?? 'it was accepted');
+
+      await stopAll();
+
+      // --- and now the same question through the real socket and the real slider ---
+      //
+      // The rows above drive one function. This one drives the product: a monitor that
+      // asked for ÷4 the way an operator asks, over the stream, with the sensor
+      // running. Interleaved rather than before-and-after, because a single ordered
+      // pair cannot tell the setting from anything else that moved between the reads.
+      mkdirSync(join(WORK, 'caps-5b'), { recursive: true });
+      await start([...streamer(), '--captures', join(WORK, 'caps-5b'), '--name', 'renderlive',
+        '--projects', join(WORK, 'p5b'), '--presets', join(WORK, 'q5b')]);
+      await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'load' });
+      await wait(2000);
+
+      const setDivisor = (d) => page.evaluate(`(${`(d) => {
+        const el = document.getElementById('monDivisor');
+        el.value = String(d);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      }`})(${d})`);
+
+      // Wipe both textures to the sentinel, let a second of arrivals land, and see
+      // what the stream could not reach. Parity-safe by construction: it asks what is
+      // still 65535 rather than what changed between two reads, and *which* of the two
+      // textures a read lands on alternates with every frame.
+      const WIPE_AND_COUNT = `() => {
+        const k = globalThis.__kinect;
+        const d = k.uniforms.depthCurr.value.image.data;
+        let n = 0;
+        for (let i = 0; i < d.length; i++) if (d[i] === 65535) n++;
+        return { sentinel: n, of: d.length };
+      }`;
+      const WIPE = `() => {
+        globalThis.__kinect.drive.injectDepth(new Uint16Array(512 * 424).fill(65535));
+        globalThis.__kinect.drive.injectDepth(new Uint16Array(512 * 424).fill(65535));
+      }`;
+
+      // The scene the cloud reconstructs, through the page's own intrinsics and the
+      // page's own clip, so no constant in this tool decides where a point goes.
+      const SCENE = `() => {
+        const k = globalThis.__kinect;
+        const d = k.uniforms.depthCurr.value.image.data;
+        const DW = 512;
+        const fx = k.uniforms.focal.value.x, fy = k.uniforms.focal.value.y;
+        const cx = k.uniforms.center.value.x, cy = k.uniforms.center.value.y;
+        let minY = 1e9, maxY = -1e9, minX = 1e9, maxX = -1e9, n = 0;
+        for (let i = 0; i < d.length; i++) {
+          const mm = d[i];
+          if (mm <= 0 || mm === 65535) continue;
+          const z = mm * 0.001;
+          if (z < k.uniforms.nearClip.value || z > k.uniforms.farClip.value) continue;
+          const col = i % DW, row = (i / DW) | 0;
+          const X = (col + 0.5 - cx) / fx * z, Y = -(row + 0.5 - cy) / fy * z;
+          if (X < minX) minX = X; if (X > maxX) maxX = X;
+          if (Y < minY) minY = Y; if (Y > maxY) maxY = Y;
+          n++;
+        }
+        return { n, width: maxX - minX, height: maxY - minY };
+      }`;
+
+      const rounds = [];
+      for (let round = 0; round < 2; round++) {
+        const arm = {};
+        for (const k of [1, 4]) {
+          await setDivisor(k);
+          await wait(1200);
+          // **What the server answered, before anything is measured under it.** Section
+          // 1 proves the negotiation, but it proves it against a different server than
+          // this one, so without this row a grant that silently failed would make the
+          // ÷4 arm a second ÷1 arm - and every row below it would pass by agreeing with
+          // its twin. The `<output>` is written by `showMonitor` from the server's
+          // answer rather than from the request, which is the whole reason it is the
+          // thing to read.
+          const granted = await page.evaluate('document.getElementById(\'monDivisor\').nextElementSibling.value');
+          ok(`round ${round + 1}: the ÷${k} arm is being served at ÷${k}, so it is an arm rather than a label`,
+            Number(granted) === k, `the monitor panel shows ÷${granted}`);
+          await page.evaluate(`(${WIPE})()`);
+          await wait(1200); // ~36 arrivals at 30fps, so a stride of 1 has had many
+          arm[k] = { ...await page.evaluate(`(${WIPE_AND_COUNT})()`), ...await page.evaluate(`(${SCENE})()`) };
+        }
+        rounds.push(arm);
+        ok(`round ${round + 1}: a full-rate stream refreshes the whole grid`,
+          arm[1].sentinel === 0, `${arm[1].sentinel} of ${arm[1].of} texels never arrived`);
+        ok(`round ${round + 1}: and so does a ÷4 stream - the divisor is a network concession, not a smaller picture`,
+          arm[4].sentinel === 0, `${arm[4].sentinel} of ${arm[4].of} texels never arrived`);
+        // The extent rather than the centroid, and the choice is measured rather than
+        // assumed. A centroid taken over the whole texture barely moves on the broken
+        // build - 0.233 against 0.224 - because the 93.8% that is frozen *is* the right
+        // scene, just an old one, so it drowns the misplaced part in its own average.
+        // The wipe above is what makes the extent sharp instead: everything still
+        // holding the sentinel is skipped, so this measures only what the stream
+        // delivered, and a ÷4 stream that lands in 27 of 424 rows delivers a cloud a
+        // little over half as tall. Measured x0.569 and x0.579 under
+        // `bind-ignores-grid` against x0.976 and x0.997 here, so the gate has room on
+        // both sides rather than being read off whichever run was handy.
+        const ratio = arm[4].height / arm[1].height;
+        ok(`round ${round + 1}: and the scene it reconstructs stands as tall as the full-rate one`,
+          ratio > 0.85 && ratio < 1.15,
+          `${arm[1].height.toFixed(3)}m tall at ÷1, ${arm[4].height.toFixed(3)}m at ÷4, x${ratio.toFixed(3)}`);
+      }
+      ok('both rounds agree, so neither is a single pair that happened to land well',
+        rounds.every((r) => r[4].sentinel === 0),
+        rounds.map((r) => `÷4 left ${r[4].sentinel}`).join(', '));
+      ok('and the page reported no error while doing any of it', pageErrors.length === 0,
+        pageErrors.slice(0, 2).join(' | '));
+
+      await browser.close();
+    }
+  }
 } catch (err) {
-  failed++;
+  // **A run that threw did not finish, and that is a different answer from a claim
+  // that failed** - the distinction this repo already spends exit 2 on. It matters
+  // most under `--mutate`, where a harness timeout would otherwise be counted as the
+  // mutation being caught: `expand-shifts-by-a-block` did exactly that on a machine
+  // busy with an unrelated export, exiting on one fired assertion that was this line
+  // rather than the misplacement row it exists to trip, and the verdict read "caught,
+  // as required". Re-run settled it fires eight, all of them the intended row. So a
+  // throw is recorded as the harness not running rather than as a finding either way.
+  crashed = err;
   console.log(`\n  FAIL  the run did not finish: ${err.message}`);
 } finally {
   await stopAll();
   rmSync(WORK, { recursive: true, force: true });
 }
 
-console.log(`\n[monitor] ${checked} assertions, ${failed} failed`);
+console.log(`\n[monitor] ${checked} assertions, ${failed} failed`
+  + (NO_BROWSER ? ' - the renderer section was skipped, so what a client does with a decimated frame is untested here' : ''));
+// Before every other verdict, because a run that threw has not earned any of them.
+if (crashed) {
+  console.log(`[monitor] DID NOT RUN - ${crashed.message}. Nothing here is a finding: re-run it.`);
+  process.exit(2);
+}
+if (untested) {
+  console.log(`[monitor] UNTESTED - ${untested}. Install playwright, or pass --no-browser and mean it.`);
+  process.exit(2);
+}
 if (MUTATE) {
   // Exit code alone cannot tell "the mutation was caught" from "the tool crashed
   // before asserting anything", and this repo has been bitten by exactly that twice.

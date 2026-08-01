@@ -601,17 +601,76 @@ function setAdditive(on) {
 
 // --------------------------------------------------------- binding a source frame
 
+// Every grid a depth block can arrive on, keyed by its own sample count. The
+// divisor is negotiated out of band on the socket, but a frame already in flight
+// when the setting changes arrives under the previous one - so the length is what a
+// frame actually is, where the last grant is only what the next frame will be. Every
+// divisor the socket and the frame API accept lands on a distinct count, so nothing
+// here has to be told which one it is looking at.
+const DEPTH_GRIDS = new Map();
+for (let k = 1; k <= 16; k++) {
+  const w = Math.ceil(DW / k);
+  const h = Math.ceil(DH / k);
+  DEPTH_GRIDS.set(w * h, { k, w, h });
+}
+
+/**
+ * A decimated grid back onto the sensor's own, nearest-neighbour, which is exactly
+ * the sampling `decimatePayload` did on the node run backwards.
+ *
+ * A texel only means anything at the pixel it was measured at: the shader unprojects
+ * `(col + 0.5 - cx) / fx * z` against intrinsics the sensor reported for a 512x424
+ * grid, so where a sample sits in the texture *is* the ray it is claimed to lie on.
+ * Writing a smaller grid straight into the larger one is therefore not a coarser
+ * picture, it is a different scene. At ÷4 the 13,568 samples land in the first 27 of
+ * 424 rows and the live cloud collapses into a band about a metre above the optical
+ * axis, while the 203,520 texels the frame cannot reach - 93.8% of the grid - keep
+ * the last full-rate frame and stand there frozen where the room used to be. That
+ * reads as the depth returns having lost their scale, which is what it was reported
+ * as, and it is a monitor silently changing its own geometry: the one thing the
+ * design says an instrument must never do.
+ *
+ * Paying it back in compute rather than on the wire is the right side to pay on. The
+ * divisor exists because a radio link cannot carry 14.6 MB/s and never because a
+ * machine could not keep up, so expanding here costs the client the GPU it already
+ * had spare and leaves the saving where it was asked for.
+ */
+function expandDepth(src, dst) {
+  const grid = DEPTH_GRIDS.get(src.length);
+  if (!grid) {
+    throw new Error(
+      `a depth block of ${src.length} samples is not the ${DW}x${DH} grid at any divisor this `
+      + 'build serves: refusing rather than filling the head of the texture with it and '
+      + 'unprojecting whatever was already in the rest as though it were the scene',
+    );
+  }
+  if (grid.k === 1) {
+    dst.set(src);
+    return;
+  }
+  for (let row = 0; row < DH; row++) {
+    const from = ((row / grid.k) | 0) * grid.w;
+    const to = row * DW;
+    for (let col = 0; col < DW; col++) dst[to + col] = src[from + ((col / grid.k) | 0)];
+  }
+}
+
 // The two doors every acquisition path goes through to put a capture frame in
 // front of the shader. There is one of each rather than one per source, because
 // the swap is the part that has to be identical: a socket arrival, a pinned run
 // and an indexed pull all have to leave the textures in the same relationship or
 // the renderer would produce a different image depending on where the bytes came
 // from - which is the drift this whole design is arranged to prevent.
+//
+// The expansion is inside the door for the same reason. A monitor was the only
+// caller handing over a decimated grid, so fixing it where the socket unpacks its
+// bytes would have left the next caller that decimates - the editor over a slow
+// link, which the design already asks for - to find the same hole again.
 function bindDepth(data) {
   const swap = depthPrev;
   depthPrev = depthCurr;
   depthCurr = swap;
-  depthCurr.image.data.set(data);
+  expandDepth(data, depthCurr.image.data);
   depthCurr.needsUpdate = true;
   uniforms.depthPrev.value = depthPrev;
   uniforms.depthCurr.value = depthCurr;
