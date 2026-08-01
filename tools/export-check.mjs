@@ -78,6 +78,10 @@ const flag = (name, fallback = null) => {
 
 const REPO = fileURLToPath(new URL('..', import.meta.url));
 const URL_BASE = flag('--url', 'http://localhost:8080');
+// The editor, which `/?take=` opened until the main menu took `/`. Named once
+// because the page is opened at it and the cross-build arm's markup is
+// intercepted by it, and those two have to agree or the interception misses.
+const EDITOR_PATH = '/edit';
 const TAKE = flag('--take', 'sample');
 const HEADED = argv.includes('--headed');
 const MUTATE = flag('--mutate');
@@ -253,6 +257,15 @@ const MUTATIONS = {
   // The grain stops being quantised onto the reference grid, so four sub-pixels of
   // a 2x render draw four unrelated values and average to a quarter of the
   // variance.
+  // The region's falloff width stops being metres and becomes pixels-at-1080p, which is
+  // the one mistake the whole world-space family is built to avoid. It is the exact
+  // shape of `grade-absolute` and `pointsize-absolute` pointed at the new terms: the
+  // same slider then describes a different shape at every output size, and the two
+  // region rows must say so while `noise` and the eight terms above stay clean.
+  'region-in-metres': { file: 'web/main.js', edits: [[
+    '  return 1.0 - smoothstep(0.0, max(1e-4, regionSoft), sd);',
+    '  return 1.0 - smoothstep(0.0, max(1e-4, regionSoft * bufferHeight / 1080.0), sd);',
+  ]] },
   'grain-continuous': { file: 'web/main.js', edits: [[
     'float n = hash(floor(vUv * ref) + fract(time) * 137.0);',
     'float n = hash(vUv * ref + fract(time) * 137.0);',
@@ -710,7 +723,26 @@ const RES_ARM = `async ({ label, look, at, resLook, camera }) => {
   const k = globalThis.__kinect;
   const ex = globalThis.__ex;
   k.setMode(4);
-  k.params.apply({ ...resLook, ...look });
+  // Only what the build in front of us declares. The cross-build arm plays an older
+  // module, and today's OFF names parameters that build has never heard of - applying
+  // them throws "unknown parameter noise" from inside the registry's own door, which is
+  // the door doing its job. Dropped names are *returned* rather than swallowed: on the
+  // current build the list must be empty, so a typo in a look still surfaces here
+  // instead of being quietly skipped on every arm.
+  const known = new Set(k.params.names());
+  // Every arm starts with the region switched off unless its own look says otherwise.
+  // Spelled out here rather than left to the rows because two of them - nobloom and
+  // full - deliberately carry no OFF spread, since they are Blackwall entire; they
+  // would inherit whatever the previous arm set, and the arms that render 1728x1080
+  // and 1920x1200 run after the region rows have already been through. Measured with
+  // this line absent: the two cross-build rows came back at luminance ratio 0.364 with
+  // a worst tile of 48.7/255, which reads as the rebase having broken and was a mask
+  // still fading the cloud. Zero is the default for all four, so this changes nothing
+  // for any row that was here before.
+  const REGION_BASE = { noise: 0, regionPush: 0, regionNoise: 0, regionMask: 0 };
+  const merged = { ...REGION_BASE, ...resLook, ...look };
+  const dropped = Object.keys(merged).filter((n) => !known.has(n));
+  k.params.apply(Object.fromEntries(Object.entries(merged).filter(([n]) => known.has(n))));
   ex.pinCamera(camera);
   await k.timeline.settled();
   const t = k.timeline.transport();
@@ -726,6 +758,7 @@ const RES_ARM = `async ({ label, look, at, resLook, camera }) => {
   const kScale = k.uniforms.bufferHeight ? k.uniforms.bufferHeight.value / 1080 : 1;
   return {
     size,
+    dropped,
     lum: ex.lum(label),
     kScale,
     refHeight: k.uniforms.bufferHeight ? k.uniforms.bufferHeight.value : null,
@@ -762,7 +795,14 @@ const pageErrors = [];
  * `source` serves a different `web/main.js` into it: the mutated build, or the
  * build at HEAD for the resolution control. Anything else gets the tree's.
  */
-async function openPage(viewport, source = mutatedBody) {
+// `html` is served alongside `source` and is only ever passed by the cross-build arm.
+// The panel and the module are one pair: a build's `PARAMS` throws at boot if any
+// parameter it declares has no control in the markup, so an older module served against
+// today's index.html dies on the first parameter this tree has renamed - and it dies
+// before `__kinect` exists, which arrives as a 30-second timeout in `openPage` rather
+// than as anything naming a panel. That is exactly how the noise field's arrival was
+// first reported. `registry-check` has served the pair since step 3; this is the same fix.
+async function openPage(viewport, source = mutatedBody, html = null) {
   // The full chromium build rather than the headless shell: the shell can land on
   // SwiftShader, which has no EXT_color_buffer_float, and a run that silently fell
   // back to a software rasteriser would agree with itself for the wrong reason.
@@ -780,12 +820,31 @@ async function openPage(viewport, source = mutatedBody) {
     pageErrors.push(msg.text());
   });
   await page.route('**/favicon.ico', (route) => route.fulfill({ status: 204, body: '' }));
+  let servedHtml = false;
+  if (html) {
+    // The predicate and the `goto` below read one constant. They used to name `/`
+    // and `/index.html` while the page was opened at `/?take=`, and the editor has
+    // since moved to `/edit?take=` - two places spelling the same path separately
+    // is how the cross-build arm ends up loading today's markup and comparing this
+    // tree against itself.
+    await page.route((url) => url.pathname === EDITOR_PATH,
+      (route) => { servedHtml = true; return route.fulfill({ contentType: 'text/html; charset=utf-8', body: html }); });
+  }
   if (source) {
     await page.route('**/main.js', (route) => route.fulfill({
       contentType: 'text/javascript; charset=utf-8', body: source,
     }));
   }
-  await page.goto(`${URL_BASE}/?take=${encodeURIComponent(TAKE)}`, { waitUntil: 'load' });
+  await page.goto(`${URL_BASE}${EDITOR_PATH}?take=${encodeURIComponent(TAKE)}`, { waitUntil: 'load' });
+  // The interception, enforced rather than assumed - and this is the exact
+  // misdiagnosis the paragraph above records. A predicate that stops matching
+  // leaves the old module against today's index.html, which throws at boot before
+  // `__kinect` exists and surfaces as the 30-second timeout on the next line,
+  // naming a page that never loaded rather than a URL that never matched.
+  if (html && !servedHtml) {
+    throw new Error(`the page markup was never intercepted - landed on ${new URL(page.url()).pathname}, `
+      + 'so the cross-build arm loaded the tree\'s own page');
+  }
   await page.waitForFunction(() => !!globalThis.__kinect);
   await page.waitForFunction(() => !!globalThis.__kinect.timeline.transport(), null, { timeout: 20000 });
   await page.evaluate(INSTALL);
@@ -941,7 +1000,32 @@ console.log('\n[2] the look holds at a different output size, and did not before
 // on this fixture and a mutation of it changed nothing at all - the probe has to
 // stand where the term is actually doing something.
 const NEAR_CAMERA = { position: [0, 0.1, -0.2], quaternion: [0, 0, 0, 1], fov: 50 };
-const OFF = { bloom: 0, trails: 0, rgbSplit: 0, scanlines: 0, grain: 0 };
+// The four effects that make the region's eight geometry parameters mean anything. With
+// all of them at zero the region is inert whatever its extents say.
+//
+// **These belong in `OFF` itself, and that is the whole of what makes the region rows
+// safe to add.** An arm applies its look over whatever the previous arm left - nothing
+// resets - and the arms walk every row at 960x600 and then every row again at 1920x1200.
+// So a region row at the end of the first pass is still in force when the second pass
+// starts, and the mask it left on faded the cloud through every row of the larger size.
+// Measured that way: all nine pre-existing rows failed with luminance ratios of 0.52 to
+// 0.86 against a 0.005 band, while the region rows themselves passed at 1.0000 - a
+// result that reads exactly like the look having stopped holding across output size, and
+// was entirely the tool's own state. Zeroing them here costs nothing, because zero is
+// what they already default to.
+const REGION_OFF = { noise: 0, regionPush: 0, regionNoise: 0, regionMask: 0 };
+const OFF = { bloom: 0, trails: 0, rgbSplit: 0, scanlines: 0, grain: 0, ...REGION_OFF };
+
+// The region itself, on the subject. Everything here is metres in the sensor frame, and
+// that is the claim the two rows using it exist to enforce: not one of these is a
+// screen-space length, so the same numbers must draw the same shape at 600 and at 1200,
+// with no `bufferHeight / 1080` anywhere in the path. `region-in-metres` is the control.
+const REGION_AT_SUBJECT = {
+  ...REGION_OFF,
+  regionX: 0.05, regionY: 0.15, regionZ: -1.9,
+  regionW: 0.4, regionH: 0.4, regionD: 0.4,
+  regionRound: 0.9, regionSoft: 0.6,
+};
 
 // The look the 16:9 arm compares, and the additive switch in it is the difference
 // between a comparison and a mistake. A splat's alpha is normalised against its own
@@ -978,6 +1062,25 @@ const PIPELINES = [
   // bloom would admit everything else too.
   ['nobloom', { look: { bloom: 0 } }],
   ['full', { look: {} }],
+  // The world-space terms, last on purpose. An arm applies its look over whatever the
+  // previous one left - `setMode(4)` writes Blackwall and nothing resets the rest - so a
+  // region row placed higher up would leak its geometry into every row below it and
+  // move calibrations that were measured without it. At the end it can only inherit,
+  // and each of these names every term it depends on rather than relying on that.
+  //
+  // One row per term, because a cumulative row cannot say which one broke: step 6
+  // found three grade mutations surviving a combined comparison by less than its own
+  // sampling residual. `noise` is the field, `regionpush` the displacement and
+  // `regionmask` the fade, and the two region rows share the falloff that
+  // `region-in-metres` attacks.
+  //
+  // The region is placed where the points are rather than anywhere convenient: the
+  // sample capture's cloud runs z [-4.50, -0.50] with its median point at
+  // (0.021, 0.019, -1.893), so this sits on the subject with its surface passing
+  // through the cloud instead of enclosing it or missing it.
+  ['noise', { look: { ...OFF, ...REGION_OFF, noise: 0.06, noiseScale: 4, noiseSpeed: 0 } }],
+  ['regionpush', { look: { ...OFF, ...REGION_AT_SUBJECT, regionPush: 0.35 } }],
+  ['regionmask', { look: { ...OFF, ...REGION_AT_SUBJECT, regionMask: 0.5 } }],
 ];
 
 // Which measurement each row is judged on, and it is per row because the terms live
@@ -1046,6 +1149,30 @@ const RES_TOLERANCE = {
   bloom: { on: 'coarse', mean: 1.6, ratio: 0.01 },
   nobloom: { on: 'coarse', mean: 2.4, ratio: 0.005 },
   full: { on: 'coarse', mean: 2.6, ratio: 0.01 },
+  // The three world-space rows. Every band here sits between a measured clean number
+  // and a measured mutant one rather than being chosen to fit.
+  //
+  // Clean, coarse mean and luminance ratio: noise 0.319/1.0002, regionpush 0.489/1.0001,
+  // regionmask 0.388/1.0000. Those ratios are the tightest in the table by an order of
+  // magnitude, and they should be - not one of these terms is a screen-space length, so
+  // there is nothing for the output size to scale. The nine rows above sit at 0.9991 to
+  // 1.0046 because a rasterised sprite grid does not resample perfectly; these three
+  // move the *world*, which is the same world at either size.
+  //
+  // Under `region-in-metres`: regionpush 1.865/1.0028 and regionmask 0.510/0.9915, while
+  // noise stays at 0.319/1.0002 to the last digit because the noise field never touches
+  // the falloff. So the mutation names the two rows that share the term rather than
+  // reddening the file, which is the whole reason these are three rows and not one.
+  //
+  // Which measurement carries each row differs, and it is worth saying which. The push
+  // row is caught on the mean - 0.489 clean against 1.865 mutant, with the band at 1.0
+  // roughly twice the one and half the other. The mask row is caught on the ratio, at a
+  // departure of 0.0085 against a clean residual of 0.0002, which is 40x the noise; its
+  // mean barely moves (0.388 to 0.510), so the 0.9 band is deliberately loose rather
+  // than squeezed onto a difference that is not the signal.
+  noise: { on: 'coarse', mean: 0.8, ratio: 0.005 },
+  regionpush: { on: 'coarse', mean: 1.0, ratio: 0.005 },
+  regionmask: { on: 'coarse', mean: 0.9, ratio: 0.005 },
 };
 
 // One arm at whatever size the page is currently at, with the intrinsics pinned so
@@ -1093,6 +1220,19 @@ async function resolutionSweep(page, pipelines) {
 }
 
 const after = await resolutionSweep(main.page, PIPELINES);
+
+// The other half of the drop-unknown rule in `RES_ARM`. Filtering a look to what the
+// page declares is only safe on the cross-build arm; on this build every name in every
+// row must land, or a row is silently measuring a term it never set - which is the
+// difference between a look holding across output sizes and a look that was never
+// applied. Reported here so the permission to drop cannot spread past the one arm
+// that needs it.
+{
+  const leaked = Object.entries(after).flatMap(([name, arms]) => Object.entries(arms)
+    .flatMap(([size, arm]) => (arm?.dropped ?? []).map((p) => `${name}@${size}:${p}`)));
+  check(leaked.length === 0,
+    'every parameter every row asks for exists on this build', leaked.join(' '));
+}
 
 // This build's whole look at two sizes, against the graded look at 600 below.
 //
@@ -1177,7 +1317,8 @@ let rebaseNon169Old = null;
   if (src.includes('bufferHeight / 1080.0')) {
     throw new Error(`${BEFORE} already has the resolution work: the control would be the same build twice`);
   }
-  const before = await openPage(SMALL, src);
+  const beforeHtml = execFileSync('git', ['-C', REPO, 'show', `${BEFORE}:web/index.html`], { encoding: 'utf8', maxBuffer: 1e9 });
+  const before = await openPage(SMALL, src, beforeHtml);
   const measured = await resolutionSweep(before.page, PIPELINES.filter(([n]) => n === 'points' || n === 'nobloom'));
 
   // The re-tune, measured across the two builds rather than argued from the factor.

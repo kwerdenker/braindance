@@ -250,7 +250,7 @@ function buildTile(take) {
     const why = !take.hasHello
       ? 'this take carries no sensor hello, so its intrinsics are unknown'
       : take.frames < 2 ? 'a take needs two frames to bracket a position' : '';
-    button('Open', 'primary', () => { location.href = `/?take=${encodeURIComponent(take.id)}`; }, !take.openable, why);
+    button('Open', 'primary', () => { location.href = `/edit?take=${encodeURIComponent(take.id)}`; }, !take.openable, why);
   }
   if (!shooting) {
     if (take.state === 'both') button('Reclaim', '', () => askReclaim(tile, take));

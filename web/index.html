@@ -75,10 +75,20 @@
   .check { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; cursor: pointer; }
   .check input { accent-color: var(--accent); margin: 0; }
 
-  #hint { position: fixed; bottom: 14px; left: 16px; color: var(--dim); z-index: 10; }
+  /* Clear of the panel rather than under it. The panel is 252px at 16px from the
+     left and scrolls to the full window height, so a hint sharing that column sat
+     underneath the last control on any window tall enough to fill it. */
+  #hint { position: fixed; bottom: 14px; left: 300px; color: var(--dim); z-index: 10; }
 
-  #camNote, #recNote, #recSpace, #monNote { color: var(--dim); font-size: 10px; line-height: 1.45; opacity: 0.75; margin-top: 2px; }
+  #camNote, #recNote, #recSpace, #monNote, #sensorNote, #recLookNote, #recRange, #viewNote {
+    color: var(--dim); font-size: 10px; line-height: 1.45; opacity: 0.75; margin-top: 2px;
+  }
   #monNote.warn { color: var(--warn); opacity: 1; }
+  /* The one thing in the recorder that must not be got backwards, so it is on the
+     control's face rather than in a comment: these two hide points that already
+     arrived, and the grabber's --min-depth/--max-depth decide what exists at all.
+     Nothing here reaches those. */
+  #recRange { color: var(--warn); opacity: 0.9; }
   /* Remaining time, never remaining bytes. "1h 47m left at current settings" is
      actionable where "94 GB free" is arithmetic the operator has to do under
      pressure, and time is the honest unit anyway since the rate depends on capture
@@ -86,8 +96,34 @@
   #recSpace.low { color: var(--warn); opacity: 1; }
   #recGo[aria-pressed=true] { background: var(--red); border-color: var(--red); color: #17000a; }
   /* A clip on the timeline has nothing to record, and a live viewer has no clip.
-     The two surfaces are exclusive for the same reason the two transports are. */
-  body.editing #recordGroup { display: none; }
+     The two surfaces are exclusive for the same reason the two transports are.
+     The sensor and monitor groups go with the recorder for a sharper reason than
+     tidiness: `showCamera` and `showMonitor` only ever run from a socket message and
+     an editing page has no socket, so on the editor those five controls sat at their
+     markup defaults presenting them as the sensor's state. A control that reads as
+     fact and is not is worse than one that is missing. */
+  body.editing #recordGroup,
+  body.editing #recLookGroup,
+  body.editing #sensorGroup,
+  body.editing #monitorGroup,
+  body.editing #extendedRow { display: none; }
+  /* The preview-range warning is about a confusion that only exists while shooting -
+     that these two might be clipping the capture. On the editor the take is already
+     on disk and nothing near this control could reach a grabber, so the same line
+     there would be a warning about an impossibility. */
+  body.editing #recRange { display: none; }
+
+  /* The shooting surface is record, mark, remaining time, a preset and the preview
+     range; everything below that is the grade, and the grade is the editor's job.
+     But a big screen before a take is a good place to find out where a look wants to
+     go, so the rest is one button away rather than absent. Hidden with a class and
+     not by leaving the controls out of the document: the registry stamps every
+     slider's bounds at boot and throws if a look parameter has no control, so a
+     surface that built a subset would stop being checkable against the registry at
+     all. Source order matters here - both selectors have the same specificity, and
+     the second is what lets the button win. */
+  body:not(.editing) .lookgroup { display: none; }
+  body.extended .lookgroup { display: block; }
   .check input:disabled { opacity: 0.4; }
   .check.disabled { opacity: 0.45; cursor: default; }
 
@@ -113,6 +149,16 @@
   .btnrow button:hover { border-color: var(--line-3); color: var(--ink); }
   .btnrow button[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: #04231f; }
   .btnrow button:disabled { opacity: 0.4; cursor: default; }
+  /* A native select renders white-on-white here and reads as a rendering fault
+     rather than as a control. It takes the row's spare width because a preset name
+     is the part worth reading; `apply` is a fixed word and sizes to itself. */
+  .btnrow select {
+    flex: 1; min-width: 0; padding: 5px 4px; border: 1px solid var(--line);
+    border-radius: 5px; background: var(--paper-1); color: var(--ink);
+    font: inherit; font-size: 10px; cursor: pointer;
+  }
+  .btnrow select:hover { border-color: var(--line-3); }
+  .btnrow select + button { flex: 0 0 68px; }
 
   /* The camera path, its nodes and the top-down orthographic, on a canvas of their
      own over the stage. Deliberately not in the rendered frame: that buffer is
@@ -277,15 +323,29 @@
     <h1>Kinect v2</h1>
     <div id="status">connecting…</div>
 
-    <div class="group">
-      <label>Shading</label>
-      <div class="modes" id="modes">
-        <button data-mode="0" aria-pressed="true">RGB</button>
-        <button data-mode="1" aria-pressed="false">Depth</button>
-        <button data-mode="2" aria-pressed="false">Ghost</button>
-        <button data-mode="3" aria-pressed="false">Contour</button>
-        <button data-mode="4" aria-pressed="false" class="wide">BLACKWALL</button>
+    <!-- The shooting controls, and the four-fifths of them that are load-bearing:
+         record, mark and how much time is left. Nothing here is a look. -->
+    <div class="group" id="recordGroup">
+      <label>Record</label>
+      <div class="btnrow">
+        <button id="recGo" type="button">record</button>
+        <button id="recMark" type="button" disabled>mark</button>
       </div>
+      <div id="recNote">not recording</div>
+      <div id="recSpace">&nbsp;</div>
+    </div>
+
+    <!-- Shooting against the look you intend to grade towards is the whole reason
+         presets are a user-authored library rather than two hardcoded modes, so the
+         recorder draws on the same library the editor does. The editor's copy of this
+         selector is in the timeline bar, where the rest of the document controls are. -->
+    <div class="group" id="recLookGroup">
+      <label>Look</label>
+      <div class="btnrow">
+        <select id="recPreset"><option value="">—</option></select>
+        <button id="recPresetApply" type="button">apply</button>
+      </div>
+      <div id="recLookNote">&nbsp;</div>
     </div>
 
     <div class="group" id="cameraGroup" hidden>
@@ -302,49 +362,42 @@
         edited in the world, so there is no slider for it.</div>
     </div>
 
-    <div class="group" id="recordGroup">
-      <label>Record</label>
-      <div class="btnrow">
-        <button id="recGo" type="button">record</button>
-        <button id="recMark" type="button" disabled>mark</button>
+    <div class="group">
+      <label>Shading</label>
+      <div class="modes" id="modes">
+        <button data-mode="0" aria-pressed="true">RGB</button>
+        <button data-mode="1" aria-pressed="false">Depth</button>
+        <button data-mode="2" aria-pressed="false">Ghost</button>
+        <button data-mode="3" aria-pressed="false">Contour</button>
+        <button data-mode="4" aria-pressed="false" class="wide">BLACKWALL</button>
       </div>
-      <div id="recNote">not recording</div>
-      <div id="recSpace">&nbsp;</div>
-      <div class="btnrow"><button id="toLibrary" type="button">library</button></div>
     </div>
 
+    <!-- Framing: what you can see, and where you are seeing it from. `sensor view` is
+         navigation and writes nothing - distinct from `look through it` above, which
+         adopts the program camera whose pose is document state. -->
     <div class="group">
-      <label>Points</label>
-      <div class="row"><span>size</span><input id="pointSize" type="range"><output></output></div>
-      <div class="row"><span>opacity</span><input id="opacity" type="range"><output></output></div>
-      <div class="row"><span>brightness</span><input id="exposure" type="range"><output></output></div>
-      <label class="check"><input id="additive" type="checkbox"> additive glow</label>
-    </div>
-
-    <div class="group">
-      <label>Depth clip (metres)</label>
+      <label>Framing (metres)</label>
+      <div class="btnrow">
+        <button id="camSensor" type="button">sensor view</button>
+      </div>
       <div class="row"><span>near</span><input id="near" type="range"><output></output></div>
       <div class="row"><span>far</span><input id="far" type="range"><output></output></div>
+      <div id="recRange">preview only</div>
     </div>
 
-    <div class="group">
-      <label>Smoothing</label>
-      <label class="check"><input id="interpolate" type="checkbox"> interpolate frames</label>
-      <div class="row"><span>snap mm</span><input id="snapDelta" type="range"><output></output></div>
-    </div>
-
-    <div class="group">
-      <label>Colour camera</label>
+    <div class="group" id="sensorGroup">
+      <label>Sensor</label>
       <label class="check"><input id="colorCam" type="checkbox" checked> colour camera on</label>
       <label class="check"><input id="lowLight" type="checkbox" checked> low light mode</label>
-      <div id="camNote">low light lets the colour camera drop to 15fps for a brighter image. Depth stays at 30 either way.</div>
+      <div id="sensorNote">low light lets the colour camera drop to 15fps for a brighter image. Depth stays at 30 either way.</div>
     </div>
 
     <!-- What this monitor pulls off the link, and never what the take records. The
          setting is the operator's and stays on screen: nothing here moves on its
          own, because coarse depth reads as a badly placed subject and a dropped
          stride reads as a sensor losing frames. -->
-    <div class="group">
+    <div class="group" id="monitorGroup">
       <label>Monitor stream</label>
       <div class="row"><span>depth ÷</span><input id="monDivisor" type="range" min="1" max="16" step="1" value="1"><output>1</output></div>
       <div class="row"><span>every Nth</span><input id="monStride" type="range" min="1" max="30" step="1" value="1"><output>1</output></div>
@@ -352,36 +405,101 @@
       <div id="monNote">full rate. the recording is always full fidelity whatever this says.</div>
     </div>
 
-    <div class="group">
-      <label>Persistence (ms)</label>
+    <div class="btnrow" id="extendedRow">
+      <button id="extended" type="button" aria-pressed="false">extended settings</button>
+    </div>
+
+    <!-- Below here is the grade, and every group is one stage of the pipeline rather
+         than one subject heading. The order is the order the image is built in:
+         what the depth signal is conditioned into, where the points are moved to,
+         how they are drawn, what colour they take, what persists between frames, and
+         what the optics do to the result. -->
+    <div class="group lookgroup">
+      <label>Depth conditioning</label>
+      <label class="check"><input id="interpolate" type="checkbox"> interpolate frames</label>
+      <div class="row"><span>snap mm</span><input id="snapDelta" type="range"><output></output></div>
+      <label class="check"><input id="denoise" type="checkbox"> cull speckle</label>
+      <div class="row"><span>edge tol</span><input id="edgeTol" type="range"><output></output></div>
+    </div>
+
+    <div class="group lookgroup">
+      <label>Displacement</label>
+      <div class="row"><span>turbulence</span><input id="noise" type="range"><output></output></div>
+      <div class="row"><span>grain m</span><input id="noiseScale" type="range"><output></output></div>
+      <div class="row"><span>speed</span><input id="noiseSpeed" type="range"><output></output></div>
+      <div class="row"><span>glitch</span><input id="glitch" type="range"><output></output></div>
+    </div>
+
+    <!-- One region in the room, read three ways: it displaces, it scrambles, and it
+         masks. Everything here is metres in the sensor frame, so a look holds at any
+         output size without being referred to 1080p the way the screen-space terms
+         are. Half-extents at zero with a radius is a sphere; raise them and it becomes
+         a rounded box; take two to zero and it is a capsule. No shape selector,
+         because an enum could not keyframe and these sliders can. -->
+    <div class="group lookgroup">
+      <label>Region (metres)</label>
+      <div class="row"><span>x</span><input id="regionX" type="range"><output></output></div>
+      <div class="row"><span>y</span><input id="regionY" type="range"><output></output></div>
+      <div class="row"><span>z</span><input id="regionZ" type="range"><output></output></div>
+      <div class="row"><span>width</span><input id="regionW" type="range"><output></output></div>
+      <div class="row"><span>height</span><input id="regionH" type="range"><output></output></div>
+      <div class="row"><span>depth</span><input id="regionD" type="range"><output></output></div>
+      <div class="row"><span>radius</span><input id="regionRound" type="range"><output></output></div>
+      <div class="row"><span>falloff</span><input id="regionSoft" type="range"><output></output></div>
+      <div class="row"><span>push</span><input id="regionPush" type="range"><output></output></div>
+      <div class="row"><span>scramble</span><input id="regionNoise" type="range"><output></output></div>
+      <div class="row"><span>mask</span><input id="regionMask" type="range"><output></output></div>
+    </div>
+
+    <div class="group lookgroup">
+      <label>Points</label>
+      <div class="row"><span>size</span><input id="pointSize" type="range"><output></output></div>
+      <div class="row"><span>opacity</span><input id="opacity" type="range"><output></output></div>
+      <label class="check"><input id="additive" type="checkbox"> additive glow</label>
+    </div>
+
+    <div class="group lookgroup">
+      <label>Colour &amp; tone</label>
+      <div class="row"><span>brightness</span><input id="exposure" type="range"><output></output></div>
+      <div class="row"><span>thermal</span><input id="thermal" type="range"><output></output></div>
+      <div class="row"><span>edges</span><input id="edges" type="range"><output></output></div>
+      <div class="row"><span>rim</span><input id="rim" type="range"><output></output></div>
+      <div class="row"><span>scan</span><input id="scan" type="range"><output></output></div>
+    </div>
+
+    <!-- The three terms that accumulate across frames, together. Fade and wake are
+         the surface memory and trails is the afterimage buffer; they were two groups
+         apart while doing one thing, which is how a look gets tuned twice. -->
+    <div class="group lookgroup">
+      <label>Time (ms)</label>
       <div class="row"><span>fade</span><input id="fade" type="range"><output></output></div>
       <div class="row"><span>wake</span><input id="wake" type="range"><output></output></div>
-    </div>
-
-    <div class="group">
-      <label>Motion</label>
-      <div class="row"><span>turbulence</span><input id="warp" type="range"><output></output></div>
-      <div class="row"><span>speed</span><input id="warpSpeed" type="range"><output></output></div>
-      <div class="row"><span>glitch</span><input id="glitch" type="range"><output></output></div>
-      <label class="check"><input id="spin" type="checkbox"> auto-orbit</label>
-    </div>
-
-    <div class="group">
-      <label>Post</label>
-      <div class="row"><span>scan</span><input id="scan" type="range"><output></output></div>
-      <div class="row"><span>rim</span><input id="rim" type="range"><output></output></div>
-      <div class="row"><span>bloom</span><input id="bloom" type="range"><output></output></div>
       <div class="row"><span>trails</span><input id="trails" type="range"><output></output></div>
+    </div>
+
+    <div class="group lookgroup">
+      <label>Optical</label>
+      <div class="row"><span>bloom</span><input id="bloom" type="range"><output></output></div>
       <div class="row"><span>rgb split</span><input id="rgbSplit" type="range"><output></output></div>
       <div class="row"><span>scanlines</span><input id="scanlines" type="range"><output></output></div>
       <div class="row"><span>grain</span><input id="grain" type="range"><output></output></div>
     </div>
 
-    <div class="group">
-      <label>Cleanup &amp; perf</label>
-      <label class="check"><input id="denoise" type="checkbox"> cull speckle</label>
-      <div class="row"><span>edge tol</span><input id="edgeTol" type="range"><output></output></div>
+    <!-- The two parameters that are not part of the clip, in the one group that says
+         so. They are tagged `view` in the registry, they get no keyframe control and
+         no preset carries them - and while they sat inside look groups that read as
+         an oversight rather than as the split it is. -->
+    <div class="group lookgroup">
+      <label>Viewer</label>
+      <label class="check"><input id="spin" type="checkbox"> auto-orbit</label>
       <div class="row"><span>render %</span><input id="renderScale" type="range"><output></output></div>
+      <div id="viewNote">Not saved with the clip and not exported: these change what you
+        are looking at, not what the frame is.</div>
+    </div>
+
+    <div class="btnrow" id="navRow">
+      <button id="toLibrary" type="button">gallery</button>
+      <button id="toMenu" type="button">menu</button>
     </div>
   </div>
 

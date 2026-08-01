@@ -932,6 +932,16 @@ async function retryOnContextLoss(label, work) {
   throw new Error('unreachable');
 }
 
+// The three pages, named once each rather than at the eight call sites below. `/`
+// served the recorder, `/?take=` the editor and `/library.html` the gallery until the
+// main menu took `/`, and a path spelled at every call site is eight chances to leave
+// one behind - where the failure is silent for thirty seconds and then loud about the
+// wrong thing, because the menu page defines neither `__kinect` nor `__library` and
+// every wait below is for one of those.
+const recorderPage = (base) => `${base}/record`;
+const editorPage = (base, take) => `${base}/edit?take=${encodeURIComponent(take)}`;
+const galleryPage = (base) => `${base}/gallery`;
+
 async function openPage(browser, url, viewport = { width: 1100, height: 760 }) {
   const page = await browser.newPage({ viewport });
   const errors = [];
@@ -1533,7 +1543,7 @@ async function runChecks() {
   // ---------------------------------------------------------- 6. the gallery page
   console.log('\n[library] the tiles: states, marks, buttons and the skim');
   {
-    const { page, errors } = await openPage(browser, `${macUrl}/library.html`);
+    const { page, errors } = await openPage(browser, galleryPage(macUrl));
     await page.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 });
     const tiles = await page.evaluate('globalThis.__library.tiles()');
     // Keyed by hash, because the fixture deliberately contains two different takes
@@ -1664,7 +1674,7 @@ async function runChecks() {
   // A library with no takes at all.
   {
     const emptyUrl = await startServer(root, ['--captures', join(WORK, 'empty-captures'), '--name', 'fresh'], MAC_PORT + 3);
-    const { page, errors } = await openPage(browser, `${emptyUrl}/library.html`);
+    const { page, errors } = await openPage(browser, galleryPage(emptyUrl));
     await page.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 });
     const line = await page.evaluate('globalThis.__library.emptyLine()');
     check(/No takes here yet/.test(line ?? ''), 'an empty library says so rather than rendering nothing',
@@ -1692,7 +1702,7 @@ async function runChecks() {
     // with no take, where the drive owns the loop outright, and the two claims that
     // are genuinely about a take run on a page that has one.
     {
-      const { page: takePage, errors: takeErrors } = await openPage(browser, `${macUrl}/?take=local-clip`, { width: 640, height: 400 });
+      const { page: takePage, errors: takeErrors } = await openPage(browser, editorPage(macUrl, 'local-clip'), { width: 640, height: 400 });
       await takePage.waitForFunction('globalThis.__kinect?.timeline?.transport() !== null', null, { timeout: 40000 });
       await takePage.evaluate('globalThis.__kinect.timeline.settled()');
       check(await takePage.evaluate('globalThis.__kinect.library.takeHash()')
@@ -1725,7 +1735,7 @@ async function runChecks() {
       await takePage.close();
     }
 
-    const { page, errors } = await openPage(browser, `${macUrl}/`, { width: 640, height: 400 });
+    const { page, errors } = await openPage(browser, recorderPage(macUrl), { width: 640, height: 400 });
     await page.waitForFunction('globalThis.__kinect !== undefined', null, { timeout: 40000 });
 
     // A look nothing defaults to, so a restore that did nothing cannot pass.
@@ -1926,7 +1936,7 @@ async function runChecks() {
   // ------------------------------------------------------- 8. the preset library
   console.log('\n[library] presets carry look and a provenance stamp');
   {
-    const { page, errors } = await openPage(browser, `${macUrl}/?take=local-clip`, { width: 640, height: 400 });
+    const { page, errors } = await openPage(browser, editorPage(macUrl, 'local-clip'), { width: 640, height: 400 });
     await page.waitForFunction('globalThis.__kinect?.timeline?.transport() !== null', null, { timeout: 40000 });
     await page.evaluate('globalThis.__kinect.timeline.settled()');
 
@@ -2026,7 +2036,7 @@ async function runChecks() {
   // --------------------------------------------------- 9. marks on the scrubber
   console.log('\n[library] marks on the editor\'s scrubber, through the retime curve');
   {
-    const { page, errors } = await openPage(browser, `${macUrl}/?take=local-clip`, { width: 1100, height: 700 });
+    const { page, errors } = await openPage(browser, editorPage(macUrl, 'local-clip'), { width: 1100, height: 700 });
     await page.waitForFunction('globalThis.__kinect?.timeline?.transport() !== null', null, { timeout: 40000 });
     await page.evaluate('globalThis.__kinect.timeline.settled()');
 
@@ -2784,7 +2794,7 @@ async function runChecks() {
     // away - so a state field saying the server cannot record is only half the fix
     // and the other half is visible or it is not there.
     {
-      const { page, errors } = await openPage(browser, `${url}/`, { width: 900, height: 700 });
+      const { page, errors } = await openPage(browser, recorderPage(url), { width: 900, height: 700 });
       await page.waitForFunction('globalThis.__kinect !== undefined', null, { timeout: 40000 });
       await page.waitForFunction("document.getElementById('recGo')?.disabled === true", null, { timeout: 20000 })
         .catch(() => { /* asserted below, so a timeout is a failing row rather than a throw */ });
@@ -3265,7 +3275,7 @@ async function runChecks() {
     // them. So this is the page rather than the JSON: NaN in a tile is not something
     // a manifest assertion can see.
     {
-      const { page, errors } = await openPage(browser, `${url}/library.html`);
+      const { page, errors } = await openPage(browser, galleryPage(url));
       await page.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 });
       const tile = await page.evaluate(`(() => {
         const el = document.querySelector('.tile[data-recording="true"]');

@@ -616,11 +616,26 @@ export class DocumentStore {
     // `pathFor` moved above the `mkdir` for the same reason it moved above the count -
     // an unusable name should not leave a directory behind either.
     const path = this.pathFor(name);
-    this.writes++;
+    // Captured here, on the same tick as the increment. Reading `this.writes` again
+    // further down would be reading it across an await, where another request has
+    // already incremented it - two writers then compute the same scratch name and the
+    // race this number exists to prevent comes straight back. Measured: 2 of 12
+    // concurrent puts still failed with the read moved below the mkdir.
+    const seq = ++this.writes;
     await mkdir(this.dir, { recursive: true });
     const text = `${JSON.stringify({ ...body, version: this.version }, null, 2)}\n`;
-    await writeFile(`${path}.tmp`, text);
-    await rename(`${path}.tmp`, path);
+    // The scratch name carries the write's own number, and that is load-bearing rather
+    // than tidy. With a fixed `${path}.tmp` two overlapping writes to one document share
+    // the file: the first rename moves it away and the second finds nothing, so the
+    // later write fails with an ENOENT the route reports as a 409. Auto-save made that
+    // reachable from ordinary use - it fires on every committed interaction, and a
+    // handful of quick ones overlap - and measured here it was 4 of 8 concurrent puts.
+    // `seq` is the write's own number, taken on the tick it was counted, so every
+    // in-flight write in this process holds a distinct one; nothing here needs a clock
+    // or a random suffix to get it.
+    const scratch = `${path}.${seq}.tmp`;
+    await writeFile(scratch, text);
+    await rename(scratch, path);
     return { name, rev: `sha256:${createHash('sha256').update(text).digest('hex')}`, bytes: text.length };
   }
 

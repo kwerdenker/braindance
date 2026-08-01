@@ -43,6 +43,10 @@ const flag = (name, fallback = null) => {
 };
 
 const URL_BASE = flag('--url', 'http://localhost:8080');
+// The live recorder, which `/` served until the main menu took that path. Both
+// arms open it, and a page that landed on the menu instead would sit waiting for
+// a `__kinect` that page never defines - a wrong URL arriving as a timeout.
+const RECORDER_PATH = '/record';
 const CAPTURE = flag('--capture', 'captures/sample.knct');
 const CLOCK = argv.includes('--clock');
 const BEFORE_REV = flag('--before', 'HEAD');
@@ -229,7 +233,7 @@ async function clockCheck(context) {
           contentType: 'text/javascript; charset=utf-8', body: source,
         }));
       }
-      await page.goto(URL_BASE, { waitUntil: 'load' });
+      await page.goto(URL_BASE + RECORDER_PATH, { waitUntil: 'load' });
       await page.waitForFunction(() => !!globalThis.__kinect);
 
       // Proof that the interception held, independent of the reading it protects.
@@ -308,7 +312,7 @@ async function openPage() {
     contentType: 'application/octet-stream',
     body: fixture,
   }));
-  await page.goto(URL_BASE, { waitUntil: 'load' });
+  await page.goto(URL_BASE + RECORDER_PATH, { waitUntil: 'load' });
   await page.waitForFunction(() => !!globalThis.__kinect);
 
   const gpu = await gpuInfo(page);

@@ -1158,6 +1158,28 @@ export const OWNED_NAMESPACES = new Set(ROUTES.map((r) => {
 }));
 
 /**
+ * The pages, and the only URLs they answer at.
+ *
+ * Deliberately not entries in `ROUTES`. That table is the mutation guard: a route
+ * there declares what it changes and `library-check` walks it asserting every
+ * `write` checks method, content type and origin. These read a file off disk and
+ * change nothing, and putting them in the table would add rows the sweep has to
+ * special-case - a guard whose list contains things it does not guard is a guard
+ * that teaches people to skim it.
+ *
+ * The map is the whole story of which URL serves which file, which is what stops a
+ * page acquiring a second address. `/record` and `/edit` are one file because the
+ * recorder and the editor are one page in two modes; the URL is what tells it which,
+ * and `main.js` reads `?take=` to decide.
+ */
+const PAGES = {
+  '/': 'menu.html',
+  '/record': 'index.html',
+  '/edit': 'index.html',
+  '/gallery': 'library.html',
+};
+
+/**
  * One dispatcher, and the only place a mutating route is let through.
  *
  * Returns false for a path no entry claims, so the static file server downstream
@@ -1234,26 +1256,36 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
-  // A path under a namespace the table owns but matching no entry is a 404 rather
-  // than a file lookup: without this `/library/../web/main.js` and friends would
-  // fall through to the static server, and more plainly a typo'd route would answer
-  // with a directory listing's 404 instead of the API's.
-  //
-  // The set is derived from ROUTES rather than written out, because the five names
-  // it used to spell were a list somebody had to remember to extend. `jobs` is what
-  // made that concrete: step 8 adds a namespace, and a literal that did not mention
-  // it sends `/jobs/../web/main.js` to the static server while every other namespace
-  // gets the API's 404. Fixing the instance would have left the next one outside the
-  // list, which is the failure this repo already closed once for the route table's
-  // own dispatch - so the namespaces are the table's first segments, and a route
-  // added later is covered by existing rather than by being noticed.
-  if (OWNED_NAMESPACES.has(urlPath.split('/')[1])) {
+  // A page is reached at the URL it is named by, and `PAGES` is asked before the
+  // owned-namespace refusal below because `/record` collides with the recorder's
+  // namespace. Every route the table holds under `record` is anchored on a second
+  // segment, so bare `/record` matches nothing and falls through - straight into a
+  // check that owns the word and would 404 the recording page before the file tree
+  // got a turn. Asked after the table's own dispatch rather than before it, so a
+  // real route still wins over a page name if the two ever meet.
+  const page = PAGES[urlPath];
+  if (!page && OWNED_NAMESPACES.has(urlPath.split('/')[1])) {
+    // A path under a namespace the table owns but matching no entry is a 404 rather
+    // than a file lookup: without this `/library/../web/main.js` and friends would
+    // fall through to the static server, and more plainly a typo'd route would answer
+    // with a directory listing's 404 instead of the API's.
+    //
+    // The set is derived from ROUTES rather than written out, because the five names
+    // it used to spell were a list somebody had to remember to extend. `jobs` is what
+    // made that concrete: step 8 adds a namespace, and a literal that did not mention
+    // it sends `/jobs/../web/main.js` to the static server while every other namespace
+    // gets the API's 404. Fixing the instance would have left the next one outside the
+    // list, which is the failure this repo already closed once for the route table's
+    // own dispatch - so the namespaces are the table's first segments, and a route
+    // added later is covered by existing rather than by being noticed.
     res.writeHead(404).end('not found');
     return;
   }
 
   let filePath;
-  if (urlPath.startsWith('/vendor/three/')) {
+  if (page) {
+    filePath = join(WEB_DIR, page);
+  } else if (urlPath.startsWith('/vendor/three/')) {
     filePath = join(THREE_DIR, urlPath.slice('/vendor/three/'.length));
   } else if (urlPath.startsWith('/exports/')) {
     // Served so a finished export can be played back where it was made, in the
@@ -1262,7 +1294,24 @@ const httpServer = createServer((req, res) => {
     // cannot make.
     filePath = join(EXPORTS_DIR, urlPath.slice('/exports/'.length));
   } else {
-    filePath = join(WEB_DIR, urlPath === '/' ? 'index.html' : urlPath);
+    // A page under `web/` has exactly one URL and it is the one in `PAGES`, so its
+    // filename is not a second way in. Refused as a class rather than by naming
+    // `/library.html`, because the instance fix is the shape this repo keeps having
+    // to undo - the next page somebody adds would arrive with its filename reachable
+    // again unless the rule is about the extension rather than about a file.
+    //
+    // **Lowercased, because APFS is case-insensitive and `extname` is not.** With a
+    // bare `=== '.html'` comparison `/LIBRARY.HTML` falls past this, `statSync`
+    // happily finds the file anyway and the gallery has a second address after all -
+    // measured at 200 on this machine before the fold was added. It sits inside this
+    // branch rather than above the three/exports ones so the rule stays about pages:
+    // `node_modules/three` ships no HTML today, and a version bump that brought its
+    // examples in should not have them refused by a rule about `web/`.
+    if (extname(urlPath).toLowerCase() === '.html') {
+      res.writeHead(404).end('not found');
+      return;
+    }
+    filePath = join(WEB_DIR, urlPath);
   }
 
   const resolved = normalize(filePath);
@@ -1650,6 +1699,59 @@ function startLive() {
   // are the same event at the exit handler and want opposite answers.
   let everLive = false;
 
+  // How long a grabber gets to shut down cleanly before it is taken out, and how
+  // long to wait afterwards before spawning its replacement. A killed grabber never
+  // ran libfreenect2's teardown, so the kernel is still reclaiming the USB device
+  // for a moment after the process is gone and an immediate respawn loses the race -
+  // measured, as an enumeration failure and a `code=1` exit on the first attempt of
+  // every toggle. The backoff recovers from it either way; the delay is so the log
+  // stops carrying a failure on the ordinary path, because a log that cries wolf on
+  // every colour toggle is one nobody reads during a shoot.
+  const STOP_GRACE_MS = 2000;
+  const RESPAWN_AFTER_KILL_MS = 1500;
+  const RESPAWN_AFTER_CLEAN_MS = 250;
+  let killedHard = false;
+
+  /**
+   * Ask the grabber to stop, and make sure it actually does.
+   *
+   * SIGTERM alone is not enough, and the failure is silent in the worst way: the
+   * grabber handles the signal and leaves its loop, then blocks in libfreenect2's
+   * `dev->stop()` with USB transfers still in flight and never exits. Every restart
+   * runs through the `exit` handler, so a child that never exits means the respawn
+   * never happens - the stream simply stops, the server stays up answering requests,
+   * and nothing anywhere says why. Observed live: toggling the colour camera off left
+   * the grabber sleeping for eight minutes with no frames and no `[grabber] stopped`
+   * line, and only a SIGKILL from outside brought the sensor back.
+   *
+   * So the supervisor stops trusting the child to die. The grace period is for the
+   * ordinary case, where a clean stop releases the device properly; past it, the
+   * device is reclaimed by the kernel when the process goes, which is the same place
+   * a crash would have left it and is recoverable either way. A shoot that has lost
+   * its picture is not.
+   */
+  const stopGrabber = ({ holdProcessOpen = false } = {}) => {
+    const dying = child;
+    if (!dying) return;
+    dying.kill('SIGTERM');
+    const timer = setTimeout(() => {
+      if (dying.exitCode === null && dying.signalCode === null) {
+        console.error('[server] grabber did not stop in time - killing it');
+        killedHard = true;
+        dying.kill('SIGKILL');
+      }
+    }, STOP_GRACE_MS);
+    // On a restart the grace period must not be a reason for the process to stay up,
+    // so it is unreferenced. On the way out it is the opposite: the grabber never
+    // exits on its own here, so an unreferenced timer means node leaves before the
+    // kill ever fires and the sensor stays claimed by a process with no parent. That
+    // orphan then fails the *next* server's enumeration, which reads as a broken
+    // Kinect rather than as an unclean shutdown - measured, by SIGINTing the server
+    // and finding the grabber still alive with the server gone.
+    if (!holdProcessOpen) timer.unref?.();
+    dying.once('exit', () => clearTimeout(timer));
+  };
+
   const spawnGrabber = () => {
     const grabberArgs = buildArgs();
     console.log(`[server] starting grabber: ${bin} ${grabberArgs.join(' ')}`);
@@ -1685,7 +1787,7 @@ function startLive() {
       } catch (err) {
         // A desynced stream is unrecoverable; restarting rebuilds the framing.
         console.error('[server]', err.message);
-        child.kill('SIGTERM');
+        stopGrabber();
       }
     });
 
@@ -1702,7 +1804,9 @@ function startLive() {
       if (restarting) {
         // Asked for, not a failure - so it does not count toward the backoff.
         restarting = false;
-        setTimeout(spawnGrabber, 250);
+        const delay = killedHard ? RESPAWN_AFTER_KILL_MS : RESPAWN_AFTER_CLEAN_MS;
+        killedHard = false;
+        setTimeout(spawnGrabber, delay);
         return;
       }
       // A grabber that has *never* handshaken is not the flaky USB link this backoff
@@ -1741,7 +1845,7 @@ function startLive() {
       console.log(`[server] colour camera ${camera.color ? 'on' : 'off'} - restarting grabber`);
       restarting = true;
       attempt = 0;
-      child?.kill('SIGTERM');
+      stopGrabber();
       return;
     }
     // Colour off means there is no exposure to set, but the flag is still worth
@@ -1769,7 +1873,7 @@ function startLive() {
 
   process.on('SIGINT', () => {
     shuttingDown = true;
-    child?.kill('SIGTERM');
+    stopGrabber({ holdProcessOpen: true });
     // Closed and scanned before the process goes, because a take without a sidecar
     // index is a take the gallery has to rebuild - and the format is append-only,
     // so whatever landed is readable either way. This is a courtesy, not the

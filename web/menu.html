@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Kinect v2</title>
+<style>
+  /* The same palette the gallery restates, restated again. docs/design/tokens.css is
+     the system and each page carries its own copy of the names it uses, which is the
+     convention library.html already set. */
+  :root {
+    --paper: #05070a;
+    --paper-1: #0d1014;
+    --paper-2: #151920;
+    --paper-3: #1e232b;
+    --ink: #e8ecf1;
+    --dim: #8b94a1;
+    --faint: #6d7683;
+    --line: rgba(255, 255, 255, 0.1);
+    --line-2: rgba(255, 255, 255, 0.2);
+    --line-3: rgba(255, 255, 255, 0.34);
+    --accent: #5ad1c4;
+    --accent-low: rgba(90, 209, 196, 0.14);
+    --rec: #ff3b4e;
+    --rec-low: rgba(255, 59, 78, 0.16);
+    --warn: #f0b04a;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--paper); color: var(--ink);
+    font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-x: clip; }
+  body { display: flex; flex-direction: column; }
+
+  .head { flex: none; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 8px 12px; background: var(--paper-1); border-bottom: 1px solid var(--line); }
+  .head h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; }
+  .head .sum { color: var(--dim); font-size: 9px; }
+
+  /* Centred rather than filling, because there are three of them and a grid stretched
+     to the viewport puts the labels at the corners of a large display. */
+  .menu { flex: 1; min-height: 0; overflow-y: auto; display: grid; gap: 16px; padding: 12px;
+    align-content: center; justify-content: center; grid-template-columns: minmax(0, 540px); }
+
+  /* An anchor rather than a button, so the three destinations are real URLs a
+     browser can show, open in a tab and go back from. The tile idiom is the
+     gallery's: a bordered card on --paper-1 that lifts its border on hover. Sized
+     for the node's touch panel, where these are pressed with a finger. */
+  .entry { display: flex; flex-direction: column; gap: 8px; padding: 30px 28px;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--paper-1);
+    color: inherit; text-decoration: none; min-height: 96px; justify-content: center; }
+  .entry:hover { border-color: var(--line-2); background: var(--paper-2); }
+  .entry .what { font-size: 23px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; }
+  .entry .why { font-size: 11px; color: var(--dim); }
+  .entry .why b { color: var(--ink); font-weight: 500; }
+
+  .entry.record .what { color: var(--rec); }
+  .entry.record:hover { border-color: var(--rec); background: var(--rec-low); }
+  .entry.gallery .what { color: var(--accent); }
+  .entry.gallery:hover { border-color: var(--accent); background: var(--accent-low); }
+  .entry.editor .what { color: var(--accent); }
+  .entry.editor:hover { border-color: var(--accent); background: var(--accent-low); }
+
+  /* Until the resume question is answered the Editor tile has no href at all, which
+     is what makes it unclickable rather than merely styled as if it were. A tile
+     that navigated somewhere while still saying "reading the library" would be the
+     surprise this page exists to remove. */
+  .entry:not([href]) { color: var(--faint); cursor: default; }
+  .entry:not([href]):hover { border-color: var(--line); background: var(--paper-1); }
+  .entry:not([href]) .what { color: var(--faint); }
+
+  /* Where a tile is about to go, said on the tile. The Editor's destination depends
+     on what is on this machine, so it is the one that has to say it. */
+  .entry .dest { font-size: 9px; color: var(--faint); letter-spacing: 0.14em; text-transform: uppercase; }
+  .entry .dest.fallthrough { color: var(--warn); }
+
+  @media (max-width: 560px) {
+    .menu { grid-template-columns: minmax(0, 1fr); align-content: start; }
+  }
+</style>
+</head>
+<body>
+
+<header class="head">
+  <h1>Kinect v2</h1>
+  <div class="sum">record, keep, re-photograph</div>
+</header>
+
+<main class="menu" aria-label="Main menu">
+  <a class="entry record" href="/record">
+    <span class="what">Record</span>
+    <span class="why">Arm the sensor and shoot a take.</span>
+  </a>
+  <a class="entry gallery" href="/gallery">
+    <span class="what">Gallery</span>
+    <span class="why">Every take here and on the node, skimmable.</span>
+  </a>
+  <a class="entry editor" id="editor">
+    <span class="what">Editor</span>
+    <span class="why" id="editorWhy">Reading the library…</span>
+    <span class="dest" id="editorDest"></span>
+  </a>
+</main>
+
+<script type="module">
+// The main menu. Two of the three entries are plain links written in the markup
+// above; the third has to be worked out, because "the editor" only means something
+// once there is a take to open it on.
+//
+// **The resume decision is taken on load, not on click.** A tile whose destination
+// is computed when it is pressed can only tell you where it went afterwards, and the
+// answer here is genuinely uncertain - the last take opened may have been deleted,
+// may live on the node rather than this machine, or may be somebody else's footage
+// filed under the same name. So the question is asked once when the page arrives and
+// the tile says what it will do, which is also why the tile carries no href until
+// the answer exists.
+
+const LAST_OPENED = 'kinect.lastOpened';
+
+const editor = document.getElementById('editor');
+const editorWhy = document.getElementById('editorWhy');
+const editorDest = document.getElementById('editorDest');
+
+/**
+ * What the editor last had open, or null if that cannot be established.
+ *
+ * Everything here is text the browser handed back from storage another page wrote,
+ * so every step is allowed to fail into the same answer: a machine with no history,
+ * which falls through to the gallery. `localStorage` itself throws rather than
+ * returning null when a browser has storage switched off, which is a state a kiosk
+ * on a node could genuinely be in.
+ */
+function lastOpened() {
+  let raw;
+  try {
+    raw = localStorage.getItem(LAST_OPENED);
+  } catch {
+    return null;
+  }
+  if (!raw) return null;
+  let saved;
+  try {
+    saved = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!saved || typeof saved !== 'object') return null;
+  if (typeof saved.takeHash !== 'string' || !saved.takeHash) return null;
+  return saved;
+}
+
+const gallery = (reason) => ({ href: '/gallery', reason, take: null, project: null, savedId: null });
+
+/**
+ * Where the Editor tile goes, and why.
+ *
+ * **Matched by hash and never by the saved id**, which is the decision at
+ * docs/recording-and-nle.md:577 - a project names its capture by content. A take
+ * downloaded from the node whose name collided with one already here is stored as
+ * `${id}-${hash.slice(7, 15)}.knct`, so the same id names different footage on two
+ * machines and resuming by id would open the wrong take while looking like it
+ * worked. The saved id is carried only to say what was written down.
+ */
+async function resolveResume() {
+  const saved = lastOpened();
+  if (!saved) return gallery('nothing has been opened on this machine yet');
+
+  let library;
+  try {
+    const res = await fetch('/library/all');
+    if (!res.ok) throw new Error(`the library answered ${res.status}`);
+    library = await res.json();
+  } catch (err) {
+    return gallery(`the library could not be read: ${err.message}`);
+  }
+
+  const takes = Array.isArray(library?.takes) ? library.takes : [];
+  const take = takes.find((t) => t.hash === saved.takeHash);
+  if (!take) return gallery('the take last open is not in this library');
+  // A take only on the node has no local file to open, and downloading it is the
+  // gallery's job rather than something to do on the way past.
+  if (take.state === 'remote') return gallery(`${take.id} is only on the node`);
+  if (take.recording === true) return gallery(`${take.id} is still being recorded`);
+  if (!take.openable) return gallery(`${take.id} cannot be opened: no sensor hello, or under two frames`);
+
+  // Built a value at a time rather than by interpolation, because a project name is
+  // whatever somebody typed and an ampersand in it would otherwise start a second
+  // parameter.
+  const query = new URLSearchParams({ take: take.id });
+  const project = typeof saved.project === 'string' && saved.project ? saved.project : null;
+  if (project) query.set('project', project);
+  // The saved id, kept only so the tile can say when it is not the one being opened.
+  // That happens exactly when a download collided and the same footage is filed here
+  // under a longer name, which is a moment where showing an id nobody wrote down
+  // reads as the wrong take rather than as the right one renamed.
+  const savedId = typeof saved.takeId === 'string' && saved.takeId !== take.id ? saved.takeId : null;
+  return { href: `/edit?${query}`, reason: null, take, project, savedId };
+}
+
+const resume = await resolveResume();
+
+// Written through the DOM rather than through a template. A take id and a project
+// name are both text from outside this page - the id comes off a listing that
+// includes whatever a node offered, the project name is whatever somebody typed -
+// and text from outside this page is never markup, which is the rule the gallery
+// already holds its mark labels to.
+const said = (...parts) => {
+  editorWhy.textContent = '';
+  for (const part of parts) {
+    if (typeof part === 'string') {
+      editorWhy.append(part);
+    } else {
+      const b = document.createElement('b');
+      b.textContent = part.name;
+      editorWhy.append(b);
+    }
+  }
+};
+
+editor.href = resume.href;
+if (resume.take) {
+  said('Resumes ', { name: resume.take.id }, ' · ',
+    ...(resume.project ? ['project ', { name: resume.project }] : ['no project, the take as shot']),
+    ...(resume.savedId ? [' · saved as ', { name: resume.savedId }, ', same footage'] : []));
+  editorDest.textContent = 'opens the editor';
+  editorDest.classList.remove('fallthrough');
+} else {
+  said(`Nothing to resume — ${resume.reason}.`);
+  editorDest.textContent = 'goes to the gallery';
+  editorDest.classList.add('fallthrough');
+}
+
+// What a check reads. The resolved decision rather than the tile's text, because the
+// claim is about where the tile goes and reading that off the copy would pass a page
+// that described one destination and linked another.
+globalThis.__menu = {
+  resume: () => ({
+    href: resume.href,
+    reason: resume.reason,
+    takeId: resume.take?.id ?? null,
+    project: resume.project,
+    savedId: resume.savedId,
+  }),
+  entries: () => [...document.querySelectorAll('.entry')].map((el) => ({
+    what: el.querySelector('.what').textContent,
+    href: el.getAttribute('href'),
+    why: el.querySelector('.why').textContent,
+    dest: el.querySelector('.dest')?.textContent ?? null,
+  })),
+};
+</script>
+</body>
+</html>

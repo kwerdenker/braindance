@@ -13,6 +13,47 @@ const DW = 512;
 const DH = 424;
 const POINTS = DW * DH;
 
+// Which of the two surfaces this page is, decided by the path. One document still
+// serves both, because there is one renderer and one image pipeline and splitting
+// the markup would be the second path this design keeps rejecting - but the two are
+// exclusive and the page has to know which it is before it builds any controls.
+//
+// Read from the path rather than from the presence of `?take=`, which is what it
+// used to be. A query parameter cannot distinguish the recorder from an editor that
+// has nothing open yet, and it left the recorder carrying every editing control by
+// default: the keyframe buttons below are built long before the boot branch runs, so
+// the answer has to be available at the top of the module rather than at the bottom.
+const EDITING = location.pathname === '/edit';
+
+// The auto-save's name, in one place because two things need to agree about it: the
+// write below and the project picker that has to leave it out.
+const WORKING_PROJECT = '__working__';
+
+// What the menu's Editor entry resumes. Client state rather than a document - which
+// project was open last is a property of this browser, not of the library, and the
+// alternative was a last-opened stamp on the store that every read would have to
+// write to. Stored against the take's **hash**: a downloaded take whose name
+// collided is stored under a different id, so an id saved here can name different
+// footage after a sync, which is the whole reason a project names its take by hash.
+const LAST_OPENED = 'kinect.lastOpened';
+
+function rememberOpened() {
+  if (!openTakeHash) return;
+  try {
+    localStorage.setItem(LAST_OPENED, JSON.stringify({
+      takeHash: openTakeHash,
+      takeId: openTakeId,
+      // The picker is where the open project's name already lives, so this reads it
+      // rather than keeping a second copy that could disagree with what is on screen.
+      project: ui.project.value || null,
+    }));
+  } catch {
+    // Private browsing, a full quota, storage disabled by policy. Resuming is a
+    // convenience and the gallery is one click away, so this is not worth a
+    // message on a surface someone is editing on.
+  }
+}
+
 const statusEl = document.getElementById('status');
 // Read here rather than beside the rest of the timeline, because `resize` runs at
 // boot and has to know how much of the window the strip is taking. Hidden it
@@ -272,8 +313,21 @@ const uniforms = {
   exposure: { value: 1.15 },
   nearClip: { value: 0.5 },
   farClip: { value: 4.5 },
-  warp: { value: 0 },
-  warpSpeed: { value: 0.7 },
+  // The turbulence field. Amplitude is metres, scale is cycles per metre and speed is
+  // how fast the field drifts through the scene in program seconds - all three world
+  // units, so none of them owes the 1080p reference every screen-space term here does.
+  noise: { value: 0 },
+  noiseScale: { value: 3 },
+  noiseSpeed: { value: 0.7 },
+  // One region, three uses. Centre, half-extents, corner radius and falloff width are
+  // metres in the sensor frame; the three effects below are what read it.
+  regionCentre: { value: new THREE.Vector3(0, 0, -2) },
+  regionHalf: { value: new THREE.Vector3(0, 0, 0) },
+  regionRound: { value: 0.5 },
+  regionSoft: { value: 0.2 },
+  regionPush: { value: 0 },
+  regionNoise: { value: 0 },
+  regionMask: { value: 0 },
   glitch: { value: 0 },
   time: { value: 0 },
   mode: { value: 0 },
@@ -283,6 +337,11 @@ const uniforms = {
   softEdge: { value: 1 },
   scanAmount: { value: 0 },
   rimAmount: { value: 0.55 },
+  // Both apply on top of whichever mode is selected rather than inside one of its
+  // branches, so they compose with every reading of the take instead of being a
+  // sixth and seventh one. Unitless mixes.
+  thermal: { value: 0 },
+  edges: { value: 0 },
   stateTex: { value: statePrev.texture },
   fadeTime: { value: 0.12 },
   wakeTime: { value: 0 },
@@ -297,7 +356,10 @@ uniform usampler2D depthPrev, depthCurr;
 uniform sampler2D stateTex;
 uniform vec2 focal, center, resolution;
 uniform float bufferHeight;
-uniform float pointSize, nearClip, farClip, warp, warpSpeed, time, edgeTol;
+uniform float pointSize, nearClip, farClip, time, edgeTol;
+uniform float noise, noiseScale, noiseSpeed;
+uniform vec3 regionCentre, regionHalf;
+uniform float regionRound, regionSoft, regionPush, regionNoise, regionMask;
 uniform float mixT, snapDelta, glitch;
 uniform float fadeTime, wakeTime, sinceFrameSec;
 uniform int denoise, interpolate;
@@ -311,12 +373,57 @@ out float vGlitch;
 out float vSize;
 out float vGhost;
 out float vFade;
+out float vMask;
 
 float depthAt(usampler2D tex, ivec2 p) {
   return float(texelFetch(tex, p, 0).r);
 }
 
 float hash(float n) { return fract(sin(n) * 43758.5453123); }
+
+// Three decorrelated hashes of one lattice corner, so a vector of noise costs one
+// trilinear blend rather than three of them.
+vec3 vhash3(vec3 p) {
+  vec3 q = vec3(
+    dot(p, vec3(127.1, 311.7, 74.7)),
+    dot(p, vec3(269.5, 183.3, 246.1)),
+    dot(p, vec3(113.5, 271.9, 124.6))
+  );
+  return fract(sin(q) * 43758.5453123);
+}
+
+// Value noise rather than gradient noise: it is eight hashes against twelve and a
+// dot product, and the difference between the two is a lattice-aligned bias that
+// shows when you colour with it and not when you displace points by it. Returns
+// [-1, 1] per axis.
+vec3 vnoise3(vec3 p) {
+  vec3 i = floor(p), f = fract(p);
+  vec3 u = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(mix(vhash3(i + vec3(0.0, 0.0, 0.0)), vhash3(i + vec3(1.0, 0.0, 0.0)), u.x),
+        mix(vhash3(i + vec3(0.0, 1.0, 0.0)), vhash3(i + vec3(1.0, 1.0, 0.0)), u.x), u.y),
+    mix(mix(vhash3(i + vec3(0.0, 0.0, 1.0)), vhash3(i + vec3(1.0, 0.0, 1.0)), u.x),
+        mix(vhash3(i + vec3(0.0, 1.0, 1.0)), vhash3(i + vec3(1.0, 1.0, 1.0)), u.x), u.y),
+    u.z) * 2.0 - 1.0;
+}
+
+// One rounded box covers every shape the region needs to be. Half-extents at zero
+// with a radius is a sphere, large half-extents with a small radius is a box, two
+// components at zero is a capsule, one large is a slab - and because those are all
+// reached by moving continuous sliders, each keyframes and each morphs into the
+// next, where a shape *enum* could not be a registry parameter at all.
+float sdRoundBox(vec3 p, vec3 b, float r) {
+  vec3 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0) - r;
+}
+
+// 1 inside the surface, ramping to 0 at regionSoft beyond it. Deep inside, the
+// falloff width cannot matter, which is why a probe for regionSoft has to sit in
+// the shell rather than anywhere convenient.
+float regionWeight(vec3 p) {
+  float sd = sdRoundBox(p - regionCentre, regionHalf, regionRound);
+  return 1.0 - smoothstep(0.0, max(1e-4, regionSoft), sd);
+}
 
 // libfreenect2's pinhole model, matching Registration::getPointXYZ. Image y grows
 // downward, so it is flipped into the right-handed scene here.
@@ -411,14 +518,42 @@ void main() {
 
   vec3 pos = unproject(position.xy, z);
 
-  if (warp > 0.0) {
-    float t = time * warpSpeed;
-    pos += warp * vec3(
-      sin(pos.y * 4.1 + t * 1.7) * cos(pos.z * 3.3 - t),
-      sin(pos.z * 3.7 + t * 1.3) * cos(pos.x * 4.5 + t),
-      sin(pos.x * 4.3 - t * 1.1) * cos(pos.y * 3.9 + t)
-    );
+  // The region is read at the *undisplaced* position, and both things below use this
+  // rather than the running pos. A region is a place in the room where the subject
+  // stood, so its boundary has to stay put when turbulence is raised - evaluated on
+  // the displaced position instead, a mask's edge would crawl along itself as the
+  // noise pushed points across it, which reads as the mask being broken rather than
+  // as the cloud moving.
+  vec3 p0 = pos;
+  float rw = (regionPush != 0.0 || regionNoise > 0.0 || regionMask != 0.0)
+    ? regionWeight(p0)
+    : 0.0;
+
+  // Gated because it is the most expensive thing in this shader: eight hashes of three
+  // sines each, against the six the old sine field cost. A look with no turbulence pays
+  // none of it, which is the same bargain the ghost half of the geometry makes.
+  float amp = noise + regionNoise * rw;
+  if (amp > 0.0) {
+    pos += amp * vnoise3(p0 * noiseScale + time * noiseSpeed * vec3(0.7, 1.13, 0.31));
   }
+
+  // Radial rather than along the field's gradient. The gradient of a rounded box is
+  // degenerate at the centre - there is no outward direction there - and flattens
+  // against the faces, where a radial push is defined everywhere and reads as a blob
+  // swelling. The guard is for the point that lands exactly on the centre, where
+  // normalize would hand back NaN and take the whole vertex with it.
+  if (regionPush != 0.0 && rw > 0.0) {
+    vec3 away = p0 - regionCentre;
+    float d = length(away);
+    if (d > 1e-4) pos += (away / d) * regionPush * rw;
+  }
+
+  // Positive hides what is inside the region, negative what is outside. Carried to the
+  // fragment stage rather than culled here, because the whole point of the falloff is
+  // that the edge is soft.
+  vMask = regionMask > 0.0
+    ? 1.0 - regionMask * rw
+    : 1.0 + regionMask * (1.0 - rw);
 
   // Datastream corruption: horizontal bands tear sideways, the way a failing
   // feed shears. Bands are picked stochastically so it stutters rather than pulses.
@@ -471,7 +606,7 @@ precision highp float;
 
 uniform sampler2D colorPrev, colorCurr;
 uniform float opacity, exposure, nearClip, farClip, mixT, time;
-uniform float scanAmount, rimAmount;
+uniform float scanAmount, rimAmount, thermal, edges;
 uniform int mode, hasColor, softEdge;
 
 in vec2 vUv;
@@ -481,8 +616,22 @@ in float vGlitch;
 in float vSize;
 in float vGhost;
 in float vFade;
+in float vMask;
 
 out vec4 fragColor;
+
+// Black through red and orange to white, the palette a thermal camera writes rather
+// than the cool-to-warm one depthRamp uses - the two are deliberately different, so
+// that thermal on top of Depth mode is a second reading and not the same one twice.
+vec3 heatRamp(float t) {
+  vec3 a = vec3(0.02, 0.01, 0.06);
+  vec3 b = vec3(0.55, 0.05, 0.28);
+  vec3 c = vec3(0.98, 0.42, 0.05);
+  vec3 d = vec3(1.00, 0.98, 0.86);
+  return t < 0.33 ? mix(a, b, t / 0.33)
+       : t < 0.66 ? mix(b, c, (t - 0.33) / 0.33)
+                  : mix(c, d, (t - 0.66) / 0.34);
+}
 
 // Smooth cool-to-warm ramp; reads as depth without the banding of a hard palette.
 vec3 depthRamp(float t) {
@@ -559,9 +708,36 @@ void main() {
     col = mix(col, vec3(1.00, 0.42, 0.20), vGhost * 0.55);
   }
 
+  // Both of these sit *after* the mode chain and modify whatever it produced, rather
+  // than living inside one of its branches. A term written into a branch is inert in
+  // every other one, which is both a worse feature - these are meant to compose with
+  // the reading you are working in - and a hole in the proof: registry-check runs
+  // its whole sweep in Blackwall, so a term reachable only from RGB would be recorded
+  // as a parameter that cannot touch a pixel.
+  if (thermal > 0.0) {
+    // Luminance where there is a colour camera, depth where there is not. A thermal
+    // picture is a reading of a signal, and with the colour stream off the only signal
+    // left is range - falling back to a flat tint instead would be a slider that
+    // appears to work and is showing nothing.
+    float lum = dot(rgb, vec3(0.299, 0.587, 0.114));
+    float heat = hasColor == 1 ? lum : 1.0 - t;
+    col = mix(col, heatRamp(clamp(heat, 0.0, 1.0)), thermal);
+  }
+
+  if (edges > 0.0) {
+    // vEdge is the neighbour spread the vertex stage already computed for the
+    // speckle test, so an edge-only reading costs a mix rather than a second pass.
+    float e = pow(vEdge, 0.6);
+    col = mix(col, mix(vec3(0.02, 0.03, 0.05), vec3(0.82, 0.94, 1.0), e), edges);
+    alpha *= mix(1.0, 0.05 + 0.95 * e, edges);
+  }
+
   // Cross-fade. A dying point thins out where it stood instead of blinking off,
   // and its replacement comes up over the same window.
   alpha *= vFade;
+  // The region's soft mask, which is a fade rather than a cull precisely so its edge
+  // can be soft - a vertex-stage discard could only ever give a hard boundary.
+  alpha *= vMask;
   // Ghosts sit under the live cloud so they read as afterglow, never as surface.
   if (vGhost > 0.0) alpha *= 0.5;
 
@@ -1109,10 +1285,56 @@ const PARAMS = {
   wake: { def: 0, min: 0, max: 4000, step: 10, kind: 'scalar', tag: 'look',
     apply: (v) => { uniforms.wakeTime.value = v / 1000; updateDrawRange(); } },
 
-  warp: { def: 0, min: 0, max: 1, step: 0.005, kind: 'scalar', tag: 'look',
-    apply: (v) => { uniforms.warp.value = v; } },
-  warpSpeed: { def: 0.7, min: 0, max: 3, step: 0.05, kind: 'scalar', tag: 'look',
-    apply: (v) => { uniforms.warpSpeed.value = v; } },
+  // The turbulence field, in world units throughout: amplitude in metres, scale in
+  // cycles per metre, speed in metres of drift per program second. Nothing here is a
+  // screen-space length, so unlike `pointSize` and the grade terms none of it is
+  // referred to 1080p - the same values draw the same displacement at every output
+  // size because they describe the room rather than the frame.
+  noise: { def: 0, min: 0, max: 1, step: 0.005, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.noise.value = v; } },
+  noiseScale: { def: 3, min: 0.2, max: 12, step: 0.1, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.noiseScale.value = v; } },
+  noiseSpeed: { def: 0.7, min: 0, max: 3, step: 0.05, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.noiseSpeed.value = v; } },
+
+  // One region, authored once and read three ways. Three scalars rather than a new
+  // `point` kind, which is the awkward part and is deliberate: the design doc argues
+  // composition is edited in the world because a position judged one component at a
+  // time is not judged at all, and that argument is about a camera *move*. A static
+  // blob you can see in the viewport is the weaker case, and three sliders keep it
+  // consistent with every other look parameter and let you type a number. An in-world
+  // handle is the follow-on, and it wants a `point` kind to key against.
+  //
+  // Tagged `look` and take-specific in exactly the way `near`/`far` are - they shape
+  // the image, but the right value depends on where the subject actually stood - which
+  // the preset path already handles by selecting parameters individually rather than
+  // taking a whole tag.
+  regionX: { def: 0, min: -3, max: 3, step: 0.05, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.regionCentre.value.x = v; } },
+  regionY: { def: 0, min: -3, max: 3, step: 0.05, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.regionCentre.value.y = v; } },
+  regionZ: { def: -2, min: -6, max: 0, step: 0.05, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.regionCentre.value.z = v; } },
+  regionW: { def: 0, min: 0, max: 3, step: 0.05, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.regionHalf.value.x = v; } },
+  regionH: { def: 0, min: 0, max: 3, step: 0.05, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.regionHalf.value.y = v; } },
+  regionD: { def: 0, min: 0, max: 3, step: 0.05, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.regionHalf.value.z = v; } },
+  regionRound: { def: 0.5, min: 0, max: 2, step: 0.05, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.regionRound.value = v; } },
+  regionSoft: { def: 0.2, min: 0.01, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.regionSoft.value = v; } },
+
+  // The three effects. Push and mask are signed because both questions have two
+  // answers - bulge or pinch, hide the inside or hide everything else - and a sign is
+  // one slider where a direction toggle would be a second parameter that cannot lerp.
+  regionPush: { def: 0, min: -1, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.regionPush.value = v; } },
+  regionNoise: { def: 0, min: 0, max: 1, step: 0.005, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.regionNoise.value = v; } },
+  regionMask: { def: 0, min: -1, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.regionMask.value = v; } },
   glitch: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
     apply: (v) => { uniforms.glitch.value = v; } },
   // Still what it always was - orbit the view you are looking at - and still view
@@ -1126,6 +1348,13 @@ const PARAMS = {
     apply: (v) => { uniforms.scanAmount.value = v; } },
   rim: { def: 0.55, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
     apply: (v) => { uniforms.rimAmount.value = v; } },
+  // Continuous rather than two more `mode` branches, which is what makes them
+  // keyframeable: a mode is refused during evaluation because it is a user action, so
+  // a shading idea expressed as a mode can never move under the playhead.
+  thermal: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.thermal.value = v; } },
+  edges: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.edges.value = v; } },
   // Each post pass costs a full-screen read and write whether or not it changes
   // anything, so a zero value switches its pass off rather than running it as a
   // no-op. The three grade terms share one pass, so they gate it together.
@@ -2161,6 +2390,15 @@ function restoreProject(project) {
     })]);
   }
 
+  // The same refusal for the parameter values, and for the same reason - but it has
+  // to happen *here*, in the build-whole phase, rather than where they are applied.
+  // `params.apply` throws on the first name the registry does not know, and by then
+  // the output size and the mode have already been written and the tracks have not,
+  // so the editor is left in the half-applied state the comment above promises it
+  // never is. A project carrying a parameter this build has since removed is exactly
+  // the case: loud and named is right, mid-write is not.
+  for (const name of Object.keys(project.look.params)) params.spec(name);
+
   const restoredCamera = project.composition.camera.map((k) => {
     const key = restoreKey('track camera', k);
     key.value = params.normalise('camera', key.value);
@@ -2202,6 +2440,19 @@ function restoreProject(project) {
   }
 
   applyModeValue(project.look.mode);
+  // Defaults first, so a key the document does not carry means the default rather
+  // than whatever the session happened to leave in the registry. `params.apply`
+  // walks the document's own keys, so absent is invisible to it - which was harmless
+  // only while every document carried every key. It stops being harmless the moment
+  // a parameter is added, and the second project opened in one session is where it
+  // would have shown up. `outputSize` already takes this position explicitly a few
+  // lines above; this is the same rule for the other half of the document.
+  //
+  // **The look tag, not every parameter.** `params.reset()` defaults view state too,
+  // and view state is not in the document - so a bare reset made undo snap render
+  // scale back to 100, which is the one thing the stack is supposed to leave alone.
+  // The set reset here is exactly the set `serialiseProjectBody` writes.
+  params.reset(params.names('look'));
   params.apply(project.look.params);
   appliedPreset = stamp;
 
@@ -2256,6 +2507,13 @@ const history = {
 
   commit() {
     if (this.restoring) return false;
+    // The recorder has no clip, so there is nothing here to undo and nothing to save.
+    // Without this the stack is not merely empty, it is poisoned: `begin` only runs
+    // in `openTake`, so `baseline` is null while shooting, every slider push a `null`
+    // onto the stack, and the first undo afterwards hands `restoreProject` a null and
+    // throws out of the keydown handler. It also stopped the auto-save writing a
+    // project that names no take on every twitch of a live slider.
+    if (!EDITING) return false;
     const now = this.snapshot();
     if (now === this.baseline) return false;
     this.stack.push(this.baseline);
@@ -2270,7 +2528,7 @@ const history = {
     // Auto-save the project after every change. Fire-and-forget: a failed save is
     // logged in the UI but it must not block the interaction that caused it.
     const workingBody = { ...serialiseProject(), take: { id: openTakeId, hash: openTakeHash } };
-    fetch('/projects/__working__', {
+    fetch(`/projects/${WORKING_PROJECT}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(workingBody),
@@ -2577,6 +2835,7 @@ function connect() {
         uniforms.center.value.set(msg.cx, msg.cy);
         if (!msg.color) uniforms.hasColor.value = 0;
         sensorLabel = `${msg.serial} · fw ${msg.firmware}`;
+        paintPreviewRange(msg.minDepth, msg.maxDepth);
         setStatus();
         console.log('sensor intrinsics', msg);
         return;
@@ -4254,6 +4513,7 @@ const ui = {
   camKey: document.getElementById('camKey'),
   camClear: document.getElementById('camClear'),
   camView: document.getElementById('camView'),
+  camSensor: document.getElementById('camSensor'),
   exportSize: buildExportMenu(document.getElementById('tExportSize')),
   exportGo: document.getElementById('tExport'),
   exportNote: document.getElementById('tExportNote'),
@@ -4273,7 +4533,13 @@ const ui = {
   recMark: document.getElementById('recMark'),
   recNote: document.getElementById('recNote'),
   recSpace: document.getElementById('recSpace'),
+  recPreset: document.getElementById('recPreset'),
+  recPresetApply: document.getElementById('recPresetApply'),
+  recLookNote: document.getElementById('recLookNote'),
+  recRange: document.getElementById('recRange'),
+  extended: document.getElementById('extended'),
   toLibrary: document.getElementById('toLibrary'),
+  toMenu: document.getElementById('toMenu'),
 };
 
 // The chips strip hides its scrollbar so the bar keeps its 51px and the lanes stay
@@ -5007,16 +5273,30 @@ const documentsIn = async (kind) => (await (await fetch(`/${kind}`)).json())[kin
 
 async function refreshPresets() {
   const list = await documentsIn('presets');
-  ui.preset.replaceChildren(new Option('—', ''));
-  for (const doc of list) ui.preset.appendChild(new Option(doc.name, doc.name));
-  if (appliedPreset) ui.preset.value = appliedPreset.name;
+  // Both selectors, because the preset library is one library and the recorder is
+  // the surface the design wants it on most: shooting against the look you intend to
+  // grade towards is the whole reason presets are a library rather than two
+  // hardcoded modes. The two are never visible at once, so this is one list with two
+  // views rather than two lists that could drift.
+  for (const el of [ui.preset, ui.recPreset]) {
+    el.replaceChildren(new Option('—', ''));
+    for (const doc of list) el.appendChild(new Option(doc.name, doc.name));
+    if (appliedPreset) el.value = appliedPreset.name;
+  }
   return list;
 }
 
 async function refreshProjects() {
   const list = await documentsIn('projects');
   ui.project.replaceChildren(new Option('—', ''));
-  for (const doc of list) ui.project.appendChild(new Option(doc.name, doc.name));
+  // The auto-save is not a document anybody chose, and it is always the newest file
+  // in the directory, so listing it beside real projects offers "the thing you were
+  // just doing" under a name that reads like a mistake. It stays on disk and stays
+  // loadable by name; it is simply not something the picker proposes.
+  for (const doc of list) {
+    if (doc.name === WORKING_PROJECT) continue;
+    ui.project.appendChild(new Option(doc.name, doc.name));
+  }
   return list;
 }
 
@@ -5164,7 +5444,13 @@ function paintKeyButton(name, btn) {
   btn.dataset.kf = state;
 }
 
-for (const name of params.names('look')) {
+// Built only on the editor, and this is the same rule as the one above rather than
+// a second one. A keyframe is a position on a clip, and the recorder has no clip:
+// `toggleKey` would still create a track and `playheadSec()` would still answer 0,
+// so a click while shooting wrote a key at t=0 on a document that does not exist and
+// nothing drew it or refused it. A control that implies a clip is the split leaking
+// whether the parameter is the wrong kind or the surface is.
+for (const name of EDITING ? params.names('look') : []) {
   const el = panelControls.get(name);
   const btn = makeKeyButton(name);
   if (el.type === 'checkbox') {
@@ -5626,6 +5912,69 @@ ui.camClear.addEventListener('click', () => {
   history.commit();
 });
 
+// ---------------------------------------------------- the sensor's own view
+
+// How far down the optical axis the orbit target lands. The camera goes to the
+// sensor's own position, so this only decides what orbiting away from there pivots
+// around; it is the depth of a person standing in a room rather than a measurement.
+const SENSOR_VIEW_DISTANCE = 2.2;
+
+/**
+ * Puts the free camera where the Kinect is, looking the way the Kinect looks.
+ *
+ * The sensor sits at the origin of this frame facing down -Z - that is exactly what
+ * `unproject` builds - so the pose is not a guess. The angles come from the same
+ * `focal` uniform the unprojection reads, which is the take's own hello on the editor
+ * and the attached sensor's on the recorder, so this is right for whatever camera
+ * actually shot the frame rather than for the one that shot ours.
+ *
+ * **This is navigation and it leaves no trace.** No keyframe, no undo entry, nothing
+ * in the project - the design's rule for orbiting, and this is orbiting to a
+ * particular place. `camView` is the neighbouring button and the opposite thing: it
+ * looks *through* the program camera, whose pose is document state.
+ *
+ * The one thing it cannot reproduce is the principal point. A real Kinect's optical
+ * axis is off centre - (257.78, 206.78) against a centred (256, 212) on this rig -
+ * and a symmetric `PerspectiveCamera` has nowhere to put that. `setViewOffset` does,
+ * but it would persist through every subsequent orbit to correct a **0.82 degree**
+ * vertical asymmetry, which is a mode where a button was asked for. So the frustum is
+ * symmetric and the residual is named here rather than approximated quietly.
+ */
+function sensorView() {
+  const fx = uniforms.focal.value.x;
+  const fy = uniforms.focal.value.y;
+  // Half-angles as tangents, which is the form the containment test needs anyway.
+  const tanH = (DW / 2) / fx;
+  const tanV = (DH / 2) / fy;
+  // Fit rather than fill. three's `fov` is the vertical angle and the horizontal one
+  // follows from the aspect, so matching vertical on a stage narrower than the sensor
+  // would crop the sides off the very thing the button exists to show. Whichever axis
+  // binds is the one matched, and the sensor's frame is always contained.
+  const aspect = freeCamera.aspect;
+  const binding = aspect >= tanH / tanV ? 'vertical' : 'horizontal';
+  const fovV = binding === 'vertical' ? 2 * Math.atan(tanV) : 2 * Math.atan(tanH / aspect);
+  freeCamera.fov = THREE.MathUtils.radToDeg(fovV);
+  freeCamera.position.set(0, 0, 0);
+  freeCamera.updateProjectionMatrix();
+  // Through the registry rather than onto `controls` directly, so the checkbox stops
+  // saying the view is spinning while it is not. A pose set underneath a running
+  // auto-orbit slides straight back out and reads as a button that did nothing.
+  params.set('spin', false);
+  controls.target.set(0, 0, -SENSOR_VIEW_DISTANCE);
+  controls.update();
+  requestRepaint();
+  return {
+    fov: freeCamera.fov,
+    binding,
+    aspect,
+    intrinsics: { fx, fy, cx: uniforms.center.value.x, cy: uniforms.center.value.y },
+    position: freeCamera.position.toArray(),
+    target: controls.target.toArray(),
+  };
+}
+
+ui.camSensor.addEventListener('click', () => { sensorView(); });
+
 // The export control: one size and one button. What is exported is the clip, at
 // the output rate the timeline is already set to, through the program camera -
 // which frames, which codec and where the file goes are the job queue's questions
@@ -5660,6 +6009,41 @@ ui.exportSize.addEventListener('change', () => { setTargetSize(ui.exportSize.val
 setTargetSize(DEFAULT_EXPORT_SIZE, { fromDocument: true });
 
 ui.mark.addEventListener('click', () => { markHere().catch(showTimelineError); });
+
+/**
+ * The one thing in the recorder that must not be got backwards, said on the control
+ * rather than in a comment.
+ *
+ * `near`/`far` are viewer uniforms: they hide points that already arrived. The
+ * grabber's `--min-depth`/`--max-depth` decide what exists at all, and nothing here
+ * reaches them - capturing wide is free, because the depth payload is a fixed-size
+ * array whether 40% or 90% of it is populated. Getting the two the wrong way round
+ * destroys footage in the one situation where nobody is watching for it.
+ *
+ * The kept range comes from the hello rather than from a constant, because
+ * `--min-depth` and `--max-depth` are grabber flags a shoot can override and a label
+ * naming the defaults would be confidently wrong on exactly the rig that changed them.
+ */
+function paintPreviewRange(minDepth, maxDepth) {
+  const kept = Number.isFinite(minDepth) && Number.isFinite(maxDepth)
+    ? `capture keeps ${minDepth.toFixed(2)}-${maxDepth.toFixed(2)}m`
+    : 'capture keeps everything the sensor resolves';
+  ui.recRange.textContent = `preview only · ${kept}`;
+}
+
+ui.recPresetApply.addEventListener('click', async () => {
+  const name = ui.recPreset.value;
+  if (!name) return;
+  try {
+    applyStoredPreset(await (await fetch(`/presets/${encodeURIComponent(name)}`)).json());
+    ui.recLookNote.textContent = `applied ${name} · ${appliedPreset.rev.slice(7, 15)}`;
+  } catch (err) {
+    // The recorder has no timeline bar, so `showTimelineError` would write into a
+    // strip nobody on this surface can see.
+    ui.recLookNote.textContent = `could not apply ${name}: ${err.message}`;
+    console.error(err);
+  }
+});
 
 ui.presetApply.addEventListener('click', async () => {
   const name = ui.preset.value;
@@ -5716,6 +6100,7 @@ ui.projectSave.addEventListener('click', async () => {
     await refreshProjects();
     ui.project.value = saved.name;
     ui.note.textContent = `saved ${saved.name} · ${saved.bytes} bytes`;
+    rememberOpened();
   } catch (err) {
     showTimelineError(err);
   }
@@ -5806,6 +6191,7 @@ async function loadProjectNamed(name) {
   if (resume) timeline.play();
   ui.project.value = name;
   ui.note.textContent = `opened ${name}`;
+  rememberOpened();
   return doc;
 }
 
@@ -5891,8 +6277,25 @@ if (ui.recGo) {
     })).json();
     ui.recNote.textContent = body.error ?? `${body.label} at ${(body.sourceMs / 1000).toFixed(1)}s`;
   });
-  ui.toLibrary.addEventListener('click', () => { location.href = '/library.html'; });
+  ui.toLibrary.addEventListener('click', () => { location.href = '/gallery'; });
+  ui.toMenu.addEventListener('click', () => { location.href = '/'; });
 }
+
+// Everything below the shooting controls, revealed rather than removed. The design
+// argues the shooting surface should stay small - record, mark, remaining time, a
+// preset and the preview range are what the person in the room is actually using -
+// but a big screen and a quiet moment before a take is a good place to find out where
+// a look wants to go, and refusing that would be the panel deciding how people work.
+//
+// Hidden with a class rather than by leaving the controls out of the document,
+// because the registry stamps every slider's bounds at boot and throws if any look
+// parameter has no control: a surface that built a subset would either need its own
+// second registry pass or would silently stop being checkable against the first.
+ui.extended.addEventListener('click', () => {
+  const on = document.body.classList.toggle('extended');
+  ui.extended.setAttribute('aria-pressed', String(on));
+  ui.extended.textContent = on ? 'fewer settings' : 'extended settings';
+});
 
 ui.camView.addEventListener('click', () => {
   const program = viewCamera === freeCamera;
@@ -5968,6 +6371,9 @@ async function openTake(id) {
   }
   uniforms.focal.value.set(hello.fx, hello.fy);
   uniforms.center.value.set(hello.cx, hello.cy);
+  // The range this take was actually shot at, which is a property of the file rather
+  // than of whatever the grabber is configured for now.
+  paintPreviewRange(hello.minDepth, hello.maxDepth);
   // A page opened on a take opens no socket at all, and the detach is still the
   // door it goes through: the flag it raises is what stops a colour decode
   // started anywhere else from landing in the textures under a timeline render.
@@ -5988,6 +6394,10 @@ async function openTake(id) {
   placeChrome();
   openTakeId = id;
   openTakeHash = source.index.hash;
+  // Remembered as soon as the take is genuinely open, so the menu can offer it again.
+  // A project name lands on top of this if one is loaded after; opening a take on its
+  // own is still worth resuming, since it is the footage that took the effort to shoot.
+  rememberOpened();
   // Awaited, so the first paint of the ruler already has the ticks on it. A take
   // whose marks arrived a frame later would show them appearing, which reads as
   // the page finding them rather than the take having them.
@@ -6040,17 +6450,36 @@ let pinnedPairs = null;
 
 // Which transport owns the loop is decided once, here, and the two are exclusive:
 // a page editing a take must not have a socket writing depth into the textures
-// underneath it, and a live viewer has no timeline to drive. There is no gallery
-// yet to pick a take from, so the take is named on the URL - step 7 replaces this
-// line with a library and nothing below it changes.
+// underneath it, and a live viewer has no timeline to drive. Which of the two this
+// is comes from `EDITING` at the top of the module; the take and the project it
+// opens are named in the query, because the gallery and the menu both have to be
+// able to hand this page a specific clip.
 const REQUESTED_TAKE = new URLSearchParams(location.search).get('take');
+const REQUESTED_PROJECT = new URLSearchParams(location.search).get('project');
 
-if (REQUESTED_TAKE) {
-  openTake(REQUESTED_TAKE).catch((err) => {
-    sensorLabel = `cannot open take ${REQUESTED_TAKE}`;
-    setStatus();
-    showTimelineError(err);
-  });
+if (EDITING && !REQUESTED_TAKE) {
+  // The editor with nothing to edit. Both doors into this page name a take, so
+  // arriving here without one means a hand-typed URL or a stale bookmark, and the
+  // gallery is the only place that can answer the question it implies.
+  location.replace('/gallery');
+} else if (EDITING) {
+  // Two failures with two names. A project can fail on its own - the resume path can
+  // hand this page a project whose take hash does not match the footage, which is a
+  // refusal `loadProjectNamed` raises deliberately - and blaming the take for it
+  // would send someone to look at the one thing that was fine.
+  openTake(REQUESTED_TAKE)
+    .catch((err) => {
+      sensorLabel = `cannot open take ${REQUESTED_TAKE}`;
+      setStatus();
+      showTimelineError(err);
+      throw err;
+    })
+    .then(() => (REQUESTED_PROJECT ? loadProjectNamed(REQUESTED_PROJECT) : null))
+    .catch((err) => {
+      // The take opened and the project did not, so the editor stays on the take
+      // rather than going dark: the footage is there and only the edit is missing.
+      if (openTakeId) showTimelineError(new Error(`project ${REQUESTED_PROJECT}: ${err.message}`));
+    });
 } else {
   // Opened here rather than beside the socket code, because `handleFrame` pushes
   // into the pair source above. Arrivals cannot dispatch until module evaluation
@@ -6058,6 +6487,15 @@ if (REQUESTED_TAKE) {
   // look accidental when it is a requirement.
   connect();
   renderer.setAnimationLoop(liveLoop);
+  // The preset library on the surface the design wants it on. Failing softly because
+  // a node may be shooting with nothing connected to it and an empty selector is a
+  // worse shoot than a missing one, but not silently: the note says which it was.
+  refreshPresets().catch((err) => {
+    ui.recLookNote.textContent = `preset library unavailable: ${err.message}`;
+  });
+  // Until the hello lands there is nothing truthful to say about the kept range, and
+  // the label still has to say the part that does not depend on the sensor.
+  paintPreviewRange(NaN, NaN);
   // The remaining-time readout, on the surface an operator is actually looking at.
   // Polled rather than pushed because free space changes on its own - another
   // process writing, a card filling - and a number that only moved when the
@@ -6070,6 +6508,12 @@ if (REQUESTED_TAKE) {
 globalThis.__kinect = {
   renderer, composer, scene, freeCamera, programCamera, controls, uniforms, material,
   bloom, afterimage, grade, geometry, resetAccumulators, renderProgramFrame,
+
+  // The sensor's own view, and the numbers it derived. Returned rather than left to
+  // be read off the camera because the containment rule is the claim worth checking
+  // and `fov` alone cannot say which axis bound it.
+  sensorView,
+  surface: () => (EDITING ? 'edit' : 'record'),
 
   // The sizes the export menu offers, and the way to adopt one.
   //

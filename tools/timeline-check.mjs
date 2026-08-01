@@ -391,7 +391,11 @@ if (MUTATE) {
   console.log(`[timeline] MUTATED BUILD: ${MUTATE} - this run is expected to FAIL`);
 }
 
-await page.goto(`${URL_BASE}/?take=${encodeURIComponent(TAKE)}`, { waitUntil: 'load' });
+// The editor, which `/?take=` opened until the main menu took `/`. The take stays in
+// the query and only the path moves - a page opened at the old root would land on the
+// menu, which defines no `__kinect`, so the wait below would spend thirty seconds
+// timing out on a page that was never going to answer.
+await page.goto(`${URL_BASE}/edit?take=${encodeURIComponent(TAKE)}`, { waitUntil: 'load' });
 await page.waitForFunction(() => !!globalThis.__kinect);
 // **The page frames at the stage this tool asked for.** The editor letterboxes
 // itself to the export aspect now, so a viewport alone no longer decides the
@@ -550,7 +554,7 @@ console.log('\n== 1c. the image at a program position is the frame the index nam
   // Depth mode with interpolation off, so the image is a function of the current
   // depth texture and nothing else - no colour, no blend against the previous
   // frame, no age term, no clock.
-  const FLAT = { fade: 0, wake: 0, trails: 0, bloom: 0, glitch: 0, scan: 0, warp: 0, rgbSplit: 0, scanlines: 0, grain: 0 };
+  const FLAT = { fade: 0, wake: 0, trails: 0, bloom: 0, glitch: 0, scan: 0, noise: 0, rgbSplit: 0, scanlines: 0, grain: 0 };
   const look = { ...FLAT, interpolate: false };
   // A source time sitting just inside a bracket, so which pair it names is not a
   // rounding question. Which *half* of that pair the image comes from is the part
@@ -1024,7 +1028,7 @@ console.log('\n== 4b. 60 fps out of a capture whose median gap is 64ms ==');
   // pair is the blend fraction. In Blackwall the scan sweep and the grain read
   // the time uniform, and two consecutive frames would differ whatever the
   // interpolation did - which would make this claim pass without testing it.
-  const FLAT = { fade: 0, wake: 0, trails: 0, bloom: 0, glitch: 0, scan: 0, warp: 0, rgbSplit: 0, scanlines: 0, grain: 0 };
+  const FLAT = { fade: 0, wake: 0, trails: 0, bloom: 0, glitch: 0, scan: 0, noise: 0, rgbSplit: 0, scanlines: 0, grain: 0 };
   const walk = `(async (o) => {
     const k = globalThis.__kinect;
     const tl = globalThis.__tl;
@@ -1051,7 +1055,7 @@ console.log('\n== 4b. 60 fps out of a capture whose median gap is 64ms ==');
     if (on[i].applied === on[i - 1].applied) pairs.push([i - 1, i]);
   }
   const distinct = pairs.filter(([a, b]) => on[a].hash !== on[b].hash).length;
-  console.log(`  method: Depth mode with fade, wake, trails, bloom, glitch, scan, warp and the whole`);
+  console.log(`  method: Depth mode with fade, wake, trails, bloom, glitch, scan, noise and the whole`);
   console.log('  grade at zero, so the blend fraction is the only thing left that can move the image.');
   console.log(`  24 output frames at 60 fps from 6.0s: ${pairs.length} consecutive pairs land on the`);
   console.log(`  same two source frames, ${distinct} of them producing a different image.`);

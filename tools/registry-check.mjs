@@ -51,6 +51,10 @@ const flag = (name, fallback = null) => {
 const REPO = fileURLToPath(new URL('..', import.meta.url));
 
 const URL_BASE = flag('--url', 'http://localhost:8080');
+// The live recorder, which `/` served until the main menu took that path. Named
+// once because the page is opened at it and the before-arm's markup is
+// intercepted by it, and those two have to agree or the interception misses.
+const RECORDER_PATH = '/record';
 const CAPTURE = flag('--capture') ?? join(REPO, 'captures/sample.knct');
 // The literal commit rather than HEAD: once step 3 is committed, HEAD is the
 // registry and the before-arm would be comparing the tree against itself.
@@ -145,12 +149,29 @@ const LANDING = {
   snapDelta: 'k.uniforms.snapDelta.value',
   fade: '[k.uniforms.fadeTime.value, k.geometry.drawRange.count]',
   wake: '[k.uniforms.wakeTime.value, k.geometry.drawRange.count]',
-  warp: 'k.uniforms.warp.value',
-  warpSpeed: 'k.uniforms.warpSpeed.value',
+  noise: 'k.uniforms.noise.value',
+  noiseScale: 'k.uniforms.noiseScale.value',
+  noiseSpeed: 'k.uniforms.noiseSpeed.value',
+  // The centre and the half-extents are three sliders landing in one vector each, so
+  // the component is named here rather than the uniform - an apply that wrote the
+  // whole vector, or wrote y where x was meant, reads identically at `.value`.
+  regionX: 'k.uniforms.regionCentre.value.x',
+  regionY: 'k.uniforms.regionCentre.value.y',
+  regionZ: 'k.uniforms.regionCentre.value.z',
+  regionW: 'k.uniforms.regionHalf.value.x',
+  regionH: 'k.uniforms.regionHalf.value.y',
+  regionD: 'k.uniforms.regionHalf.value.z',
+  regionRound: 'k.uniforms.regionRound.value',
+  regionSoft: 'k.uniforms.regionSoft.value',
+  regionPush: 'k.uniforms.regionPush.value',
+  regionNoise: 'k.uniforms.regionNoise.value',
+  regionMask: 'k.uniforms.regionMask.value',
   glitch: 'k.uniforms.glitch.value',
   spin: 'k.controls.autoRotate',
   scan: 'k.uniforms.scanAmount.value',
   rim: 'k.uniforms.rimAmount.value',
+  thermal: 'k.uniforms.thermal.value',
+  edges: 'k.uniforms.edges.value',
   bloom: '[k.bloom.strength, k.bloom.enabled]',
   trails: '[k.afterimage.uniforms.damp.value, k.afterimage.enabled]',
   rgbSplit: '[k.grade.uniforms.rgbSplit.value, k.grade.enabled]',
@@ -175,12 +196,26 @@ const EXPECT = {
   snapDelta: (v) => v,
   fade: (v, all) => [v / 1000, v > 0 || all.wake > 0 ? POINTS * 2 : POINTS],
   wake: (v, all) => [v / 1000, all.fade > 0 || v > 0 ? POINTS * 2 : POINTS],
-  warp: (v) => v,
-  warpSpeed: (v) => v,
+  noise: (v) => v,
+  noiseScale: (v) => v,
+  noiseSpeed: (v) => v,
+  regionX: (v) => v,
+  regionY: (v) => v,
+  regionZ: (v) => v,
+  regionW: (v) => v,
+  regionH: (v) => v,
+  regionD: (v) => v,
+  regionRound: (v) => v,
+  regionSoft: (v) => v,
+  regionPush: (v) => v,
+  regionNoise: (v) => v,
+  regionMask: (v) => v,
   glitch: (v) => v,
   spin: (v) => v,
   scan: (v) => v,
   rim: (v) => v,
+  thermal: (v) => v,
+  edges: (v) => v,
   bloom: (v) => [v, v > 0],
   trails: (v) => [v, v > 0],
   rgbSplit: (v, all) => [v, v > 0 || all.scanlines > 0 || all.grain > 0],
@@ -206,12 +241,54 @@ const SCRAMBLE = {
   snapDelta: 410,
   fade: 260,
   wake: 830,
-  warp: 0.075,
-  warpSpeed: 1.45,
+  noise: 0.08,
+  noiseScale: 5.5,
+  noiseSpeed: 1.45,
+  // The region is placed rather than picked, because the sweep below drops each
+  // parameter in turn and asserts the image moved - and a region floating in empty
+  // space would leave all eight of its geometry parameters inert while looking like a
+  // perfectly reasonable set of numbers. Measured against the six frames this fixture
+  // is built from, unprojected with the take's own intrinsics and clipped to the
+  // near/far above: the cloud runs x [-2.31, 2.97], y [-2.26, 1.63], z [-4.50, -0.50]
+  // with its median point at (0.021, 0.019, -1.893), so the centre sits on the subject
+  // and the surface passes through it rather than around it.
+  //
+  // What that buys, per parameter, as points whose region weight changes when that one
+  // parameter alone reverts to its default - 957,783 points survive the clip:
+  //
+  //   regionX 14.49%   regionY 19.13%   regionZ 31.25%   regionW 27.96%
+  //   regionH 44.20%   regionD 56.84%   regionRound 68.89%   regionSoft 21.31%
+  //
+  // The tightest is `regionX`, whose 0.05 step is one grid position off its default and
+  // still moves 138,822 points. `regionSoft` is the one to watch if these are ever
+  // retuned: it can only act in the shell outside the surface, so a falloff at its
+  // default width against a region already swallowing the cloud would move nothing.
+  regionX: 0.05,
+  regionY: 0.15,
+  regionZ: -1.9,
+  regionW: 0.4,
+  regionH: 0.4,
+  regionD: 0.4,
+  regionRound: 0.9,
+  regionSoft: 0.6,
+  // All three non-zero, because the eight above are only observable through them: with
+  // push, scramble and mask all at their defaults the region has no effect to have, and
+  // every geometry parameter would land in the no-pixel bucket at once. The mask is
+  // well short of 1 for the same reason - a region that hid its contents outright would
+  // make the displacement inside it invisible and take `regionPush` down with it.
+  regionPush: 0.35,
+  regionNoise: 0.5,
+  regionMask: 0.4,
   glitch: 0.31,
   spin: true,
   scan: 0.72,
   rim: 0.28,
+  // Order matters here and nowhere else in this file: the comparison against the
+  // serialised set is a JSON.stringify equality, so these keys have to sit in the order
+  // PARAMS declares them. Put them anywhere else and the check fails with an empty
+  // detail line, because every value matches and only the ordering does not.
+  thermal: 0.6,
+  edges: 0.45,
   bloom: 1.35,
   trails: 0.44,
   rgbSplit: 2.3,
@@ -255,21 +332,47 @@ const landingReader = `(() => {
   return { ${Object.entries(LANDING).map(([n, e]) => `${n}: (${e})`).join(', ')} };
 })()`;
 
+// The same reader with every expression allowed to come back undefined, and it is used
+// on exactly one page: the revision the golden comparison plays back. That build
+// predates some of these parameters, so reading `k.uniforms.regionCentre.value.x` there
+// is a TypeError rather than a finding, and one throw takes the whole section with it.
+//
+// Deliberately *not* used for the current page. A LANDING entry naming a uniform this
+// build does not have is a real bug in the check, and swallowing it on both arms would
+// turn every such typo into a silent `undefined === undefined` pass - the shape this
+// repo keeps finding, where an instrument stops being able to fail.
+const tolerantLandingReader = `(() => {
+  const k = globalThis.__kinect;
+  const at = (f) => { try { return f(); } catch { return undefined; } };
+  return { ${Object.entries(LANDING).map(([n, e]) => `${n}: at(() => (${e}))`).join(', ')} };
+})()`;
+
 const readLanding = (page) => page.evaluate(landingReader);
 
 // Everything the two arms of the before/after comparison can both answer. No
 // `k.params` here: the committed page has none, and a snapshot that only the new
 // page could produce would compare nothing.
-const snapshot = `(() => {
+const snapshotWith = (reader) => `(() => {
   const k = globalThis.__kinect;
   return {
-    landing: ${landingReader},
+    landing: ${reader},
     mode: k.uniforms.mode.value,
     fog: k.scene.fog.color.getHex(),
     dom: Object.fromEntries([...document.querySelectorAll('#panel input')]
       .map((el) => [el.id, el.type === 'checkbox' ? el.checked : el.value])),
+    // Range rows only. A readout is the number beside a slider, so a checkbox row has
+    // none by design - and the monitor group added one in step 9, at which point this
+    // map started calling .textContent on null and took the whole section down before
+    // a single assertion ran. Filtering to the rows that are supposed to have a readout
+    // is what the map always meant.
+    //
+    // The missing one is still reported rather than skipped: a *slider* that lost its
+    // output is exactly the regression this map exists to catch, and it now shows up as
+    // a differing value instead of as a crash.
     readouts: Object.fromEntries([...document.querySelectorAll('#panel .row')]
-      .map((r) => [r.querySelector('input').id, r.querySelector('output').textContent])),
+      .filter((r) => r.querySelector('input')?.type === 'range')
+      .map((r) => [r.querySelector('input').id,
+        r.querySelector('output')?.textContent ?? '(no output element)'])),
     pressed: [...document.querySelectorAll('#modes button')].map((b) => b.getAttribute('aria-pressed')),
   };
 })()`;
@@ -306,13 +409,21 @@ async function openPage({ source = null, pin = false } = {}) {
   // ones with it, or left to fail the run for a reason that is not about the page.
   await page.route('**/favicon.ico', (route) => route.fulfill({ status: 204, body: '' }));
 
+  let servedHtml = false;
   if (source) {
     // The panel and the module are served as one pair. The committed page reads
     // its ranges out of its own HTML, so pairing the old module with the new
     // markup would boot it on whatever a range input defaults to and the
     // comparison would be against a page that never existed.
-    await page.route((url) => url.pathname === '/' || url.pathname === '/index.html',
-      (route) => route.fulfill({ contentType: 'text/html; charset=utf-8', body: source.html }));
+    //
+    // The predicate and the `goto` below read one constant rather than each
+    // spelling the path. They used to name `/` and `/index.html` while the page
+    // was opened at `/`, and the recorder has since moved to `/record` - two
+    // places that must agree about a path and do not is how the before arm ends
+    // up quietly loading the tree's own markup and printing two matching columns
+    // under a heading that says they came from different code.
+    await page.route((url) => url.pathname === RECORDER_PATH,
+      (route) => { servedHtml = true; return route.fulfill({ contentType: 'text/html; charset=utf-8', body: source.html }); });
     await page.route('**/main.js', (route) => route.fulfill({
       contentType: 'text/javascript; charset=utf-8', body: source.js,
     }));
@@ -323,7 +434,16 @@ async function openPage({ source = null, pin = false } = {}) {
     }));
   }
 
-  await page.goto(URL_BASE, { waitUntil: 'load' });
+  await page.goto(URL_BASE + RECORDER_PATH, { waitUntil: 'load' });
+  // Proof the interception held, for the same reason the focal reading below is
+  // here. A predicate that stops matching pairs the old module with today's
+  // markup, which throws at boot on the first parameter this tree has renamed -
+  // and that arrives as a 30-second `waitForFunction` timeout naming nothing,
+  // which is a wrong URL wearing the shape of a missing feature.
+  if (source && !servedHtml) {
+    throw new Error(`the page markup was never intercepted - landed on ${new URL(page.url()).pathname}, `
+      + `so the ${BEFORE_REV} arm loaded the tree's own page`);
+  }
   await page.waitForFunction(() => !!globalThis.__kinect);
   // **The page frames at the stage this tool asked for.** The editor letterboxes
   // itself to the export aspect now, so a viewport alone no longer decides the
@@ -390,8 +510,9 @@ const readPoses = `(() => {
   return out;
 })()`;
 
-async function walkModes(opts) {
+async function walkModes(opts, reader = landingReader) {
   const { page, errors } = await openPage(opts);
+  const snapshot = snapshotWith(reader);
   const out = { boot: await page.evaluate(snapshot) };
   for (const [i, mode] of MODE_WALK.entries()) {
     await page.click(`#modes button[data-mode="${mode}"]`);
@@ -401,7 +522,7 @@ async function walkModes(opts) {
   return { out, poses, errors, page };
 }
 
-const beforeArm = await walkModes({ source: beforeSource });
+const beforeArm = await walkModes({ source: beforeSource }, tolerantLandingReader);
 await beforeArm.page.close();
 const afterArm = await walkModes({});
 await afterArm.page.close();
@@ -434,6 +555,40 @@ const GOLDEN_SKIP = new Set(['camera']);
 const POINT_SIZE_REBASE = 1080 / 600;
 const GOLDEN_RESCALE = { pointSize: POINT_SIZE_REBASE };
 
+// Parameters that did not exist at BEFORE_REV, so there is no earlier value to hold
+// them to. This is the `camera` case rather than the `pointSize` case - nothing left to
+// compare against - but it is not a skip, and the difference is what keeps it honest:
+// a name is only excused here if the *earlier* arm answered `undefined`, which is the
+// signature of a uniform, a slider and a readout that genuinely were not there. Put a
+// name in this set that did exist at that revision and it still fails, because its old
+// value is a number and a number is not undefined.
+//
+// What that leaves proven is the claim worth making about an added look parameter: the
+// twenty-five that were already here render and read back exactly as they did, so
+// twelve new sliders at their defaults changed no image. Whether the new ones reach the
+// pixels at all is section 9's question, not this one's.
+const GOLDEN_ABSENT = new Set([
+  'noise', 'noiseScale', 'noiseSpeed',
+  'regionX', 'regionY', 'regionZ', 'regionW', 'regionH', 'regionD',
+  'regionRound', 'regionSoft', 'regionPush', 'regionNoise', 'regionMask',
+  'thermal', 'edges',
+  // Not registry parameters at all - the monitor's stream controls, which arrived with
+  // step 9 and carry their own bounds in the markup. They are in this set for the same
+  // reason as the rest: the earlier revision has no such control, so there is nothing
+  // to hold them to here. What they *are* held to is `monitor-check`.
+  'monDivisor', 'monStride', 'monAcceptCost',
+]);
+const absentBefore = (name, before) => GOLDEN_ABSENT.has(name) && before === undefined;
+
+// The mirror, and it needs the mirrored evidence. `warp` and `warpSpeed` drove a fixed
+// three-term sine field; the noise field replaced them, so their old values describe a
+// displacement this build cannot produce and there is no rescale that recovers one from
+// the other - the sine's amplitude and the noise's are both metres, but of different
+// fields. A name is only excused if the *current* arm answers undefined, so putting one
+// here that still exists fails on its own value.
+const GOLDEN_REMOVED = new Set(['warp', 'warpSpeed']);
+const removedSince = (name, after) => GOLDEN_REMOVED.has(name) && after === undefined;
+
 const rescaled = (name, before, after) => {
   const factor = GOLDEN_RESCALE[name];
   if (!factor) return false;
@@ -446,8 +601,13 @@ for (const stage of Object.keys(beforeArm.out)) {
   const a = beforeArm.out[stage];
   const b = afterArm.out[stage];
   const unexplained = (field) => (typeof a[field] === 'object' && a[field]
-    ? Object.keys(a[field]).filter((sub) => !eq(a[field][sub], b[field][sub])
-      && !GOLDEN_SKIP.has(sub) && !rescaled(sub, a[field][sub], b[field][sub]))
+    // Keyed off the union rather than the earlier arm's keys, because a parameter this
+    // build added is absent from `a` entirely - iterating `a` alone would step straight
+    // past every new name and call that agreement.
+    ? [...new Set([...Object.keys(a[field]), ...Object.keys(b[field] ?? {})])]
+      .filter((sub) => !eq(a[field][sub], b[field][sub])
+        && !GOLDEN_SKIP.has(sub) && !rescaled(sub, a[field][sub], b[field][sub])
+        && !absentBefore(sub, a[field][sub]) && !removedSince(sub, b[field][sub]))
     : []);
   const differing = Object.keys(a).filter((field) => {
     if (eq(a[field], b[field])) return false;

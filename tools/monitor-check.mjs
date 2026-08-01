@@ -76,6 +76,11 @@ const MUTATE = flag('--mutate');
 const NO_BROWSER = argv.includes('--no-browser');
 const WORK = join(REPO, '.monitor-check');
 const SOURCE = join(REPO, 'captures', 'sample.knct');
+// The live recorder, which `/` served until the main menu took that path. Section 5
+// is the arm pointed at the monitor's own picture, and the menu page defines no
+// `__kinect` at all - so a stale root here would not read as a wrong URL, it would
+// read as the viewer never coming up.
+const RECORDER_URL = `http://127.0.0.1:${PORT}/record`;
 
 // --- mutations -------------------------------------------------------------
 // Each names source text and must match exactly once. A replacement matching
@@ -118,9 +123,34 @@ const MUTATIONS = {
   // The server applies the setting and does not say what it applied. The client then
   // renders the label it hoped for over whatever it was actually given, which is the
   // failure the design's "always visible" sentence is about.
+  // Re-anchored: this named a line the server has never carried on this branch, so
+  // the mutation was refused rather than run and the tool exited non-zero with no
+  // assertion behind it - the shape that reads as "caught" to anything checking exit
+  // codes instead of counting failures. Found by sweeping every anchor in every table
+  // against the file it names, which is worth doing after any edit to the server.
+  //
+  // It anchors on the **grant** echo rather than on the refusal one a few lines above.
+  // The rows this is the control for are "a monitor is told its setting on connect"
+  // and "asking for depth /k is granted, and answered"; silencing the refusal path
+  // instead would redden the refusal row, which is a different claim and would have
+  // been a mutation caught for a neighbouring reason.
+  //
+  // And it **reorders** the echo rather than deleting it, which is the trap the note
+  // further down this file already records. Deleting the send means the client is
+  // never told anything, so the harness waits for a message that is not coming and
+  // the run ends as DID NOT RUN with its own timeout among the failures - measured,
+  // at 5 real assertions plus a timeout. Sending before the values are applied is the
+  // actual bug being guarded against, "what it grants is not what it sends", and it
+  // leaves the socket talking so every row gets to speak.
   'grant-not-echoed': { file: 'server/index.js', edits: [[
-    '      sendMonitor(ws, bad.length ? bad.join(\'; \') : null);',
-    '      /* mutation: granted silently */',
+    '      m.divisor = nextDivisor;\n'
+    + '      m.stride = nextStride;\n'
+    + '      m.granted = true;\n'
+    + '      sendMonitor(ws);',
+    '      sendMonitor(ws);\n'
+    + '      m.divisor = nextDivisor;\n'
+    + '      m.stride = nextStride;\n'
+    + '      m.granted = true;',
   ]] },
   // **The control for the refusal.** A take starts however fine the monitors are, so
   // the frames it loses are lost with nothing said. The pre-press warning goes with
@@ -705,7 +735,7 @@ try {
       const page = await browser.newPage({ viewport: { width: 960, height: 600 } });
       const pageErrors = [];
       page.on('pageerror', (e) => pageErrors.push(e.message));
-      await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'load' });
+      await page.goto(RECORDER_URL, { waitUntil: 'load' });
       await wait(1200);
 
       // Values are generated inside the page from an index, and the expectation is
@@ -867,7 +897,7 @@ try {
       mkdirSync(join(WORK, 'caps-5b'), { recursive: true });
       await start([...streamer(), '--captures', join(WORK, 'caps-5b'), '--name', 'renderlive',
         '--projects', join(WORK, 'p5b'), '--presets', join(WORK, 'q5b')]);
-      await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'load' });
+      await page.goto(RECORDER_URL, { waitUntil: 'load' });
       await wait(2000);
 
       const setDivisor = (d) => page.evaluate(`(${`(d) => {

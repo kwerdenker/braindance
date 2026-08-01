@@ -98,7 +98,11 @@ try {
   const page = await browser.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
-  await page.goto(URL_, { waitUntil: 'domcontentloaded' });
+  // The recorder rather than the root, which is the main menu now. This load exists
+  // only to read the renderer class off a page with a WebGL context, and the menu has
+  // none - a worker pointed at it would wait thirty seconds and then refuse every job
+  // for a renderer it never managed to name.
+  await page.goto(`${URL_}/record`, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => globalThis.__kinect?.export?.rendererClass, null, { timeout: 30000 });
 
   const renderer = await page.evaluate(() => globalThis.__kinect.export.rendererClass());
@@ -158,9 +162,9 @@ try {
     try {
       // Reopened per job rather than once, because two jobs in a queue are two
       // edits and nothing says they are against the same footage. The page reloads
-      // with the take in the query, which is the same door the editor uses.
+      // at `/edit` with the take in the query, which is the same door the editor uses.
       const takeId = await takeForHash(job.capture);
-      await page.goto(`${URL_}/?take=${encodeURIComponent(takeId)}`, { waitUntil: 'load' });
+      await page.goto(`${URL_}/edit?take=${encodeURIComponent(takeId)}`, { waitUntil: 'load' });
       await page.waitForFunction(() => Boolean(globalThis.__kinect?.timeline?.transport()), null, { timeout: 60000 });
       errors.length = 0;
 

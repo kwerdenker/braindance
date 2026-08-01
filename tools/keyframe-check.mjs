@@ -165,9 +165,14 @@ const MUTATIONS = {
   // The undo snapshot takes the whole registry rather than document state, so
   // dropping render scale for performance lands on the stack and pressing undo
   // puts it back.
+  // Re-anchored for v3. The line this names moved into `serialiseProjectBody`'s `look`
+  // block and grew an explicit tag argument, so the old text matched nothing and the
+  // tool refused the mutation - correctly, and silently as far as anything reading only
+  // the exit code was concerned. The claim is unchanged: the snapshot is document state,
+  // so widening it to the whole registry has to be caught.
   'undo-includes-view': [[
-    '    params: params.values(),',
-    '    params: params.values(params.names()),',
+    "      params: params.values(params.names('look')),",
+    '      params: params.values(params.names()),',
   ]],
   // Undo pushes on every input event rather than on the end of the interaction, so
   // one slider drag is two hundred levels.
@@ -745,7 +750,11 @@ if (MUTATE) {
   console.log(`[keyframe] MUTATED BUILD: ${MUTATE} - this run is expected to FAIL`);
 }
 
-await page.goto(`${URL_BASE}/?take=${encodeURIComponent(TAKE)}`, { waitUntil: 'load' });
+// The editor, which `/?take=` opened until the main menu took `/`. The take stays in
+// the query and only the path moves - a page opened at the old root would land on the
+// menu, which defines no `__kinect`, so the wait below would spend thirty seconds
+// timing out on a page that was never going to answer.
+await page.goto(`${URL_BASE}/edit?take=${encodeURIComponent(TAKE)}`, { waitUntil: 'load' });
 await page.waitForFunction(() => !!globalThis.__kinect);
 // **The page frames at the stage this tool asked for.** The editor letterboxes
 // itself to the export aspect now, so a viewport alone no longer decides the
@@ -1452,7 +1461,7 @@ console.log('\n== 4b. a hold freezes source time, and the image with it ==');
   // is not a claim about a renderer that had stopped working. The other side of
   // that - that the program-time terms *do* keep moving - is the second half below.
   await page.click('#modes button[data-mode="4"]');
-  const TIME_FREE = { scan: 0, grain: 0, scanlines: 0, rgbSplit: 0, glitch: 0, warp: 0, trails: 0 };
+  const TIME_FREE = { scan: 0, grain: 0, scanlines: 0, rgbSplit: 0, glitch: 0, noise: 0, trails: 0 };
   await page.evaluate(`globalThis.__kinect.params.apply(${src(TIME_FREE)})`);
   await settle();
 
@@ -2032,8 +2041,12 @@ console.log('\n== 5. undo restores the document and never the view ==');
 
   // (d) and none of it is in the snapshot, so an undo cannot put it back.
   const snapshot = await project();
-  check(!('renderScale' in snapshot.params) && !('spin' in snapshot.params),
-    'the snapshot holds no view state at all', Object.keys(snapshot.params).join(' '));
+  // A v3 document is `{ look: { mode, params, tracks }, composition: { retime, camera } }`.
+  // Read flat, `snapshot.params` is undefined and the `in` below throws rather than
+  // failing, which is how this arrived: as "the page stopped answering" three sections
+  // after the shape actually changed.
+  check(!('renderScale' in snapshot.look.params) && !('spin' in snapshot.look.params),
+    'the snapshot holds no view state at all', Object.keys(snapshot.look.params).join(' '));
 
   // (e) an undo restores the document and moves neither the playhead nor the view.
   const keyed = { wake: [{ t: 0, value: 100 }, { t: 5, value: 1200 }] };
@@ -2066,13 +2079,17 @@ console.log('\n== 5. undo restores the document and never the view ==');
     };
   })()`);
   await settle();
+  // Look tracks and the retime curve sit on opposite sides of the v3 split - tracks are
+  // look, the curve is composition - so the two readings below come from two places.
+  const undoneTracks = undone.project.look.tracks;
+  const undoneRetime = undone.project.composition.retime;
   console.log(`  a track and a retime curve pushed one level (${depthWithKeys}), then undone: `
-    + `tracks ${Object.keys(withKeys.tracks).join(',') || 'none'} -> `
-    + `${Object.keys(undone.project.tracks).join(',') || 'none'}, `
-    + `retime keys ${withKeys.retime.keys.length} -> ${undone.project.retime.keys.length}`);
+    + `tracks ${Object.keys(withKeys.look.tracks).join(',') || 'none'} -> `
+    + `${Object.keys(undoneTracks).join(',') || 'none'}, `
+    + `retime keys ${withKeys.composition.retime.keys.length} -> ${undoneRetime.keys.length}`);
   check(undone.popped === true, 'the stack had something to pop');
-  check(Object.keys(undone.project.tracks).length === 0 && undone.project.retime.keys.length === 0,
-    'and undo took the keys and the curve back off', JSON.stringify(undone.project.tracks));
+  check(Object.keys(undoneTracks).length === 0 && undoneRetime.keys.length === 0,
+    'and undo took the keys and the curve back off', JSON.stringify(undoneTracks));
   check(undone.frameAfter === undone.frameBefore, 'and left the playhead exactly where it was',
     `frame ${undone.frameBefore} -> ${undone.frameAfter}`);
   check(undone.scaleAfter === undone.scaleBefore, 'and did not touch render scale',
@@ -2276,7 +2293,7 @@ console.log('\n== 6e. keying from the panel, and dragging a handle ==');
   const afterClick = await page.evaluate(`(() => {
     const k = globalThis.__kinect;
     return {
-      keys: k.keyframes.project().tracks.bloom ?? null,
+      keys: k.keyframes.project().look.tracks.bloom ?? null,
       state: document.querySelector('.kf[aria-label="bloom keyframe"]').dataset.kf,
       value: k.params.get('bloom'),
     };
@@ -2317,7 +2334,7 @@ console.log('\n== 6e. keying from the panel, and dragging a handle ==');
   const fc = await page.evaluate(`(() => {
     const k = globalThis.__kinect;
     return {
-      keys: k.keyframes.project().tracks.bloom.map((key) => ({ t: +key.t.toFixed(3), value: key.value })),
+      keys: k.keyframes.project().look.tracks.bloom.map((key) => ({ t: +key.t.toFixed(3), value: key.value })),
       value: k.params.get('bloom'),
       slider: Number(document.getElementById('bloom').value),
     };
@@ -2375,7 +2392,7 @@ console.log('\n== 6e. keying from the panel, and dragging a handle ==');
     '[5.0, 6.5].map((t) => globalThis.__kinect.keyframes.valueAt("bloom", t))',
   );
   const handleBefore = await page.evaluate(
-    'JSON.stringify(globalThis.__kinect.keyframes.project().tracks.bloom[1])',
+    'JSON.stringify(globalThis.__kinect.keyframes.project().look.tracks.bloom[1])',
   );
   await page.mouse.move(at.x, at.y);
   await page.mouse.down();
@@ -2383,7 +2400,7 @@ console.log('\n== 6e. keying from the panel, and dragging a handle ==');
   await page.mouse.up();
   await settle();
   const handleAfter = await page.evaluate(
-    'JSON.stringify(globalThis.__kinect.keyframes.project().tracks.bloom[1])',
+    'JSON.stringify(globalThis.__kinect.keyframes.project().look.tracks.bloom[1])',
   );
   const curveAfter = await page.evaluate(
     '[5.0, 6.5].map((t) => globalThis.__kinect.keyframes.valueAt("bloom", t))',
@@ -2401,7 +2418,7 @@ console.log('\n== 6e. keying from the panel, and dragging a handle ==');
   check(moved > 0.01, 'and the curve between the keys follows it, which is what a handle is for',
     `${moved.toFixed(4)} of change`);
   const keysHeld = await page.evaluate(
-    'globalThis.__kinect.keyframes.project().tracks.bloom.map((k) => k.value)',
+    'globalThis.__kinect.keyframes.project().look.tracks.bloom.map((k) => k.value)',
   );
   check(String(keysHeld) === String(EASED.map((k) => k.value)),
     'while every key value stays exactly where it was, because an ease bends timing and not values',
