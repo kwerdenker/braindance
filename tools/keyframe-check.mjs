@@ -747,6 +747,12 @@ if (MUTATE) {
 
 await page.goto(`${URL_BASE}/?take=${encodeURIComponent(TAKE)}`, { waitUntil: 'load' });
 await page.waitForFunction(() => !!globalThis.__kinect);
+// **The page frames at the stage this tool asked for.** The editor letterboxes
+// itself to the export aspect now, so a viewport alone no longer decides the
+// drawing buffer: a 640x400 stage is 1.6, the menu's default is 16:9, and the fit
+// makes the buffer 640x360 with a 20px offset unless told otherwise. That moves
+// every buffer-size expectation and every pointer coordinate in this file.
+await page.evaluate('globalThis.__kinect.setTargetSize?.("640x400")');
 await page.waitForFunction(() => !!globalThis.__kinect.timeline.transport(), null, { timeout: 20000 });
 await page.evaluate(INSTALL);
 
@@ -2137,7 +2143,20 @@ console.log('\n== 6b. dragging a path node in the top-down moves it across the f
   // PointerEvent carries no active pointer id, so the capture the drag takes out
   // throws and the gesture never starts - which would have this check measuring
   // the absence of its own input rather than the absence of the feature.
-  const at = await page.evaluate(`globalThis.__kinect.keyframes.camera.project(${src(NODE)}, true)`);
+  // **Canvas-local, and `page.mouse` is viewport-relative.** These were the same
+  // number while the stage filled the window from its corner; the editor letterboxes
+  // itself to the export aspect now, so the canvas is centred in whatever the stage
+  // area leaves over and the two differ by that offset. Without it the drag lands on
+  // empty background and the node does not move, which reads as the feature being
+  // gone rather than as the pointer having missed - four rows here failed exactly
+  // that way. The other drag in this file takes its point from a DOM rect and is
+  // already in viewport coordinates.
+  const canvasAt = await page.evaluate(`(() => {
+    const r = document.getElementById('stage').getBoundingClientRect();
+    return { x: r.left, y: r.top };
+  })()`);
+  const raw = await page.evaluate(`globalThis.__kinect.keyframes.camera.project(${src(NODE)}, true)`);
+  const at = { x: raw.x + canvasAt.x, y: raw.y + canvasAt.y };
   const before = await page.evaluate(`globalThis.__kinect.keyframes.camera.keys()[${src(NODE)}].value.position`);
   const depthBefore = await page.evaluate('globalThis.__kinect.keyframes.undo.depth()');
 

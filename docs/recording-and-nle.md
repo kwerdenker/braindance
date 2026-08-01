@@ -1634,6 +1634,17 @@ decimated one. So a full-rate monitor costs about a quarter of the take rather t
 The mechanism holds: the packet counter moves with the loss, 14-fold between the
 first two arms, and the decimated monitor pulls it most of the way back.
 
+**The fps column is three runs and the packet column is one**, which is worth stating
+rather than letting one table imply both are equally settled. The fps figures are
+24.5%/24.0%/24.4% across three runs and nine paired rounds; the packet counts come
+only from the third, since the first two were counting the wrong string. A fourth run
+was attempted for exactly that replication and **the tool threw it away** — its
+no-client arms spread 0.97fps against the 0.8 this rig settles within. Its packet
+deltas are worth recording as corroboration rather than as data: +290, +279, +277 for
+the full-rate arm against the third run's +297, +300, +329, and +20, −9, −9 for the
+decimated one against +26, +57, +43. The direction and the magnitude agree; the run
+still does not count.
+
 **One correction worth keeping, because the wrong version was written down before it
 was caught.** The first two runs reported zero skipped packets in every arm and were
 read as the loss happening without any USB packet loss at all. They were counting
