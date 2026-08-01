@@ -18,7 +18,8 @@
 //   tools/fake-grabber.mjs --source captures/sample.knct --fps 60 --frames 40
 //   tools/fake-grabber.mjs --die-after 12      # exits, so the server respawns it
 
-import { readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { MessageParser, TYPE_HELLO, TYPE_FRAME, encodeMessage } from '../server/protocol.js';
 
 const argv = process.argv.slice(2);
@@ -45,6 +46,20 @@ const FRAMES = Number(flag('--frames', '0'));
 // A distinguishing number in the hello, so a check can tell one spawn's take from
 // the next one's rather than assuming the file boundary fell where it meant it to.
 const TAG = flag('--tag', '');
+// Where this writer records what it actually put on stdout: one line per message,
+// `type length sha256-of-payload`.
+//
+// **It exists so the take can be checked against the writer rather than against the
+// reader**, which is the distinction step 7 learned the hard way - a check that
+// polls the library to find out what was recorded makes the library scan the take
+// being written, and then measures an artifact its own question created. Nothing
+// here observes the server at all; it is the emitter's own record of what left, and
+// a take is correct exactly when its bytes are these bytes.
+//
+// This is what makes "a monitor never costs the take fidelity" an identity rather
+// than an assurance: with a viewer attached at a divisor, a recorder handed the
+// decimated buffer produces frames whose payload hashes are simply not in this file.
+const EMIT_LOG = flag('--emit-log', '');
 
 const parser = new MessageParser();
 const frames = [];
@@ -78,12 +93,22 @@ const origin = Math.round(performance.now());
 let n = 0;
 process.stderr.write(`[fake-grabber] streaming ${frames.length} looped frames at ${FPS}fps${TAG ? ` tag=${TAG}` : ''}\n`);
 
+// Appended synchronously and before the bytes go out, so a writer killed mid-take
+// has logged everything the reader could possibly have received and never less. The
+// other order would let a frame reach the recorder that this file does not vouch
+// for, and the check reading it would report a take carrying a frame nobody emitted.
+const note = (type, payload) => {
+  if (!EMIT_LOG) return;
+  appendFileSync(EMIT_LOG, `${type} ${payload.length} ${createHash('sha256').update(payload).digest('hex')}\n`);
+};
+
 const encode = () => {
   const payload = Buffer.from(frames[n % frames.length]);
   // Only the u64 at payload offset 8 moves - the same edit `make-fixture` performs -
   // so the depth and the JPEG are real bytes off a real sensor.
   payload.writeBigUInt64LE(BigInt(origin + Math.round((n * 1000) / FPS)), 8);
   n++;
+  note(TYPE_FRAME, payload);
   return encodeMessage(TYPE_FRAME, payload);
 };
 
@@ -95,6 +120,7 @@ const emit = () => process.stdout.write(encode());
 // hello and at most a fragment of the first frame, and a recorder that opened its
 // file a turn late would look correct for a reason that has nothing to do with its
 // ordering. This is what makes the property measurable rather than incidental.
+note(TYPE_HELLO, hello);
 const opening = [encodeMessage(TYPE_HELLO, hello)];
 for (let i = 0; i < BURST; i++) opening.push(encode());
 process.stdout.write(Buffer.concat(opening));

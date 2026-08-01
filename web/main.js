@@ -2127,6 +2127,64 @@ function showCamera(state) {
 colorCamEl.addEventListener('change', () => sendCamera({ color: colorCamEl.checked }));
 lowLightEl.addEventListener('change', () => sendCamera({ lowLight: lowLightEl.checked }));
 
+// ------------------------------------------------- what this monitor pulls
+//
+// A depth divisor and a frame stride, asked for over the socket that is already
+// carrying the frames. Decimation is a network concession and never a compute one:
+// the capture node sustains full rate, and this exists because a radio link cannot
+// carry 14.6 MB/s while the same machine is also writing it to disk.
+//
+// **Nothing here ever moves on its own.** The controls are the operator's, the
+// granted setting is always on screen, and a link that cannot sustain what was asked
+// says so rather than quietly coarsening - an instrument that changes its own scale
+// is worse than none, because coarse depth reads as a badly placed subject and a
+// dropped stride reads as a sensor losing frames, and both get blamed on the room.
+const monDivisorEl = document.getElementById('monDivisor');
+const monStrideEl = document.getElementById('monStride');
+const monNoteEl = document.getElementById('monNote');
+
+// The last setting the server confirmed, which is what the record button consults.
+// Held rather than read back off the sliders, because a slider carries what somebody
+// dragged it to and this has to carry what was granted.
+let monitorState = { divisor: 1, stride: 1, loopback: true, wouldRefuseRecording: false };
+
+function sendMonitor() {
+  if (socket?.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({
+    monitor: { divisor: Number(monDivisorEl.value), stride: Number(monStrideEl.value) },
+  }));
+}
+
+function showMonitor(state) {
+  monitorState = state;
+  monDivisorEl.value = String(state.divisor);
+  monStrideEl.value = String(state.stride);
+  monDivisorEl.nextElementSibling.value = String(state.divisor);
+  monStrideEl.nextElementSibling.value = String(state.stride);
+
+  // A frame is 486KB at full rate; the depth block scales with the divisor squared
+  // and the colour block does not move at all, which is why the saving flattens.
+  // Stated from the grid rather than from a table, so the number cannot drift from
+  // what the sender is actually building.
+  const depthKB = Math.ceil(512 / state.divisor) * Math.ceil(424 / state.divisor) * 2 / 1000;
+  const perFrame = depthKB + 52;
+  const rate = perFrame * (30 / state.stride) / 1000;
+  const parts = [`depth ÷${state.divisor}, every ${state.stride === 1 ? 'frame' : `${state.stride}th frame`}`,
+    `about ${perFrame.toFixed(0)}KB a frame, ${rate.toFixed(1)} MB/s`];
+  if (state.refused) parts.push(`refused: ${state.refused}`);
+  if (state.wouldRefuseRecording) {
+    parts.push(`a take will refuse to start at this setting - finer than the ÷${state.cap.divisor} `
+      + `×${state.cap.stride} a recording allows, and the frames it costs never reach the file`);
+  } else if (!state.loopback) {
+    parts.push('coarse enough to record through');
+  }
+  parts.push('the recording is always full fidelity whatever this says');
+  monNoteEl.textContent = `${parts.join(' · ')}.`;
+  monNoteEl.classList.toggle('warn', Boolean(state.wouldRefuseRecording || state.refused));
+}
+
+for (const el of [monDivisorEl, monStrideEl]) el.addEventListener('input', sendMonitor);
+
 function connect() {
   const ws = new WebSocket(`ws://${location.host}`);
   ws.binaryType = 'arraybuffer';
@@ -2159,12 +2217,40 @@ function connect() {
         return;
       }
 
-      uniforms.focal.value.set(msg.fx, msg.fy);
-      uniforms.center.value.set(msg.cx, msg.cy);
-      if (!msg.color) uniforms.hasColor.value = 0;
-      sensorLabel = `${msg.serial} · fw ${msg.firmware}`;
-      setStatus();
-      console.log('sensor intrinsics', msg);
+      // What the server granted this monitor, which is not always what it asked
+      // for. Rendered from the answer rather than from the request, because the one
+      // property this negotiation has to hold is that the setting on screen is the
+      // setting on the wire.
+      if (msg.monitor) {
+        showMonitor(msg.monitor);
+        return;
+      }
+
+      // **The hello is recognised rather than reached by falling through, and that
+      // is a fix rather than a tidy-up.** Every branch above returns, so this used
+      // to be the else-case for anything unrecognised - which meant a message type
+      // added later did not fail, it set `focal` to (undefined, undefined). Every
+      // point then unprojects to NaN and the viewer renders an empty frame with no
+      // error anywhere, on a page that looks fine. Step 9's monitor message landed
+      // exactly here and `library-check` caught it as fifteen identical renders.
+      //
+      // Tested on the hello's own fields because the payload is written into the
+      // take verbatim, so there is no discriminator the server could add without
+      // changing the file format. `serial` and the four intrinsics are what the
+      // grabber always emits (`native/grabber.cpp:375-381`).
+      if (typeof msg.serial === 'string' && Number.isFinite(msg.fx)) {
+        uniforms.focal.value.set(msg.fx, msg.fy);
+        uniforms.center.value.set(msg.cx, msg.cy);
+        if (!msg.color) uniforms.hasColor.value = 0;
+        sensorLabel = `${msg.serial} · fw ${msg.firmware}`;
+        setStatus();
+        console.log('sensor intrinsics', msg);
+        return;
+      }
+
+      // Loud rather than ignored. A message this page does not understand means the
+      // server is ahead of it, and the failure that produces is silent by nature.
+      console.warn('unrecognised message on the frame socket', msg);
     } else {
       handleFrame(event.data);
     }
@@ -5241,7 +5327,17 @@ function paintRecord(storage) {
   ui.recGo.textContent = rec ? 'stop' : 'record';
   ui.recGo.setAttribute('aria-pressed', String(rec));
   ui.recMark.disabled = !rec;
-  ui.recNote.textContent = blocked ?? (rec
+  // Said before the button is pressed rather than only in the 409 it would answer.
+  // The refusal exists so a full-rate monitor cannot quietly cost the take frames,
+  // and an operator who only learns that from an error in the second they were
+  // trying to roll has been told too late to do anything with it.
+  const costly = recordState.monitors?.costingTheTake ?? [];
+  const monitorWarning = !rec && costly.length
+    ? `${costly.length} monitor${costly.length > 1 ? 's are' : ' is'} watching over the network at `
+      + `${costly.map((m) => `÷${m.divisor} ×${m.stride}`).join(', ')} - a take will refuse to start until `
+      + `they are at ÷${recordState.monitors.cap.divisor} ×${recordState.monitors.cap.stride} or coarser`
+    : null;
+  ui.recNote.textContent = blocked ?? monitorWarning ?? (rec
     ? `${recordState.takeId} · ${recordState.frames} frames`
       + (recordState.dropped ? ` · ${recordState.dropped} dropped to a slow disk` : '')
     : (recordState.armed ? 'armed, waiting for the sensor' : 'not recording'));

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { basename, dirname, join, normalize, extname, sep, resolve } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { MessageParser, encodeMessage, TYPE_HELLO, TYPE_FRAME } from './protocol.js';
-import { openCapture, withCapture, captureIdFor, openCaptureCount } from './capture.js';
+import { openCapture, withCapture, captureIdFor, openCaptureCount, decimatePayload } from './capture.js';
 import { handleExportSocket, MAX_FRAME_BYTES } from './export.js';
 import {
   VALID_ID, DocumentStore, NodeLink, appendMarks, downloadTake, hashFile, markWriteCount,
@@ -70,6 +70,35 @@ const NO_COLOR = has('--no-color');
 // A browser that falls behind must never build a queue - a stale point cloud
 // reads as "the Kinect is slow". Drop frames instead.
 const MAX_BUFFERED = 4 * 1024 * 1024;
+
+// What a monitor is allowed to ask for. The divisor's ceiling is the frame API's,
+// because they are one mechanism and a divisor the socket accepts and the gallery
+// refuses would be two. The stride's ceiling is one frame per second at 30fps,
+// past which a monitor has stopped being a monitor.
+const MAX_DIVISOR = 16;
+const MAX_STRIDE = 30;
+
+// What a monitor costs the take, and the setting at which it stops costing it.
+//
+// **This is a refusal at the record boundary and never a cap on a running stream**,
+// which is the distinction the design turns on. Line 255 of the design doc says
+// decimation is set by the user, is always visible, and never downgrades itself -
+// because a monitor is an instrument, and coarse depth reads as a badly placed
+// subject while a dropped stride reads as a sensor losing frames. Both would be
+// misattributed to the scene at exactly the moment somebody is judging framing. So
+// nothing here ever changes a setting: `/record/start` refuses instead, names the
+// monitors that are too fine and what they would cost, and the operator either
+// coarsens them or says `acceptMonitorCost` and means it. That is the same shape as
+// the low-space refusal the recorder already makes - a take that never started is a
+// decision, a take that dies at eighty percent is a loss.
+//
+// **Loopback monitors are exempt, and that exemption is measured rather than
+// assumed** - see the interleaved A/B in the commit body. The cost being refused is
+// backpressure from a link that cannot carry 14.6 MB/s reaching back through the
+// server's stdin pipe into the grabber, which then misses USB deadlines; a monitor
+// on the same machine never touches that link. It also means every existing proof
+// tool, which drives this server over localhost, is unaffected by the refusal.
+const RECORDING_CAP = { divisor: 4, stride: 3 };
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -725,7 +754,55 @@ const shooting = (run) => async (req, res, args, query) => {
   }
 };
 
-const serveRecordStart = shooting(async (req, res) => sendJson(res, await recorder.start(helloJson)));
+/**
+ * Every monitor whose frames cross the link at a setting finer than the cap.
+ *
+ * Read off the live sockets rather than off anything a caller sends, because the
+ * question is what is attached right now, and the answer has to be the same one
+ * `broadcastFrame` is about to act on.
+ */
+function monitorsCostingTheTake() {
+  const out = [];
+  for (const ws of wss.clients) {
+    if (ws.readyState !== ws.OPEN) continue;
+    const m = monitors.get(ws);
+    if (m && costsTheTake(m)) out.push({ divisor: m.divisor, stride: m.stride });
+  }
+  return out;
+}
+
+/**
+ * Arming a take, with the one refusal the socket can raise.
+ *
+ * **A refusal here rather than a cap on the stream**, for the reason the constant
+ * above sets out: the design forbids decimation that changes itself, and a monitor
+ * whose image silently coarsened at the moment recording started would be lying
+ * about the scene to the one person who cannot check. So the cost is stated at the
+ * boundary where a decision is being made anyway, in the same place and the same
+ * shape as the recorder's own refusal to start a take the card cannot hold.
+ *
+ * `acceptMonitorCost` is the way past it, and it is spelled out rather than a bare
+ * `force` so that a log line saying somebody accepted it reads as the decision it
+ * was. A node on ethernet genuinely does not pay this, and the operator is the only
+ * one who knows which link they are on.
+ */
+const serveRecordStart = shooting(async (req, res) => {
+  const body = await readBody(req);
+  const costly = monitorsCostingTheTake();
+  if (costly.length && body.acceptMonitorCost !== true) {
+    const at = costly.map((m) => `÷${m.divisor} ×${m.stride}`).join(', ');
+    throw new Error(
+      `refusing to start a take: ${costly.length} monitor${costly.length > 1 ? 's are' : ' is'} watching over the `
+      + `network at ${at}, finer than the ÷${RECORDING_CAP.divisor} ×${RECORDING_CAP.stride} a recording take `
+      + 'allows - backpressure from that link reaches the grabber and costs the take frames that never reach the '
+      + 'file, so coarsen the monitor or start again with acceptMonitorCost',
+    );
+  }
+  if (costly.length) {
+    console.log(`[server] starting a take with ${costly.length} full-rate monitor(s): the operator accepted the cost`);
+  }
+  sendJson(res, await recorder.start(helloJson));
+});
 const serveRecordStop = shooting(async (req, res) => sendJson(res, { stopped: await recorder.stop() }));
 const serveRecordMark = shooting(async (req, res) => {
   const body = await readBody(req);
@@ -885,9 +962,29 @@ const serveJobRequeue = async (req, res, args) => {
 };
 const serveRemaining = async (req, res) => sendJson(res, await remaining(CAPTURES_DIR, recordingRate()));
 const serveDescriptors = (req, res) => sendJson(res, { open: openCaptureCount(), real: realDescriptorCount() });
-const serveRecordState = async (req, res) => sendJson(res, {
-  ...recorder.state, storage: await remaining(CAPTURES_DIR, recordingRate()),
-});
+/**
+ * What the recorder is doing, and what the monitors attached to it would cost.
+ *
+ * The monitor half is here rather than only on the socket because the refusal is an
+ * HTTP one: the surface that is about to press record reads this, so the button can
+ * say "this take will refuse" before it is pressed instead of after. That is the
+ * positive twin of the refusal - a check built only out of 409s would pass against a
+ * server that refused everything, and this is the number that says which monitors
+ * are the reason.
+ */
+const serveRecordState = async (req, res) => {
+  const costly = monitorsCostingTheTake();
+  sendJson(res, {
+    ...recorder.state,
+    storage: await remaining(CAPTURES_DIR, recordingRate()),
+    monitors: {
+      cap: RECORDING_CAP,
+      attached: wss.clients.size,
+      costingTheTake: costly,
+      wouldRefuse: costly.length > 0,
+    },
+  });
+};
 
 async function serveLocalTakes(req, res) {
   const here = await localTakes();
@@ -1213,12 +1310,41 @@ function setSensorState(state) {
 const camera = { color: !NO_COLOR, lowLight: true };
 let applyCamera = null; // wired up by startLive; absent in replay
 
-wss.on('connection', (ws) => {
+/**
+ * What each monitor asked for, and whether its frames cross a network to reach it.
+ *
+ * Held beside the socket rather than on it, so nothing about a client's settings
+ * survives the socket it was negotiated on - a reconnecting browser gets the
+ * default and has to ask again, which is the honest behaviour for a setting whose
+ * whole purpose is to describe a link that may have changed.
+ */
+const monitors = new WeakMap();
+
+// Whether this socket's frames leave the machine. `remoteAddress` is the peer as the
+// kernel sees it, so it cannot be spoofed by anything the client sends - which
+// matters, because this decides whether the record refusal applies.
+const isLoopback = (req) => {
+  const a = req.socket.remoteAddress ?? '';
+  return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+};
+
+/**
+ * A whole number in range, or null for anything else.
+ *
+ * Null rather than a clamp, because a monitor that asked for 64 and silently got 16
+ * is a monitor whose displayed setting is not the setting - and the one property
+ * this negotiation has to hold is that what is on screen is what is on the wire.
+ */
+const whole = (v, max) => (Number.isInteger(v) && v >= 1 && v <= max ? v : null);
+
+wss.on('connection', (ws, req) => {
   ws.binaryType = 'nodebuffer';
+  monitors.set(ws, { divisor: 1, stride: 1, loopback: isLoopback(req) });
   console.log(`[server] client connected (${wss.clients.size} total)`);
   if (helloJson) ws.send(helloJson);
   ws.send(JSON.stringify({ status: sensorState }));
   ws.send(JSON.stringify({ camera }));
+  sendMonitor(ws);
   ws.on('error', (err) => console.error('[server] socket error:', err.message));
 
   ws.on('message', (raw) => {
@@ -1228,7 +1354,30 @@ wss.on('connection', (ws) => {
     } catch {
       return; // a client sending junk is not the server's problem
     }
-    if (!msg || typeof msg.camera !== 'object' || !msg.camera) return;
+    if (!msg) return;
+
+    // The monitor's own settings. Answered on every attempt, accepted or not, so the
+    // client renders what it was granted rather than what it hoped for - a client
+    // that assumed its request took effect would draw a `÷4` label over a full-rate
+    // stream, which is the misattribution this whole negotiation exists to avoid.
+    if (typeof msg.monitor === 'object' && msg.monitor) {
+      const m = monitors.get(ws);
+      const divisor = whole(msg.monitor.divisor, MAX_DIVISOR);
+      const stride = whole(msg.monitor.stride, MAX_STRIDE);
+      const bad = [];
+      if (msg.monitor.divisor !== undefined && divisor === null) {
+        bad.push(`divisor must be a whole number from 1 to ${MAX_DIVISOR}`);
+      }
+      if (msg.monitor.stride !== undefined && stride === null) {
+        bad.push(`stride must be a whole number from 1 to ${MAX_STRIDE}`);
+      }
+      if (divisor !== null) m.divisor = divisor;
+      if (stride !== null) m.stride = stride;
+      sendMonitor(ws, bad.length ? bad.join('; ') : null);
+      return;
+    }
+
+    if (typeof msg.camera !== 'object' || !msg.camera) return;
     if (!applyCamera) return;
 
     const next = {
@@ -1239,17 +1388,86 @@ wss.on('connection', (ws) => {
   });
 });
 
+/**
+ * The setting this monitor is actually being served at, plus what it would cost a
+ * take if one started now.
+ *
+ * `wouldRefuseRecording` is the positive half of the refusal: the record button can
+ * say so before it is pressed, rather than the operator discovering it from a 409 in
+ * the one second they were trying to start a shot.
+ */
+function sendMonitor(ws, refused = null) {
+  const m = monitors.get(ws);
+  if (!m || ws.readyState !== ws.OPEN) return;
+  ws.send(JSON.stringify({
+    monitor: {
+      divisor: m.divisor,
+      stride: m.stride,
+      loopback: m.loopback,
+      cap: RECORDING_CAP,
+      wouldRefuseRecording: costsTheTake(m),
+      maxDivisor: MAX_DIVISOR,
+      maxStride: MAX_STRIDE,
+      ...(refused ? { refused } : {}),
+    },
+  }));
+}
+
+// A monitor costs the take when its frames cross the link and it is asking for more
+// of them than the cap allows. Both terms matter: finer than the cap on loopback is
+// free, and a remote monitor at or past the cap is what the cap is for.
+const costsTheTake = (m) => !m.loopback && (m.divisor < RECORDING_CAP.divisor || m.stride < RECORDING_CAP.stride);
+
+// Which frame this is, for the stride. Counted over every frame the grabber
+// delivered rather than per client, so two monitors at the same stride land on the
+// same frames and the second one costs no extra bytes on a shared link.
+let frameSeq = 0;
+
 function broadcastFrame(payload) {
+  frameSeq++;
+  // `stats` is what the library divides free space by to report remaining time, so it
+  // counts the frame that arrived and never the frame that went out. A monitor at ÷4
+  // does not make the take smaller, and a remaining-time readout that thought so
+  // would promise an hour of card that does not exist.
+  stats.frames++;
+  stats.bytes += payload.length;
+
+  // The common case on a capture node mid-shoot is nobody watching, and it costs
+  // nothing here rather than a map allocation per frame.
+  if (wss.clients.size === 0) return;
+
+  // Sampled at most once per divisor per frame, and only for a divisor somebody
+  // actually asked for. Two monitors at ÷4 pay for one decimation; a monitor at ÷1
+  // pays for none, since the payload it wants is the one already in hand.
+  const byDivisor = new Map([[1, payload]]);
+
   for (const ws of wss.clients) {
     if (ws.readyState !== ws.OPEN) continue;
+    const m = monitors.get(ws);
+    if (!m) continue;
+    // Strided out, which is not the same as dropped and is not counted as one. A
+    // dropped frame is a monitor that could not keep up; this is a monitor that asked
+    // not to be sent it.
+    if (frameSeq % m.stride !== 0) continue;
     if (ws.bufferedAmount > MAX_BUFFERED) {
       stats.dropped++;
       continue;
     }
-    ws.send(payload);
+    let out = byDivisor.get(m.divisor);
+    if (out === undefined) {
+      try {
+        out = decimatePayload(payload, m.divisor, `frame ${frameSeq}`);
+      } catch (err) {
+        // A frame whose declared lengths do not describe it is refused rather than
+        // sampled past, and one bad frame must not take the fan-out down with it -
+        // the same reading the frame API takes, on the same function.
+        console.error(`[server] cannot decimate for a monitor at divisor ${m.divisor}: ${err.message}`);
+        out = null;
+      }
+      byDivisor.set(m.divisor, out);
+    }
+    if (out) ws.send(out);
   }
-  stats.frames++;
-  stats.bytes += payload.length;
 }
 
 // One take is one file, and the recorder is what holds that identity. It is

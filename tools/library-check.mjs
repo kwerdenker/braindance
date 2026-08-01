@@ -199,9 +199,13 @@ const MUTATIONS = {
   // The colour block is dropped from a decimated frame. Still smaller, still a
   // KNCT frame, and no longer the mechanism the 21ms-per-position number describes -
   // colour is 52KB of that 79KB.
+  // Re-anchored when step 9 lifted the sampling loop out of `Capture.readFrame` and
+  // into the module-level `decimatePayload` the live socket shares - the body is
+  // unchanged and two spaces to the left, which is exactly the shape the
+  // match-exactly-once rule exists to surface rather than swallow.
   'decimate-drops-colour': { file: 'server/capture.js', edits: [
-    ['    out.writeUInt32LE(colorBytes, 4);', '    out.writeUInt32LE(0, 4);'],
-    ['    payload.copy(out, 16 + w * h * 2, 16 + depthBytes);', '    /* mutation: colour dropped */'],
+    ['  out.writeUInt32LE(colorBytes, 4);', '  out.writeUInt32LE(0, 4);'],
+    ['  payload.copy(out, 16 + w * h * 2, 16 + depthBytes);', '  /* mutation: colour dropped */'],
   ] },
   // The document version stops being checked, so a file whose point size is in the
   // old unit loads silently and draws 1.8x wrong at every output size.
@@ -516,8 +520,9 @@ const MUTATIONS = {
   // The decimation path stops checking that a frame's two declared lengths describe
   // the frame, so an overstated colour length returns the uninitialised tail of an
   // `allocUnsafe` buffer.
+  // Re-anchored with `decimate-drops-colour` above, and for the same reason.
   'decimate-skips-length-check': { file: 'server/capture.js', edits: [[
-    '    if (16 + depthBytes + colorBytes !== payload.length) {', '    if (false) {',
+    '  if (16 + depthBytes + colorBytes !== payload.length) {', '  if (false) {',
   ]] },
   // The registry's door goes back to testing truthiness on an object literal, which
   // accepts every name on `Object.prototype`.

@@ -72,7 +72,8 @@
 
   #hint { position: fixed; bottom: 14px; left: 16px; color: var(--dim); z-index: 10; }
 
-  #camNote, #recNote, #recSpace { color: var(--dim); font-size: 10px; line-height: 1.45; opacity: 0.75; margin-top: 2px; }
+  #camNote, #recNote, #recSpace, #monNote { color: var(--dim); font-size: 10px; line-height: 1.45; opacity: 0.75; margin-top: 2px; }
+  #monNote.warn { color: var(--warn); opacity: 1; }
   /* Remaining time, never remaining bytes. "1h 47m left at current settings" is
      actionable where "94 GB free" is arithmetic the operator has to do under
      pressure, and time is the honest unit anyway since the rate depends on capture
@@ -311,6 +312,17 @@
       <label class="check"><input id="colorCam" type="checkbox" checked> colour camera on</label>
       <label class="check"><input id="lowLight" type="checkbox" checked> low light mode</label>
       <div id="camNote">low light lets the colour camera drop to 15fps for a brighter image. Depth stays at 30 either way.</div>
+    </div>
+
+    <!-- What this monitor pulls off the link, and never what the take records. The
+         setting is the operator's and stays on screen: nothing here moves on its
+         own, because coarse depth reads as a badly placed subject and a dropped
+         stride reads as a sensor losing frames. -->
+    <div class="group">
+      <label>Monitor stream</label>
+      <div class="row"><span>depth ÷</span><input id="monDivisor" type="range" min="1" max="16" step="1" value="1"><output>1</output></div>
+      <div class="row"><span>every Nth</span><input id="monStride" type="range" min="1" max="30" step="1" value="1"><output>1</output></div>
+      <div id="monNote">full rate. the recording is always full fidelity whatever this says.</div>
     </div>
 
     <div class="group">

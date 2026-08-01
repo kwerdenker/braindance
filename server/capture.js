@@ -49,6 +49,86 @@ const RUN_CHUNK = 1024 * 1024;
 const STAMP_BYTES = 16;
 const PREFIX_BYTES = HEADER_BYTES + STAMP_BYTES;
 
+/**
+ * One frame's payload sampled down by a depth divisor, or the payload itself at a
+ * divisor of 1.
+ *
+ * Decimation is a **network** concession and never a compute one, which is why it
+ * lives here rather than in any one consumer: the monitor asks for it because a
+ * radio link cannot carry 14.6 MB/s, the editor asks for it when the take is on the
+ * other end of that link, the gallery asks for it to skim a take that has not been
+ * downloaded, and the live socket asks for it because a full-rate monitor costs the
+ * take frames. One mechanism, four callers.
+ *
+ * **The fourth caller is why this is a function and not a method.** The first three
+ * hold a `Capture` - a file on disk with an index over it - and the socket holds a
+ * buffer that has not been written yet. Reaching for a `Capture` there was never
+ * possible, so the alternative to this was a second copy of the loop on the live
+ * path, drifting from this one about what a `÷4` frame is until a monitor and a
+ * gallery tile disagreed about the same take.
+ *
+ * What comes back is still a KNCT frame - same sixteen-byte payload header, same
+ * field offsets, same decoder - carrying a `ceil(DEPTH_W/k) x ceil(DEPTH_H/k)` grid
+ * sampled nearest-neighbour. **The colour block is copied through untouched**, and
+ * that is deliberate rather than an omission: at a divisor of 4 the depth falls from
+ * 424KB to 27KB while the JPEG stays at about 52KB, so colour is what a decimated
+ * frame mostly is, and a version that dropped it would be a different mechanism
+ * wearing this one's measured numbers.
+ *
+ * **What goes to disk is unaffected, and on the live path that is a property rather
+ * than an observation.** The recorder is handed the grabber's own framed bytes
+ * before this is ever called, so no divisor any monitor asks for can reach the
+ * take - which is the `nearClip` versus `--min-depth` failure by another name, and
+ * the one this design cannot afford, since it destroys footage in the situation
+ * where nobody is watching for it. `monitor-check` asserts the identity rather than
+ * trusting this paragraph.
+ *
+ * `what` names the frame in a refusal, because the two callers identify frames
+ * differently - by index in a take, or as whatever just arrived on the wire.
+ */
+export function decimatePayload(payload, depthDivisor, what = 'frame') {
+  const k = Math.trunc(depthDivisor);
+  if (!(k > 1)) return payload;
+
+  const depthBytes = payload.readUInt32LE(0);
+  const colorBytes = payload.readUInt32LE(4);
+  // The frame's own two lengths have to add up to the frame. Only the depth length
+  // was checked, so a colour length that overstated the payload sized `out` larger
+  // than the copy that follows fills it - and `allocUnsafe` hands back whatever was
+  // in that memory, so the tail of the served frame was this process's own recycled
+  // heap. Checked here rather than in the scan because this is the path that builds a
+  // new buffer from the two numbers; at divisor 1 the payload is returned exactly as
+  // it arrived, which is what the format promises.
+  if (16 + depthBytes + colorBytes !== payload.length) {
+    throw new Error(
+      `${what} declares ${depthBytes} depth and ${colorBytes} colour bytes, which is not the `
+      + `${payload.length - 16} it carries: refusing rather than sampling past the frame`,
+    );
+  }
+  if (depthBytes !== DEPTH_W * DEPTH_H * 2) {
+    throw new Error(
+      `${what} carries ${depthBytes} depth bytes, not the ${DEPTH_W}x${DEPTH_H} grid `
+      + 'this divisor samples: refusing rather than sampling a shape nobody declared',
+    );
+  }
+  const w = Math.ceil(DEPTH_W / k);
+  const h = Math.ceil(DEPTH_H / k);
+  const out = Buffer.allocUnsafe(16 + w * h * 2 + colorBytes);
+  out.writeUInt32LE(w * h * 2, 0);
+  out.writeUInt32LE(colorBytes, 4);
+  // The capture timestamp, verbatim. A decimated frame is the same moment as the
+  // frame it came from, and a stamp rewritten here would put a second timeline into a
+  // format that has one.
+  payload.copy(out, 8, 8, 16);
+  for (let y = 0; y < h; y++) {
+    const src = 16 + y * k * DEPTH_W * 2;
+    const dst = 16 + y * w * 2;
+    for (let x = 0; x < w; x++) out.writeUInt16LE(payload.readUInt16LE(src + x * k * 2), dst + x * 2);
+  }
+  payload.copy(out, 16 + w * h * 2, 16 + depthBytes);
+  return out;
+}
+
 /** `captures/take3.knct` → `captures/take3.idx`, beside the take it describes. */
 export const indexPathFor = (capturePath) => `${capturePath.replace(/\.knct$/i, '')}.idx`;
 
@@ -264,64 +344,15 @@ export class Capture {
    * One frame's payload, byte for byte as the socket would have delivered it -
    * or, with a depth divisor above 1, the same frame sampled down.
    *
-   * Decimation is a **network** concession and never a compute one, which is why
-   * it lives here rather than in any one consumer: the monitor asks for it because
-   * a radio link cannot carry 14.6 MB/s, the editor asks for it when the take is
-   * on the other end of that link, and the gallery asks for it to skim a take that
-   * has not been downloaded. One mechanism, three callers.
-   *
-   * What comes back is still a KNCT frame - same sixteen-byte payload header, same
-   * field offsets, same decoder - carrying a `ceil(DEPTH_W/k) x ceil(DEPTH_H/k)`
-   * grid sampled nearest-neighbour. **The colour block is copied through
-   * untouched**, and that is deliberate rather than an omission: at a divisor of 4
-   * the depth falls from 424KB to 27KB while the JPEG stays at about 52KB, so
-   * colour is what a decimated frame mostly is, and a version that dropped it
-   * would be a different mechanism wearing this one's measured numbers. What goes
-   * to disk is unaffected either way - the capture is already written.
+   * The sampling itself is `decimatePayload` below, which this shares with the live
+   * socket rather than reimplementing: a stored frame and a frame still in flight
+   * are the same sixteen bytes of header over the same grid, so two copies of this
+   * loop would be two things to keep agreeing about what a `÷4` frame is.
    */
   async readFrame(n, depthDivisor = 1) {
     const { offset, length } = this.index.frames;
     const payload = await this.readAt(offset[n], length[n]);
-    const k = Math.trunc(depthDivisor);
-    if (!(k > 1)) return payload;
-
-    const depthBytes = payload.readUInt32LE(0);
-    const colorBytes = payload.readUInt32LE(4);
-    // The frame's own two lengths have to add up to the frame. Only the depth length
-    // was checked, so a colour length that overstated the payload sized `out` larger
-    // than the copy that follows fills it - and `allocUnsafe` hands back whatever was
-    // in that memory, so the tail of the served frame was this process's own
-    // recycled heap. Checked here rather than in the scan because this is the path
-    // that builds a new buffer from the two numbers; at divisor 1 the payload is
-    // returned exactly as the file holds it, which is what the format promises.
-    if (16 + depthBytes + colorBytes !== payload.length) {
-      throw new Error(
-        `frame ${n} declares ${depthBytes} depth and ${colorBytes} colour bytes, which is not the `
-        + `${payload.length - 16} it carries: refusing rather than sampling past the frame`,
-      );
-    }
-    if (depthBytes !== DEPTH_W * DEPTH_H * 2) {
-      throw new Error(
-        `frame ${n} carries ${depthBytes} depth bytes, not the ${DEPTH_W}x${DEPTH_H} grid `
-        + 'this divisor samples: refusing rather than sampling a shape nobody declared',
-      );
-    }
-    const w = Math.ceil(DEPTH_W / k);
-    const h = Math.ceil(DEPTH_H / k);
-    const out = Buffer.allocUnsafe(16 + w * h * 2 + colorBytes);
-    out.writeUInt32LE(w * h * 2, 0);
-    out.writeUInt32LE(colorBytes, 4);
-    // The capture timestamp, verbatim. A decimated frame is the same moment as the
-    // frame it came from, and a stamp rewritten here would put a second timeline
-    // into a format that has one.
-    payload.copy(out, 8, 8, 16);
-    for (let y = 0; y < h; y++) {
-      const src = 16 + y * k * DEPTH_W * 2;
-      const dst = 16 + y * w * 2;
-      for (let x = 0; x < w; x++) out.writeUInt16LE(payload.readUInt16LE(src + x * k * 2), dst + x * 2);
-    }
-    payload.copy(out, 16 + w * h * 2, 16 + depthBytes);
-    return out;
+    return decimatePayload(payload, depthDivisor, `frame ${n}`);
   }
 
   /**
