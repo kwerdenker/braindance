@@ -37,6 +37,11 @@
   html, body { height: 100%; margin: 0; background: #05070a; color: var(--ink);
     font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; }
   canvas { display: block; }
+  /* The frame edge. The stage is letterboxed to the export aspect so that what is
+     framed is what is exported, and on a black page against a black background that
+     boundary is invisible - which makes it a guide nobody can use. An outline rather
+     than a border because it must not enter the layout the letterbox just computed. */
+  #stage { outline: 1px solid rgba(120, 220, 210, 0.28); }
 
   #panel {
     position: fixed; top: 16px; left: 16px; width: 252px; max-height: calc(100vh - 32px);
@@ -379,7 +384,11 @@
         <label class="tchip">project<select id="tProject"><option value="">—</option></select>
           <button id="tProjectOpen" type="button">open</button><button id="tProjectSave" type="button">save</button></label>
         <span class="tchip">marks <b id="tMarkCount">0</b><button id="tMark" type="button">mark here</button></span>
-        <label class="tchip">export<select id="tExportSize"><option>1920x1080</option><option>1280x720</option><option>960x540</option><option>3840x2160</option></select>
+        <!-- Built from EXPORT_SIZES in main.js rather than written here. One list, so
+             a proof tool sweeping the sizes is sweeping the sizes the menu offers -
+             the step 6 hole was a check whose four arms were all 1.6 while the menu
+             was all 16:9, and neither list knew about the other. -->
+        <label class="tchip">export<select id="tExportSize"></select>
           <button id="tExport" type="button">render</button></label>
         <span class="tchip warn" id="tBehind"></span>
         <span class="tchip" id="tExportNote"></span>

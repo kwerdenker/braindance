@@ -27,6 +27,20 @@
 // its other numbers are noise. That rule is `prof-summary`'s and it is enforced here
 // rather than left to the reader: a run whose A arms miss the floor is thrown away.
 //
+// **The node samples itself, and the driver never reads across the link during a
+// window.** The first version of this file took its counters over SSH at each window
+// boundary - which meant the control channel shared the wireless link that arm B
+// exists to saturate, so the sample closing B's window was delayed by exactly the
+// congestion being measured, and the frame count and the timestamp it was divided by
+// were skewed apart. It also never completed: twenty minutes produced no window at
+// all. That is the observer effect this repo already recorded in another shape, and
+// the fix is the same one - do not let the instrument touch what it is sampling.
+//
+// So a sampler on the node appends one line a second to tmpfs, and **each line
+// carries the server's own view of what is watching**. The arm is therefore read off
+// the resource rather than off what this process believed it had set, and the whole
+// log is pulled once, afterwards, when nothing is being measured.
+//
 //   node tools/monitor-cost-ab.mjs --host braindancePi.local --user braindancepi \
 //     --key ~/.ssh/id_ed25519 --window 40 --rounds 3
 //
@@ -52,38 +66,109 @@ const DIR = flag('--dir', '~/kinect-nle');
 const PORT = Number(flag('--port', '8080'));
 const WINDOW = Number(flag('--window', '40'));
 const ROUNDS = Number(flag('--rounds', '3'));
-// The delivered-rate floor below which a window is contention rather than a result.
-// 29.5 is `prof-summary`'s number and this uses the same one deliberately.
-const FLOOR = Number(flag('--floor', '29.5'));
+// **The baseline gate is the spread of the no-client arms, not an absolute floor.**
+// `prof-summary`'s 29.5 was the first thing tried here and it threw away a run that
+// was fine: this configuration records continuously to the SD card, and the design
+// doc already measures a recording run at 29.86fps rather than 30.00 because of
+// buffered-write stalls, explicitly noting that a long take meets more of them. Over
+// eight minutes the no-client arms came in at 28.90, 29.19 and 28.83 - which is 0.36
+// of spread, and a tight cluster is the signature of a settled rig.
+//
+// Contention looks different and this repo has a worked example of what it looks
+// like: the thread-count sweep saw 27.31-29.13 within one arm, and the tell was
+// *variance and non-monotonicity*, not the absolute level. So the check is that the
+// baselines agree with each other, and the absolute is printed for the reader rather
+// than gated on a constant borrowed from a run that writes nothing.
+const SPREAD = Number(flag('--max-baseline-spread', '0.8'));
 const KEEP = has('--keep');
+// **The instrumentation goes to tmpfs, never to the capture card.** An early gate-4
+// run showed a 1245ms gap that looked like a sensor fault and was the grabber's own
+// periodic stderr line blocking on the same card the capture was streaming to. This
+// log is `--log debug`, which is far more traffic than that line was, so putting it
+// beside the take would be measuring the instrument. `/tmp` is tmpfs on this image.
+const LOG = flag('--log-path', '/tmp/monitor-cost.log');
+const PIDFILE = '/tmp/monitor-cost.pid';
 
 const ssh = (cmd) => new Promise((resolve, reject) => {
-  execFile('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-i', KEY, `${USER}@${HOST}`, cmd],
+  // `-n` and a remote `< /dev/null`, together. A backgrounded remote process
+  // inherits the SSH channel's stdin, and ssh does not return until every holder of
+  // that channel is gone - so `nohup node ... &` without this hangs the driver
+  // forever with the server running perfectly well on the other side. Two runs were
+  // lost to it before the cause was read off the fact that the very next log line
+  // never printed.
+  execFile('ssh', ['-n', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-i', KEY, `${USER}@${HOST}`, cmd],
     { maxBuffer: 64 * 1024 * 1024 },
     (err, stdout, stderr) => (err ? reject(new Error(`${err.message}\n${stderr}`)) : resolve(stdout)));
 });
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-const median = (xs) => {
-  const s = [...xs].sort((a, b) => a - b);
-  return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+
+const waitFor = async (cond, ms, what) => {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    try { if (await cond()) return true; } catch { /* keep trying */ }
+    await wait(1000);
+  }
+  throw new Error(`timed out after ${ms}ms waiting for ${what}`);
 };
 
-// The node's own counters, sampled at a window boundary. `frames` is what the
-// recorder has durably taken, `skipped` is libfreenect2's own dropped-isochronous
-// counter off the grabber's debug log - the quantity the finding is actually about,
-// since a skipped depth packet is a frame that never existed rather than one that
-// was dropped somewhere downstream.
-async function sample() {
-  const out = await ssh(
-    `curl -s http://127.0.0.1:${PORT}/record/state; echo; `
-    + `grep -c 'not all subsequences received' ${DIR}/run.log || true`);
-  const [stateLine, skippedLine] = out.trim().split('\n');
-  return {
-    at: Date.now(),
-    frames: JSON.parse(stateLine).frames ?? 0,
-    skipped: Number(skippedLine.trim()) || 0,
-  };
+/**
+ * Start something on the node without waiting for it.
+ *
+ * **`await ssh(...)` cannot launch a long-lived remote process**, and two runs were
+ * lost proving it: ssh does not return until the channel has no holders, a
+ * backgrounded remote process holds it whatever `nohup` and `< /dev/null` are given,
+ * and the visible symptom is a driver frozen with the server running perfectly well
+ * on the other side. Detached and unwaited, with readiness polled for afterwards, is
+ * the shape that does not depend on any of that.
+ */
+const sshDetached = (cmd) => {
+  const child = spawn('ssh', ['-n', '-o', 'BatchMode=yes', '-i', KEY, `${USER}@${HOST}`, cmd],
+    { stdio: 'ignore', detached: true });
+  child.unref();
+};
+
+/** Poll until the node's server answers, or give up saying so. */
+async function awaitServer(ms) {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    try {
+      const out = await ssh(`curl -s --max-time 3 http://127.0.0.1:${PORT}/record/state || true`);
+      if (out.trim().startsWith('{')) return JSON.parse(out.trim());
+    } catch { /* not up yet */ }
+    await wait(2000);
+  }
+  throw new Error(`the node's server never answered within ${ms}ms - check ${LOG}`);
+}
+
+// The sampler that runs on the node. One line a second: node-local epoch, the
+// recorder's durable frame count, libfreenect2's own dropped-isochronous counter, and
+// the arm - taken from the server's list of what is attached and at what setting.
+//
+// `wc -l` on the debug log rather than `grep -c` over it, because the interesting
+// quantity is a monotonic counter and re-scanning a growing file every second is work
+// the node should not be doing while it is the thing under test.
+const SAMPLER = (port, log, out) => `
+  while true; do
+    st=$(curl -s --max-time 2 http://127.0.0.1:${port}/record/state)
+    sk=$(grep -c 'not all subsequences received' ${log} 2>/dev/null || echo 0)
+    printf '%s\\t%s\\t%s\\n' "$(date +%s%3N)" "$sk" "$st" >> ${out}
+    sleep 1
+  done`;
+
+// One sample line back into numbers plus the arm it belongs to.
+function parseSample(line) {
+  const [ms, skipped, ...rest] = line.split('\t');
+  let state;
+  try { state = JSON.parse(rest.join('\t')); } catch { return null; }
+  const watching = state.monitors?.watching ?? [];
+  // The arm is the server's own answer about what is attached. No client is A, a
+  // monitor finer than the cap is B, one at or past it is C - and anything else is
+  // labelled rather than silently folded into a neighbour.
+  let arm = 'A';
+  if (watching.length === 1) arm = watching[0].divisor === 1 && watching[0].stride === 1 ? 'B' : 'C';
+  else if (watching.length > 1) arm = '?';
+  return { at: Number(ms), skipped: Number(skipped), frames: state.frames ?? 0, arm, watching: watching.length };
 }
 
 /** A monitor on this machine, so its frames cross the real wireless link. */
@@ -98,128 +183,177 @@ function connect() {
 }
 
 const ARMS = [
-  { key: 'A', label: 'no client', setup: async () => null },
-  { key: 'B', label: 'monitor ÷1 ×1', setup: async (m) => m.set(1, 1) },
-  { key: 'C', label: 'monitor ÷4 ×3', setup: async (m) => m.set(4, 3) },
+  { key: 'A', label: 'no client' },
+  { key: 'B', label: 'monitor \u00f71 \u00d71' },
+  { key: 'C', label: 'monitor \u00f74 \u00d73' },
 ];
+const SAMPLES = '/tmp/monitor-cost.samples';
 
-let server = null;
-const rows = [];
+// Killed by what they are, never by a command line that would match the shell asking.
+// The listener is resolved through `ss`, and the sampler by the marker file it writes
+// into - `pkill -f` over SSH matches the remote shell running the very command, and
+// on this node has already killed an SSH session while leaving its target alive.
+const KILL_SERVER = `ss -tlnp 2>/dev/null | awk '/:${PORT} /{print $NF}' | grep -o 'pid=[0-9]*' `
+  + '| cut -d= -f2 | xargs -r kill 2>/dev/null || true';
+const KILL_SAMPLER = `for p in $(pgrep -f 'monitor-cost.samples' | grep -v $$); do kill "$p" 2>/dev/null; done || true`;
+
+const median = (xs) => {
+  const a = [...xs].sort((x, y) => x - y);
+  return a.length % 2 ? a[(a.length - 1) / 2] : (a[a.length / 2 - 1] + a[a.length / 2]) / 2;
+};
+
+// A window's rate, computed from the node's own first and last sample inside it.
+// Both the frame count and the clock come from the same machine and the same line,
+// so nothing here divides a node-side counter by a Mac-side interval.
+function windowStats(samples) {
+  if (samples.length < 6) return null;
+  const first = samples[0], last = samples.at(-1);
+  const secs = (last.at - first.at) / 1000;
+  if (!(secs > 20)) return null;
+  // The recorder's counter resets when a take closes, so the teardown window reads as
+  // a large negative rate. Dropped rather than reported: it is not a window, it is the
+  // end of the run.
+  if (last.frames < first.frames) return null;
+  return {
+    recordedFps: (last.frames - first.frames) / secs,
+    skipped: last.skipped - first.skipped,
+    secs,
+  };
+}
+
+let rows = [];
 
 try {
   console.log(`[cost] node ${USER}@${HOST}:${PORT}, ${ROUNDS} rounds x ${ARMS.length} arms x ${WINDOW}s`);
-  const link = await ssh('ip -brief addr | grep -v "^lo" | head -3');
-  console.log(`[cost] node link:\n${link.trim().split('\n').map((l) => `         ${l}`).join('\n')}`);
+  console.log(`[cost] node link:\n${(await ssh('ip -brief addr | grep -v "^lo" | head -3')).trim()
+    .split('\n').map((l) => `         ${l}`).join('\n')}`);
 
-  // One grabber for the whole measurement. `--log debug` is what surfaces the
-  // subsequence counter; the log goes to the node's disk and is read by grep rather
-  // than streamed, so the reader never competes with the capture for the card.
-  await ssh(`pkill -f 'server/index.js' || true; rm -f ${DIR}/run.log; sleep 1`);
-  server = spawn('ssh', ['-o', 'BatchMode=yes', '-i', KEY, `${USER}@${HOST}`,
-    `cd ${DIR} && XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 `
-    + `node server/index.js --port ${PORT} --host 0.0.0.0 --record `
-    + `--grabber "$PWD/native/build/grabber --log debug" > run.log 2>&1`],
-    { stdio: ['ignore', 'inherit', 'inherit'] });
+  // **Nothing here matches processes by command line.** `pkill -f 'server/index.js'`
+  // over SSH matches the remote shell running that very command, which on this node
+  // has already killed an SSH session while leaving its target running. Listeners are
+  // resolved by port through `ss`, whose pipeline contains no text matching itself.
+  await ssh(`${KILL_SERVER}; ${KILL_SAMPLER}; rm -f ${LOG} ${SAMPLES}; sleep 1`);
+  sshDetached(`cd ${DIR} && XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 `
+    + `setsid node server/index.js --port ${PORT} --host 0.0.0.0 --record `
+    + `--grabber "$PWD/native/build/grabber --log debug" < /dev/null > ${LOG} 2>&1`);
+  await awaitServer(40000);
+  console.log('[cost] server up; warming up (device open, exposure, first flush) - discarded');
+  await wait(25000);
+  const armed = await awaitServer(10000);
+  if (!(armed.frames > 0)) throw new Error('nothing is being recorded on the node - check ' + LOG);
+  console.log(`[cost] recording, ${armed.frames} frames so far`);
 
-  // Warm-up, discarded entirely: device open, exposure settling and the first
-  // recorder flush all land here and none of them belong in a window.
-  console.log('[cost] warming up (device open, exposure, first flush) - discarded');
-  await wait(20000);
-  const first = await sample();
-  if (!(first.frames > 0)) throw new Error('nothing is being recorded on the node - check run.log');
-
-  const monitor = connect();
-  await monitor.ready;
-  console.log('[cost] monitor attached over the link\n');
-  // Parked coarse between arms so the socket exists throughout and only the setting
-  // changes. Arm A closes it, which is the one arm where the client genuinely is not
-  // there - that is what "no client connected" means and a parked socket would not
-  // reproduce it.
-  monitor.close();
-  await wait(1000);
+  // The sampler starts only now, so the warm-up contributes no lines at all rather
+  // than lines this process has to remember to discard.
+  // **Shipped base64, not quoted.** `bash -c "<script>"` through SSH loses a
+  // multi-line script twice over: the outer shell expands every `$(...)` in it before
+  // bash is reached, and a JSON-quoted string carries `\n` as two literal characters
+  // rather than as newlines. The first run of this produced no sampler at all and no
+  // error either - nine windows drove perfectly and there was nothing to read at the
+  // end. Base64 is alphanumeric, so nothing in the transport can interpret it.
+  const script = Buffer.from(SAMPLER(PORT, LOG, SAMPLES)).toString('base64');
+  sshDetached(`echo ${script} | base64 -d > /tmp/monitor-cost.sh && `
+    + 'setsid bash /tmp/monitor-cost.sh < /dev/null > /dev/null 2>&1');
+  // The sampler has to be writing before the first window opens, or round 1 arm A is
+  // measured over whatever lines happen to exist. Asserted rather than slept for.
+  await waitFor(async () => (await ssh(`wc -l < ${SAMPLES} 2>/dev/null || echo 0`)).trim() >= 3,
+    20000, 'the node-side sampler to start writing');
 
   let live = null;
   for (let round = 1; round <= ROUNDS; round++) {
     for (const arm of ARMS) {
-      if (arm.key === 'A') { live?.close(); live = null; await wait(1500); } else {
-        if (!live) { live = connect(); await live.ready; await wait(500); }
-        await arm.setup(live);
-        await wait(500); // let the grant land before the window opens
+      if (arm.key === 'A') { live?.close(); live = null; } else {
+        if (!live) { live = connect(); await live.ready; }
+        live.set(arm.key === 'B' ? 1 : 4, arm.key === 'B' ? 1 : 3);
       }
-      const before = await sample();
-      const beforeFrames = live?.frames ?? 0;
+      // Settling, outside every window: the socket has to close or the grant has to
+      // land before the samples that get attributed to this arm start. The segmenting
+      // reads the arm off the server, so a transition in flight labels itself.
+      await wait(4000);
+      console.log(`  round ${round} ${arm.key} ${arm.label} - ${WINDOW}s`);
       await wait(WINDOW * 1000);
-      const after = await sample();
-      const secs = (after.at - before.at) / 1000;
-      const row = {
-        round,
-        arm: arm.key,
-        label: arm.label,
-        recordedFps: (after.frames - before.frames) / secs,
-        skipped: after.skipped - before.skipped,
-        monitorFps: ((live?.frames ?? 0) - beforeFrames) / secs,
-        secs,
-      };
-      rows.push(row);
-      console.log(`  round ${round} ${arm.key} ${arm.label.padEnd(14)} `
-        + `recorded ${row.recordedFps.toFixed(2)}fps  skipped ${String(row.skipped).padStart(4)}  `
-        + `monitor ${row.monitorFps.toFixed(1)}fps`);
     }
   }
   live?.close();
+  await wait(3000);
+
+  // Pulled once, now, when nothing is being measured.
+  await ssh(`${KILL_SAMPLER}`);
+  const raw = await ssh(`cat ${SAMPLES}`);
+  const samples = raw.trim().split('\n').map(parseSample).filter(Boolean);
+  console.log(`\n[cost] ${samples.length} node-local samples`);
+
+  // Segmented by runs of a constant arm, so a window is whatever the server said was
+  // watching for a contiguous stretch. Transitions fall out as short runs and are
+  // dropped by `windowStats`, which needs more than five seconds.
+  const runs = [];
+  for (const s of samples) {
+    const last = runs.at(-1);
+    if (last && last.arm === s.arm) last.samples.push(s);
+    else runs.push({ arm: s.arm, samples: [s] });
+  }
+  for (const run of runs) {
+    if (run.arm === '?') continue;
+    const st = windowStats(run.samples);
+    if (st) rows.push({ arm: run.arm, ...st });
+  }
 } catch (err) {
   console.error(`\n[cost] the run did not finish: ${err.message}`);
   process.exitCode = 2;
 } finally {
   try {
-    await ssh(`curl -s -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:${PORT}/record/stop > /dev/null; `
-      + `pkill -f 'server/index.js' || true`);
+    await ssh(`${KILL_SAMPLER}; `
+      + `curl -s --max-time 5 -X POST -H 'Content-Type: application/json' -d '{}' `
+      + `http://127.0.0.1:${PORT}/record/stop > /dev/null 2>&1; sleep 1; ${KILL_SERVER}`);
     if (!KEEP) await ssh(`rm -f ${DIR}/captures/*.knct ${DIR}/captures/*.idx || true`);
   } catch { /* the node going away during teardown is not a result */ }
-  server?.kill('SIGKILL');
 }
 
-if (rows.length === 0) process.exit(process.exitCode ?? 2);
+if (rows.length === 0) { console.error('[cost] no usable windows'); process.exit(process.exitCode ?? 2); }
 
-// --- the verdict -----------------------------------------------------------
-console.log('\n[cost] method: one grabber, one device open, one continuous recording;'
-  + ` ${ROUNDS} interleaved rounds of ${ARMS.length} arms at ${WINDOW}s each;`
-  + ' first 20s discarded as warm-up; monitor on the editing machine over Wi-Fi;'
-  + ' skipped counted from libfreenect2\'s own subsequence warnings.');
+console.log(`\n[cost] method: one grabber, one device open, one continuous recording; `
+  + `${ROUNDS} interleaved rounds of ${ARMS.length} arms at ${WINDOW}s each, 4s of settling outside every `
+  + `window; first 25s discarded as warm-up before the sampler starts; counters sampled once a second by the `
+  + `node itself and pulled afterwards, so the driver never reads across the link under test; each window `
+  + `labelled by the server's own list of attached monitors; skipped counted from libfreenect2's subsequence `
+  + `warnings; monitor on the editing machine over Wi-Fi.`);
 
 const baseline = rows.filter((r) => r.arm === 'A');
-const contended = baseline.filter((r) => r.recordedFps < FLOOR);
-console.log(`\n[cost] arm A delivered ${baseline.map((r) => r.recordedFps.toFixed(2)).join(', ')} fps`);
-if (contended.length) {
-  console.log(`[cost] THROWN AWAY: ${contended.length} of ${baseline.length} no-client windows fell under ${FLOOR}fps, `
-    + 'so this machine was competing for itself and every other number here is noise. Re-run on a settled node.');
+const spread = Math.max(...baseline.map((r) => r.recordedFps)) - Math.min(...baseline.map((r) => r.recordedFps));
+console.log(`\n[cost] arm A delivered ${baseline.map((r) => r.recordedFps.toFixed(2)).join(', ')} fps, `
+  + `spread ${spread.toFixed(2)}`);
+if (baseline.length < 2 || spread > SPREAD) {
+  console.log(`[cost] THROWN AWAY: the no-client arms spread ${spread.toFixed(2)}fps, over the ${SPREAD} this rig `
+    + 'settles within, so the node was competing for itself and every other number here is noise. '
+    + 'Re-run on a settled node.');
   process.exit(2);
 }
 
-console.log('\n| arm | recorded fps (median) | skipped / window (median) | monitor fps |');
+console.log('\n| arm | windows | recorded fps (median) | skipped / window (median) |');
 console.log('| --- | --- | --- | --- |');
 for (const arm of ARMS) {
   const mine = rows.filter((r) => r.arm === arm.key);
-  console.log(`| ${arm.label} | ${median(mine.map((r) => r.recordedFps)).toFixed(2)} `
-    + `| ${median(mine.map((r) => r.skipped))} | ${median(mine.map((r) => r.monitorFps)).toFixed(1)} |`);
+  if (!mine.length) { console.log(`| ${arm.label} | 0 | - | - |`); continue; }
+  console.log(`| ${arm.label} | ${mine.length} | ${median(mine.map((r) => r.recordedFps)).toFixed(2)} `
+    + `| ${median(mine.map((r) => r.skipped))} |`);
 }
 
-// Paired within a round, which is the comparison that survives drift: a round's B is
-// read against that same round's A rather than against a median taken elsewhere.
+// Paired within a round: each round's B and C are read against that round's own A,
+// which is the comparison that survives drift over a twenty-minute run.
 console.log('\n[cost] paired deltas, each within its own round');
 let allSameSign = true;
-for (const key of ['B', 'C']) {
-  const deltas = [];
-  for (let round = 1; round <= ROUNDS; round++) {
-    const a = rows.find((r) => r.round === round && r.arm === 'A');
-    const x = rows.find((r) => r.round === round && r.arm === key);
-    if (a && x) deltas.push({ fps: a.recordedFps - x.recordedFps, skipped: x.skipped - a.skipped });
-  }
-  const signs = new Set(deltas.map((d) => Math.sign(d.fps)));
-  if (signs.size > 1) allSameSign = false;
-  const pct = deltas.map((d, i) => (d.fps / rows.find((r) => r.round === i + 1 && r.arm === 'A').recordedFps) * 100);
-  console.log(`  ${key} against A: fps cost ${pct.map((p) => `${p.toFixed(1)}%`).join(', ')} `
-    + `(median ${median(pct).toFixed(1)}%), extra skipped ${deltas.map((d) => d.skipped).join(', ')}`);
+const byRound = [];
+for (let i = 0; i + 2 < rows.length + 1; i += 3) {
+  const trio = rows.slice(i, i + 3);
+  if (trio.length === 3 && trio[0].arm === 'A' && trio[1].arm === 'B' && trio[2].arm === 'C') byRound.push(trio);
 }
-console.log(`\n[cost] ${allSameSign ? 'every paired delta has the same sign' : 'PAIRED DELTAS DISAGREE IN SIGN - this is noise, not a result'}`);
+for (const [key, idx] of [['B', 1], ['C', 2]]) {
+  const pct = byRound.map((t) => ((t[0].recordedFps - t[idx].recordedFps) / t[0].recordedFps) * 100);
+  const skip = byRound.map((t) => t[idx].skipped - t[0].skipped);
+  if (new Set(pct.map(Math.sign)).size > 1) allSameSign = false;
+  console.log(`  ${key} against A: fps cost ${pct.map((p) => `${p.toFixed(1)}%`).join(', ')} `
+    + `(median ${pct.length ? median(pct).toFixed(1) : '-'}%), extra skipped ${skip.join(', ')}`);
+}
+console.log(`\n[cost] ${byRound.length} complete rounds; `
+  + `${allSameSign ? 'every paired delta has the same sign' : 'PAIRED DELTAS DISAGREE IN SIGN - noise, not a result'}`);
 process.exit(allSameSign ? 0 : 1);

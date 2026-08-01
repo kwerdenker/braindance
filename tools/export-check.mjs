@@ -793,6 +793,17 @@ async function openPage(viewport, source = mutatedBody) {
   await page.waitForFunction(() => !!globalThis.__kinect);
   await page.waitForFunction(() => !!globalThis.__kinect.timeline.transport(), null, { timeout: 20000 });
   await page.evaluate(INSTALL);
+  // **Every page frames at the stage it was opened with.** The editor letterboxes
+  // itself to the export aspect now, so a viewport alone no longer decides the
+  // buffer: `STAGE` is 640x400 and 1.6, the menu's default is 16:9, and without this
+  // the fit made the buffer 640x360 while the export beside it wrote 640x400. Nine of
+  // nine frames then differed, and the row that caught it is the one comparing the
+  // editor's own image against what crossed the wire - which is exactly the row that
+  // should catch two sizes wearing one name.
+  //
+  // Optional because the cross-build arms load an older `main.js` deliberately, and
+  // that build has no letterbox to tell.
+  await page.evaluate(`globalThis.__kinect.setTargetSize?.(${JSON.stringify(`${viewport.width}x${viewport.height}`)})`);
   const gpu = await page.evaluate(() => {
     const gl = globalThis.__kinect.renderer.getContext();
     const dbg = gl.getExtension('WEBGL_debug_renderer_info');
@@ -840,9 +851,24 @@ async function onFreshPage(what, work, attempts = 3) {
   }
 }
 
-/** Resizes the stage and waits for the drawing buffer to actually become it. */
+/**
+ * Resizes the stage and waits for the drawing buffer to actually become it.
+ *
+ * **The target size goes with the viewport, because the editor is letterboxed now.**
+ * The stage is fitted to the aspect the export menu is set to, so what you frame is
+ * what you get - which means a viewport alone no longer decides the buffer. Asking
+ * for a 960x600 stage against a 16:9 target used to hang here for ten seconds
+ * waiting for a height of 600 that the fit had made 540. Saying both is the honest
+ * request: this tool's arms are deliberately not all one aspect, and that is the
+ * whole point of them.
+ */
 async function setStage(page, size) {
   await page.setViewportSize({ width: size.width, height: size.height + TIMELINE_H });
+  // Optional, because the cross-build arms load an older `main.js` on purpose and
+  // that build has no letterbox - its buffer is the viewport, which is exactly what
+  // the wait below already expects. Guarding here rather than branching at the call
+  // sites keeps one function that means "put the stage at this size" on both builds.
+  await page.evaluate(`globalThis.__kinect.setTargetSize?.(${JSON.stringify(`${size.width}x${size.height}`)})`);
   await page.waitForFunction(
     `(() => {
       const gl = globalThis.__kinect.renderer.getContext();

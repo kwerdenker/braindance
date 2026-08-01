@@ -762,11 +762,26 @@ const shooting = (run) => async (req, res, args, query) => {
  * `broadcastFrame` is about to act on.
  */
 function monitorsCostingTheTake() {
+  return attachedMonitors().filter(costsTheTake).map((m) => ({ divisor: m.divisor, stride: m.stride }));
+}
+
+/**
+ * Every monitor attached right now, with the setting it is actually being served at.
+ *
+ * Served rather than only counted because the interleaved measurement segments its
+ * windows by this: the node samples itself once a second and labels each sample with
+ * what the server says is watching, so an arm is identified by the resource rather
+ * than by what the driver on the other end of the link believed it had set. The
+ * driver cannot ask across the link during a window without competing with the arm
+ * it is measuring, which is the observer effect that made the first version of that
+ * harness unusable.
+ */
+function attachedMonitors() {
   const out = [];
   for (const ws of wss.clients) {
     if (ws.readyState !== ws.OPEN) continue;
     const m = monitors.get(ws);
-    if (m && costsTheTake(m)) out.push({ divisor: m.divisor, stride: m.stride });
+    if (m) out.push(m);
   }
   return out;
 }
@@ -980,6 +995,10 @@ const serveRecordState = async (req, res) => {
     monitors: {
       cap: RECORDING_CAP,
       attached: wss.clients.size,
+      // Each one's actual setting, which is what an interleaved measurement segments
+      // its windows by. A count alone cannot tell a full-rate monitor from a coarse
+      // one, and those are two different arms.
+      watching: attachedMonitors().map((m) => ({ divisor: m.divisor, stride: m.stride, loopback: m.loopback })),
       costingTheTake: costly,
       wouldRefuse: costly.length > 0,
     },

@@ -739,6 +739,37 @@ composer.addPass(new OutputPass());
 let renderScale = 1;
 
 // The drawing buffer an export has taken over, or null while the window owns it.
+/**
+ * Every size the export menu offers, grouped by the ratio it is.
+ *
+ * **This is the list, and the menu is built from it.** Step 6 recorded the failure
+ * that makes that worth insisting on: `export-check` swept four sizes that were all
+ * 1.6 while the menu offered four that were all 16:9, so a build referencing the
+ * width instead of the height was bit-identical on every arm the tool had and drew
+ * 11.1% too large on every size the product shipped. Two lists, neither aware of the
+ * other. There is now one, and the check reads it off the page.
+ *
+ * **Ratios are exact, and dimensions are even.** `yuv420p` subsamples chroma by two
+ * each way, so an odd dimension is not encodable and `server/export.js` refuses it
+ * rather than letting ffmpeg fail after the first frame is already written. 65:24
+ * only lands on both at once when the height is a multiple of 48, which is why its
+ * widths are 2730 and 3900 rather than anything rounder - a menu entry labelled
+ * 65:24 that is really 2.7062 would be a number this repo would find later and have
+ * to correct.
+ *
+ * Both 4K flavours are here because they are different shapes: UHD is 3840x2160 and
+ * 16:9, DCI is 4096x2160 and 1.896:1, and picking one would silently decide an
+ * aspect for anybody who asked for "4K".
+ */
+const EXPORT_SIZES = [
+  { ratio: '16:9', sizes: [[960, 540], [1280, 720], [1920, 1080], [3840, 2160]] },
+  { ratio: '1.90:1 DCI', sizes: [[2048, 1080], [4096, 2160]] },
+  { ratio: '4:3', sizes: [[1440, 1080], [2880, 2160]] },
+  { ratio: '1:1', sizes: [[1080, 1080], [2160, 2160]] },
+  { ratio: '65:24', sizes: [[2730, 1008], [3900, 1440]] },
+];
+const DEFAULT_EXPORT_SIZE = '1920x1080';
+
 // An export's output resolution is a setting rather than a property of whatever
 // window it was started from, and the look is resolution-relative precisely so
 // that can be true - but the buffer still has to actually become that size, and
@@ -747,6 +778,80 @@ let renderScale = 1;
 // ratio, so a preview left at 85% would otherwise deliver an 85% file under a
 // 1080p name.
 let outputSize = null;
+
+/**
+ * The aspect the editor frames at, which is the aspect the export will be.
+ *
+ * Before this the viewport took its aspect from the window, so what you framed was
+ * only what you got if your window happened to match - mild while every size in the
+ * menu was 16:9, and severe the moment one of them is 1:1 or 65:24. The stage is
+ * letterboxed to this instead, so the picture on screen is the picture in the file.
+ *
+ * **Vertical field is what stays fixed as this changes**, which is three.js's own
+ * behaviour for a perspective camera and is also the only choice consistent with the
+ * rest of the renderer: `pointSize` is pixels at 1080p and scales by
+ * `bufferHeight / 1080`, and every grade term is referred to the same height. Hold
+ * the vertical field and a point's apparent size against the world is invariant
+ * across every aspect and every output size, so a look holds. Hold the horizontal
+ * field instead and changing aspect moves the vertical field underneath a point size
+ * still scaling off height, so the density of points per screen height drifts and
+ * the grade quietly stops being the grade anybody tuned.
+ *
+ * So a wider ratio shows more to the sides and a squarer one shows less, and neither
+ * changes how big anything is.
+ */
+let targetSize = { w: 1920, h: 1080 };
+const targetAspect = () => targetSize.w / targetSize.h;
+
+// Where the letterboxed stage sits in the window. Set by `resize`, read by the
+// overlay so both canvases cover the same pixels.
+const stageBox = { left: 0, top: 0 };
+
+/** The menu, filled from `EXPORT_SIZES` and grouped by ratio. One list. */
+function buildExportMenu(select) {
+  if (!select) return select;
+  for (const group of EXPORT_SIZES) {
+    const optgroup = document.createElement('optgroup');
+    optgroup.label = group.ratio;
+    for (const [w, h] of group.sizes) {
+      const option = document.createElement('option');
+      option.value = `${w}x${h}`;
+      option.textContent = `${w}x${h}`;
+      optgroup.appendChild(option);
+    }
+    select.appendChild(optgroup);
+  }
+  select.value = DEFAULT_EXPORT_SIZE;
+  return select;
+}
+
+/**
+ * Adopt an output size: the editor reframes to it and the project remembers it.
+ *
+ * The size is document state rather than a control's position, because a
+ * composition and the shape it was composed for are one thing. A 65:24 shot reopened
+ * at 1920x1080 would be a different shot with the same keys, which is the class of
+ * silent reinterpretation the point-size rebase already taught this repo to refuse.
+ */
+function setTargetSize(text, { fromDocument = false } = {}) {
+  const [w, h] = String(text).split('x').map(Number);
+  if (!(w > 0 && h > 0)) return false;
+  targetSize = { w, h };
+  if (ui?.exportSize && ui.exportSize.value !== `${w}x${h}`) {
+    // A size a document names that the menu does not offer is still the size the
+    // clip was framed at, so it is added rather than snapped to a neighbour.
+    if (![...ui.exportSize.options].some((o) => o.value === `${w}x${h}`)) {
+      const option = document.createElement('option');
+      option.value = `${w}x${h}`;
+      option.textContent = `${w}x${h} (from the project)`;
+      ui.exportSize.appendChild(option);
+    }
+    ui.exportSize.value = `${w}x${h}`;
+  }
+  void fromDocument;
+  resize();
+  return true;
+}
 
 // Which camera the viewport draws. Navigation is switched off while the program
 // camera is on screen, because a drag would otherwise move the free camera
@@ -761,8 +866,21 @@ function resize() {
   // The stage is the window less whatever the timeline strip is taking, which is
   // nothing at all while it is hidden. Overlaying it on the image instead would
   // have cost nothing here and hidden the bottom of every frame being graded.
-  const width = outputSize ? outputSize.w : innerWidth;
-  const height = outputSize ? outputSize.h : Math.max(1, innerHeight - timelineEl.offsetHeight);
+  // The stage is the window less the timeline strip, and then the largest box of the
+  // target aspect that fits inside it. The letterbox is what makes the editor
+  // WYSIWYG: the camera's aspect is the canvas's aspect is the file's aspect, so
+  // nothing is stretched and nothing is cropped between here and the export.
+  //
+  // Fitting rather than masking, because the two directions are not symmetric. A
+  // target narrower than the window could be shown by masking the sides, but a target
+  // wider than the window sees *more* world than the window is showing, and no mask
+  // can draw what was never rendered.
+  const availW = innerWidth;
+  const availH = Math.max(1, innerHeight - timelineEl.offsetHeight);
+  const fitH = Math.max(1, Math.min(availH, Math.round(availW / targetAspect())));
+  const fitW = Math.max(1, Math.round(fitH * targetAspect()));
+  const width = outputSize ? outputSize.w : fitW;
+  const height = outputSize ? outputSize.h : fitH;
   // An export's aspect comes from the output it was asked for, not from the window
   // it was started in, or the file would be framed by whoever happened to be
   // watching.
@@ -779,6 +897,18 @@ function resize() {
   renderer.setSize(width, height, !outputSize);
   composer.setPixelRatio(ratio);
   composer.setSize(width, height);
+  // Where the letterboxed stage sits, published for the overlay to line up with.
+  // Written rather than each canvas working it out, so the two cannot drift apart by
+  // a scrollbar - and read by `drawChrome` rather than set on the chrome canvas from
+  // here, because that element is created hundreds of lines below and touching it in
+  // this function is a temporal-dead-zone throw on the very first `resize()`.
+  if (!outputSize) {
+    stageBox.left = Math.round((availW - fitW) / 2);
+    stageBox.top = Math.round((availH - fitH) / 2);
+    renderer.domElement.style.position = 'fixed';
+    renderer.domElement.style.left = `${stageBox.left}px`;
+    renderer.domElement.style.top = `${stageBox.top}px`;
+  }
   const buf = renderer.getDrawingBufferSize(new THREE.Vector2());
   // Bloom is the most expensive pass, so it runs at half resolution - and the
   // resolution it is half of is the 1080p reference rather than the drawing
@@ -1769,6 +1899,11 @@ function serialiseProject() {
     // Composition per the preset table - it is never in a preset and it is part of
     // what the clip is - so it is document state and it is undoable.
     outputFps: timeline ? timeline.outputFps : 30,
+    // The shape the clip was framed for. A composition and its aspect are one thing:
+    // reopening a 65:24 shot at 1920x1080 would be a different shot wearing the same
+    // keys, which is the silent reinterpretation the point-size rebase already taught
+    // this repo to refuse rather than absorb.
+    outputSize: `${targetSize.w}x${targetSize.h}`,
     params: params.values(),
     tracks: Object.fromEntries([...tracks].map(([name, track]) => [name, track.serialise()])),
     retime: retime.serialise(),
@@ -1845,6 +1980,15 @@ function restoreProject(project) {
   if (!Number.isFinite(project.outputFps) || project.outputFps <= 0) {
     throw new Error(`outputFps is ${JSON.stringify(project.outputFps)}: it has to be a positive number`);
   }
+  // Checked here rather than shrugged off, because a size that does not parse would
+  // otherwise leave the editor framing at whatever the last clip was and quietly
+  // export a different shape from the one on screen. Absent is allowed and means the
+  // 1920x1080 this field was introduced beside - the version gate above is what makes
+  // that reading safe, since nothing older than it can reach here.
+  if (project.outputSize !== undefined && !/^[1-9][0-9]*x[1-9][0-9]*$/.test(String(project.outputSize))) {
+    throw new Error(`outputSize is ${JSON.stringify(project.outputSize)}: it reads as WIDTHxHEIGHT`);
+  }
+  setTargetSize(project.outputSize ?? DEFAULT_EXPORT_SIZE, { fromDocument: true });
   if (!project.params || typeof project.params !== 'object') {
     throw new Error('a project carries a params object');
   }
@@ -3894,7 +4038,7 @@ const ui = {
   camKey: document.getElementById('camKey'),
   camClear: document.getElementById('camClear'),
   camView: document.getElementById('camView'),
-  exportSize: document.getElementById('tExportSize'),
+  exportSize: buildExportMenu(document.getElementById('tExportSize')),
   exportGo: document.getElementById('tExport'),
   exportNote: document.getElementById('tExportNote'),
   marks: document.getElementById('tMarks'),
@@ -4965,6 +5109,10 @@ function drawChrome() {
   }
   chromeCanvas.style.width = `${w}px`;
   chromeCanvas.style.height = `${h}px`;
+  // Onto the letterboxed stage rather than the window's corner, so the path, the
+  // nodes and the frustum land on the pixels they annotate.
+  chromeCanvas.style.left = `${stageBox.left}px`;
+  chromeCanvas.style.top = `${stageBox.top}px`;
   chromeCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
   chromeCtx.clearRect(0, 0, w, h);
 
@@ -5188,6 +5336,11 @@ ui.exportGo.addEventListener('click', async () => {
 });
 
 // ------------------------------------------------- the library controls in the editor
+
+// Changing the export size reframes the editor, because the point of letterboxing
+// the stage is that the two are never allowed to disagree.
+ui.exportSize.addEventListener('change', () => setTargetSize(ui.exportSize.value));
+setTargetSize(DEFAULT_EXPORT_SIZE, { fromDocument: true });
 
 ui.mark.addEventListener('click', () => { markHere().catch(showTimelineError); });
 
@@ -5559,6 +5712,22 @@ if (REQUESTED_TAKE) {
 globalThis.__kinect = {
   renderer, composer, scene, freeCamera, programCamera, controls, uniforms, material,
   bloom, afterimage, grade, geometry, resetAccumulators, renderProgramFrame,
+
+  // The sizes the export menu offers, and the way to adopt one.
+  //
+  // **Exposed so a proof tool sweeps the sizes the product ships rather than a list
+  // of its own.** That is the step 6 hole written as an interface: `export-check` had
+  // four arms that were all 1.6 while this menu had four that were all 16:9, so a
+  // build referring to the width was bit-identical on every arm and 11.1% wrong on
+  // every size a user could pick. A tool reading this cannot drift from the menu,
+  // because it is the menu.
+  //
+  // `setTargetSize` is here for the same reason the editor letterboxes: the stage's
+  // shape is the export's shape now, so a tool asking for a stage of some size has to
+  // say which shape it means rather than assuming the window decides.
+  exportSizes: () => EXPORT_SIZES.flatMap((g) => g.sizes.map(([w, h]) => ({ ratio: g.ratio, w, h }))),
+  setTargetSize: (text) => setTargetSize(text, { fromDocument: true }),
+  targetSize: () => ({ ...targetSize }),
 
   // The registry and the two bulk writes a user gesture performs. All three refuse
   // while a frame is being evaluated, which now means exactly what it says: the
