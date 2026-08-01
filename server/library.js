@@ -25,7 +25,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { readdir, readFile, writeFile, appendFile, stat, unlink, rename, mkdir, statfs } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import { basename, join, resolve } from 'node:path';
 import { cachedIndex, forgetCapture, indexPathFor, captureIdFor, readHelloOnce } from './capture.js';
 
@@ -384,6 +384,21 @@ export function durationLabel(sec) {
  * node's manifest never lands in the library at all - and never lands under a hash
  * that would then reconcile against a project file.
  */
+/**
+ * What each download in flight has moved so far, keyed by take id.
+ *
+ * A take is gigabytes and the link is a room's wifi, so this is minutes of work
+ * behind a single POST that answers when it is finished. Without this the gallery
+ * can only print the word "downloading" for four minutes, which is the same thing
+ * it would print if the node had silently stopped sending - and an operator who
+ * cannot tell those apart restarts a transfer that was working.
+ *
+ * The count comes off the stream rather than off `stat` of the `.part` file: the
+ * write is buffered, so the file lags what has actually arrived, and the verifying
+ * phase has no file growth at all while still taking real time on a 2.5 GB take.
+ */
+export const downloadsInFlight = new Map();
+
 export async function downloadTake(node, take, dir) {
   if (!VALID_ID.test(take.id)) throw new Error(`the node offered an unusable id: ${take.id}`);
   // A filename is not an identity, and this is where that stops being a slogan.
@@ -400,20 +415,40 @@ export async function downloadTake(node, take, dir) {
   const temp = `${target}.part`;
   const res = await fetch(`${node.url}/capture/${encodeURIComponent(take.id)}/file`);
   if (!res.ok) throw new Error(`downloading ${take.id}: ${res.status} ${res.statusText}`);
-  await pipeline(Readable.fromWeb(res.body), createWriteStream(temp));
 
-  // The same streaming scan step 2 built, against the file that actually landed.
-  // Re-deriving the hash from the node's answer would only be restating it.
-  const got = await hashFile(temp);
-  if (got !== take.hash) {
-    await unlink(temp).catch(() => {});
-    throw new Error(
-      `${take.id} arrived as ${got}, not the ${take.hash} the node advertised: `
-      + 'discarded rather than filed under a hash it does not have',
-    );
+  // Registered only once the node has actually answered, so a transfer that was
+  // refused never appears as one that stalled at zero.
+  const progress = { id: take.id, phase: 'transferring', received: 0, bytes: take.bytes, startedAt: Date.now() };
+  downloadsInFlight.set(take.id, progress);
+  try {
+    const counted = new Transform({
+      transform(chunk, _enc, done) {
+        progress.received += chunk.length;
+        done(null, chunk);
+      },
+    });
+    await pipeline(Readable.fromWeb(res.body), counted, createWriteStream(temp));
+
+    // The same streaming scan step 2 built, against the file that actually landed.
+    // Re-deriving the hash from the node's answer would only be restating it.
+    // Named as its own phase because it is not instant at this size and a progress
+    // readout stuck at 100% is the same silence this was built to remove.
+    progress.phase = 'verifying';
+    const got = await hashFile(temp);
+    if (got !== take.hash) {
+      await unlink(temp).catch(() => {});
+      throw new Error(
+        `${take.id} arrived as ${got}, not the ${take.hash} the node advertised: `
+        + 'discarded rather than filed under a hash it does not have',
+      );
+    }
+    await rename(temp, target);
+    forgetCapture(target);
+  } finally {
+    // In a `finally` because a failed download must not leave the gallery showing a
+    // transfer that is no longer happening - and the hash mismatch above throws.
+    downloadsInFlight.delete(take.id);
   }
-  await rename(temp, target);
-  forgetCapture(target);
 
   // Marks come with the take. They are outside the hash by design - mutable, and
   // editable from either machine - so they are merged rather than compared, and

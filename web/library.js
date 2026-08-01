@@ -40,7 +40,18 @@ const noteEl = document.getElementById('note');
 
 const mmss = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.round(s % 60)).padStart(2, '0')}`;
 const gb = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : `${(b / 1e6).toFixed(0)} MB`);
-const stamp = (ms) => new Date(ms).toISOString().slice(0, 16).replace('T', ' ');
+// The wall clock the take was shot on, in the zone of whoever is reading the
+// gallery. `toISOString` was the first spelling of this and it is UTC by
+// definition, so every tile in a CEST room read two hours early - a take shot at
+// 03:40 filed as 01:40, which is the one field an operator uses to tell this
+// afternoon's takes from last night's. Built from the local getters rather than
+// `toLocaleString` so the shape stays the sortable `YYYY-MM-DD HH:MM` the tiles are
+// laid out for, whatever locale the browser is set to.
+const stamp = (ms) => {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+};
 
 let library = { takes: [], node: null, here: '?' };
 let filter = 'all';
@@ -225,7 +236,12 @@ function buildTile(take) {
     button('Open', 'primary', () => {}, true, why);
     button('Delete', 'danger', () => {}, true, why);
   } else if (take.state === 'remote') {
-    button('Download', 'primary', () => run(tile, `downloading ${take.id}`, () => post(`/library/download/${take.id}`)));
+    button('Download', 'primary', () => run(
+      tile,
+      `downloading ${take.id} — asking ${library.node?.name ?? 'the node'} for ${gb(take.bytes)}`,
+      () => post(`/library/download/${take.id}`),
+      () => downloadProgress(take.id),
+    ));
   } else {
     // A take that cannot be opened says so on the button rather than throwing when
     // pressed. Two frames is the floor for a pair source and a hello is what
@@ -321,9 +337,26 @@ function buildTile(take) {
   return tile;
 }
 
-async function run(tile, message, action) {
+/**
+ * Runs a tile's action with its buttons held down, and reports on it while it runs.
+ *
+ * `watch` is a function returning the sentence to show right now, or null for
+ * nothing new to say. It exists for the download, which is gigabytes over a room's
+ * wifi behind one request that answers when it is done - so without it this printed
+ * a fixed word for four minutes, indistinguishable from a transfer that had died.
+ */
+async function run(tile, message, action, watch = null) {
   for (const b of tile.querySelectorAll('.act')) b.disabled = true;
   say(message);
+  // Polled rather than streamed: the progress is a number that changes slowly and a
+  // second connection to carry it would be a second thing that can fail while the
+  // transfer it describes is fine.
+  const ticking = watch ? setInterval(async () => {
+    try {
+      const line = await watch();
+      if (line) say(line);
+    } catch { /* a poll that failed says nothing rather than replacing the state with an error */ }
+  }, 700) : null;
   try {
     await action();
     say('');
@@ -331,7 +364,24 @@ async function run(tile, message, action) {
   } catch (err) {
     say(err.message);
     for (const b of tile.querySelectorAll('.act')) b.disabled = false;
+  } finally {
+    if (ticking) clearInterval(ticking);
   }
+}
+
+/** The sentence for a download in flight, or null once the server stops listing it. */
+async function downloadProgress(id) {
+  const res = await fetch('/library/downloads');
+  const d = (await res.json()).downloading?.find((x) => x.id === id);
+  if (!d) return null;
+  if (d.phase === 'verifying') return `verifying ${id} — hashing ${gb(d.bytes)} to check the copy against the node`;
+  const pct = d.bytes ? Math.min(100, (d.received / d.bytes) * 100) : 0;
+  const rate = d.bytesPerSec / 1e6;
+  // Remaining time from the average rate so far, which is the only rate that does
+  // not swing by a factor of three between two polls of a wifi link.
+  const left = d.bytesPerSec > 0 ? (d.bytes - d.received) / d.bytesPerSec : 0;
+  return `downloading ${id} — ${pct.toFixed(0)}% of ${gb(d.bytes)} at ${rate.toFixed(1)} MB/s, `
+    + `about ${left < 90 ? `${Math.ceil(left)}s` : `${Math.ceil(left / 60)}m`} left`;
 }
 
 // ------------------------------------------------------------------- the confirms

@@ -2365,6 +2365,16 @@ function showMonitor(state) {
   monDivisorEl.nextElementSibling.value = String(state.divisor);
   monStrideEl.nextElementSibling.value = String(state.stride);
 
+  // The stride reads as a position, so it needs a real ordinal rather than a "th"
+  // glued on - the slider runs to 30 and three of the values in that range would
+  // otherwise read "2th", "3th", "21th". The teens are the exception the naive rule
+  // gets wrong in the other direction.
+  const ordinal = (n) => {
+    const suffix = n % 100 >= 11 && n % 100 <= 13 ? 'th'
+      : { 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] ?? 'th';
+    return `${n}${suffix}`;
+  };
+
   // A frame is 486KB at full rate; the depth block scales with the divisor squared
   // and the colour block does not move at all, which is why the saving flattens.
   // Stated from the grid rather than from a table, so the number cannot drift from
@@ -2372,7 +2382,7 @@ function showMonitor(state) {
   const depthKB = Math.ceil(512 / state.divisor) * Math.ceil(424 / state.divisor) * 2 / 1000;
   const perFrame = depthKB + 52;
   const rate = perFrame * (30 / state.stride) / 1000;
-  const parts = [`depth ÷${state.divisor}, every ${state.stride === 1 ? 'frame' : `${state.stride}th frame`}`,
+  const parts = [`depth ÷${state.divisor}, every ${state.stride === 1 ? 'frame' : `${ordinal(state.stride)} frame`}`,
     `about ${perFrame.toFixed(0)}KB a frame, ${rate.toFixed(1)} MB/s`];
   if (state.refused) parts.push(`refused: ${state.refused}`);
   if (state.wouldRefuseRecording) {
@@ -2400,7 +2410,12 @@ function connect() {
       const msg = JSON.parse(event.data);
 
       if (msg.status) {
-        sensorState = { live: '', starting: 'sensor starting…', lost: 'sensor lost — restarting' }[msg.status] ?? msg.status;
+        sensorState = {
+          live: '', starting: 'sensor starting…', lost: 'sensor lost — restarting',
+          // Not a fault to wait out, so it does not say "restarting": this is the
+          // editing station, and the footage is on the node.
+          absent: 'no sensor on this machine',
+        }[msg.status] ?? msg.status;
         if (msg.status !== 'live') fps = 0;
         setStatus();
         return;
@@ -4116,6 +4131,32 @@ const ui = {
   toLibrary: document.getElementById('toLibrary'),
 };
 
+// The chips strip hides its scrollbar so the bar keeps its 51px and the lanes stay
+// where a dragged key expects them - which also hid the only evidence that anything
+// was off its right edge. This puts a fade there when there is, and takes it away
+// when there is not, so the strip says whether it has more.
+//
+// Watched two ways because it overflows for two reasons. The window getting narrower
+// changes the strip's own box, which is the ResizeObserver; the readouts inside it
+// getting longer - the pre-roll grows on a slow ramp, an export note arrives - does
+// not, which is the MutationObserver. Either one alone leaves a state where the fade
+// is wrong, and a fade that is wrong is worse than none.
+{
+  const chips = document.querySelector('.tchips');
+  const sayMore = () => chips.classList.toggle('more', chips.scrollWidth > chips.clientWidth + 1);
+  new ResizeObserver(sayMore).observe(chips);
+  new MutationObserver(sayMore).observe(chips, { subtree: true, childList: true, characterData: true });
+  sayMore();
+}
+
+// The export note is pinned beside the render button and truncates rather than
+// pushing the controls off, so the whole sentence has to stay reachable somewhere -
+// a failure message is exactly the one that overflows.
+const sayExport = (text) => {
+  ui.exportNote.textContent = text;
+  ui.exportNote.title = text;
+};
+
 let timeline = null;
 
 const timecode = (sec) => {
@@ -5375,19 +5416,19 @@ ui.exportGo.addEventListener('click', async () => {
   if (exporting) return;
   const [width, height] = ui.exportSize.value.split('x').map(Number);
   ui.exportGo.disabled = true;
-  ui.exportNote.textContent = `export ${width}x${height} starting`;
+  sayExport(`export ${width}x${height} starting`);
   try {
     const done = await exportClip({
       width,
       height,
       onProgress: (n, total) => {
-        ui.exportNote.textContent = `export ${Math.round((n / total) * 100)}% · frame ${n}/${total}`;
+        sayExport(`export ${Math.round((n / total) * 100)}% · frame ${n}/${total}`);
       },
     });
-    ui.exportNote.textContent = `${done.output} · ${done.frames} frames · ${(done.bytes / 1e6).toFixed(1)} MB `
-      + `in ${(done.elapsedMs / 1000).toFixed(1)}s`;
+    sayExport(`${done.output} · ${done.frames} frames · ${(done.bytes / 1e6).toFixed(1)} MB `
+      + `in ${(done.elapsedMs / 1000).toFixed(1)}s`);
   } catch (err) {
-    ui.exportNote.textContent = `export failed: ${err.message}`;
+    sayExport(`export failed: ${err.message}`);
     showTimelineError(err);
   } finally {
     ui.exportGo.disabled = false;

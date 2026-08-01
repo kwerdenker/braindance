@@ -12,8 +12,8 @@ import { MessageParser, encodeMessage, TYPE_HELLO, TYPE_FRAME } from './protocol
 import { openCapture, withCapture, captureIdFor, openCaptureCount, decimatePayload } from './capture.js';
 import { handleExportSocket, MAX_FRAME_BYTES } from './export.js';
 import {
-  VALID_ID, DocumentStore, NodeLink, appendMarks, downloadTake, hashFile, markWriteCount,
-  readMarkLog, readMarks, reconcile, remaining, removeTake, resolveMarks, scanTakes,
+  VALID_ID, DocumentStore, NodeLink, appendMarks, downloadTake, downloadsInFlight, hashFile,
+  markWriteCount, readMarkLog, readMarks, reconcile, remaining, removeTake, resolveMarks, scanTakes,
 } from './library.js';
 import { Recorder } from './recorder.js';
 import { JobStore } from './jobs.js';
@@ -976,6 +976,27 @@ const serveJobRequeue = async (req, res, args) => {
   }
 };
 const serveRemaining = async (req, res) => sendJson(res, await remaining(CAPTURES_DIR, recordingRate()));
+
+/**
+ * The downloads currently moving bytes, so a transfer that takes minutes reads as
+ * one rather than as a page that has stopped responding.
+ *
+ * The rate is derived here rather than stored, because the only honest rate is over
+ * the whole transfer so far - a rate sampled between two polls of a wifi link swings
+ * by a factor of three and reads as a fault.
+ */
+const serveDownloads = (req, res) => sendJson(res, {
+  downloading: [...downloadsInFlight.values()].map((d) => {
+    const elapsed = Math.max(1, Date.now() - d.startedAt) / 1000;
+    return {
+      id: d.id,
+      phase: d.phase,
+      received: d.received,
+      bytes: d.bytes,
+      bytesPerSec: d.received / elapsed,
+    };
+  }),
+});
 const serveDescriptors = (req, res) => sendJson(res, { open: openCaptureCount(), real: realDescriptorCount() });
 /**
  * What the recorder is doing, and what the monitors attached to it would cost.
@@ -1049,6 +1070,7 @@ const ROUTES = [
   { path: '/library/takes', pattern: /^\/library\/takes$/, read: serveLocalTakes },
   { path: '/library/all', pattern: /^\/library\/all$/, read: serveLibrary },
   { path: '/library/remaining', pattern: /^\/library\/remaining$/, read: serveRemaining },
+  { path: '/library/downloads', pattern: /^\/library\/downloads$/, read: serveDownloads },
   // Read by the proof tool, because the descriptor bound this build introduces has
   // to be measurable rather than asserted in a comment.
   //
@@ -1504,10 +1526,17 @@ const recorder = new Recorder({
   // ambiguity that reconciling by content hash exists to remove. The record button
   // on the viewer disables itself off this, because it is unconditional otherwise
   // and this is one click away in the setup this repo documents.
-  cannotRecord: REPLAY
+  // Two ways to have nothing worth recording, and the second one is why this is a
+  // function. A machine with no sensor is not a configuration, it is a discovery -
+  // the editing station the library is documented to run on looks identical to a
+  // capture node until a grabber has failed to find a device a few times over.
+  cannotRecord: () => (REPLAY
     ? `this server is replaying ${basename(REPLAY)} rather than reading a sensor, and a replay loops `
       + '- its frames repeat their own timestamps, so what it wrote would not be a take'
-    : null,
+    : sensorState === 'absent'
+      ? 'no Kinect v2 on this machine, so there is nothing here to record - this is the editing '
+        + 'side of the link, and takes are shot on the node'
+      : null),
   // The rate the library reports, so the refusal to start a take and the
   // remaining-time readout beside it are dividing free space by the same number.
   rateOf: () => recordingRate(),
@@ -1557,6 +1586,12 @@ setInterval(() => {
 // so a dead grabber is an expected condition, not a fatal one. Respawn it.
 const RESTART_DELAYS = [1000, 2000, 4000, 8000];
 
+// How long to leave between attempts once the conclusion is that there is no sensor
+// on this machine at all. Long, because the enumeration is never going to find one
+// and the grabber's own stderr goes straight to this console - but not never, so a
+// sensor plugged in later is picked up without anyone restarting the server.
+const ABSENT_DELAY = 30000;
+
 function startLive() {
   const bin = GRABBER_BIN ? resolve(GRABBER_BIN) : join(ROOT, 'native/build/grabber');
   const buildArgs = () => {
@@ -1570,6 +1605,10 @@ function startLive() {
   let attempt = 0;
   let shuttingDown = false;
   let restarting = false;
+  // Whether a sensor has ever handshaken with this process. Monotonic on purpose:
+  // it separates "the link dropped" from "there is nothing plugged in here", which
+  // are the same event at the exit handler and want opposite answers.
+  let everLive = false;
 
   const spawnGrabber = () => {
     const grabberArgs = buildArgs();
@@ -1599,6 +1638,7 @@ function startLive() {
           handleMessage(msg);
           if (msg.type === TYPE_HELLO) {
             attempt = 0; // a clean handshake means the link is healthy again
+            everLive = true;
             setSensorState('live');
           }
         }
@@ -1625,10 +1665,26 @@ function startLive() {
         setTimeout(spawnGrabber, 250);
         return;
       }
-      setSensorState('lost');
-      const delay = RESTART_DELAYS[Math.min(attempt, RESTART_DELAYS.length - 1)];
+      // A grabber that has *never* handshaken is not the flaky USB link this backoff
+      // was written for - it is a machine with no sensor on it, which is exactly what
+      // the editing station running this same library is. Told apart, because the two
+      // want opposite answers: a sensor that worked and dropped keeps the short
+      // backoff, since that is the bus drop the design expects to ride out, while one
+      // that has never appeared is reported absent so `/record/state` stops claiming a
+      // take could start here and the record button says why. The full backoff table
+      // is spent first rather than concluding on the first exit, because a node whose
+      // sensor is slow to enumerate at boot is the same shape for the first few
+      // seconds and must not be written off as an editing machine.
+      const absent = !everLive && attempt >= RESTART_DELAYS.length;
+      setSensorState(absent ? 'absent' : 'lost');
+      const delay = absent ? ABSENT_DELAY : RESTART_DELAYS[Math.min(attempt, RESTART_DELAYS.length - 1)];
       attempt++;
-      console.log(`[server] restarting grabber in ${delay}ms (attempt ${attempt})`);
+      // Once absent, said once. The alternative is this line and libfreenect2's
+      // enumeration every few seconds for as long as the editing station is up.
+      if (!absent) console.log(`[server] restarting grabber in ${delay}ms (attempt ${attempt})`);
+      else if (attempt === RESTART_DELAYS.length + 1) {
+        console.log(`[server] no sensor found in ${attempt} attempts - looking again every ${ABSENT_DELAY / 1000}s`);
+      }
       setTimeout(spawnGrabber, delay);
     });
   };

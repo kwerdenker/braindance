@@ -406,7 +406,7 @@ const MUTATIONS = {
   // A replay server records. The frames come off a file on a loop, so their stamps
   // repeat, and one take is one continuous stream with monotonic stamps.
   'replay-can-record': { file: 'server/index.js', edits: [[
-    '  cannotRecord: REPLAY\n    ?', '  cannotRecord: false\n    ?',
+    '  cannotRecord: () => (REPLAY\n    ?', '  cannotRecord: () => (false\n    ?',
   ]] },
   // The demonstrated failure, whole: recording a replay is allowed *and* the replay
   // hands `handleMessage` a payload with no framing. One open take then turns every
@@ -421,7 +421,7 @@ const MUTATIONS = {
   // framing is load-bearing rather than decorative: with the door open, it is the
   // only thing between the replay loop and a throw per frame.
   'replay-records-a-bare-payload': { file: 'server/index.js', edits: [
-    ['  cannotRecord: REPLAY\n    ?', '  cannotRecord: false\n    ?'],
+    ['  cannotRecord: () => (REPLAY\n    ?', '  cannotRecord: () => (false\n    ?'],
     ['        handleMessage({ type: TYPE_FRAME, payload, raw: encodeMessage(TYPE_FRAME, payload) });',
       '        handleMessage({ type: TYPE_FRAME, payload });'],
   ] },

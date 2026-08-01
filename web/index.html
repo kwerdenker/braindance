@@ -168,6 +168,17 @@
   .tchips { margin-left: auto; display: flex; gap: 8px; flex-wrap: nowrap; align-items: center;
     min-width: 0; overflow-x: auto; scrollbar-width: none; }
   .tchips::-webkit-scrollbar { display: none; }
+  /* The strip has to say when it has more, because hiding the scrollbar hid the only
+     evidence that anything was off the right edge. A fade rather than a scrollbar so
+     the bar keeps its 51px and the lanes stay where a dragged key expects them. */
+  .tchips.more { mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
+
+  /* The pinned end of the bar: never scrolled, so the render control is on screen at
+     every window width. It gives ground before the scroller does - the note truncates
+     rather than squeezing the chips that carry controls. */
+  .tpin { flex: none; display: flex; gap: 8px; align-items: center; max-width: 46%; }
+  .tpin #tExportNote { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tpin #tExportNote:empty { display: none; }
   .tchip {
     flex: none;
     display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px;
@@ -384,15 +395,24 @@
         <label class="tchip">project<select id="tProject"><option value="">—</option></select>
           <button id="tProjectOpen" type="button">open</button><button id="tProjectSave" type="button">save</button></label>
         <span class="tchip">marks <b id="tMarkCount">0</b><button id="tMark" type="button">mark here</button></span>
-        <!-- Built from EXPORT_SIZES in main.js rather than written here. One list, so
-             a proof tool sweeping the sizes is sweeping the sizes the menu offers -
-             the step 6 hole was a check whose four arms were all 1.6 while the menu
-             was all 16:9, and neither list knew about the other. -->
+        <span class="tchip warn" id="tBehind"></span>
+        <span class="tchip" id="tNote"></span>
+      </div>
+      <!-- Outside the scroller on purpose. This strip overflows at 1512px - the width
+           of the laptop this is documented to run on - and its scrollbar is hidden so
+           the bar cannot grow and push the lanes out of the bottom. Export was the last
+           chip in it, which put the render button 224px past the right edge with
+           nothing on screen to say it existed: the one control that produces the
+           deliverable, unreachable on the machine the tool ships for. Pinned here it is
+           on screen at every width, and everything else is what scrolls.
+           The select is built from EXPORT_SIZES in main.js rather than written here, so
+           a proof tool sweeping the sizes sweeps the sizes the menu offers - the step 6
+           hole was a check whose four arms were all 1.6 while the menu was all 16:9,
+           and neither list knew about the other. -->
+      <div class="tpin">
+        <span class="tchip" id="tExportNote"></span>
         <label class="tchip">export<select id="tExportSize"></select>
           <button id="tExport" type="button">render</button></label>
-        <span class="tchip warn" id="tBehind"></span>
-        <span class="tchip" id="tExportNote"></span>
-        <span class="tchip" id="tNote"></span>
       </div>
     </div>
     <div class="tlanes">

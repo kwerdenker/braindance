@@ -135,13 +135,17 @@ async function flushMarks(take) {
 }
 
 export class Recorder {
-  constructor({ dir, onChange = () => {}, rateOf = () => undefined, cannotRecord = null }) {
+  constructor({ dir, onChange = () => {}, rateOf = () => undefined, cannotRecord = () => null }) {
     this.dir = dir;
     this.onChange = onChange;
     this.rateOf = rateOf;
     // Why this server cannot record at all, as a sentence for the operator, or null
-    // for one that can. A replay server is the case: it has no sensor, and the
-    // frames it emits are a file read on a loop.
+    // for one that can. Asked each time rather than fixed at construction, for the
+    // same reason `rateOf` is: one of the two answers is not known at startup. A
+    // replay server is decided by its flag, but a machine with no sensor on it is
+    // only discovered by a grabber failing to find one, which happens seconds later
+    // - and a constant captured before that would have the editing station claim it
+    // could roll.
     this.cannotRecord = cannotRecord;
     // Armed and recording are different states and the split is why. A restart
     // closes the take while the operator's intention to be recording is unchanged,
@@ -166,7 +170,7 @@ export class Recorder {
       // so; the alternative was an unbounded queue and a kill.
       dropped: take?.dropped ?? 0,
       buffered: take ? take.stream.writableLength : 0,
-      cannotRecord: this.cannotRecord,
+      cannotRecord: this.cannotRecord(),
     };
   }
 
@@ -192,7 +196,8 @@ export class Recorder {
     // near-copy of a take that already exists, under a new name and a different
     // hash, which is precisely the ambiguity reconciling by content hash exists to
     // remove.
-    if (this.cannotRecord) throw new Error(this.cannotRecord);
+    const blocked = this.cannotRecord();
+    if (blocked) throw new Error(blocked);
     if (this.armed) return this.state;
     // The rate the library is reporting, not a constant. The refusal and the
     // readout have to divide by the same number or the monitor says one thing and
