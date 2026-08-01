@@ -134,13 +134,12 @@ try {
 
   while (claimed < MAX) {
     const claim = await post('/jobs/claim', { worker: NAME, renderer });
-    if (claim.status === 409) {
-      // Work exists and none of it is ours. Reported rather than slept on: this is
-      // the scheduling failure the class pinning exists to surface, and a worker
-      // that quietly polled forever would turn it back into the silence it was
-      // designed to replace.
-      console.error(`[worker] ${claim.body.error}`);
-      for (const b of claim.body.blocked ?? []) console.error(`[worker]   ${b.id} wants ${b.wants}`);
+    if (claim.status === 409 || claim.status >= 500) {
+      // Work exists and none of it is ours, or the queue itself failed. Reported
+      // rather than slept on: a worker that quietly polled forever would turn the
+      // scheduling failure back into the silence it was designed to replace.
+      console.error(`[worker] ${claim.status} from claim: ${claim.body?.error ?? '(no body)'}`);
+      for (const b of claim.body?.blocked ?? []) console.error(`[worker]   ${b.id} wants ${b.wants}`);
       blockedExit = true;
       break;
     }
@@ -154,6 +153,8 @@ try {
     claimed++;
     console.log(`[worker] ${job.id} ${job.width}x${job.height} @${job.fps} -> ${job.output}`);
     errors.length = 0;
+    let beat = null;
+    let leaseLost = false;
     try {
       // Reopened per job rather than once, because two jobs in a queue are two
       // edits and nothing says they are against the same footage. The page reloads
@@ -162,19 +163,46 @@ try {
       await page.goto(`${URL_}/?take=${encodeURIComponent(takeId)}`, { waitUntil: 'load' });
       await page.waitForFunction(() => Boolean(globalThis.__kinect?.timeline?.transport()), null, { timeout: 60000 });
       errors.length = 0;
-      // The project travels *in the job* rather than by name. That is what makes a
-      // job self-contained: a name would resolve to whatever is in the store when
-      // the worker gets round to it, which is the opposite of reproducing an edit.
+
+      // **Attest the footage and renderer before rendering.** A job names its
+      // capture by content hash, so the page opened by id has to agree after load.
+      // The renderer class is pinned on the claim, so the browser that renders it
+      // must be the same one that claimed.
+      const [actualHash, actualRenderer] = await page.evaluate(() => [
+        globalThis.__kinect.library.takeHash(),
+        globalThis.__kinect.export.rendererClass(),
+      ]);
+      if (actualHash !== job.capture) {
+        throw new Error(`the opened take hashes ${actualHash.slice(0, 22)}… but the job expects ${job.capture.slice(0, 22)}…`);
+      }
+      if (actualRenderer !== renderer) {
+        throw new Error(`the rendering browser is ${actualRenderer} but the claim was made on ${renderer}`);
+      }
+
       // **Says it is alive while it renders, because the queue's only alternative
       // is believing a dead worker forever.** A render runs for minutes or hours
       // by design, so nothing can time a job out on duration - what the queue
       // expires is silence, and this is the noise. Cheap and unconditional: if it
       // fails the render still runs, and the job goes stale, which is the safe
       // direction.
-      const beat = setInterval(() => {
-        post(`/jobs/${job.id}/heartbeat`, { lease: job.lease }).catch(() => {});
-      }, 15_000);
+      const heartbeat = async () => {
+        if (leaseLost) return;
+        const res = await post(`/jobs/${job.id}/heartbeat`, { lease: job.lease });
+        if (res.status === 409) {
+          // The lease is gone: the job was requeued or finished by something else.
+          // The render cannot be interrupted mid-frame, but we stop before the
+          // finish report so the queue does not accept an outcome from a dead claim.
+          leaseLost = true;
+          if (beat) { clearInterval(beat); beat = null; }
+          console.error(`[worker] ${job.id} heartbeat refused: ${res.body?.error ?? 'lease lost'}`);
+        }
+      };
+      beat = setInterval(() => { heartbeat().catch((e) => { if (beat) { clearInterval(beat); beat = null; } console.error(`[worker] ${job.id} heartbeat: ${e.message}`); }); }, 15_000);
       beat.unref?.();
+
+      // The project travels *in the job* rather than by name. That is what makes a
+      // job self-contained: a name would resolve to whatever is in the store when
+      // the worker gets round to it, which is the opposite of reproducing an edit.
       const result = await page.evaluate(async (j) => {
         // `restoreProject` rather than `loadProject`: the second fetches by name
         // from the store, and a job carries its document precisely so it does not
@@ -211,20 +239,23 @@ try {
         });
       }, job);
       if (errors.length) throw new Error(`the page errored during the render: ${errors[0]}`);
+      if (!result?.output) throw new Error('the export did not return an output path');
+      if (leaseLost) throw new Error('the lease was lost during the render, so the outcome is not accepted');
+
       // The frame count travels with the outcome so the record says how much was
       // rendered rather than only that something was. `server/export.js` refuses a
       // stream whose count differs from the one the export declared, so this is the
       // encoder's own number and a check can hold the file against it.
       const fin = await post(`/jobs/${job.id}/finish`, {
-        state: 'done', output: result?.output ?? job.output, frames: result?.frames ?? null, lease: job.lease,
+        state: 'done', output: result.output, frames: result?.frames ?? null, lease: job.lease,
       });
       if (fin.status !== 200) throw new Error(`the queue refused the report: ${fin.body.error}`);
-      console.log(`[worker] ${job.id} done ${result?.output ?? ''} ${result?.frames ?? ''} frames`);
-      clearInterval(beat);
+      console.log(`[worker] ${job.id} done ${result.output} ${result?.frames ?? ''} frames`);
+      if (beat) { clearInterval(beat); beat = null; }
     } catch (err) {
       failed++;
       const message = String(err.message ?? err);
-      clearInterval(beat);
+      if (beat) { clearInterval(beat); beat = null; }
       console.error(`[worker] ${job.id} failed: ${message}`);
       // Reported, not swallowed. A job left `running` by a worker that walked away
       // is the state nothing can tell from a job still being rendered.

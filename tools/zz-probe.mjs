@@ -504,10 +504,7 @@ try {
     const real = await enqueue({ capture: take.hash, output: 'jobs-check-render', width: 320, height: 200 });
     check(real.status === 200, 'a job against real footage is queued', real.body.id ?? real.body.error);
     const worker = spawn(process.execPath, [join(REPO, 'tools/render-worker.mjs'),
-      '--url', URL_, '--name', 'jobs-check', '--drain', '--max', '1'], { stdio: ['ignore', 'pipe', 'pipe'] });
-    const wlog = [];
-    worker.stdout.on('data', (c) => wlog.push(c.toString()));
-    worker.stderr.on('data', (c) => wlog.push(c.toString()));
+      '--url', URL_, '--name', 'jobs-check', '--drain', '--max', '1'], { stdio: 'ignore' });
     const code = await new Promise((done) => worker.on('close', done));
     const record = await get(`/jobs/${real.body.id}`);
     check(code === 0 && record.state === 'done',
@@ -518,7 +515,7 @@ try {
     let probed = '';
     try {
       probed = execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=width,height,nb_frames',
-        '-of', 'default=nw=1', record.output], { encoding: 'utf8' });
+        '-of', 'default=nw=1', record.artifactPath], { encoding: 'utf8' });
     } catch (err) { probed = `ffprobe failed: ${err.message}`; }
     check(/width=320/.test(probed) && /height=200/.test(probed),
       'the file it wrote is a video at the size the job asked for, which is the only thing a metadata check cannot fake',

@@ -13,10 +13,10 @@
 // re-render reproduces the original, a queue that silently handed a re-render to
 // a different class of machine would break the property the model rests on. So a
 // mismatch is refused and *recorded*, never quietly re-dispatched.
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { VALID_NAME } from './export.js';
+import { validateExport } from './export.js';
 
 export const JOB_VERSION = 1;
 
@@ -164,15 +164,10 @@ export class JobStore {
     if (typeof capture !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(capture)) {
       throw new Error(`a job names its capture by content hash, got ${JSON.stringify(capture)}`);
     }
-    if (!(Number(width) > 0 && Number(height) > 0)) throw new Error(`bad output size ${width}x${height}`);
-    if (!(Number(fps) > 0)) throw new Error(`bad output rate ${fps}`);
-    // The exporter's own rule, imported rather than restated. A job carrying
-    // `../../server/index` used to be accepted here and refused three layers later
-    // by the export socket, so the queue held work it already knew could not run -
-    // and the refusal that mattered lived nowhere near the field it was about.
-    if (!VALID_NAME.test(String(output ?? ''))) {
-      throw new Error(`bad output name ${JSON.stringify(output)}: it names a file in the exports directory, so it is letters, digits, dot, dash and underscore`);
-    }
+    // All the export rules run at enqueue, so the queue refuses work it already
+    // knows cannot run. The worker and the export socket must not be the place a
+    // bad width, an odd h264 dimension, or an unknown codec is first discovered.
+    const { width: w, height: h, fps: f } = validateExport({ name: output, width, height, fps, codec });
     return this.serialise(async () => {
       const live = await this.list();
       // **Two jobs writing one file is one job's work thrown away.** Both render to
@@ -192,9 +187,10 @@ export class JobStore {
         capture,
         renderer: renderer ?? null,
         output: String(output),
-        width: Math.trunc(width),
-        height: Math.trunc(height),
-        fps: Number(fps),
+        artifactPath: null,
+        width: w,
+        height: h,
+        fps: f,
         codec,
         state: 'queued',
         created,
@@ -246,7 +242,9 @@ export class JobStore {
       // a job it never claimed - and `POST /jobs/<id>/finish` with `{"state":"done"}`
       // straight after an enqueue marked a job done that no worker had ever
       // touched, which is a render that never happened wearing a successful record.
-      job.lease = `${job.id}-${job.attempts}-${createHash('sha256').update(`${job.id}${job.attempts}${job.claimed}`).digest('hex').slice(0, 12)}`;
+      // Random rather than derived from the record, because the read routes strip
+      // it but keep every other field a forger would need to recompute it.
+      job.lease = randomBytes(16).toString('hex');
       // Stamped on the claim, not on completion. A job that dies mid-render has still
       // told us which class of machine it was attempted on, and that is the provenance
       // the field exists for.
@@ -294,7 +292,11 @@ export class JobStore {
       job.error = error;
       job.finished = this.now();
       job.lease = null;
-      if (output) job.output = output;
+      // `output` from the worker is the absolute artifact path the encoder landed.
+      // It is kept in `artifactPath` so the output *name* stays the requested base
+      // name and a retried job can ask for the same name without `export.js`
+      // rejecting an absolute path as a bad export name.
+      if (typeof output === 'string' && output.length > 0) job.artifactPath = output;
       // What the encoder actually took, reported by the worker rather than derived
       // here. The take's own frame count is NOT this number - the sample was shot
       // on a degraded link at about 9.3fps and an export at 30 makes far more
@@ -336,6 +338,15 @@ export class JobStore {
           );
         }
       }
+      // The name may have been reserved by another job while this one was away,
+      // and putting it back on the queue would create two live owners. The same
+      // check `enqueue` makes, now run on the way back in.
+      const live = await this.list();
+      const holder = live.find((j) => j.id !== id && j.output === job.output
+        && (j.state === 'queued' || j.state === 'running'));
+      if (holder) {
+        throw new Error(`output ${JSON.stringify(job.output)} is already reserved by ${holder.id} (${holder.state}), so this retry would collide`);
+      }
       job.state = 'queued';
       job.claimed = null;
       job.finished = null;
@@ -343,6 +354,9 @@ export class JobStore {
       job.error = null;
       job.lease = null;
       job.heartbeat = null;
+      // A previous artifact path, if any, is no longer the one this retry will
+      // write - the worker reports the new path when it finishes.
+      job.artifactPath = null;
       return this.#put(job);
     });
   }

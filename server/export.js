@@ -67,6 +67,34 @@ const CODECS = {
   lossless: { ext: 'mkv', args: ['-c:v', 'ffv1', '-level', '3', '-pix_fmt', 'rgb24'] },
 };
 
+// Exported so the queue can validate a job before it is claimed. One rule with two
+// callers, the same shape `originAllowed` took: a second copy of this code in
+// `server/jobs.js` would be a second rule to keep honest.
+export function validateExport({ name, width, height, fps, frames = null, codec }) {
+  if (!VALID_NAME.test(String(name ?? ''))) {
+    throw new Error(`bad output name ${JSON.stringify(name)}: it names a file in the exports directory, so it is letters, digits, dot, dash and underscore`);
+  }
+  const w = Number(width);
+  const h = Number(height);
+  const f = Number(fps);
+  if (!Number.isInteger(w) || w <= 0) throw new Error(`bad output size ${width}x${height}`);
+  if (!Number.isInteger(h) || h <= 0) throw new Error(`bad output size ${width}x${height}`);
+  if (codec === 'h264' && (w % 2 || h % 2)) {
+    throw new Error(`h264 needs even dimensions, got ${w}x${h}`);
+  }
+  if (!Number.isFinite(f) || f <= 0) throw new Error(`bad output rate ${fps}`);
+  if (frames !== null) {
+    const fc = Math.trunc(frames);
+    if (!Number.isInteger(fc) || fc <= 0) throw new Error(`an export of ${frames} frames has nothing to encode`);
+  }
+  const frameBytes = w * h * 4;
+  if (frameBytes > MAX_FRAME_BYTES) {
+    throw new Error(`a ${w}x${h} frame is ${frameBytes} bytes, past the ${MAX_FRAME_BYTES} ceiling`);
+  }
+  if (!CODECS[codec]) throw new Error(`unknown codec ${codec}`);
+  return { width: w, height: h, fps: f, frames: frames !== null ? Math.trunc(frames) : null, codec };
+}
+
 // Distinguishes one export's scratch file from another's within this process. The
 // name never reaches the file's bytes - `-fflags +bitexact` is what makes that
 // true, and the determinism claim, which runs two exports through two sockets and
@@ -138,31 +166,15 @@ export function handleExportSocket(ws, { outDir, log = console.log }) {
   };
 
   const begin = async (msg) => {
-    const width = Math.trunc(msg.width);
-    const height = Math.trunc(msg.height);
-    const fps = Number(msg.fps);
-    const frames = Math.trunc(msg.frames);
-    const codec = msg.codec ?? 'h264';
-
-    if (!CODECS[codec]) throw new Error(`unknown codec ${msg.codec}`);
-    if (!VALID_NAME.test(String(msg.name ?? ''))) throw new Error(`bad export name ${JSON.stringify(msg.name)}`);
-    if (!(width > 0 && height > 0)) throw new Error(`bad output size ${width}x${height}`);
-    // yuv420p subsamples chroma by two each way, so an odd dimension is not
-    // encodable and ffmpeg would refuse after the first frame had already been
-    // sent - which reads to the browser as the pipe dying for no reason.
-    if (codec === 'h264' && (width % 2 || height % 2)) {
-      throw new Error(`h264 needs even dimensions, got ${width}x${height}`);
-    }
-    if (!(fps > 0)) throw new Error(`bad output rate ${msg.fps}`);
-    if (!(frames > 0)) throw new Error(`an export of ${frames} frames has nothing to encode`);
-    const frameBytes = width * height * 4;
-    if (frameBytes > MAX_FRAME_BYTES) {
-      throw new Error(`a ${width}x${height} frame is ${frameBytes} bytes, past the ${MAX_FRAME_BYTES} ceiling`);
-    }
+    const { width, height, fps, frames, codec } = validateExport({
+      name: msg.name, width: msg.width, height: msg.height, fps: msg.fps,
+      frames: msg.frames, codec: msg.codec ?? 'h264',
+    });
 
     await mkdir(outDir, { recursive: true });
     const ext = CODECS[codec].ext;
     const output = join(outDir, `${msg.name}.${ext}`);
+    const frameBytes = width * height * 4;
     // The encoder writes beside the output and never onto it. `finish` renames the
     // scratch file into place once ffmpeg has exited 0, so an export either
     // replaces the previous one entirely or leaves it exactly as it was - and a
