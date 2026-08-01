@@ -1619,28 +1619,30 @@ three arms at 40s each with 4s of settling outside every window, the first 25s
 discarded, counters sampled once a second by the node itself and pulled afterwards
 so the driver never reads across the link under test:
 
-| arm | recorded fps (median) | cost against no client |
-| --- | --- | --- |
-| no client | 28.77 | — |
-| monitor ÷1 ×1 | 21.76 | **24.0%** |
-| monitor ÷4 ×3 | 27.46 | **3.4%** |
+| arm | recorded fps (median) | skipped depth packets / 40s | cost against no client |
+| --- | --- | --- | --- |
+| no client | 29.45 | 24 | — |
+| monitor ÷1 ×1 | 21.91 | 347 | **24.4%** |
+| monitor ÷4 ×3 | 28.21 | 77 | **3.4%** |
 
-Run twice on separate occasions, six paired rounds in all, every delta the same
-sign: 24.5%/24.0% for the full-rate monitor and 3.9%/3.4% for the decimated one. So
-a full-rate monitor costs about a quarter of the take rather than 11%, decimating
-to the cap recovers about six sevenths of that, and `tools/monitor-cost-ab.mjs` is
-what measures it.
+Run three times on separate occasions, nine paired rounds in all, every delta the
+same sign: 24.5%/24.0%/24.4% for the full-rate monitor and 3.9%/3.4%/3.4% for the
+decimated one. So a full-rate monitor costs about a quarter of the take rather than
+11%, decimating to the cap recovers about six sevenths of that, and
+`tools/monitor-cost-ab.mjs` is what measures it.
 
-**The mechanism above is not the one that reproduced, and that is worth saying
-plainly.** libfreenect2's `not all subsequences received` fired **once in an
-eight-minute run and its count did not move in any arm** — not in the no-client arm,
-and not in the arm losing a quarter of its frames. So the frames are not being lost
-to dropped isochronous packets here. What the numbers are consistent with is the
-grabber blocking on its write to stdout while the server's pipe is full, and the
-frames piling up behind it being discarded by libfreenect2's own listener — a
-frame-level drop rather than a packet-level one. That is not proved and is not
-claimed; what is measured is that the loss is large, reproducible, and unaccompanied
-by any USB packet loss.
+The mechanism holds: the packet counter moves with the loss, 14-fold between the
+first two arms, and the decimated monitor pulls it most of the way back.
+
+**One correction worth keeping, because the wrong version was written down before it
+was caught.** The first two runs reported zero skipped packets in every arm and were
+read as the loss happening without any USB packet loss at all. They were counting
+`not all subsequences received`, which is what the grabber's own `--help` names —
+and the string the node actually emits in quantity is `skipping depth packet`. Both
+exist in libfreenect2 and they are different events. Counting the wrong one produced
+a delta of zero everywhere and an inference of an absence the probe had
+manufactured; it was caught by reading the node's journal rather than by rechecking
+the harness.
 
 The harness had to be thrown away twice, and both are recorded because neither would
 have been found by reading it. It first sampled the node over SSH at each window

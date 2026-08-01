@@ -145,13 +145,22 @@ async function awaitServer(ms) {
 // recorder's durable frame count, libfreenect2's own dropped-isochronous counter, and
 // the arm - taken from the server's list of what is attached and at what setting.
 //
+// **The phrase is `skipping depth packet`, and the first version of this grepped for
+// `not all subsequences received` instead.** Both exist in libfreenect2 and they are
+// different events - the second is an incomplete depth frame off the USB isochronous
+// stream, the first is the parser discarding a packet. The grabber's own `--help`
+// names the second, which is what sent this at it; the node's log carries the first
+// in quantity and the second almost never. Counting the wrong string produced a
+// delta of zero in every arm and an inference that no packets were being lost at
+// all, which is the shape of a probe reporting an absence it manufactured.
+//
 // `wc -l` on the debug log rather than `grep -c` over it, because the interesting
 // quantity is a monotonic counter and re-scanning a growing file every second is work
 // the node should not be doing while it is the thing under test.
 const SAMPLER = (port, log, out) => `
   while true; do
     st=$(curl -s --max-time 2 http://127.0.0.1:${port}/record/state)
-    sk=$(grep -c 'not all subsequences received' ${log} 2>/dev/null || echo 0)
+    sk=$(grep -c 'skipping depth packet' ${log} 2>/dev/null || echo 0)
     printf '%s\\t%s\\t%s\\n' "$(date +%s%3N)" "$sk" "$st" >> ${out}
     sleep 1
   done`;
@@ -315,8 +324,8 @@ console.log(`\n[cost] method: one grabber, one device open, one continuous recor
   + `${ROUNDS} interleaved rounds of ${ARMS.length} arms at ${WINDOW}s each, 4s of settling outside every `
   + `window; first 25s discarded as warm-up before the sampler starts; counters sampled once a second by the `
   + `node itself and pulled afterwards, so the driver never reads across the link under test; each window `
-  + `labelled by the server's own list of attached monitors; skipped counted from libfreenect2's subsequence `
-  + `warnings; monitor on the editing machine over Wi-Fi.`);
+  + `labelled by the server's own list of attached monitors; skipped counted from libfreenect2's `
+  + `'skipping depth packet' lines; monitor on the editing machine over Wi-Fi.`);
 
 const baseline = rows.filter((r) => r.arm === 'A');
 const spread = Math.max(...baseline.map((r) => r.recordedFps)) - Math.min(...baseline.map((r) => r.recordedFps));
