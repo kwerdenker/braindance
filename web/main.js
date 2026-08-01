@@ -2344,18 +2344,19 @@ lowLightEl.addEventListener('change', () => sendCamera({ lowLight: lowLightEl.ch
 // dropped stride reads as a sensor losing frames, and both get blamed on the room.
 const monDivisorEl = document.getElementById('monDivisor');
 const monStrideEl = document.getElementById('monStride');
+const monAcceptCostEl = document.getElementById('monAcceptCost');
 const monNoteEl = document.getElementById('monNote');
 
 // The last setting the server confirmed, which is what the record button consults.
 // Held rather than read back off the sliders, because a slider carries what somebody
 // dragged it to and this has to carry what was granted.
-let monitorState = { divisor: 1, stride: 1, loopback: true, wouldRefuseRecording: false };
+let monitorState = { divisor: 1, stride: 1, loopback: true, granted: true, wouldRefuseRecording: false };
 
 function sendMonitor() {
   if (socket?.readyState !== WebSocket.OPEN) return;
-  socket.send(JSON.stringify({
-    monitor: { divisor: Number(monDivisorEl.value), stride: Number(monStrideEl.value) },
-  }));
+  const body = { divisor: Number(monDivisorEl.value), stride: Number(monStrideEl.value) };
+  if (monAcceptCostEl?.checked) body.acceptMonitorCost = true;
+  socket.send(JSON.stringify({ monitor: body }));
 }
 
 function showMonitor(state) {
@@ -2364,6 +2365,9 @@ function showMonitor(state) {
   monStrideEl.value = String(state.stride);
   monDivisorEl.nextElementSibling.value = String(state.divisor);
   monStrideEl.nextElementSibling.value = String(state.stride);
+  if (monAcceptCostEl) {
+    monAcceptCostEl.parentElement.style.display = state.loopback ? 'none' : '';
+  }
 
   // The stride reads as a position, so it needs a real ordinal rather than a "th"
   // glued on - the slider runs to 30 and three of the values in that range would
@@ -2382,18 +2386,20 @@ function showMonitor(state) {
   const depthKB = Math.ceil(512 / state.divisor) * Math.ceil(424 / state.divisor) * 2 / 1000;
   const perFrame = depthKB + 52;
   const rate = perFrame * (30 / state.stride) / 1000;
-  const parts = [`depth ÷${state.divisor}, every ${state.stride === 1 ? 'frame' : `${ordinal(state.stride)} frame`}`,
-    `about ${perFrame.toFixed(0)}KB a frame, ${rate.toFixed(1)} MB/s`];
+  const parts = [];
+  if (!state.granted) parts.push('ungranted');
+  parts.push(`depth ÷${state.divisor}, every ${state.stride === 1 ? 'frame' : `${ordinal(state.stride)} frame`}`);
+  parts.push(`about ${perFrame.toFixed(0)}KB a frame, ${rate.toFixed(1)} MB/s`);
   if (state.refused) parts.push(`refused: ${state.refused}`);
   if (state.wouldRefuseRecording) {
     parts.push(`a take will refuse to start at this setting - finer than the ÷${state.cap.divisor} `
       + `×${state.cap.stride} a recording allows, and the frames it costs never reach the file`);
-  } else if (!state.loopback) {
+  } else if (state.granted && !state.loopback) {
     parts.push('coarse enough to record through');
   }
   parts.push('the recording is always full fidelity whatever this says');
   monNoteEl.textContent = `${parts.join(' · ')}.`;
-  monNoteEl.classList.toggle('warn', Boolean(state.wouldRefuseRecording || state.refused));
+  monNoteEl.classList.toggle('warn', Boolean(!state.granted || state.wouldRefuseRecording || state.refused));
 }
 
 for (const el of [monDivisorEl, monStrideEl]) el.addEventListener('input', sendMonitor);

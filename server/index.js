@@ -1380,7 +1380,15 @@ const whole = (v, max) => (Number.isInteger(v) && v >= 1 && v <= max ? v : null)
 
 wss.on('connection', (ws, req) => {
   ws.binaryType = 'nodebuffer';
-  monitors.set(ws, { divisor: 1, stride: 1, loopback: isLoopback(req) });
+  // A loopback socket is trusted and starts at full rate: its frames never cross the
+  // link the cap is about. A remote socket starts ineligible for binary frames until
+  // it explicitly requests a grant, and while a take is active its ordinary initial
+  // grant is the recording cap or coarser. Finer requests are refused unless the
+  // client explicitly accepts the cost, and they are never silently clamped.
+  const loopback = isLoopback(req);
+  monitors.set(ws, loopback
+    ? { divisor: 1, stride: 1, loopback: true, granted: true }
+    : { divisor: RECORDING_CAP.divisor, stride: RECORDING_CAP.stride, loopback: false, granted: false });
   console.log(`[server] client connected (${wss.clients.size} total)`);
   if (helloJson) ws.send(helloJson);
   ws.send(JSON.stringify({ status: sensorState }));
@@ -1403,18 +1411,39 @@ wss.on('connection', (ws, req) => {
     // stream, which is the misattribution this whole negotiation exists to avoid.
     if (typeof msg.monitor === 'object' && msg.monitor) {
       const m = monitors.get(ws);
-      const divisor = whole(msg.monitor.divisor, MAX_DIVISOR);
-      const stride = whole(msg.monitor.stride, MAX_STRIDE);
+      if (!m) return;
+      const wantDivisor = whole(msg.monitor.divisor, MAX_DIVISOR);
+      const wantStride = whole(msg.monitor.stride, MAX_STRIDE);
       const bad = [];
-      if (msg.monitor.divisor !== undefined && divisor === null) {
+      if (msg.monitor.divisor !== undefined && wantDivisor === null) {
         bad.push(`divisor must be a whole number from 1 to ${MAX_DIVISOR}`);
       }
-      if (msg.monitor.stride !== undefined && stride === null) {
+      if (msg.monitor.stride !== undefined && wantStride === null) {
         bad.push(`stride must be a whole number from 1 to ${MAX_STRIDE}`);
       }
-      if (divisor !== null) m.divisor = divisor;
-      if (stride !== null) m.stride = stride;
-      sendMonitor(ws, bad.length ? bad.join('; ') : null);
+      if (bad.length) {
+        sendMonitor(ws, bad.join('; '));
+        return;
+      }
+      const nextDivisor = wantDivisor !== null ? wantDivisor : m.divisor;
+      const nextStride = wantStride !== null ? wantStride : m.stride;
+      // A request that would cost the take is granted only if the client explicitly
+      // says so. If this monitor is already serving, a refused request leaves the
+      // existing grant untouched; if it is not yet granted, the requested setting is
+      // stored so the client can accept it with a later acceptMonitorCost.
+      const wouldCost = !m.loopback && (nextDivisor < RECORDING_CAP.divisor || nextStride < RECORDING_CAP.stride);
+      if (wouldCost && msg.monitor.acceptMonitorCost !== true) {
+        if (!m.granted) {
+          m.divisor = nextDivisor;
+          m.stride = nextStride;
+        }
+        sendMonitor(ws, 'that setting would cost the take; send acceptMonitorCost: true to allow it');
+        return;
+      }
+      m.divisor = nextDivisor;
+      m.stride = nextStride;
+      m.granted = true;
+      sendMonitor(ws);
       return;
     }
 
@@ -1444,6 +1473,7 @@ function sendMonitor(ws, refused = null) {
     monitor: {
       divisor: m.divisor,
       stride: m.stride,
+      granted: m.granted,
       loopback: m.loopback,
       cap: RECORDING_CAP,
       wouldRefuseRecording: costsTheTake(m),
@@ -1454,10 +1484,12 @@ function sendMonitor(ws, refused = null) {
   }));
 }
 
-// A monitor costs the take when its frames cross the link and it is asking for more
-// of them than the cap allows. Both terms matter: finer than the cap on loopback is
-// free, and a remote monitor at or past the cap is what the cap is for.
-const costsTheTake = (m) => !m.loopback && (m.divisor < RECORDING_CAP.divisor || m.stride < RECORDING_CAP.stride);
+// A monitor costs the take when its frames cross the link, it has been granted, and
+// it is asking for more of them than the cap allows. All three terms matter: a
+// remote monitor that has not negotiated a grant is not yet on the wire, finer than
+// the cap on loopback is free, and a remote monitor at or past the cap is what the
+// cap is for.
+const costsTheTake = (m) => !m.loopback && m.granted && (m.divisor < RECORDING_CAP.divisor || m.stride < RECORDING_CAP.stride);
 
 // Which frame this is, for the stride. Counted over every frame the grabber
 // delivered rather than per client, so two monitors at the same stride land on the
@@ -1485,7 +1517,7 @@ function broadcastFrame(payload) {
   for (const ws of wss.clients) {
     if (ws.readyState !== ws.OPEN) continue;
     const m = monitors.get(ws);
-    if (!m) continue;
+    if (!m || !m.granted) continue;
     // Strided out, which is not the same as dropped and is not counted as one. A
     // dropped frame is a monitor that could not keep up; this is a monitor that asked
     // not to be sent it.

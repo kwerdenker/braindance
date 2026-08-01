@@ -134,8 +134,15 @@ const MUTATIONS = {
   // the mutation a refusal-only check cannot see: it makes the product useless and
   // every "it refused" assertion in this file still passes.
   'refuse-ignores-loopback': { file: 'server/index.js', edits: [[
-    'const costsTheTake = (m) => !m.loopback && (m.divisor < RECORDING_CAP.divisor || m.stride < RECORDING_CAP.stride);',
-    'const costsTheTake = (m) => (m.divisor < RECORDING_CAP.divisor || m.stride < RECORDING_CAP.stride);',
+    'const costsTheTake = (m) => !m.loopback && m.granted && (m.divisor < RECORDING_CAP.divisor || m.stride < RECORDING_CAP.stride);',
+    'const costsTheTake = (m) => m.granted && (m.divisor < RECORDING_CAP.divisor || m.stride < RECORDING_CAP.stride);',
+  ]] },
+  // **The control for the handshake.** A remote socket starts eligible for binary
+  // frames at full rate, so a newcomer can cost the take before it has requested
+  // anything. This is the defect the admission gate exists to close.
+  'remote-default-eligible': { file: 'server/index.js', edits: [[
+    '  const loopback = isLoopback(req);\n  monitors.set(ws, loopback\n    ? { divisor: 1, stride: 1, loopback: true, granted: true }\n    : { divisor: RECORDING_CAP.divisor, stride: RECORDING_CAP.stride, loopback: false, granted: false });',
+    '  const loopback = isLoopback(req);\n  monitors.set(ws, { divisor: 1, stride: 1, loopback, granted: true });',
   ]] },
   // The range check goes, so a divisor of 0 or 99 is accepted and stored. Zero is
   // the interesting one - `frameSeq % 0` is NaN, so a stride of 0 sends nothing at
@@ -561,51 +568,87 @@ try {
   if (LAN) {
     const remote = new WebSocket(`ws://${LAN}:${PORT}/`, { headers: { Origin: `http://${LAN}:${PORT}` } });
     const grants = [];
+    let binaryBeforeGrant = 0;
+    let framesAfterGrant = 0;
     remote.on('message', (data, isBinary) => {
-      if (!isBinary) { const m = JSON.parse(data.toString('utf8')); if (m.monitor) grants.push(m.monitor); }
+      if (isBinary) {
+        const last = grants.at(-1);
+        if (!last || !last.granted) binaryBeforeGrant++;
+        else framesAfterGrant++;
+        return;
+      }
+      const msg = JSON.parse(data.toString('utf8'));
+      if (msg.monitor) grants.push(msg.monitor);
     });
     await new Promise((res, rej) => { remote.on('open', res); remote.on('error', rej); });
     await waitFor(async () => grants.length > 0, 4000, 'the remote monitor to be told its setting');
+    const cap = grants[0].cap;
     ok('a monitor arriving over the network is told it is not on loopback', grants[0].loopback === false,
       JSON.stringify(grants[0]));
-    ok('and is told, before pressing anything, that a take would refuse at this setting',
-      grants[0].wouldRefuseRecording === true);
+    ok('and it starts ungranted, with the cap as the ordinary proposal',
+      grants[0].granted === false
+        && grants[0].divisor === cap.divisor
+        && grants[0].stride === cap.stride,
+      JSON.stringify(grants[0]));
 
     const state = await get('/record/state');
     ok('the record surface says the same thing over HTTP, so the button can warn before it is pressed',
-      state.monitors?.wouldRefuse === true && state.monitors.costingTheTake.length === 1,
+      state.monitors?.wouldRefuse === false && state.monitors.costingTheTake.length === 0,
       JSON.stringify(state.monitors));
 
-    // Counted before the attempt rather than compared against an empty directory:
-    // the two positive twins above deliberately recorded, so "no take exists" would
-    // be asserting that those rows failed. What the refusal claims is that it
-    // created nothing, and a delta is what says that.
-    const takesBefore = readdirSync(recDir4).filter((f) => f.endsWith('.knct')).length;
-    const refused = await post('/record/start');
-    ok('and the take refuses, naming the cost rather than a status', refused.status === 409
-      && /costs the take frames/.test(refused.body.error ?? ''), (refused.body.error ?? '').slice(0, 110));
-    ok('and nothing was armed by the attempt', (await get('/record/state')).armed === false);
-    const takesAfter = readdirSync(recDir4).filter((f) => f.endsWith('.knct')).length;
-    ok('and no take file was opened by it', takesAfter === takesBefore,
-      `${takesBefore} takes before, ${takesAfter} after`);
+    ok('no binary frame arrives before the client has requested and been granted a setting',
+      binaryBeforeGrant === 0);
 
-    // Twin one: coarsen and it records. Without this the refusal could be
-    // unconditional and every row above would still pass.
+    // Twin one: a finer request is refused, and the grant is not silently clamped.
+    // If this were an accept-only check on the request, the same monitor could still
+    // record after being refused, so the refusal also has to leave the grant unchanged.
+    remote.send(JSON.stringify({ monitor: { divisor: 1, stride: 1 } }));
+    await waitFor(async () => grants.length > 1, 4000, 'the finer refusal').catch(() => false);
+    ok('a finer request from a remote monitor is refused without changing the grant',
+      grants[1]?.granted === false
+        && grants[1]?.divisor === 1
+        && grants[1]?.stride === 1
+        && /would cost/.test(String(grants[1]?.refused ?? '')),
+      JSON.stringify(grants[1]));
+    ok('and still no binary frames arrive', binaryBeforeGrant === 0);
+
+    // Twin two: the cap is the ordinary initial grant, and recording works.
     remote.send(JSON.stringify({ monitor: { divisor: 4, stride: 3 } }));
-    const coarsened = await waitFor(async () => grants.at(-1)?.divisor === 4 && grants.at(-1)?.stride === 3,
-      4000, 'the coarser grant').catch(() => false);
-    ok('the coarser setting is granted and answered', coarsened === true, JSON.stringify(grants.at(-1)));
+    await waitFor(async () => grants.at(-1)?.granted === true, 4000, 'the cap grant').catch(() => false);
+    ok('the cap is granted and answered',
+      grants.at(-1)?.granted === true
+        && grants.at(-1)?.divisor === cap.divisor
+        && grants.at(-1)?.stride === cap.stride,
+      JSON.stringify(grants.at(-1)));
     ok('coarsened to the cap, the same monitor no longer blocks it', grants.at(-1)?.wouldRefuseRecording === false);
+    await waitFor(async () => framesAfterGrant > 0, 4000, 'a frame after the cap grant');
     const coarse = await post('/record/start');
     ok('and the take starts', coarse.status === 200 && coarse.body.armed === true,
       JSON.stringify(coarse.body).slice(0, 90));
     await post('/record/stop');
 
-    // Twin two: the override. An operator on ethernet genuinely does not pay this,
-    // and a refusal with no way past it would be a cap wearing a refusal's clothes.
-    remote.send(JSON.stringify({ monitor: { divisor: 1, stride: 1 } }));
+    // Twin three: a finer setting is reachable only when the client explicitly
+    // accepts the cost, and the take still refuses until the operator does too.
+    remote.send(JSON.stringify({ monitor: { divisor: 1, stride: 1, acceptMonitorCost: true } }));
     await waitFor(async () => grants.at(-1)?.divisor === 1 && grants.at(-1)?.stride === 1,
-      4000, 'the full-rate grant').catch(() => false);
+      4000, 'the costly grant').catch(() => false);
+    ok('a remote monitor that explicitly accepts cost is granted the finer setting',
+      grants.at(-1)?.granted === true && grants.at(-1)?.wouldRefuseRecording === true,
+      JSON.stringify(grants.at(-1)));
+
+    // Counted before the attempt rather than compared against an empty directory:
+    // the positive twins above deliberately recorded, so "no take exists" would
+    // be asserting that those rows failed. What the refusal claims is that it
+    // created nothing, and a delta is what says that.
+    const takesBefore = readdirSync(recDir4).filter((f) => f.endsWith('.knct')).length;
+    const refused = await post('/record/start');
+    ok('and the take refuses, naming the cost rather than a status', refused.status === 409
+      && /costs? the take frames/.test(refused.body.error ?? ''), (refused.body.error ?? '').slice(0, 110));
+    ok('and nothing was armed by the attempt', (await get('/record/state')).armed === false);
+    const takesAfter = readdirSync(recDir4).filter((f) => f.endsWith('.knct')).length;
+    ok('and no take file was opened by it', takesAfter === takesBefore,
+      `${takesBefore} takes before, ${takesAfter} after`);
+
     const forced = await post('/record/start', { acceptMonitorCost: true });
     ok('and an operator who accepts the cost in as many words gets the take',
       forced.status === 200 && forced.body.armed === true, JSON.stringify(forced.body).slice(0, 90));
