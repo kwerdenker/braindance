@@ -149,6 +149,7 @@ if (MUTATE && !MUTATIONS[MUTATE]) {
 // --- harness ---------------------------------------------------------------
 let assertions = 0;
 let failures = 0;
+let crashed = null;
 const check = (ok, label, detail = '') => {
   assertions++;
   console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${label}${detail ? `  ${detail}` : ''}`);
@@ -567,8 +568,7 @@ try {
   // cannot fail still increments the count, which is the part that does harm: it
   // buys confidence with a number rather than with evidence.
 } catch (err) {
-  failures++;
-  assertions++;
+  crashed = err;
   console.log(`\n  FAIL  the run did not finish: ${err.message}`);
 } finally {
   stopServers();
@@ -577,6 +577,11 @@ try {
 }
 
 console.log(`\n[jobs] ${assertions} assertions, ${failures} failed`);
+// Before any other verdict, a run that threw has not earned a verdict either way.
+if (crashed) {
+  console.log(`[jobs] DID NOT RUN - ${crashed.message}. Nothing here is a finding: re-run it.`);
+  process.exit(2);
+}
 if (MUTATE) {
   if (failures === 0) { console.log('[jobs] NOT CAUGHT - the check passed a queue it should have rejected'); process.exit(1); }
   console.log(`[jobs] caught, as required (${failures} assertion${failures === 1 ? '' : 's'} fired)`);
