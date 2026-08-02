@@ -4,6 +4,9 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Kinect v2 · library</title>
+<!-- Before the page's own rules on purpose: nav.css owns how the chips look and the
+     page owns where they sit, so a placement rule here has to win the tie. -->
+<link rel="stylesheet" href="/nav.css" />
 <style>
   /* The system defined in web/index.html, restated in this file's own names the
      way the viewer restates it - two copies of a palette is two things to keep in
@@ -145,7 +148,11 @@
 
   @media (max-width: 560px) {
     .grid { grid-template-columns: minmax(0, 1fr); }
+    /* `.where` takes a row of its own here and gives up the auto margin that was
+       right-aligning it, which would leave the nav starting a third row at the left
+       edge - so the nav takes the margin over, and top-right stays top-right. */
     .where { margin-left: 0; width: 100%; }
+    .surfacenav { margin-left: auto; }
   }
 </style>
 </head>
@@ -155,6 +162,13 @@
   <h1>Library</h1>
   <div class="sum" id="sum">reading…</div>
   <div class="where" id="where"></div>
+  <!-- The same two chips as the editor's sidebar head and the menu's, in the same
+       order and the same corner. This page had no way back to the menu at all before
+       it, which is the half of "hidden at the bottom of a sidebar" that was worse. -->
+  <nav class="surfacenav" id="navRow" aria-label="Surfaces">
+    <a id="toMenu" href="/">menu</a>
+    <a id="toLibrary" aria-current="page">gallery</a>
+  </nav>
 </header>
 
 <div class="tabs" id="tabs">
