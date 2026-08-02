@@ -55,6 +55,18 @@ where 33ms and a JPEG encode sit between calls, the same change is worth 0.30ms 
 **An offline harness is for correctness; `grabber --profile` on the sensor is for cost** - and
 a screening measurement that removes the effect will confidently report its absence.
 
+## Synthetic pictures cannot price a live image path
+
+The HD colour encoder first measured 3.12ms p50 over 200 structured synthetic images,
+after discarding 20 warmups. The real sensor then measured 5.50ms mean over 90 native
+1920x1080 frames during a six-second subscription at the same q80, TJSAMP_420 and
+FASTDCT settings. The grabber delivered 180 depth frames in that interval - 30.0fps -
+and reported zero encoder-busy drops. No encoder warmup was discarded.
+
+Those runs use different summary statistics, so their difference is not a percentage
+claim about content. The live run is the cost of the path that ships. Use generated
+images to test an encoder and real producer content to price it.
+
 ## Replacing a shader literal with a uniform is not one question but two
 
 And the second one is about the expression rather than the value. Step 3 of the effects rework

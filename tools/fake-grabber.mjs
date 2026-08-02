@@ -19,8 +19,9 @@
 //   tools/fake-grabber.mjs --die-after 12      # exits, so the server respawns it
 
 import { appendFileSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { MessageParser, TYPE_HELLO, TYPE_FRAME, encodeMessage } from '../server/protocol.js';
+import { MessageParser, TYPE_HELLO, TYPE_FRAME, TYPE_COLOR, encodeMessage } from '../server/protocol.js';
 
 const argv = process.argv.slice(2);
 const flag = (name, fallback = null) => {
@@ -60,6 +61,27 @@ const TAG = flag('--tag', '');
 // than an assurance: with a viewer attached at a divisor, a recorder handed the
 // decimated buffer produces frames whose payload hashes are simply not in this file.
 const EMIT_LOG = flag('--emit-log', '');
+// Whether this writer can produce type 3, the native-resolution colour the webcam
+// output reads. Off by default so nothing that already drives this file starts
+// needing ffmpeg; `vcam-check` is the only caller that asks for it.
+//
+// **The synthesised HD frame is the registered one upscaled, plus a marker in the
+// outer margin, and both halves of that are the point.** The webcam's whole claim is
+// that it serves the colour camera rather than the registered image the point cloud
+// is textured with, and the two are hard to tell apart by eye: same scene, same
+// moment, different projection. So the discriminator has to be geometric. The colour
+// camera sees 84.1 degrees where the registered frustum sees 70.6, which means a real
+// colour frame carries scene content down the sides that no upscale of the registered
+// image can invent. This fixture plants exactly that: everything inside the middle is
+// the upscale, so an implementation that cheats by scaling type 2 matches almost the
+// whole picture and still cannot produce the margin. `vcam-check` asserts the margin
+// and nothing but the margin, and `--mutate hd-upscales-registered` is the arm that
+// has to fail on it.
+const HD = argv.includes('--hd');
+// Where the marker lives, as a fraction of width taken off each side. 0.12 is wide
+// enough to survive 4:2:0 chroma subsampling and JPEG ringing at the boundary, and
+// narrow enough that the middle is still most of the picture.
+const HD_MARGIN = 0.12;
 
 const parser = new MessageParser();
 const frames = [];
@@ -72,6 +94,64 @@ if (!sourceHello || frames.length === 0) {
   process.stderr.write(`[fake-grabber] ${SOURCE} carries no hello or no frames\n`);
   process.exit(1);
 }
+
+// Built once at startup rather than per frame: this is a fixture standing in for a
+// sensor, and re-encoding 1080p thirty times a second would make the fixture the
+// thing under measurement. The real grabber does encode per frame, on its own thread,
+// and `grabber --profile` is where that cost is read.
+let hdFrame = null;
+if (HD) {
+  const first = frames[0];
+  const depthBytes = first.readUInt32LE(0);
+  const colorBytes = first.readUInt32LE(4);
+  if (!colorBytes) {
+    process.stderr.write(`[fake-grabber] ${SOURCE} carries no colour, so there is no HD frame to build from\n`);
+    process.exit(1);
+  }
+  const registered = first.subarray(16 + depthBytes, 16 + depthBytes + colorBytes);
+  const margin = Math.round(1920 * HD_MARGIN);
+  try {
+    hdFrame = execFileSync('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-y', '-i', 'pipe:0',
+      '-vf', `scale=1920:1080,`
+        + `drawbox=x=0:y=0:w=${margin}:h=1080:color=magenta@1.0:t=fill,`
+        + `drawbox=x=${1920 - margin}:y=0:w=${margin}:h=1080:color=cyan@1.0:t=fill`,
+      '-frames:v', '1', '-q:v', '3', '-f', 'mjpeg', 'pipe:1',
+    ], { input: registered, maxBuffer: 64 * 1024 * 1024 });
+  } catch (err) {
+    process.stderr.write(`[fake-grabber] cannot build the HD fixture frame: ${err.message}\n`);
+    process.exit(1);
+  }
+  process.stderr.write(`[fake-grabber] HD fixture ready: ${hdFrame.length} bytes, `
+    + `${margin}px magenta left margin and cyan right\n`);
+}
+// Off until asked, exactly as the real grabber is, so a check that never sends the
+// command sees no type 3 - which is what makes "it is emitted only on request" a
+// thing the fixture can be wrong about rather than a claim in a comment.
+let hdOn = false;
+
+// One command per line on stdin, the real grabber's channel and the real grabber's
+// vocabulary. `low-light` is accepted and ignored because there is no device here to
+// apply it to, and refusing it would make this fixture reject a command the server
+// legitimately sends.
+let stdinPending = '';
+process.stdin.on('data', (chunk) => {
+  stdinPending += chunk.toString('utf8');
+  let nl;
+  while ((nl = stdinPending.indexOf('\n')) !== -1) {
+    const line = stdinPending.slice(0, nl).replace(/\r$/, '');
+    stdinPending = stdinPending.slice(nl + 1);
+    if (line === 'hd-color on' || line === 'hd-color off') {
+      if (!HD) {
+        process.stderr.write('[fake-grabber] refusing hd colour: started without --hd\n');
+        continue;
+      }
+      hdOn = line === 'hd-color on';
+      process.stderr.write(`[fake-grabber] hd colour ${hdOn ? 'on' : 'off'}\n`);
+    }
+  }
+});
+process.stdin.resume();
 
 // The wall clock goes in the hello and nowhere else, the same as the real grabber:
 // every frame stamp below is a monotonic clock, which is right for frame spacing and
@@ -112,7 +192,26 @@ const encode = () => {
   return encodeMessage(TYPE_FRAME, payload);
 };
 
-const emit = () => process.stdout.write(encode());
+// Type 3 rides the same tick as the frame rather than a clock of its own. A real
+// sensor's colour camera runs at its own rate - 30 healthy, 15 in dim light - and
+// nothing downstream may assume the two are locked, but a fixture that drifted them
+// apart would be simulating a sensor rather than framing bytes, which is the line
+// this file has always drawn.
+const encodeHd = () => {
+  const payload = Buffer.alloc(8 + hdFrame.length);
+  payload.writeBigUInt64LE(BigInt(origin + Math.round((n * 1000) / FPS)), 0);
+  hdFrame.copy(payload, 8);
+  note(TYPE_COLOR, payload);
+  return encodeMessage(TYPE_COLOR, payload);
+};
+
+const emit = () => {
+  // The frame first, so a reader that stops at the first message still sees the
+  // stream the recorder is about.
+  const parts = [encode()];
+  if (hdOn && hdFrame) parts.push(encodeHd());
+  process.stdout.write(parts.length === 1 ? parts[0] : Buffer.concat(parts));
+};
 
 // The hello and the burst leave in **one write**, so they arrive in one chunk and
 // the reader's parser hands them to the recorder inside a single turn. Written

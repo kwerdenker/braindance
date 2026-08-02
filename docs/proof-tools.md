@@ -12,17 +12,18 @@ For the method behind the suite, see `docs/instruments.md`.
 the disagreement runs the dangerous way, so read the assertion count and never the code.**
 Counted rather than recalled:
 
-- **Six exit non-zero on a catch and say `NOT CAUGHT` when they miss**: `guard-check`,
-  `jobs-check`, `editor-check`, `monitor-check`, `sensor-view-check`, `level-check`.
+- **Seven exit non-zero on a catch and say `NOT CAUGHT` when they miss**: `guard-check`,
+  `jobs-check`, `editor-check`, `monitor-check`, `sensor-view-check`, `level-check`,
+  `vcam-check`.
 - **Three invert it**: `vendor-check`, `registration-check` and `registry-check`, where caught
   is exit **0** with `caught, as required (N assertions fired)` and exit **1** is `NOT CAUGHT`.
   Anything gating on "non-zero means caught" reads a genuine miss by these three as a catch.
   `registry-check` joined this group rather than the first deliberately, because all three of
   its outcomes have their own code: it exits **2** with `DID NOT RUN` on a crash, on the same
-  reading `registration-check` reserves 2 for. `level-check` separates the same three and lands
-  in the first group instead, so the three-way split and the sign of a catch are independent
-  choices rather than one decision — which is the whole reason this section exists. That is not
-  hypothetical — two of its four mutations reddened their intended row and *then* died on
+  reading `registration-check` reserves 2 for. `level-check` and `vcam-check` separate the same
+  three and land in the first group instead, so the three-way split and the sign of a catch are
+  independent choices rather than one decision — which is the whole reason this section exists.
+  That is not hypothetical — two of its four mutations reddened their intended row and *then* died on
   Playwright's `Target page, context or browser has been closed`, and without the crash handler
   each would have exited non-zero having asserted the right thing for the wrong reason.
 - **Four have no `NOT CAUGHT` branch at all** and simply exit on their failure count:
@@ -50,11 +51,11 @@ same way. The convention was reached independently several times and it is one r
 `--mutate <name>` serves a deliberately broken `main.js` into the running server, or for the
 two vendoring tools rebuilds a deliberately broken source tree.
 
-**Thirteen tools carry mutations** — editor, export, guard, jobs, keyframe, level, library,
-monitor, registration, registry, sensor-view, timeline and vendor — and all of them refuse a
-mutation whose text they cannot find exactly once, because a replacement that silently matched
-nothing would run the unmutated page and be recorded as the check having missed a bug it was
-never shown.
+**Fourteen tools carry mutations** — editor, export, guard, jobs, keyframe, level, library,
+monitor, registration, registry, sensor-view, timeline, vcam and vendor — and all of them refuse
+a mutation whose text they cannot find exactly once, because a replacement that silently
+matched nothing would run the unmutated page and be recorded as the check having missed a bug
+it was never shown.
 
 **A mutation is a piece of source text, so a mutation stops matching the moment the code it
 names is edited** — three of `timeline-check`'s nine had to be re-anchored when step 5 rewrote
@@ -94,6 +95,23 @@ and says so - the queue rows are seconds, the render row is a minute. Its mutati
 one.** `channel: 'chromium'` rather than the bundled headless shell, which has no GPU and falls
 back to SwiftShader - a class nothing else can reproduce, which the worker refuses outright
 rather than pinning jobs to.
+
+**`vcam-check`** spawns its own server on 8361 and needs none running, but it needs a capture at
+`captures/sample.knct` to loop, ffmpeg and ffprobe, and a GPU browser for section 5
+(`--no-browser` drops it and says so). It writes takes into its own staged tree, so it never
+touches `captures/`.
+
+**Its discriminator is geometry rather than resolution, and that is the whole design of the
+tool.** The webcam's claim is that it serves the colour camera and not the registered 512x424
+image the point cloud is textured with — and an implementation that upscaled the registered
+image to 1080p would pass every dimension check there is. What it cannot pass is a margin: the
+colour camera sees 84.1° where the registered frustum sees 70.6°, so a real colour frame carries
+content down the sides that no upscale can invent. `fake-grabber --hd` builds the fixture as
+*the registered frame upscaled* plus a magenta left margin and a cyan right one, so a cheating
+implementation matches most of the picture and still fails on the 12% at each edge. Run
+`--mutate hd-upscales-registered` and read which rows fire: the two margin rows and the
+re-encode row, and nothing else. `--mutate hd-reaches-recorder` fires the two rows about the
+take. A control that failed on a neighbouring row would not be a control for the thing it names.
 
 **`guard-check`** spawns its own servers and needs none running. It exits 2 when the machine has
 no non-internal IPv4, because "not listening on the network" is only a claim if there is a
@@ -206,12 +224,12 @@ noise. That floor belongs to a profiling run that writes nothing — see the gat
 it builds both arms, checks with `ldd` that they load different libraries, and refuses to
 report milliseconds from an arm that lost frames.
 
-**`sweep-all` says "every mutation of every tool" and drives four of the eleven that carry
+**`sweep-all` says "every mutation of every tool" and drives four of the fourteen that carry
 mutations.** Its `TOOLS` is `['library', 'timeline', 'keyframe', 'export']`, so editor, guard,
-jobs, monitor, registration, sensor-view and vendor are outside the sweep a merge waits on -
+jobs, monitor, registration, registry, sensor-view, vcam and vendor are outside the sweep a merge waits on -
 and the file's own header is an argument against exactly this shape, since it takes each tool's
 mutation *names* from that tool's refusal specifically so no list has to agree with anything.
-The names are enumerated and the tools are not. The seven that are missing each need something
+The names are enumerated and the tools are not. The nine that are missing each need something
 the sweep does not currently arrange - a private server, a GPU browser, a built prefix - so
 wiring them is real work rather than a longer array.
 

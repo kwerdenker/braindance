@@ -923,6 +923,16 @@ const DRIVER_RULES = [
       + 'assert where the nav sits and where its two anchors go',
     match: (el) => el.closest('#navRow'),
   },
+  {
+    key: 'output',
+    what: 'a program-out control',
+    // Named because it is driven, not because it is exempt. `vcam-check` section 5
+    // opens the operator surface and the source together, moves both of these, and
+    // asserts the source's drawing buffer and its camera actually followed - which is
+    // the only place they can be checked, since what they change is a different page.
+    by: 'vcam-check section 5 sets both from the operator page and reads the source',
+    match: (el) => el.closest('#programOutGroup'),
+  },
 ];
 
 // Named one at a time, because each of these is a control this file presses itself.
@@ -1119,7 +1129,7 @@ try {
       ease: el.dataset ? el.dataset.ease ?? null : null,
       inTbar: Boolean(el.closest('.tbar')),
       groups: ['#panel', '#cameraGroup', '#navRow', '#recordGroup', '#recLookGroup',
-        '#sensorGroup', '#monitorGroup', '#extendedRow']
+        '#sensorGroup', '#monitorGroup', '#extendedRow', '#programOutGroup']
         .filter((g) => el.closest(g)),
       kf: el.classList.contains('kf'),
       label: (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 24),
@@ -1133,6 +1143,7 @@ try {
     if (row.ease) return 'rule: an ease preset, section 5 presses all five';
     if (row.kf && row.id !== 'tRateKey') return RULE.keyframe;
     if (inGroup(row, '#recordGroup', '#recLookGroup', '#sensorGroup', '#monitorGroup', '#extendedRow')) return RULE.recorder;
+    if (inGroup(row, '#programOutGroup')) return RULE.output;
     if (inGroup(row, '#cameraGroup') || row.id === 'camSensor') return RULE.camera;
     if (inGroup(row, '#navRow')) return RULE.nav;
     if (inGroup(row, '#panel') && (row.type === 'range' || row.type === 'checkbox')) return RULE.look;

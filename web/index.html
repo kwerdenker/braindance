@@ -193,6 +193,23 @@
   body.editing #hint { display: none; }
   body.editing #panel { max-height: calc(100vh - var(--timeline-h) - var(--tlanes-h) - 32px); }
 
+  /* The program-out source. Everything an operator needs and an encoder does not
+     comes off, because a browser source captures the page rather than the canvas -
+     the panel is a DOM element sitting over the picture, and OBS would composite it
+     straight into the shot. The readout stays and is the one deliberate exception:
+     it is how somebody checks the source is healthy by opening the URL, and it sits
+     in a corner OBS can crop rather than being drawn into the buffer. */
+  body.program-out #panel,
+  body.program-out #hint,
+  body.program-out #timeline { display: none; }
+  body.program-out { background: #000; overflow: hidden; }
+  #programOutReadout {
+    position: fixed; left: 8px; bottom: 8px; z-index: 20;
+    font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: rgba(230, 238, 248, 0.72); background: rgba(8, 11, 16, 0.6);
+    padding: 3px 8px; border-radius: 5px; pointer-events: none; white-space: nowrap;
+  }
+
   /* Two rows, both of a fixed height, and the fixedness is the load-bearing half
      rather than the count. The strip's height is a constant the stage is sized
      against, so a row that *wrapped* would not make the strip taller - it would push
@@ -552,6 +569,23 @@
       <div class="row"><span>every Nth</span><input id="monStride" type="range" min="1" max="30" step="1" value="1"><output>1</output></div>
       <div class="row"><span>allow cost</span><input id="monAcceptCost" type="checkbox"></div>
       <div id="monNote">full rate. the recording is always full fidelity whatever this says.</div>
+    </div>
+
+    <!-- What OBS gets. Two sources, and they are different pictures rather than two
+         views of one: the program-out page renders this scene at a fixed size, and
+         the webcam is the colour camera's own 1920x1080 frame served straight off
+         the server without a renderer in the way. Neither is a setting on the other,
+         which is why they are two URLs. -->
+    <div class="group" id="programOutGroup">
+      <label>Output to OBS</label>
+      <div class="row"><span>camera</span>
+        <select id="progMode">
+          <option value="camera">program camera</option>
+          <option value="mirror">mirror this view</option>
+        </select>
+      </div>
+      <div class="row"><span>size</span><input id="progSize" type="text" value="1920x1080" spellcheck="false"></div>
+      <div id="progNote">add a browser source in OBS for the viewport, or a media source for the webcam.</div>
     </div>
 
     <div class="btnrow" id="extendedRow">

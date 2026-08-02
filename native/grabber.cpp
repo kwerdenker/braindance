@@ -8,6 +8,8 @@
 //   type 2 (frame) : [u32 depthBytes][u32 colorBytes][u64 timestampMs]
 //                    [u16 depth[512*424] millimetres, 0 = no reading]
 //                    [JPEG of the registered 512x424 colour image]
+//   type 3 (colour): [u64 timestampMs][JPEG of the native 1920x1080 colour image]
+//                    Only while the server has asked for it - see `hd-color` below.
 
 #include <cstdio>
 #include <cstdlib>
@@ -18,6 +20,10 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -34,6 +40,10 @@
 static const uint32_t MAGIC = 0x4B4E4354; // 'KNCT'
 static const uint32_t TYPE_HELLO = 1;
 static const uint32_t TYPE_FRAME = 2;
+static const uint32_t TYPE_COLOR = 3;
+
+static const int CW = 1920;
+static const int CH = 1080;
 
 // A corpus is deliberately not KNCT: the wire format carries u16 millimetre depth
 // and a JPEG, which are both lossy relative to what Registration::apply actually
@@ -90,7 +100,17 @@ static bool write_file(const std::string &path, const void *const *parts,
   return ok;
 }
 
+// **stdout has two writers, so framing a message is a critical section.** The frame
+// loop writes type 1 and type 2; the colour encoder thread below writes type 3. A
+// message is a header followed by its payload as two separate `write_all` calls over
+// a pipe that partial-writes at 64KB, so without this lock the two interleave - a
+// header claiming 215KB followed by the first 64KB of somebody else's depth grid.
+// The parser on the other end reads that as a desync and restarts the grabber, and
+// it would do it rarely, unreproducibly, and only once a webcam was attached.
+static std::mutex g_writeMutex;
+
 static bool write_message(int fd, uint32_t type, const void *payload, uint32_t payloadLen) {
+  std::lock_guard<std::mutex> lock(g_writeMutex);
   uint32_t header[3] = {MAGIC, type, payloadLen};
   if (!write_all(fd, header, sizeof(header))) return false;
   if (payloadLen && !write_all(fd, payload, payloadLen)) return false;
@@ -110,6 +130,135 @@ static uint64_t now_us() {
   return (uint64_t)duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
+/**
+ * The webcam output's producer: the colour camera's own picture, encoded off the
+ * frame loop.
+ *
+ * **Why a second encode at all.** Type 2 already carries colour, but it carries the
+ * *registered* colour - `Registration::apply`'s resample of the colour camera into
+ * the depth camera's viewpoint. That image wears the depth camera's 70.6 degree
+ * frustum rather than the colour camera's 84.1, and it is punched through with holes
+ * wherever the depth solve returned nothing, because registration has no depth to
+ * carry a colour sample on. It is a texture for a point cloud and not a picture of a
+ * room, so a webcam has to start from the 1920x1080 frame instead.
+ *
+ * **Why its own thread.** A 1080p TurboJPEG encode at the same settings measures
+ * 5.50ms mean on this machine - 90 real sensor frames over a six-second subscription,
+ * no warmup discarded, zero busy drops, q80, TJSAMP_420, FASTDCT. The serial half of
+ * the frame loop is 7.1ms against a 33ms budget with `Registration::apply` taking 6.3
+ * of it, so encoding here would add the full encode to capture-to-wire latency for an
+ * output most runs do not have attached. On its own thread the loop pays the copy
+ * below and nothing else.
+ *
+ * **Why it copies rather than borrows.** The `Frame` handed in belongs to
+ * libfreenect2's listener and is released when the next colour frame arrives. At
+ * 30fps that is 33ms against a 5.50ms mean encode, so borrowing would be safe almost
+ * always - and "almost always" is a data race that surfaces as a torn picture on a
+ * dim-light run nobody can reproduce.
+ *
+ * **Drop-to-latest rather than a queue.** A colour frame arriving while the encoder
+ * is busy overwrites the pending one. A queue would grow latency under exactly the
+ * condition a live output cannot afford it, and a webcam wants the newest frame
+ * rather than every frame.
+ */
+class HdEncoder {
+public:
+  explicit HdEncoder(int quality) : quality_(quality) {}
+
+  void start() { thread_ = std::thread(&HdEncoder::run, this); }
+
+  void stop() {
+    {
+      std::lock_guard<std::mutex> lock(m_);
+      stop_ = true;
+    }
+    cv_.notify_all();
+    if (thread_.joinable()) thread_.join();
+  }
+
+  bool enabled() const { return enabled_.load(std::memory_order_relaxed); }
+  void setEnabled(bool on) { enabled_.store(on, std::memory_order_relaxed); }
+  uint64_t sent() const { return sent_.load(std::memory_order_relaxed); }
+  uint64_t encodeUs() const { return encodeUs_.load(std::memory_order_relaxed); }
+  uint64_t dropped() const { return dropped_.load(std::memory_order_relaxed); }
+
+  /** Called on the frame loop, and the only thing it costs is the copy. */
+  void submit(const uint8_t *bgrx, size_t bytes, uint64_t ts) {
+    {
+      std::lock_guard<std::mutex> lock(m_);
+      // An unconsumed frame still in the slot is one the encoder never got to, and
+      // it is counted rather than silently replaced: a webcam delivering 12fps off a
+      // 30fps sensor is a fact about this machine, and the alternative is somebody
+      // attributing it to the sensor.
+      if (hasPending_) dropped_.fetch_add(1, std::memory_order_relaxed);
+      pending_.assign(bgrx, bgrx + bytes);
+      pendingTs_ = ts;
+      hasPending_ = true;
+    }
+    cv_.notify_one();
+  }
+
+private:
+  void run() {
+    tjhandle jpeg = tjInitCompress();
+    if (!jpeg) {
+      std::fprintf(stderr, "[grabber] cannot start the hd colour encoder: %s\n", tjGetErrorStr());
+      return;
+    }
+    std::vector<uint8_t> work;
+    std::vector<uint8_t> payload;
+    unsigned char *buf = nullptr;
+    // Declared out here and never reset for the same reason the frame loop's is:
+    // TurboJPEG reads it as the capacity of the buffer it allocated last time, and
+    // zeroing it claims a zero-length buffer that the encode then runs off the end of.
+    unsigned long size = 0;
+
+    for (;;) {
+      uint64_t ts;
+      {
+        std::unique_lock<std::mutex> lock(m_);
+        cv_.wait(lock, [this] { return hasPending_ || stop_; });
+        if (stop_) break;
+        work.swap(pending_);
+        ts = pendingTs_;
+        hasPending_ = false;
+      }
+
+      uint64_t t0 = now_us();
+      if (tjCompress2(jpeg, work.data(), CW, 0, CH, TJPF_BGRX, &buf, &size,
+                      TJSAMP_420, quality_, TJFLAG_FASTDCT) != 0) {
+        std::fprintf(stderr, "[grabber] hd colour encode failed: %s\n", tjGetErrorStr());
+        continue;
+      }
+      encodeUs_.fetch_add(now_us() - t0, std::memory_order_relaxed);
+
+      payload.resize(8 + (size_t)size);
+      std::memcpy(payload.data(), &ts, 8);
+      std::memcpy(payload.data() + 8, buf, (size_t)size);
+      // Through the same locked writer as everything else, which is what keeps this
+      // thread's 215KB from landing inside the frame loop's 486KB.
+      if (!write_message(STDOUT_FILENO, TYPE_COLOR, payload.data(), (uint32_t)payload.size())) break;
+      sent_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    if (buf) tjFree(buf);
+    tjDestroy(jpeg);
+  }
+
+  const int quality_;
+  std::thread thread_;
+  std::mutex m_;
+  std::condition_variable cv_;
+  std::vector<uint8_t> pending_;
+  uint64_t pendingTs_ = 0;
+  bool hasPending_ = false;
+  bool stop_ = false;
+  std::atomic<bool> enabled_{false};
+  std::atomic<uint64_t> sent_{0};
+  std::atomic<uint64_t> encodeUs_{0};
+  std::atomic<uint64_t> dropped_{0};
+};
+
 // Low light on is the sensor's own behaviour: it lengthens integration until the
 // image is properly exposed, which drops the colour camera to 15fps. Off pins the
 // exposure to a single mains-flicker period - 16.667 pseudo-ms resolves to 10ms
@@ -124,7 +273,8 @@ static void applyLowLight(libfreenect2::Freenect2Device *dev, bool on) {
 // Commands arrive newline terminated on stdin so the server can retune a running
 // grabber. Restarting instead would cost a multi-second blackout, because closing
 // the device on macOS sleeps 4s inside libfreenect2.
-static void pollCommands(libfreenect2::Freenect2Device *dev, std::string &pending, bool wantColor) {
+static void pollCommands(libfreenect2::Freenect2Device *dev, std::string &pending, bool wantColor,
+                         HdEncoder *hd) {
   char buf[256];
   ssize_t n;
   while ((n = ::read(STDIN_FILENO, buf, sizeof(buf))) > 0) pending.append(buf, (size_t)n);
@@ -137,6 +287,19 @@ static void pollCommands(libfreenect2::Freenect2Device *dev, std::string &pendin
 
     if (line == "low-light on" || line == "low-light off") {
       if (wantColor) applyLowLight(dev, line == "low-light on");
+    } else if (line == "hd-color on" || line == "hd-color off") {
+      // Asked for rather than always on, because a 1080p JPEG is roughly 215KB and
+      // another ~50Mbit/s down a pipe whose backpressure reaches this process and
+      // makes it miss USB deadlines. With colour off there is no frame to encode, and
+      // saying so on stderr is what stops the server waiting for a stream that is
+      // never coming.
+      const bool on = line == "hd-color on";
+      if (!wantColor && on) {
+        std::fprintf(stderr, "[grabber] refusing hd colour: this grabber was started with --no-color\n");
+      } else if (hd) {
+        hd->setEnabled(on);
+        std::fprintf(stderr, "[grabber] hd colour %s\n", on ? "on" : "off");
+      }
     } else if (!line.empty()) {
       std::fprintf(stderr, "[grabber] unknown command: %s\n", line.c_str());
     }
@@ -229,6 +392,14 @@ int main(int argc, char **argv) {
         "  the time spent blocked waiting for the next depth frame, which is the\n"
         "  headroom left over. One CSV row per frame, all of them written to\n"
         "  stderr at exit so the reporting stays out of the loop being measured.\n"
+        "  hd_copy_us is the webcam's share: the 1080p encode itself runs on\n"
+        "  another thread and is summarised separately, so what lands on the loop\n"
+        "  is the copy that hands the frame over and nothing else.\n"
+        "\n"
+        "  On stdin, one command per line: 'low-light on|off' and\n"
+        "  'hd-color on|off'. The second starts and stops the type 3 colour\n"
+        "  stream the webcam output reads, and it is off until asked because a\n"
+        "  1080p JPEG is roughly 215KB a frame of pipe nobody is reading.\n"
         "\n"
         "  --min-depth/--max-depth clip on the GPU before the frame is built, so\n"
         "  they decide what exists at all - the viewer's own clip only hides what\n"
@@ -433,11 +604,22 @@ int main(int argc, char **argv) {
   unsigned char *jpegBuf = nullptr;
   unsigned long jpegSize = 0;
 
+  // Started with the stream rather than on the first request, because a thread parked
+  // on a condition variable costs nothing and starting one on demand would put the
+  // thread's own startup inside the latency of the first webcam frame. It encodes
+  // only what `hd-color on` lets the loop below hand it.
+  HdEncoder hdEncoder(jpegQuality);
+  if (wantColor) hdEncoder.start();
+
   std::vector<uint8_t> depthOut(DEPTH_PIXELS * sizeof(uint16_t));
   std::vector<uint8_t> payload;
 
   libfreenect2::FrameMap depthFrames, colorFrames;
   bool haveColor = false;
+  // Said once rather than per frame: a decoder producing something the webcam cannot
+  // encode does it thirty times a second, and a log that repeats at frame rate is a
+  // log nobody reads.
+  bool hdFormatWarned = false;
   uint64_t frameCount = 0;
   uint64_t colorCount = 0;
   int dumped = 0;
@@ -446,7 +628,7 @@ int main(int argc, char **argv) {
   // the profiling I/O cannot land inside the loop it is measuring.
   struct ProfRecord {
     uint64_t arrival;
-    uint32_t newColor, wait, acq, reg, conv, enc, asm_, write, jpegBytes;
+    uint32_t newColor, wait, acq, reg, conv, enc, asm_, write, jpegBytes, hdCopy;
   };
   std::vector<ProfRecord> prof;
   if (profile) prof.reserve(1 << 17); // ~an hour at 30fps, so no realloc mid-loop
@@ -459,7 +641,7 @@ int main(int argc, char **argv) {
     }
     uint64_t tArrived = now_us();
 
-    pollCommands(dev, pendingCommands, wantColor);
+    pollCommands(dev, pendingCommands, wantColor, &hdEncoder);
 
     // Take a new colour frame only if one is already waiting; never block on it.
     // The previous one is released first so at most one is held outside the pool.
@@ -473,6 +655,40 @@ int main(int argc, char **argv) {
     libfreenect2::Frame *depth = depthFrames[libfreenect2::Frame::Depth];
     libfreenect2::Frame *rgb = haveColor ? colorFrames[libfreenect2::Frame::Color] : nullptr;
     uint64_t tAcquired = now_us();
+
+    // The webcam's picture, handed off before registration rather than after, because
+    // nothing it needs happens downstream and every microsecond it waits here is
+    // latency in somebody's video call.
+    //
+    // **Only on a new colour frame.** The loop reuses the last colour when none has
+    // arrived - that is the whole point of the decoupled listeners - so submitting
+    // every iteration would re-encode one picture at the depth rate and bill a
+    // stationary webcam for 30fps of identical JPEGs. Gated this way, the output runs
+    // at the colour camera's real rate, which halves to 15 in dim light and is the
+    // honest number to show.
+    uint64_t tHdCopied = tAcquired;
+    if (newColor && rgb && hdEncoder.enabled()) {
+      // Checked rather than assumed: both JPEG decoders this library can be built
+      // with produce BGRX today, and a build that produced RGBX would hand the webcam
+      // a picture with its red and blue swapped - wrong in a way that looks like a
+      // colour-grading choice rather than a bug.
+      if (rgb->format != libfreenect2::Frame::BGRX) {
+        if (!hdFormatWarned) {
+          std::fprintf(stderr, "[grabber] hd colour off: the colour decoder produced format %d, not BGRX\n",
+                       (int)rgb->format);
+          hdFormatWarned = true;
+        }
+      } else if ((int)rgb->width != CW || (int)rgb->height != CH) {
+        if (!hdFormatWarned) {
+          std::fprintf(stderr, "[grabber] hd colour off: the colour frame is %dx%d, not %dx%d\n",
+                       (int)rgb->width, (int)rgb->height, CW, CH);
+          hdFormatWarned = true;
+        }
+      } else {
+        hdEncoder.submit((const uint8_t *)rgb->data, (size_t)CW * CH * 4, now_ms());
+      }
+      tHdCopied = now_us();
+    }
 
     // Dumped before apply() rather than after, because these two frames are the
     // harness's input and apply() writes into buffers it also reads maps from.
@@ -561,7 +777,11 @@ int main(int argc, char **argv) {
       r.newColor  = newColor ? 1 : 0;
       r.wait      = (uint32_t)(tArrived - tWaitStart);
       r.acq       = (uint32_t)(tAcquired - tArrived);
-      r.reg       = (uint32_t)(tRegistered - tAcquired);
+      // The webcam's copy sits between acquisition and registration, so it comes out
+      // of the span rather than being buried inside `reg`. A cost that hides in a
+      // neighbouring segment is a cost the next person attributes to registration.
+      r.hdCopy    = (uint32_t)(tHdCopied - tAcquired);
+      r.reg       = (uint32_t)(tRegistered - tHdCopied);
       r.conv      = (uint32_t)(tConverted - tRegistered);
       r.enc       = (uint32_t)(tEncoded - tConverted);
       r.asm_      = (uint32_t)(tAssembled - tEncoded);
@@ -579,17 +799,32 @@ int main(int argc, char **argv) {
                    (unsigned long long)frameCount, (unsigned long long)colorCount);
   }
 
+  // Stopped before the listener releases its frame and before the counters below are
+  // read, so the thread is quiescent rather than mid-encode when either happens.
+  hdEncoder.stop();
   if (haveColor) colorListener.release(colorFrames);
 
   if (profile) {
-    std::fprintf(stderr, "[prof] n,arrival_us,newColor,wait_us,acq_us,reg_us,conv_us,enc_us,asm_us,write_us,jpeg_bytes\n");
+    std::fprintf(stderr, "[prof] n,arrival_us,newColor,wait_us,acq_us,reg_us,conv_us,enc_us,asm_us,write_us,jpeg_bytes,hd_copy_us\n");
     for (size_t i = 0; i < prof.size(); i++) {
       const ProfRecord &r = prof[i];
-      std::fprintf(stderr, "[prof] %zu,%llu,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+      std::fprintf(stderr, "[prof] %zu,%llu,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
                    i, (unsigned long long)r.arrival,
-                   r.newColor, r.wait, r.acq, r.reg, r.conv, r.enc, r.asm_, r.write, r.jpegBytes);
+                   r.newColor, r.wait, r.acq, r.reg, r.conv, r.enc, r.asm_, r.write, r.jpegBytes,
+                   r.hdCopy);
     }
     std::fflush(stderr);
+  }
+
+  // The webcam's own cost, reported off the per-frame table because the encode does
+  // not happen on the frame loop's clock. `dropped` is the number that says whether
+  // this machine kept up: a colour frame arriving while the encoder was still busy is
+  // one the webcam never showed, and a viewer counting a low frame rate needs to know
+  // it was this and not the sensor.
+  if (wantColor && hdEncoder.sent() > 0) {
+    std::fprintf(stderr, "[grabber] hd colour: %llu sent, %llu dropped busy, %.2f ms mean encode\n",
+                 (unsigned long long)hdEncoder.sent(), (unsigned long long)hdEncoder.dropped(),
+                 (double)hdEncoder.encodeUs() / (double)hdEncoder.sent() / 1000.0);
   }
 
   if (jpegBuf) tjFree(jpegBuf);

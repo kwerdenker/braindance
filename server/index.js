@@ -8,7 +8,7 @@ import { pipeline } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, join, normalize, extname, sep, resolve } from 'node:path';
 import { WebSocketServer } from 'ws';
-import { MessageParser, encodeMessage, TYPE_HELLO, TYPE_FRAME } from './protocol.js';
+import { MessageParser, encodeMessage, TYPE_HELLO, TYPE_FRAME, TYPE_COLOR } from './protocol.js';
 import { openCapture, withCapture, captureIdFor, openCaptureCount, decimatePayload } from './capture.js';
 import { handleExportSocket, MAX_FRAME_BYTES } from './export.js';
 import {
@@ -18,6 +18,7 @@ import {
 } from './library.js';
 import { Recorder } from './recorder.js';
 import { JobStore } from './jobs.js';
+import { Webcam } from './webcam.js';
 import { requireMutation, originAllowed } from './http-guard.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -981,14 +982,33 @@ const shooting = (run) => async (req, res, args, query) => {
 };
 
 /**
- * Every monitor whose frames cross the link at a setting finer than the cap.
+ * Every consumer whose frames cross the link and cost the take.
  *
  * Read off the live sockets rather than off anything a caller sends, because the
  * question is what is attached right now, and the answer has to be the same one
  * `broadcastFrame` is about to act on.
+ *
+ * **This asks about consumers rather than about monitors, and the difference is the
+ * whole reason it was rewritten.** The cost being refused is backpressure: a link
+ * that cannot carry what is being pushed down it reaches back through this server's
+ * stdin pipe into the grabber, which then misses USB deadlines and drops depth
+ * packets that never reach the file. A WebSocket monitor at ÷1 does that. So does a
+ * webcam subscriber pulling ~50Mbit/s of MJPEG over the same radio, and it does it
+ * through a route that has no divisor and no stride to name.
+ *
+ * Written as "every kind of consumer, asked the same question" rather than as
+ * monitors-plus-a-webcam-clause, so the third kind is refused by being in this list
+ * rather than by somebody remembering this function exists. A cost the refusal cannot
+ * see is a cost it silently under-reports, and the only thing the refusal has going
+ * for it is that its number is true.
  */
-function monitorsCostingTheTake() {
-  return attachedMonitors().filter(costsTheTake).map((m) => ({ divisor: m.divisor, stride: m.stride }));
+function consumersCostingTheTake() {
+  return [
+    ...attachedMonitors().filter(costsTheTake)
+      .map((m) => ({ kind: 'monitor', at: `÷${m.divisor} ×${m.stride}` })),
+    ...webcam.describe().filter((s) => !s.loopback)
+      .map(() => ({ kind: 'webcam', at: 'the colour camera at full rate' })),
+  ];
 }
 
 /**
@@ -1029,18 +1049,19 @@ function attachedMonitors() {
  */
 const serveRecordStart = shooting(async (req, res) => {
   const body = await readBody(req);
-  const costly = monitorsCostingTheTake();
+  const costly = consumersCostingTheTake();
   if (costly.length && body.acceptMonitorCost !== true) {
-    const at = costly.map((m) => `÷${m.divisor} ×${m.stride}`).join(', ');
+    const at = costly.map((c) => `${c.kind} at ${c.at}`).join(', ');
     throw new Error(
-      `refusing to start a take: ${costly.length} monitor${costly.length > 1 ? 's are' : ' is'} watching over the `
-      + `network at ${at}, finer than the ÷${RECORDING_CAP.divisor} ×${RECORDING_CAP.stride} a recording take `
-      + 'allows - backpressure from that link reaches the grabber and costs the take frames that never reach the '
-      + 'file, so coarsen the monitor or start again with acceptMonitorCost',
+      `refusing to start a take: ${costly.length} consumer${costly.length > 1 ? 's are' : ' is'} reading over the `
+      + `network (${at}), past what a recording take allows - a monitor may go no finer than `
+      + `÷${RECORDING_CAP.divisor} ×${RECORDING_CAP.stride}, and the webcam has no coarser setting to offer at all. `
+      + 'Backpressure from that link reaches the grabber and costs the take frames that never reach the file, so '
+      + 'coarsen the monitor, detach the webcam, or start again with acceptMonitorCost',
     );
   }
   if (costly.length) {
-    console.log(`[server] starting a take with ${costly.length} full-rate monitor(s): the operator accepted the cost`);
+    console.log(`[server] starting a take with ${costly.length} costly consumer(s): the operator accepted the cost`);
   }
   sendJson(res, await recorder.start(helloJson));
 });
@@ -1073,6 +1094,10 @@ function serveRoutes(req, res) {
       // A route that changes something is a route with a write, and this is that
       // fact rather than a label beside it.
       mutates: Boolean(r.write),
+      // And a route that serves what the sensor is seeing right now says so, for the
+      // same reason: the origin rule applies to it, and a check that walks this table
+      // can then ask every one of them rather than the ones a reviewer thought of.
+      live: Boolean(r.live),
       methods: r.write?.methods ?? [],
     })),
   });
@@ -1235,7 +1260,7 @@ const serveDescriptors = (req, res) => sendJson(res, { open: openCaptureCount(),
  * are the reason.
  */
 const serveRecordState = async (req, res) => {
-  const costly = monitorsCostingTheTake();
+  const costly = consumersCostingTheTake();
   sendJson(res, {
     ...recorder.state,
     storage: await remaining(CAPTURES_DIR, recordingRate()),
@@ -1248,6 +1273,16 @@ const serveRecordState = async (req, res) => {
       watching: attachedMonitors().map((m) => ({ divisor: m.divisor, stride: m.stride, loopback: m.loopback })),
       costingTheTake: costly,
       wouldRefuse: costly.length > 0,
+    },
+    // Beside the monitors rather than inside them, because it is a different kind of
+    // consumer reached through a different door - but it is in the same `costly` list
+    // above, which is the number the refusal is actually made of.
+    webcam: {
+      subscribers: webcam.describe(),
+      available: webcam.unavailable === null,
+      unavailable: webcam.unavailable,
+      served: webcam.served,
+      dropped: webcam.dropped,
     },
   });
 };
@@ -1355,6 +1390,16 @@ const ROUTES = [
     write: { methods: ['PUT', 'POST', 'DELETE'], run: (req, res, args) => writeDocument(req, res, DELIVERABLES, args[0]) },
   },
 
+  // ---- the webcam
+  //
+  // `live` rather than `write`: it changes nothing, so it is not a mutation, but it
+  // hands out what the colour camera is seeing this second and the origin rule
+  // applies to it for that reason alone. The dispatcher asks the rule of every entry
+  // carrying this flag, so the next route that serves live sensor bytes is covered by
+  // declaring itself rather than by somebody remembering - the same move the table
+  // already made for mutations.
+  { path: '/camera.mjpg', pattern: /^\/camera\.mjpg$/, live: true, read: (req, res) => webcam.attach(req, res) },
+
   // ---- recording
   { path: '/record/state', pattern: /^\/record\/state$/, read: serveRecordState },
   { path: '/record/start', pattern: /^\/record\/start$/, write: { methods: ['POST'], run: serveRecordStart } },
@@ -1410,6 +1455,12 @@ const PAGES = {
   '/record': 'index.html',
   '/edit': 'index.html',
   '/gallery': 'library.html',
+  // The program-out source, which OBS opens as a browser source. The same file as
+  // the viewer and the editor for the same reason those two are one file: it is the
+  // same renderer drawing the same scene, and a second page would be a second
+  // renderer to keep in step with this one. The URL is what tells `main.js` which of
+  // the three it is.
+  '/program': 'index.html',
 };
 
 /**
@@ -1428,6 +1479,20 @@ async function serveRoute(req, res, urlPath, query) {
     if (!m) continue;
     const args = m.slice(1).map((a) => decodeURIComponent(a));
     if (reading && r.read) {
+      // **The second gate, and it is here for the same reason the first one is.** A
+      // route marked `live` serves what the sensor is seeing right now. It mutates
+      // nothing, so `requireMutation` is the wrong rule - a GET declares no content
+      // type and there is no state to protect - but a page on another origin has no
+      // business reading the camera, and the answer to "which page is asking" is the
+      // same answer the mutating routes already get. Asked from the dispatcher rather
+      // than inside the handler, so a live route added later is guarded by declaring
+      // itself; `guard-check` walks the table and asks every entry carrying the flag.
+      if (r.live && !originAllowed(req)) {
+        sendJson(res, {
+          error: `${req.headers.origin} is not this server, and this route serves what the sensor is seeing`,
+        }, 403);
+        return true;
+      }
       await r.read(req, res, args, query);
       return true;
     }
@@ -1656,6 +1721,10 @@ function broadcastText(text) {
 function setSensorState(state) {
   sensorState = state;
   broadcastText(JSON.stringify({ status: state }));
+  // The webcam cannot outlive the sensor being live, and hanging it off the state
+  // change rather than off each of the paths that cause one is what keeps a route
+  // added later from missing a case. Only revoked here - a hello is what restores it.
+  if (state !== 'live') webcam.setUnavailable(`the sensor is ${state}`);
 }
 
 // Live camera settings the viewer can change. Colour on/off has to restart the
@@ -1778,6 +1847,28 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    // What the operator's surface is telling the program-out source to draw: which
+    // camera, what size, and every parameter write as it happens.
+    //
+    // **Relayed rather than interpreted.** The server has no opinion about what a
+    // parameter means and must not acquire one - `web/main.js`'s registry is the only
+    // thing that knows a parameter's range, its kind and what applying it does, and a
+    // second copy of any of that here would be the drift the registry exists to
+    // prevent. So this forwards the message to every other client and reads nothing
+    // out of it, which also means a parameter added to the registry next year reaches
+    // the program-out page without this line changing.
+    //
+    // To others only, never back to the sender: a surface that received its own
+    // writes would apply each one twice, and in mirror mode that is a camera pose
+    // fighting the hand that is dragging it.
+    if (typeof msg.programOut === 'object' && msg.programOut) {
+      const text = raw.toString('utf8');
+      for (const other of wss.clients) {
+        if (other !== ws && other.readyState === other.OPEN) other.send(text);
+      }
+      return;
+    }
+
     if (typeof msg.camera !== 'object' || !msg.camera) return;
     if (!applyCamera) return;
 
@@ -1874,6 +1965,23 @@ function broadcastFrame(payload) {
   }
 }
 
+// Asks the grabber to start or stop encoding the colour camera. Wired up by
+// `startLive` and absent in replay, for the same reason `applyCamera` is: a capture
+// on a loop has no colour camera to turn on, and the webcam says so rather than
+// serving frames from a recording as though they were live.
+let requestHdColor = null;
+
+// The webcam output. Created out here beside the recorder rather than inside
+// `startLive`, because the route above has to answer on a machine where no grabber
+// ever starts - an editing station with nothing plugged in should say why the camera
+// is unavailable, not 404 as though the feature did not exist.
+const webcam = new Webcam({
+  request: (wanted) => requestHdColor?.(wanted),
+});
+if (REPLAY) {
+  webcam.setUnavailable(`this server is replaying ${basename(REPLAY)}, so there is no colour camera to serve`);
+}
+
 // One take is one file, and the recorder is what holds that identity. It is
 // created here rather than inside `startLive` because the HTTP routes above have
 // to be able to reach it whether or not a sensor ever appears - a library on a
@@ -1932,6 +2040,24 @@ function handleMessage(msg) {
     // tick's catch - no frame reached any client, the status flapped between lost
     // and live, and `/record/state` reported a healthy recording the whole time.
     recorder.write(msg.raw);
+  } else if (msg.type === TYPE_COLOR) {
+    // **The webcam and nothing else. There is deliberately no `recorder.write` on
+    // this branch.**
+    //
+    // A capture file is the wire verbatim, so a type 3 landing in one would change
+    // what a `.knct` file contains - and the content hash of every take with it,
+    // which is the key `library.js` joins two machines on. `capture.js`'s sidecar
+    // index and frame API both walk the file assuming types 1 and 2, so a third would
+    // have to be skipped correctly at both ends including for takes written before
+    // today. None of that is hard and none of it has been decided, so the live-only
+    // rule holds until it is: issue #9 carries what recording it would take.
+    //
+    // This is the `nearClip` versus `--min-depth` failure class - footage changed in
+    // the one situation nobody is watching for it - so it is not left to this comment.
+    // `vcam-check --mutate hd-reaches-recorder` adds the write back and has to fail.
+    //
+    // The payload is [u64 timestampMs][JPEG], and the JPEG goes out untouched.
+    webcam.offer(Buffer.from(msg.payload.subarray(8)), Number(msg.payload.readBigUInt64LE(0)));
   }
 }
 
@@ -2119,6 +2245,18 @@ function startLive() {
             attempt = 0; // a clean handshake means the link is healthy again
             everLive = true;
             setSensorState('live');
+            // **A new grabber has never heard of the subscriber that is still
+            // attached.** Its encoder starts off, so without this the webcam comes
+            // back from a colour toggle or a USB drop as a socket that is open,
+            // subscribed and permanently silent - and everything on both ends looks
+            // connected while it happens.
+            //
+            // This is also the one place the webcam becomes available at all: a
+            // handshake from a grabber with colour on is the only evidence that there
+            // is a colour camera to serve, and everything else in this file can only
+            // revoke it.
+            if (camera.color) webcam.setAvailable();
+            webcam.reassert();
           }
         }
       } catch (err) {
@@ -2143,6 +2281,11 @@ function startLive() {
       // matters - the restart branch below returns before the state is set, and that
       // branch is the colour toggle.
       helloJson = null;
+      // The picture goes with the grabber too. Said as a sentence rather than left as
+      // a stalled stream, because the reason is the whole value: a webcam that stops
+      // mid-call and answers "the grabber is restarting" is one somebody waits three
+      // seconds for, and a webcam that stops and answers nothing is one they debug.
+      webcam.setUnavailable('the grabber is restarting');
       // The take ends here. One take is one continuous stream with one hello and
       // monotonic timestamps, and the index, the retime curve and `mixT` all depend
       // on it - a blend fraction across a restart seam has no meaning, and the
@@ -2161,6 +2304,15 @@ function startLive() {
       }
       scheduleRetry();
     });
+  };
+
+  // One line down the grabber's own stdin command channel, the same one the low-light
+  // toggle uses. Refused rather than sent when colour is off, because the grabber
+  // would refuse it too and the webcam should hear the reason from the side that
+  // knows it rather than from a stream that never starts.
+  requestHdColor = (wanted) => {
+    if (!camera.color) return;
+    child?.stdin.write(`hd-color ${wanted ? 'on' : 'off'}\n`);
   };
 
   applyCamera = (next) => {
@@ -2190,6 +2342,15 @@ function startLive() {
       // retry is a genuine backoff step, and zeroing it would restart the table - so a
       // sensorless editing station whose colour toggle gets touched now and then would
       // never reach `absent`, which is the one conclusion that machine needs.
+      // **Turning colour off drops a live webcam, and that is allowed rather than
+      // refused.** The alternative - refusing the toggle while somebody is subscribed
+      // - puts the decision on the person at the keyboard, who did not necessarily
+      // know a call was running; this puts a legible reason in front of whoever loses
+      // the picture. It is the one place this feature makes something worse, and it
+      // is a deliberate trade rather than an oversight.
+      if (!camera.color) {
+        webcam.setUnavailable('colour is off on this grabber, so there is no colour camera to serve');
+      }
       console.log(`[server] colour camera ${camera.color ? 'on' : 'off'} - ${child ? 'restarting grabber' : 'takes effect on the next spawn'}`);
       if (child) {
         restarting = true;
