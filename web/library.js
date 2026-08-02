@@ -566,9 +566,20 @@ function menuItemsFor(take) {
  * `addButton`, so it answers to its id, which its clone carries too.
  */
 const controlKey = (el) => el?.dataset?.act || el?.id || null;
-const findControl = (host, key) => (key && host?.isConnected
-  ? host.querySelector(`[data-act="${CSS.escape(key)}"], #${CSS.escape(key)}`)
-  : null);
+const findControl = (host, key) => {
+  if (!key || !host?.isConnected) return null;
+  const byAct = host.querySelector(`[data-act="${CSS.escape(key)}"]`);
+  if (byAct) return byAct;
+  // **An id is the whole document's namespace rather than this surface's, so what it
+  // finds has to be checked before focus is sent there.** `library.html` has a
+  // `<dialog id="rename">` and `rename` is one of the menu item keys; the dialog is a
+  // sibling of the viewer rather than inside it, so the scoped search cannot reach it
+  // today - but "today" is the wrong thing for this to rest on, since a dialog is not
+  // focusable and `focus()` on one is a silent no-op that leaves the caret on the body.
+  // That is this bug for the fifth time, arriving through a hole nobody moved.
+  const byId = host.querySelector(`#${CSS.escape(key)}`);
+  return byId?.matches('.act, .mi') ? byId : null;
+};
 
 /** Closes whichever ⋯ menu is open, if any. */
 function closeMenus(except = null) {
