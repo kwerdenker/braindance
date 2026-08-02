@@ -148,6 +148,33 @@ if (!existsSync(DOC)) {
   }
 }
 
+// **And every `docs/*.md` anything points at has to exist**, for the same reason and by
+// the same shape as the block above. `CLAUDE.md` was 704 lines and was split into three
+// documents it now sends you to by name, with fourteen comments in `tools/` citing those
+// documents by section - so the disclosure chain is load-bearing and nothing was checking
+// it. Delete one of the three and every citation resolves to nothing while this tool stays
+// green, which is a claim asserted in prose with nothing bringing it about.
+//
+// Enumerated rather than listed: the paths are read out of what actually cites them, so a
+// fourth document added next year is checked by existing and a pointer that outlives its
+// target fails here. The control is `mv docs/instruments.md /tmp` and a run.
+{
+  const citing = [join(ROOT, 'CLAUDE.md'), ...walk(join(ROOT, 'tools'))];
+  const cited = new Set();
+  for (const file of citing) {
+    if (!existsSync(file)) continue;
+    for (const m of readFileSync(file, 'utf8').matchAll(/\bdocs\/[A-Za-z0-9._-]+\.md\b/g)) cited.add(m[0]);
+  }
+  const missing = [...cited].filter((p) => !existsSync(join(ROOT, p))).sort();
+  if (cited.size === 0) {
+    fail('nothing cites a docs/ page, so this assertion passed on nothing - the disclosure chain is gone or this scan is looking in the wrong place');
+  } else if (missing.length) {
+    fail(`${missing.join(', ')} is cited but does not exist - a pointer that outlives its target teaches a document nobody can read`);
+  } else {
+    console.log(`  docs/   all ${cited.size} cited pages exist`);
+  }
+}
+
 console.log(`\n${total} JavaScript files, ${failed} failed`);
 // Said out loud because `npm test` runs this, and a green `npm test` that meant "the
 // suite passed" would be the most expensive wrong impression in the repo. Nothing here

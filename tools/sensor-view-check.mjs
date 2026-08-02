@@ -12,10 +12,11 @@
 // build that hardcoded 60.157 degrees and a build that computes from `fy` therefore
 // agree on every take anybody can open, so a mutation replacing the computation
 // with a constant would pass while the feature was entirely broken. This is the
-// failure `CLAUDE.md` describes at length under "what do my arms agree about": a set
-// of probes that agree about a quantity cannot measure it however many of them there
-// are. So the intrinsics claim is driven on three arms, two of which do not exist on
-// disk - the hello is intercepted and answered with numbers of this tool's own.
+// failure `docs/instruments.md` describes at length under "what do my arms agree
+// about": a set of probes that agree about a quantity cannot measure it however
+// many of them there are. So the intrinsics claim is driven on three arms, two of
+// which do not exist on disk - the hello is intercepted and answered with numbers
+// of this tool's own.
 //
 // The third arm exists for the second half of that question. `fx` and `fy` are equal
 // on every take *and* on the obvious synthetic arm, so a build reading `fx` where it
@@ -334,8 +335,8 @@ let failures = 0;
 let checks = 0;
 // The labels rather than only the count. A mutation run that says "3 assertions
 // fired" cannot be checked for having been caught *for the reason claimed*, which
-// is the distinction `CLAUDE.md` spends a paragraph on - a control that goes red
-// for a neighbouring reason looks exactly like a control that works.
+// is the distinction `docs/instruments.md` spends a paragraph on - a control that
+// goes red for a neighbouring reason looks exactly like a control that works.
 const fired = [];
 const check = (ok, label, detail = '') => {
   checks++;
@@ -1006,9 +1007,10 @@ try {
   //
   // Navigation, and the design's rule for navigation is that it leaves no trace. The
   // observation is deliberately not one thing: the page's own requests, the server's
-  // monotonic per-store counters, and the bodies of the stores. `CLAUDE.md`'s second
-  // form of the agreement rule is what this is answering - not "what do my arms agree
-  // about" but "is there an object here that every observation happens to skip".
+  // monotonic per-store counters, and the bodies of the stores. The second form of
+  // the agreement rule in `docs/instruments.md` is what this is answering - not "what
+  // do my arms agree about" but "is there an object here that every observation
+  // happens to skip".
   console.log('\n[4] pressing it writes nothing: no key, no undo entry, no document change');
   const beforeStores = await stores(PRIVATE_BASE);
   const writeRun = await onFreshPage('the writes-nothing arm', { }, async ({ page }) => {
