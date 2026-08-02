@@ -5524,12 +5524,26 @@ function clipFractionAt(surface, clientX) {
  * one lane is worth everywhere else in this file, and a wheel notch moving a different
  * amount from an arrow key on the same surface is the kind of disagreement nothing
  * records.
+ *
+ * **A page has two dimensions and the two axes get the right one each.** This converted
+ * both through `ui.bed.clientHeight`, which is the ruler row - tens of pixels, and not a
+ * page by any reading. The horizontal case was the worse of the two: a page of panning
+ * became a couple of dozen pixels and was then divided by the track width, so a page-mode
+ * pan moved almost nothing. Stated rather than measured, because nothing on this rig
+ * emits `DOM_DELTA_PAGE` - the line mode is what Firefox actually sends and what the
+ * proof row drives.
  */
 const wheelPixels = (e) => {
-  const unit = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? LANE_KEY_STEP
-    : e.deltaMode === WheelEvent.DOM_DELTA_PAGE ? Math.max(1, ui.bed.clientHeight)
-      : 1;
-  return { x: e.deltaX * unit, y: e.deltaY * unit };
+  if (e.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+    return { x: e.deltaX * LANE_KEY_STEP, y: e.deltaY * LANE_KEY_STEP };
+  }
+  if (e.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+    return {
+      x: e.deltaX * Math.max(1, globalThis.innerWidth),
+      y: e.deltaY * Math.max(1, globalThis.innerHeight),
+    };
+  }
+  return { x: e.deltaX, y: e.deltaY };
 };
 
 const onStripWheel = (surface) => (e) => {
@@ -6056,6 +6070,27 @@ function applyRate(rate) {
   // `setClipInOut` finds the playhead outside and buys the accurate seek this whole
   // path exists to avoid - one per slider event. Unclamped, the playhead and the cuts
   // scale by the same `k` and it stays inside by arithmetic rather than by luck.
+  // **And the anchor lands on the output grid, which costs up to half a frame of program
+  // time - `rate / (2 * outputFps)` of source.** A reviewer read that as the speed control
+  // failing to hold the picture, and the number is real: from program 10s at 1x, 2.35x
+  // wants program 4.255319s, the nearest frame is 128 at 4.266667s, and the source moment
+  // moves 10.0000s to 10.0267s. At 4x and 30fps the worst case is 66.7ms, two capture
+  // frames.
+  //
+  // It is the grid rather than the rounding, and that is worth being exact about because
+  // "preserve the source position" sounds available and is not. The transport shows a
+  // frame, so the only choice is *which* frame - and with `source = program * rate` the
+  // two errors differ by a constant factor, so the frame nearest in program time is
+  // already the frame nearest in source time. `Math.round` is the minimiser; what is left
+  // is that no output frame maps to the moment being asked for.
+  //
+  // It also accumulates: each change re-derives the anchor from a frame the previous one
+  // quantised, so 1x -> 2.35x -> 1x lands about 33ms from where it started. Carrying a
+  // sub-frame program time through the transport would close that, and it would change
+  // the thing `determinism-check` and `timeline-check` both rest on - a frame-indexed
+  // program clock - so it is named here rather than done in passing. `editor-check` has
+  // an off-grid arm asserting the bound, because its other three sit exactly on the grid
+  // and had never measured this at all.
   timeline.frame = timeline.frameOf(program);
   reparameteriseProgramTime(rateGesture.rate / rate, rateGesture.times);
   return program;
@@ -6079,14 +6114,29 @@ ui.rate.addEventListener('pointerdown', () => beginRateGesture());
 const RATE_KEYS = new Set([
   'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End',
 ]);
-ui.rate.addEventListener('keydown', (e) => { if (RATE_KEYS.has(e.key)) beginRateGesture({ fromKey: true }); });
+ui.rate.addEventListener('keydown', (e) => { if (RATE_KEYS.has(e.key)) beginRateGesture({ fromKey: e.key }); });
 // `blur` is in here for the same reason and is the one that closes the class: it is the
 // last event the control gets on *any* way out of it, including the ones nobody thought
 // of. It cannot pre-empt a commit either - on an arrow followed by Tab, `change` lands
 // three events before `blur`, so the gesture is already over by then.
-for (const type of ['pointerup', 'pointercancel', 'keyup', 'blur']) {
+for (const type of ['pointerup', 'pointercancel', 'blur']) {
   ui.rate.addEventListener(type, endRateGesture);
 }
+// **A `keyup` ends this gesture only when it is the key holding it open**, which is why
+// `fromKey` is the key's name rather than a flag. Any other release used to end it: hold
+// an arrow to ramp the speed, tap Shift on the way, and the Shift release closed the
+// gesture while the arrow was still repeating. The next repeat opened a *new* one, read
+// `timeline.playing` off a transport the first had already paused, and so recorded
+// `wasPlaying: false` - so the real release left a running take stopped, and one
+// adjustment became several undo steps and several accurate seeks. Same shape as the
+// `change` handler two doors up, arriving on a different event.
+//
+// A gesture with no `fromKey` - a pointer drag, or a value written straight into the
+// control - is not ended here at all. `pointerup` and `blur` own those, and a stray
+// keyboard release during a pointer drag is the same intruder wearing the other hand.
+ui.rate.addEventListener('keyup', (e) => {
+  if (rateGesture && rateGesture.fromKey === e.key) endRateGesture();
+});
 // **`change` ends a gesture only when no key is holding one open, because a held arrow
 // key is not one gesture to this control - it is one per repeat.** Chromium fires
 // `keydown -> input -> change` on every auto-repeat and a single `keyup` at the end, so

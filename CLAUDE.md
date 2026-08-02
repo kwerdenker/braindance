@@ -132,6 +132,8 @@ node tools/editor-check.mjs --mutate keys-yield-touch --no-render      # ... and
 node tools/editor-check.mjs --mutate deliverable-keeps-gesture --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate window-clamp-ratchets --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate detent-eats-loaded-rate --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate anchor-floors-to-frame --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate keyup-ends-any-gesture --no-render # ... and must FAIL
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated

@@ -353,6 +353,31 @@ const MUTATIONS = {
     ]],
   },
 
+  // The anchor takes the frame below instead of the nearest one, which doubles what the
+  // grid costs. Reddens the bound row of the off-grid arm and leaves its own "the anchor
+  // does move" row green, plus the three on-grid arms above it - they land on the grid
+  // either way, which is exactly why they could not see this.
+  'anchor-floors-to-frame': {
+    file: 'web/main.js',
+    edits: [[
+      'return Math.max(0, Math.min(this.lastFrame, Math.round(programSec * this.outputFps)));',
+      'return Math.max(0, Math.min(this.lastFrame, Math.floor(programSec * this.outputFps)));',
+    ]],
+  },
+
+  // A release of any key ends the gesture again, so tapping Shift while an arrow is
+  // repeating splits one adjustment into several and loses the play intent. Reddens the
+  // held-key block's commit, seek and resume rows.
+  'keyup-ends-any-gesture': {
+    file: 'web/main.js',
+    edits: [[
+      "ui.rate.addEventListener('keyup', (e) => {\n"
+      + '  if (rateGesture && rateGesture.fromKey === e.key) endRateGesture();\n'
+      + '});',
+      "ui.rate.addEventListener('keyup', endRateGesture);",
+    ]],
+  },
+
   // The deliverable stops being a document replacement, so a gesture held across one
   // rescales the trim it began in and writes it back over the one just chosen. Reddens
   // only the last of the three deliverable rows - the two above it are about the menu
@@ -1182,6 +1207,16 @@ try {
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
       el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', repeat: true, bubbles: true }));
+      // A modifier tapped in the middle of the hold, which a hand on a keyboard does
+      // constantly and which used to end the gesture on its release - the arrow was still
+      // repeating, so the next repeat opened a second gesture against a transport the
+      // first had already paused. Without this the drive is a clean hold that no stray
+      // release ever interrupts, and the rule about *which* key ends a gesture is
+      // asserted by nothing.
+      if (i === 3) {
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', bubbles: true }));
+        el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Shift', bubbles: true }));
+      }
     }
     el.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true }));
   })()`);
@@ -1270,6 +1305,35 @@ try {
       '  by moving program time, which is what proves it held the other one',
       `program ${arm.before.programSec.toFixed(3)}s -> ${arm.after.programSec.toFixed(3)}s`);
   }
+
+  // **The three arms above agree about something, and it is the output grid.** 10s and 24s
+  // are frames 300 and 720 at 30fps, and 2x and 0.5x take those to 150, 600 and 360 -
+  // every one exactly on the grid, so all three measure a drift of 0.0ms and the 1e-3
+  // above passes without ever exercising the rounding. Measured that way rather than
+  // reasoned: the same arithmetic at 2.35x moves the source moment 26.7ms.
+  //
+  // So this arm parks at the same 10s and asks for a rate the grid cannot represent. What
+  // it asserts is the *bound* rather than equality, because equality is not available: the
+  // transport shows a frame, and with `source = program * rate` the frame nearest in
+  // program time is already the frame nearest in source time - `Math.round` is the
+  // minimiser and the residual is the grid itself, up to half a frame of program time,
+  // which is `rate / (2 * outputFps)` of source.
+  //
+  // Both halves are asserted. The bound alone would pass on a build that held the source
+  // exactly, which is impossible but would also pass on one that had stopped rescaling at
+  // all - so the drift is required to be non-zero as well, which is what makes this arm
+  // measure the grid rather than agree with the three above.
+  const offGrid = await rateArm(10, 2.35);
+  const drift = Math.abs(offGrid.after.sourceSec - offGrid.before.sourceSec);
+  const bound = 2.35 / (2 * offGrid.before.outputFps);
+  check(drift > 1e-3,
+    'at a rate the output grid cannot represent, the anchor does move - which the three arms above never showed',
+    `source ${offGrid.before.sourceSec.toFixed(4)}s -> ${offGrid.after.sourceSec.toFixed(4)}s, `
+    + `${(drift * 1000).toFixed(1)}ms at 2.35x`);
+  check(drift <= bound + 1e-9,
+    '  and no further than half an output frame, which is the whole of what the grid costs',
+    `${(drift * 1000).toFixed(1)}ms against a bound of ${(bound * 1000).toFixed(1)}ms `
+    + `at ${offGrid.before.outputFps}fps`);
 
   // ---------------------------------------------------------------------
   // And the rest of the strip, which held the same bug for longer.
