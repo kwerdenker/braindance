@@ -3891,9 +3891,21 @@ class TimelineTransport {
   get clipInSec() { return Math.max(0, Number(clipIn) || 0); }
   get clipOutSec() { return clipOut === null ? this.duration : Math.min(this.duration, clipOut); }
 
+  /**
+   * Program seconds onto the output grid, bounded by the take and by nothing else.
+   *
+   * Split out of `frameAt` rather than duplicated beside it, so the rounding and the
+   * take's bounds have one implementation and the clip range is the only thing the
+   * two callers disagree about. `applyRate` wants this one: it is mid-way through
+   * changing the slope, and the clip range it would otherwise be clamped against
+   * belongs to the rate it is leaving.
+   */
+  frameOf(programSec) {
+    return Math.max(0, Math.min(this.lastFrame, Math.round(programSec * this.outputFps)));
+  }
+
   frameAt(programSec) {
-    const clamped = Math.max(this.clipInSec, Math.min(this.clipOutSec, programSec));
-    return Math.max(0, Math.min(this.lastFrame, Math.round(clamped * this.outputFps)));
+    return this.frameOf(Math.max(this.clipInSec, Math.min(this.clipOutSec, programSec)));
   }
 
   sourceFrameAt(programSec) {
@@ -5682,7 +5694,16 @@ function beginRateGesture() {
 function applyRate(rate) {
   retime.rate = rate;
   const program = programHoldingAnchor();
-  timeline.frame = timeline.frameAt(program);
+  // `frameOf` rather than `frameAt`, and that is the second half of the ordering above.
+  // `frameAt` clamps to the clip range, which at this instant is still the *previous*
+  // rate's range - the cuts are rescaled on the next line. Clamping against them puts
+  // the playhead on an old boundary that the rescale then moves out from under it:
+  // with cuts at 10s/15s and the slope going 1x -> 2x, the anchor at 5.5s is dragged
+  // up to the old in-point at 10s while the new range becomes 5s/7.5s, so
+  // `setClipInOut` finds the playhead outside and buys the accurate seek this whole
+  // path exists to avoid - one per slider event. Unclamped, the playhead and the cuts
+  // scale by the same `k` and it stays inside by arithmetic rather than by luck.
+  timeline.frame = timeline.frameOf(program);
   reparameteriseProgramTime(rateGesture.rate / rate, rateGesture.times);
   return program;
 }
