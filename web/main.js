@@ -1239,6 +1239,13 @@ addEventListener('resize', () => {
   // exists to make unreachable. Re-applied before the stage is sized against it.
   applyLaneHeight();
   resize();
+  // The ruler picks its tick step from the bed's width, so a window that changed width
+  // has the previous width's tick count on it until something else happens to rebuild
+  // it - a zoom, or a timing change. Narrowed, that is labels written over each other;
+  // widened, it is a ruler far sparser than the space it has. Nothing else on this path
+  // touches it, and the strip is the one surface whose content depends on how wide it is
+  // rather than only on where it is.
+  if (timeline) buildRuler();
 });
 resize();
 
