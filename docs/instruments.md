@@ -26,6 +26,56 @@ growth bound. When you write a proof tool, ask what a broken implementation woul
 to still pass it, and close that. **Every proof tool needs a falsification control**:
 something that must FAIL if the thing under test were not actually doing the work.
 
+### An A/B where one arm cleans up after the other measures nothing
+
+The version of that failure worth naming separately, because both arms run, both produce a
+real image, and the comparison is still empty.
+
+Section 3c's change lets a draft skip the accumulator reset when the playhead has not moved,
+and the claim it rests on is that the surface memory cannot reach the image while fade and
+wake are held at zero. The first test of it alternated the two arms back to back — reset,
+skip, reset, skip — and reported bit-identity over four pairs and three million bytes, which
+sounds like a strong result and was worth nothing. **A resetting draft clears the
+accumulators and then writes nothing back into them**: no steps, so no state advance, and
+trails at zero, so the afterimage pass is off. Every skipping arm therefore ran on buffers the
+resetting arm had just emptied, and the one case the change actually affects — a draft landing
+on top of an accurate seek, whose pre-roll has just loaded those buffers — never occurred in
+the test at all.
+
+The tell is structural rather than numeric, so it can be looked for: **ask whether arm A
+leaves the state that arm B is supposed to inherit, and in what condition.** If A's job
+includes resetting something, alternating A and B hands B a reset every time. The fix was to
+re-establish the state at the head of each arm — each one re-seeks now — and to add the
+control that says the state was there to inherit: the seek's own image differs from its draft
+over 2.21M bytes at worst 170/255, so the buffers held something. A second control on the
+readback itself, because a comparison of two identical zero-filled arrays also reports
+bit-identity: holding the camera still gives 0 differing bytes and nudging it 0.25m gives
+383,769 at worst 255/255.
+
+### A flag that the right answer and the wrong one both set
+
+Section 9's release row asserted `(await read()).drafted === false` and called that "the
+release still lands the accurate image". It does not. `seekNow` clears `drafted` whatever
+position it was handed, so a release that seeked *accurately to the wrong moment* — the
+mutation is `timeline.programSec + 1` — set the flag to false and passed the row, while the
+viewport visibly sat a second away from where the hand let go. The row read the transport's
+bookkeeping and named the rendered result.
+
+The tell is one word doing two jobs. "Accurate" in the flag means *a seek ran rather than a
+draft*; "accurate" in the claim means *the seek went where it should have*. **Ask which of the
+readings a broken build would also produce** — here, every one of them, because the only thing
+the flag can distinguish is which method ran.
+
+What replaced it compares pictures, and it takes two rows rather than one: a comparison that
+cannot separate two moments would pass on every build there is, so the row that says it *can*
+has to come first. The statistic is forty tile means over the stage rather than one lit count
+over it, because a cloud a second along mostly redistributes its brightness instead of changing
+how much of it there is, and a scalar can come out equal for two genuinely different pictures.
+Measured, one screenshot per arm on an idle machine: the released picture sits 0.24/255 from an
+accurate seek to the same moment on the worst of the forty tiles, where a seek one second away
+sits 4.48 — an eighteen-fold separation, and the claim row asks for a fourfold one.
+`release-seeks-past-target` is the control, and it moves that worst tile to 4.50.
+
 ## Mutation-test the instrument, don't just reason about it
 
 Deliberately break the thing under test, run the check, and confirm it fails on the

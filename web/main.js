@@ -4987,8 +4987,29 @@ class TimelineTransport {
         // The reset is what lets a drag go backwards. Nothing here reads the
         // accumulators, so clearing them costs four target clears and removes the
         // one state that could not be walked the other way.
-        resetAccumulators();
-        this.source.seekTo(i);
+        //
+        // Skipped when the draft has not moved the playhead, which is every frame of
+        // an orbit: the pair the walk would rebuild is the pair already bound, so it
+        // buys two `expandDepth` passes over the whole depth grid, two binds and two
+        // state advances to arrive back where it started. The two lines go together
+        // or not at all, and that is what makes it correct rather than merely
+        // cheaper - with `applied` left where it is, `at` emits no steps, so nothing
+        // rebinds, nothing ages, and the state texture keeps exactly the memory this
+        // frame was rendered with.
+        //
+        // The image is the same image, and it is measured rather than argued: 3.70ms
+        // to 1.40ms per draft over 60 interleaved pairs, bit-identical over 3,022,672
+        // bytes of readback across five alternating shots, on a look with fade at
+        // 400, wake at 900 and trails at 0.85 so the accumulators genuinely held
+        // something to inherit. The first version of that comparison alternated the
+        // two arms back to back and could not have found a difference - a reset draft
+        // clears the buffers and writes nothing back, so the skipping arm never once
+        // ran on dirty ones, which is the only case this changes. Each arm re-seeks
+        // now, and the control is that the seek's own image differs from its draft.
+        if (target !== this.frame || this.source.applied !== i + 1) {
+          resetAccumulators();
+          this.source.seekTo(i);
+        }
         advanceNavigation(t);
         renderProgramFrame(t);
         // Inside the borrow, not after it. The top-down draws the same cloud the
@@ -5896,6 +5917,26 @@ function buildRuler() {
   ui.ruler.replaceChildren(...ticks);
 }
 
+// A drag resolves at one draft per displayed frame, and never queues more than one
+// behind the one in flight: the position the pointer is at now is the only one worth
+// rendering, so an older one is dropped rather than caught up on. Same shape as the
+// colour decode pump, and for the same reason.
+//
+// **Nothing here restarts itself.** It used to - the `finally` pumped whatever had
+// been armed while it ran - and that is a clock built out of "however fast this
+// machine can rebuild a frame". For a scrub it is harmless, because one pointer move
+// arms one position and the pointer cannot outrun the display. For an orbit it is
+// ruinous, because the render arms the next position itself: `renderProgramFrame`
+// runs `advanceNavigation`, which calls `controls.update()`, which consumes 7% of the
+// damped residual and fires `change`, which arms another draft. Measured on a paused
+// orbit drag, one pointer move cost 34 drafts and raised 35 `change` events, 34 of
+// them from inside a render - about 167ms of blocked main thread for a gesture that
+// showed 12 frames a second while rendering 190.
+//
+// So the rule is stated where it can be enforced rather than left to each caller: a
+// frame the compositor never gets a turn to show is work nobody sees, and the
+// animation loop is what knows when that turn comes. `pumpParkedDraft` is the only
+// thing that continues a drag.
 /**
  * The overview strip: the whole clip, with the visible window drawn on it.
  *
@@ -5968,7 +6009,6 @@ async function pumpDraft() {
     showTimelineError(err);
   } finally {
     draftBusy = false;
-    if (draftWanted !== null) pumpDraft();
   }
 }
 
@@ -6056,11 +6096,12 @@ for (const type of ['pointerup', 'pointercancel']) {
     scrubbing = false;
     // The queued position goes first, and it is the whole of the fix for the one
     // gesture this transport exists to get right. A draft is usually in flight
-    // when the pointer comes up, and its `finally` pumps whatever is queued
-    // behind it - so without this the release would render the true image and
-    // then paint a draft of the second-to-last pointer position over the top of
-    // it, leaving `drafted` up and the playhead a few frames out. The fetch
-    // ordering guarantees the wrong one lands last rather than making it a race.
+    // when the pointer comes up and a position armed behind it, which the next
+    // animation frame would pump - so without this the release would render the
+    // true image and then paint a draft of the second-to-last pointer position
+    // over the top of it, leaving `drafted` up and the playhead a few frames out.
+    // The fetch ordering guarantees the wrong one lands last rather than making
+    // it a race.
     draftWanted = null;
     // Releasing is what asks for the true image, so this is the one gesture that
     // pays for a pre-roll. The picture visibly changes here, which is the
@@ -6987,30 +7028,132 @@ ui.fps.addEventListener('change', () => {
 });
 
 // Orbiting while the playhead is parked has the same shape as scrubbing: a drag
-// wants a cheap frame per pointer move and a true one on release. Only a pointer
-// drag is answered - the controls also fire `change` from the update inside a
-// render, and answering that would render itself in a loop.
+// wants a cheap frame per pointer move and a true one on release. It differs from
+// scrubbing in the one way that matters, and the difference is why this arms rather
+// than pumps: **the render answers this event**. `renderProgramFrame` runs
+// `advanceNavigation`, `advanceNavigation` calls `controls.update()`, and a damped
+// control that moved fires `change` - so a handler that rendered here would be a
+// render asking for the next render, with the damping settle running at rebuild rate
+// instead of at the display's. The guard that used to stand here was `orbiting`,
+// which is true for exactly the window those render-raised events arrive in.
 //
+// Playing has never had the problem and the reason is the shape to copy: the handler
+// returns below, so `controls.update()` runs once per rendered frame from `step()`
+// and the frame clock paces the damping. Parked, the animation loop is that clock.
+let orbiting = false;
+// Damping outlives the pointer. On release the controls still hold a residual the
+// camera has not travelled through, and draining it is the loop's job - so the
+// accurate seek is deferred until it has, or it would land on a pose the camera is
+// still moving away from and the release would visibly jump.
+let orbitSettling = false;
+// What the orbit arms, and it is a flag rather than a position on purpose. Writing
+// `timeline.programSec` here would be reading the transport from inside its own
+// render: `programSec` is `frame / outputFps`, and both `seekNow` and `draftNow`
+// assign `this.frame` only after their render loop has finished, so a `change` raised
+// by `advanceNavigation` part-way through a seek reads the position the transport is
+// leaving rather than the one it is travelling to. A scrub or an arrow seek started
+// while a release was still settling would arm that stale position behind itself, and
+// the next animation turn would pump it and pull the viewport back off the moment the
+// user had just picked. Naming only *that* a redraw is wanted and letting
+// `pumpParkedDraft` read the position when it pumps - outside every render - makes
+// that staleness unrepresentable, rather than something each navigation entry point
+// added later has to remember to cancel.
+let orbitRedrawWanted = false;
 // Registered through `onNav` rather than on the object, because the object does not
 // outlive a change of navigation's up - see where `controls` is declared. Attached
 // directly, these three would go quiet the first time somebody pressed sensor view on
 // a levelled take, and quietly: orbiting would still work and only the draft frame
 // would stop being asked for.
-let orbiting = false;
-onNav('start', () => { orbiting = true; });
+onNav('start', () => { orbiting = true; orbitSettling = false; });
 onNav('change', () => {
-  if (!orbiting || !timeline || timeline.playing) return;
-  draftWanted = timeline.programSec;
-  pumpDraft();
+  if ((!orbiting && !orbitSettling) || !timeline || timeline.playing) return;
+  orbitRedrawWanted = true;
 });
 onNav('end', () => {
   orbiting = false;
   if (!timeline || timeline.playing) return;
-  // Same release rule as the scrubber: whatever is queued behind the draft in
-  // flight would otherwise paint itself over the true image this asks for.
-  draftWanted = null;
-  timeline.seek(timeline.programSec).catch(showTimelineError);
+  orbitSettling = true;
 });
+
+/**
+ * Hands the camera the movement the damping still owes it, so an action that reads
+ * the pose reads the one it is going to keep.
+ *
+ * Damping applies a fraction of the remaining delta per update, so it approaches the
+ * target without ever arriving; one update with damping off applies the whole
+ * remainder, which is the pose the glide was heading for anyway. Nothing is skipped
+ * and nothing new is invented - the camera simply stops being between two places.
+ *
+ * The flags are deliberately left alone. Clearing `orbitSettling` here would drop the
+ * deferred accurate seek and leave a draft standing where the true image belongs; the
+ * loop's settle branch still runs on the next frame, and it now seeks to a pose that
+ * has finished moving instead of one that is still travelling.
+ */
+function finishOrbitDrift() {
+  if (!orbiting && !orbitSettling) return;
+  const damped = controls.enableDamping;
+  controls.enableDamping = false;
+  // Zero rather than no argument, and the difference is not cosmetic. `update()`
+  // called bare falls back to a fixed auto-rotate step, so with `spin` on this would
+  // add a turn nobody asked for - and with damping off for this one call it would
+  // land in full, putting the camera somewhere the manual glide was never heading.
+  // A delta of zero rotates by zero, which is what "finish what is owed" means.
+  controls.update(0);
+  controls.enableDamping = damped;
+}
+
+/**
+ * The only thing that continues a drag while the playhead is parked, called once per
+ * animation frame.
+ *
+ * Both halves are here rather than at the gestures that want them, because both are
+ * answers to "has the display had its turn yet" and that is a question only the loop
+ * can answer. The armed position renders at most one frame per frame; the deferred
+ * seek waits for the damping to stop arming positions, which is what tells it the
+ * camera has finished arriving.
+ */
+function pumpParkedDraft() {
+  // Dropped rather than left standing, and this is the half that has to be said. An
+  // armed position is only meaningful while something will consume it, and two of the
+  // three states where nothing will are visible from in here: playing and exporting.
+  // Leaving it armed used to be harmless because nothing read the flag; now
+  // `settled()` does, so a drag interrupted by hitting play would arm a draft nothing
+  // could serve and every tool in the suite would hang on the call it synchronises
+  // on. Neither state loses a picture by clearing: `play` seeks when a draft is up,
+  // and an export repaints at the end.
+  //
+  // The third state is `drive.pin`, and it cannot be handled here for the reason that
+  // makes it dangerous - it takes the animation loop away, so this function stops
+  // being called at all and no condition written inside it can run. It clears the
+  // same three flags itself, at the moment it detaches.
+  if (!timeline || timeline.playing || exporting) {
+    draftWanted = null;
+    orbitRedrawWanted = false;
+    orbitSettling = false;
+    return;
+  }
+  if (draftWanted !== null) {
+    pumpDraft();
+    return;
+  }
+  // The orbit's own turn, and the position is read here rather than where it was
+  // armed - see `orbitRedrawWanted` above for why that read has to happen outside a
+  // render. A scrub or a seek owns `draftWanted` in the branch above, so this can
+  // never paint over one that is already queued.
+  if (orbitRedrawWanted && !draftBusy) {
+    orbitRedrawWanted = false;
+    draftWanted = timeline.programSec;
+    pumpDraft();
+    return;
+  }
+  // Nothing armed and nothing in flight, so the controls have stopped moving.
+  if (orbitSettling && !draftBusy) {
+    orbitSettling = false;
+    // Releasing is what asks for the true image, the same rule the scrubber follows
+    // and for the same reason: a draft is not the picture playback would produce.
+    timeline.seek(timeline.programSec).catch(showTimelineError);
+  }
+}
 
 // ------------------------------------------------------------ look in tracks
 
@@ -8502,6 +8645,14 @@ let nodeDrag = null;
 // Catching the event a level up is what makes `stopPropagation` mean anything.
 addEventListener('pointerdown', (e) => {
   if (!chromeOn || e.target !== renderer.domElement) return;
+  // Before the hit test rather than after it, because the hit carries a depth read
+  // through the camera and the drag then unprojects every pointer move through the
+  // same one. A camera still draining its release would be a different camera by the
+  // second move, so the plane the pointer is being read against would slide out from
+  // under the gesture and the node would land somewhere nobody pointed at. This is
+  // the third member of the class `finishOrbitDrift` exists for - reading the pose,
+  // fixing the pose, and now projecting through it.
+  finishOrbitDrift();
   const view = viewUnder(e.clientX, e.clientY);
   if (!view) return;
   const hit = nodeUnder(view);
@@ -8554,6 +8705,14 @@ ui.camKey.addEventListener('click', () => {
   // The pose you are looking from, which is what makes orbiting to a shot and
   // keying it one gesture. The free camera is navigation everywhere else in this
   // design; here it is the viewfinder, and the copy is one-way.
+  //
+  // And the gesture is why the drift has to be finished first. A hand that orbits to
+  // a shot and reaches straight for this button arrives inside the release's damping
+  // window, where the camera is still travelling - so the key would record a pose the
+  // viewport then glides away from, and the shot that was keyed is not the shot that
+  // was framed. The window is about a third of a second, which is well inside the
+  // reach of the very gesture the comment above describes.
+  finishOrbitDrift();
   freeCamera.updateMatrixWorld(true);
   track.setKey(playheadSec(), {
     position: freeCamera.position.toArray(),
@@ -8614,6 +8773,12 @@ function sensorView() {
   // follows from the aspect, so matching vertical on a stage narrower than the sensor
   // would crop the sides off the very thing the button exists to show. Whichever axis
   // binds is the one matched, and the sensor's frame is always contained.
+  // Before anything is assigned, for the same reason the camera key does it and one
+  // gesture earlier: a pose set underneath a release that is still draining slides
+  // back out, because the damping owes the camera movement it will deliver on the
+  // next frames whatever was written in between. Drained first, this button's answer
+  // is the one that stays.
+  finishOrbitDrift();
   const aspect = freeCamera.aspect;
   const binding = aspect >= tanH / tanV ? 'vertical' : 'horizontal';
   const fovV = binding === 'vertical' ? 2 * Math.atan(tanV) : 2 * Math.atan(tanH / aspect);
@@ -9433,7 +9598,11 @@ async function openTake(id) {
   // somewhere honest to land rather than an empty document.
   history.begin();
   await timeline.seek(0);
-  renderer.setAnimationLoop(() => timeline.tick());
+  // Two things per frame, and the second is not an afterthought: with the playhead
+  // parked `tick` returns immediately, so this is the only clock a paused editor has.
+  // A drag that continued itself off its own renders instead is what this loop was
+  // added to replace - see `pumpDraft`.
+  renderer.setAnimationLoop(() => { timeline.tick(); pumpParkedDraft(); });
   return timeline;
 }
 
@@ -9740,6 +9909,14 @@ globalThis.__kinect = {
      * transport's queue has drained. Anything measuring renders needs it: a
      * repaint it did not ask for would land inside its window and be counted as
      * work the thing under test performed.
+     *
+     * The draft state is in the condition because a draft is armed a frame before it
+     * runs. While `pumpDraft` restarted itself, an armed position was always either
+     * already in flight or one microtask from it, so `working` covered it; now the
+     * animation loop starts it, and there is a window up to a frame wide where a
+     * draft is armed, `working` is down and nothing is queued. Every tool in the
+     * suite synchronises on this call, so a window that reads as idle there is a
+     * flake in all of them rather than in the one that opened it.
      */
     async settled() {
       for (let i = 0; i < 200; i++) {
@@ -9747,7 +9924,8 @@ globalThis.__kinect = {
         // enqueued by the time the transport is asked whether it is idle.
         await new Promise((resolve) => { setTimeout(resolve, 0); });
         await timeline?.idle();
-        if (!repaintWanted && !repaintBusy && !repaintScheduled && !timeline?.working) return;
+        if (!repaintWanted && !repaintBusy && !repaintScheduled && !timeline?.working
+          && draftWanted === null && !draftBusy && !orbitRedrawWanted && !orbitSettling) return;
       }
       throw new Error('the transport never settled');
     },
@@ -9765,6 +9943,12 @@ globalThis.__kinect = {
         lastFrame: t.lastFrame,
         playing: t.playing,
         drafted: t.drafted,
+        // Whether a released orbit is still draining its damping. Exposed because a
+        // check that wants to test what happens *during* that window has no other way
+        // to know it was in it - the window is about a third of a second long and
+        // closing it is exactly what makes the case go away, so a row that simply
+        // hurried and hoped would report a pass on the run where it arrived late.
+        settling: orbitSettling,
         lastSeek: t.lastSeek,
         lastCostMs: t.lastCostMs,
         overtaken: t.overtaken,
@@ -9827,6 +10011,18 @@ globalThis.__kinect = {
   drive: {
     /** Detaches the live loop and feeds a run of capture frame payloads instead. */
     pin(buffer) {
+      // Cleared here rather than in `pumpParkedDraft`, and the asymmetry is the whole
+      // reason this is a separate site: the other two states that strand an armed
+      // position leave the loop running, so the loop is able to notice them. This one
+      // takes the loop away, so afterwards there is nothing left to notice anything.
+      // A drag that armed a redraw or entered release settling before a check pinned
+      // its inputs would leave `settled()` running out its two hundred iterations and
+      // throwing - in every tool in the suite, since they all synchronise on it. The
+      // rule this states is for whatever detaches the loop next: taking the clock
+      // away is the last moment anything can drop what the clock was going to serve.
+      draftWanted = null;
+      orbitRedrawWanted = false;
+      orbitSettling = false;
       renderer.setAnimationLoop(null);
       detachStream();
       pinnedPairs = new PinnedPairSource(buffer);
