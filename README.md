@@ -64,10 +64,11 @@ live viewer, the take library, or the editor.
 ![The menu: three cards reading RECORD, GALLERY and EDITOR, the last one saying
 nothing has been opened on this machine yet.](media/menu.png)
 
-**`--record` arms the recorder rather than offering it**: a take opens as soon as the
-sensor says hello and runs until something stops it, so `npm run record` starts writing
-to `captures/` the moment the server is up. Reach for `npm start` and the record button
-if you want to decide when.
+**`--record` arms the *first* take rather than offering the recorder**: the flag is
+read once at boot, a take opens on the sensor's hello, and after you stop that one the
+flag has no further effect — arming again is the record button. So `npm run record`
+starts writing to `captures/` the moment the server is up, and `npm start` is the one
+to reach for if you want to decide when.
 
 **`npm run replay` needs a capture, and none ships with this repository.** Captures
 are large and binary, so `captures/` is gitignored. If you have a Kinect, record one
