@@ -1189,6 +1189,25 @@ const dropRateGesture = () => {
   if (rateGesture) rateGesture = null;
 };
 
+/**
+ * Stops the transport *and says so*, which is what every navigation here has to do.
+ *
+ * **A pause is a claim on the transport, and the resumes queued behind an older gesture
+ * only ask whether anybody has claimed it since.** A rate release seeks before it plays
+ * again, and that seek is a pre-roll - long enough to start a scrub, drag a cut, step a
+ * frame, press space or begin an export. All of those paused, none of them took the
+ * transport, so the older gesture's `.then` still found its own generation current and
+ * started the take playing underneath a gesture that had deliberately stopped it. The
+ * space bar was the plainest version: pause, and a moment later the take is running.
+ *
+ * `beginRateGesture` deliberately does not come through here - it takes the transport
+ * *before* it pauses, so that the generation it keeps is its own.
+ */
+const pauseTransport = () => {
+  takeTransport();
+  timeline.pause();
+};
+
 function resize() {
   stageResizes++;
   // The stage is the window less whatever the timeline strip is taking, which is
@@ -1929,8 +1948,22 @@ function setClipInOut(values) {
   activeDeliverable.out = clipOut;
   paintDeliverable();
   if (timeline) {
-    if (timeline.programSec < clipIn) timeline.seek(clipIn).catch(showTimelineError);
-    else if (clipOut !== null && timeline.programSec > clipOut) timeline.seek(clipOut).catch(showTimelineError);
+    // **Compared on the output grid, because that is the only place the playhead can be.**
+    // `programSec` is a frame divided by the rate, and a boundary is a float - so after a
+    // speed change rescales the cuts, a playhead that was sitting exactly on `clipIn` can
+    // land a fraction of a frame outside the rescaled one and read as out of range. From
+    // 10s at 1x to 2.3x the boundary becomes 4.3478s and the nearest frame is 130 at
+    // 4.3333s: outside by 14ms, which buys a full accurate seek. Per `input` event, that
+    // is the seek storm this control was rewritten to avoid, coming back through the one
+    // case the count probe cannot see - it parks the playhead in the interior.
+    //
+    // Nothing is lost by comparing frames: a boundary between two frames is a boundary
+    // the transport cannot show either side of, so "outside by less than a frame" is a
+    // distinction with no picture attached.
+    const frameIn = timeline.frameOf(clipIn);
+    const frameOut = clipOut === null ? null : timeline.frameOf(clipOut);
+    if (timeline.frame < frameIn) timeline.seek(clipIn).catch(showTimelineError);
+    else if (frameOut !== null && timeline.frame > frameOut) timeline.seek(clipOut).catch(showTimelineError);
     else timeline.paint();
   }
 }
@@ -4638,7 +4671,7 @@ async function exportClip(options = {}) {
   };
 
   exporting = true;
-  timeline.pause();
+  pauseTransport();
   try {
     // The rate first, because the frame grid every position below is named in is
     // the output rate's grid.
@@ -4966,10 +4999,22 @@ const view = {
     return moved;
   },
 
-  /** Zooms by `factor` (>1 closer) holding the fraction `at` where it is on screen. */
+  /**
+   * Zooms by `factor` (>1 closer) holding the fraction `at` where it is on screen.
+   *
+   * **The clamp is applied here rather than left to `set`, because `set` can only widen
+   * the span and would keep the start that went with the narrower one.** At the minimum
+   * window, another notch inward asked for a span `set` refused and a start computed for
+   * it, so the window kept its width and slid to the right: a gesture that could not zoom
+   * panned instead, and the time under the pointer walked away a notch at a time. Deriving
+   * the start from the span that actually survives makes a further zoom-in a no-op, which
+   * is what a control at the end of its travel should do.
+   */
   zoomAbout(at, factor) {
-    const span = (this.b - this.a) / factor;
-    const start = at - (at - this.a) / factor;
+    const span = Math.min(1, Math.max(this.minSpan(), (this.b - this.a) / factor));
+    // Where the anchor sits in the window now, kept where it is in the window after.
+    const held = (at - this.a) / Math.max(1e-9, this.b - this.a);
+    const start = at - held * span;
     return this.set(start, start + span);
   },
 
@@ -5280,7 +5325,7 @@ ui.bed.addEventListener('pointerdown', (e) => {
   if (!timeline) return;
   ui.bed.setPointerCapture(e.pointerId);
   scrubbing = true;
-  timeline.pause();
+  pauseTransport();
   draftWanted = programAtPointer(e);
   pumpDraft();
 });
@@ -5654,7 +5699,7 @@ for (const handle of [ui.in, ui.out]) {
     if (!timeline) return;
     handle.setPointerCapture(e.pointerId);
     handleDrag = handle === ui.in ? 'in' : 'out';
-    timeline.pause();
+    pauseTransport();
     e.stopPropagation();
   });
   handle.addEventListener('pointermove', (e) => {
@@ -5693,7 +5738,7 @@ ui.play.addEventListener('click', () => {
 /** Parks the playhead somewhere, stopping first. Seeks clamp into the clip range. */
 function goTo(sec) {
   if (!timeline) return;
-  timeline.pause();
+  pauseTransport();
   timeline.seek(Math.max(0, Math.min(sec, timeline.duration))).catch(showTimelineError);
 }
 
@@ -5785,7 +5830,7 @@ addEventListener('keydown', (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
 
   const step = (frames) => {
-    timeline.pause();
+    pauseTransport();
     timeline.seek(Math.max(0, Math.min((timeline.frame + frames) / timeline.outputFps, timeline.duration)))
       .catch(showTimelineError);
   };
@@ -5798,7 +5843,7 @@ addEventListener('keydown', (e) => {
       if (e.target instanceof HTMLElement && e.target.closest('button, [role=button]')) return;
       // Or the page scrolls under the strip.
       e.preventDefault();
-      if (timeline.playing) timeline.pause();
+      if (timeline.playing) pauseTransport();
       else timeline.play().catch(showTimelineError);
       return;
     case 'ArrowRight': e.preventDefault(); step(e.shiftKey ? timeline.outputFps : 1); return;
@@ -5869,20 +5914,54 @@ addEventListener('keydown', (e) => {
 // A log grid has no reason to land on 1 at all, so the band snaps to it and the rest
 // is quantised to a millirate, which is finer than the readout beside it can show.
 //
-// Its width is measured against the control rather than picked as a round number. The
-// travel spans a factor of 40, so a band of +/-r in rate is `ln(1+r)/ln(40)` of the
-// slider: at the +/-1.5% this started as, that is 1.5px on the ~380px the strip gives
-// it, which is not a detent anybody can land on and made the exactness it exists for
-// unreachable in exactly the case it was written for. +/-3% is about 3px, and it costs
-// nothing real - a deliberate 2% speed change is not a thing anyone grades.
+// Its width belongs to the control rather than to the rate, and the two attempts to
+// state it in rate are both recorded below at `DETENT_PX` - the second was wrong by a
+// factor of four because the arithmetic was done against a slider four times wider than
+// the one the stylesheet ships.
 const RATE_MIN = 0.1;
 const RATE_MAX = 4;
-const RATE_DETENT = 0.03;
+
+/**
+ * How wide the 1.00x detent is, in pixels of the control it lives on.
+ *
+ * **It was a band of rate, and a band of rate is not a band of anything a finger can
+ * find.** The travel spans a factor of 40, so +/-3% of rate is `ln(1.03)/ln(40)` of the
+ * slider - 0.74px on each side of the shipped 92px control, which is sub-pixel and makes
+ * the one value the detent exists to make reachable unreachable again. That is the same
+ * failure this constant was written to fix, surviving its own fix: the comment beside it
+ * did the arithmetic against a ~380px control and the stylesheet says
+ * `.tchip input[type=range] { width: 92px }`.
+ *
+ * So it is stated in pixels and converted against the control as rendered, rather than
+ * agreed with in a comment - the same rule the proof tools learned about layout constants
+ * they kept their own copy of. It costs nothing real either way, since a deliberate 2%
+ * speed change is not a thing anyone grades.
+ *
+ * **The number of pixels it actually buys is measured rather than computed**, because the
+ * value a click produces is not `x / width`: a range input's track is shorter than its box
+ * by the thumb, so arithmetic from the element's width is off by however wide that is.
+ * `editor-check` sweeps the control a pixel at a time and reports what a pointer really
+ * gets - 8 contiguous pixels of the 92, x 56..63, on the shipped stylesheet.
+ */
+const DETENT_PX = 3;
 
 const rawRateFromSlider = (v) => (
   RATE_MIN * (RATE_MAX / RATE_MIN) ** Math.min(1, Math.max(0, Number(v) || 0))
 );
-const insideDetent = (rate) => Math.abs(rate - 1) <= RATE_DETENT;
+/**
+ * Whether a slider *position* is inside the detent - a position, because the band is a
+ * number of pixels and the mapping from rate to travel is logarithmic, so the same band
+ * in rate is a different number of pixels at every point on the control.
+ *
+ * The width is read off the element each time rather than cached: the strip is resizable
+ * and a cached number would be one more layout constant kept in two places. The 92px
+ * fallback is for a panel that is hidden, where the rect is zero and no pointer can reach
+ * the control anyway.
+ */
+const insideDetent = (v) => {
+  const width = ui.rate.getBoundingClientRect().width || 92;
+  return Math.abs(Number(v) - sliderFromRate(1)) <= DETENT_PX / Math.max(1, width);
+};
 
 /**
  * The rate a slider position means, with the detent applied - but only to a gesture that
@@ -5902,9 +5981,8 @@ const insideDetent = (rate) => Math.abs(rate - 1) <= RATE_DETENT;
  * the observer effect this repo keeps finding in its own instruments.
  */
 const rateFromSlider = (v) => {
-  const rate = rawRateFromSlider(v);
   const holding = rateGesture ? rateGesture.detentArmed === false : false;
-  return !holding && insideDetent(rate) ? 1 : Number(rate.toFixed(3));
+  return !holding && insideDetent(v) ? 1 : Number(rawRateFromSlider(v).toFixed(3));
 };
 
 const sliderFromRate = (rate) => (
@@ -5968,7 +6046,7 @@ function beginRateGesture({ fromKey = false } = {}) {
     // the band at something other than 1.00x, which is a rate no slider could have
     // produced - it came out of a project file. The `input` handler arms it the moment
     // the thumb leaves the band, so aiming at 1.00x from outside still snaps.
-    detentArmed: retime.rate === 1 || !insideDetent(retime.rate),
+    detentArmed: retime.rate === 1 || !insideDetent(sliderFromRate(retime.rate)),
     source: retime.sourceSecAt(timeline.programSec),
     wasPlaying: timeline.playing,
     // The parameterisation the gesture started in. Every program time in the document
@@ -6162,7 +6240,7 @@ ui.rate.addEventListener('input', () => {
   // Once the thumb has been outside the band, the detent is live for the rest of the
   // gesture. Armed from the raw position rather than from the snapped rate, because the
   // snapped one cannot say whether it is inside the band or exactly on the value.
-  if (rateGesture && !rateGesture.detentArmed && !insideDetent(rawRateFromSlider(ui.rate.value))) {
+  if (rateGesture && !rateGesture.detentArmed && !insideDetent(ui.rate.value)) {
     rateGesture.detentArmed = true;
   }
   const program = applyRate(rateFromSlider(ui.rate.value));

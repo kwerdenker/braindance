@@ -348,8 +348,8 @@ const MUTATIONS = {
     file: 'web/main.js',
     edits: [[
       '  const holding = rateGesture ? rateGesture.detentArmed === false : false;\n'
-      + '  return !holding && insideDetent(rate) ? 1 : Number(rate.toFixed(3));',
-      '  return insideDetent(rate) ? 1 : Number(rate.toFixed(3));',
+      + '  return !holding && insideDetent(v) ? 1 : Number(rawRateFromSlider(v).toFixed(3));',
+      '  return insideDetent(v) ? 1 : Number(rawRateFromSlider(v).toFixed(3));',
     ]],
   },
 
@@ -375,6 +375,55 @@ const MUTATIONS = {
       + '  if (rateGesture && rateGesture.fromKey === e.key) endRateGesture();\n'
       + '});',
       "ui.rate.addEventListener('keyup', endRateGesture);",
+    ]],
+  },
+
+  // A navigation pause stops announcing itself, so a resume queued behind an older rate
+  // release still finds its own generation current and starts the take playing under a
+  // gesture that had deliberately stopped it. Reddens the navigation row in section 4.
+  'pause-keeps-resume': {
+    file: 'web/main.js',
+    edits: [['const pauseTransport = () => {\n  takeTransport();\n  timeline.pause();\n};',
+      'const pauseTransport = () => {\n  timeline.pause();\n};']],
+  },
+
+  // The clip bounds go back to being compared in seconds against a playhead that is a
+  // frame, so a playhead sitting on a cut reads as outside it after every rescale.
+  // Reddens the boundary seek-count row and leaves the interior one green.
+  'bounds-compare-off-grid': {
+    file: 'web/main.js',
+    edits: [[
+      '    if (timeline.frame < frameIn) timeline.seek(clipIn).catch(showTimelineError);\n'
+      + '    else if (frameOut !== null && timeline.frame > frameOut) timeline.seek(clipOut).catch(showTimelineError);',
+      '    if (timeline.programSec < clipIn) timeline.seek(clipIn).catch(showTimelineError);\n'
+      + '    else if (clipOut !== null && timeline.programSec > clipOut) timeline.seek(clipOut).catch(showTimelineError);',
+    ]],
+  },
+
+  // The detent goes back to a band of rate rather than of pixels, which on the shipped
+  // 92px control is 0.74px each side. Reddens the swept hit-target rows and leaves the
+  // two value-driven rows green - which is exactly the pair that let this ship.
+  'detent-in-rate-units': {
+    file: 'web/main.js',
+    edits: [[
+      '  const width = ui.rate.getBoundingClientRect().width || 92;\n'
+      + '  return Math.abs(Number(v) - sliderFromRate(1)) <= DETENT_PX / Math.max(1, width);',
+      '  return Math.abs(rawRateFromSlider(v) - 1) <= 0.03;',
+    ]],
+  },
+
+  // The zoom goes back to deriving its start from a span the clamp then refuses, so a
+  // notch at the minimum window pans instead of doing nothing. Reddens the two clamp rows
+  // and leaves every other zoom row green - they all start from a window with room.
+  'zoom-pans-at-the-clamp': {
+    file: 'web/main.js',
+    edits: [[
+      '    const span = Math.min(1, Math.max(this.minSpan(), (this.b - this.a) / factor));\n'
+      + '    // Where the anchor sits in the window now, kept where it is in the window after.\n'
+      + '    const held = (at - this.a) / Math.max(1e-9, this.b - this.a);\n'
+      + '    const start = at - held * span;',
+      '    const span = (this.b - this.a) / factor;\n'
+      + '    const start = at - (at - this.a) / factor;',
     ]],
   },
 
@@ -1255,6 +1304,51 @@ try {
   await page.evaluate('__kinect.timeline.transport().seek(0)');
   await settle();
 
+  // **A rate release plays again after a seek, and that seek is long enough to press
+  // space in.** The resume asks only whether anybody has taken the transport since - and
+  // pausing was not taking it, so the space bar stopped the take and the queued resume
+  // started it again a moment later. Every navigation that pauses for its own purposes
+  // announces it now; the space bar is the plainest of them and the one this drives.
+  await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
+  await settle();
+  await page.evaluate('__kinect.timeline.transport().play()');
+  await new Promise((r) => setTimeout(r, 300));
+  const runningBefore = await page.evaluate('__kinect.timeline.transport().playing');
+  // The release and the navigation go in one task, with no round trip between them. That
+  // is the whole of the row: the resume rides the release's pre-roll, so a navigation
+  // arriving after the pre-roll has finished has nothing left to invalidate and the
+  // mutation walks past. A first version pressed the key through Playwright and did
+  // exactly that - it reported the fix working on a build without it.
+  //
+  // `Home` rather than the space bar, and for a reason worth naming: at this instant the
+  // gesture has already paused the take, so space would *start* it rather than stop it.
+  // `goTo` pauses unconditionally, which is what makes "is it playing a second later" a
+  // clean read of whether the queued resume fired.
+  await page.evaluate(`(() => {
+    const el = document.getElementById('tRate');
+    el.focus();
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    el.value = String(__kinect.editor.rateSlider.toValue(1.6));
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true }));
+    // Out of the control first, or the window handler's typing guard skips the key.
+    el.blur();
+    globalThis.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+  })()`);
+  await settle();
+  await new Promise((r) => setTimeout(r, 1500));
+  const afterNav = await page.evaluate('__kinect.timeline.transport().playing');
+  check(runningBefore,
+    'a take is running when the speed gesture starts, so the release below has a resume to queue',
+    `playing ${runningBefore}`);
+  check(afterNav === false,
+    '  and a navigation arriving inside its pre-roll keeps it stopped, rather than the resume starting it again',
+    `playing ${runningBefore} -> ${afterNav}`);
+  await page.evaluate('__kinect.timeline.transport().pause()');
+  await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
+  await settle();
+
+
 
   // Two positions and two directions, because program and source time agree
   // trivially at program 0 and a single arm cannot tell holding one from holding the
@@ -1488,6 +1582,54 @@ try {
     await settle();
     return page.evaluate('__kinect.timeline.retime.rate');
   };
+  // **Driven by pixel as well as by value, because a detent is a hit target.** The arms
+  // below assign `el.value`, which exercises the arithmetic and not the affordance - and
+  // the affordance is the whole point: the band was stated as +/-3% of rate, which on a
+  // travel spanning a factor of 40 is `ln(1.03)/ln(40)` of the control, or 0.74px each
+  // side of the 92px slider the stylesheet ships. Sub-pixel, so the one value the detent
+  // exists to make reachable was unreachable by pointer, on a build whose value-driven
+  // rows all passed. The band is stated in pixels now and this row clicks them.
+  const rateBox = await page.locator('#tRate').boundingBox();
+  check(rateBox.width < 200,
+    'the speed slider is the narrow one the stylesheet ships, which is what the band has to fit',
+    `${rateBox.width.toFixed(0)}px`);
+  // **Measured in pixels of the rendered control, and both terms of that are measured.**
+  // A first version swept the box a pixel at a time and reported 8px on a build with the
+  // band and 8px on one without, which is a probe that answers the same number either way
+  // and therefore measures neither - a range input's track is shorter than its box by the
+  // thumb, and clicking is a gesture whose own detent arming gets in the way of reading
+  // the band off it. So the two terms are taken apart: how wide the band is in travel,
+  // asked of the page's own mapping, and how much travel a pixel is worth, taken from two
+  // clicks far apart.
+  const bandInTravel = await page.evaluate(`(() => {
+    const one = __kinect.editor.rateSlider.toValue(1);
+    let lo = 0;
+    let hi = 1;
+    // The largest offset from the 1.00x position that still comes back as exactly 1.
+    for (let i = 0; i < 60; i++) {
+      const mid = (lo + hi) / 2;
+      if (__kinect.editor.rateSlider.toRate(one + mid) === 1) lo = mid; else hi = mid;
+    }
+    return lo;
+  })()`);
+  const travelPerPixel = await (async () => {
+    const read = async (dx) => {
+      await page.mouse.click(rateBox.x + dx, rateBox.y + rateBox.height / 2);
+      return page.evaluate("Number(document.getElementById('tRate').value)");
+    };
+    const near = await read(10);
+    const far = await read(Math.round(rateBox.width) - 10);
+    return (far - near) / (Math.round(rateBox.width) - 20);
+  })();
+  await settle();
+  const bandPx = bandInTravel / Math.max(1e-9, travelPerPixel);
+  check(travelPerPixel > 0,
+    '  and a pixel of it is worth a measurable amount of travel, or the row below divides by noise',
+    `${(1 / travelPerPixel).toFixed(1)}px of track across a ${rateBox.width.toFixed(0)}px box`);
+  check(bandPx >= 2,
+    '  and exactly 1.00x is reachable across at least two pixels either side of it',
+    `${bandPx.toFixed(2)}px each side, from a band of ${bandInTravel.toFixed(5)} travel`);
+
   const inBand = await atSlider(0.005);
   check(inBand === 1, 'a slider position just off 1.00x snaps to exactly 1, not to 0.99-something',
     `landed at ${inBand}`);
@@ -2687,6 +2829,78 @@ try {
     `${atMin.spanSec.toFixed(6)}s -> ${atBack.spanSec.toFixed(6)}s`);
   await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
   await page.evaluate('__kinect.editor.view.fit()');
+  await settle();
+
+  // **A control at the end of its travel should do nothing, not something else.** At the
+  // minimum window another notch inward asks for a span the clamp refuses - and the clamp
+  // could only widen the span, so it kept the start computed for the narrower one and the
+  // window slid sideways instead. A gesture that could not zoom panned, and the time under
+  // the pointer walked away a notch at a time.
+  //
+  // Probed at the clamp rather than from a wide window, which is where the existing zoom
+  // rows sit and why they never saw this: at 0.2..0.8 every notch has room to zoom.
+  await page.evaluate('__kinect.editor.view.set(0.5, 0.5)');
+  await settle();
+  const atFloor = await page.evaluate('__kinect.editor.view.window()');
+  const underPointer = (win) => win.startSec + win.spanSec * 0.25;
+  const anchorSec = underPointer(atFloor);
+  // Driven by the wheel over the bed, which is the path the report names and the one a
+  // user has - the window hook exposes `set` and `fit` but not the zoom.
+  const floorBed = await page.locator('#tBed').boundingBox();
+  for (let i = 0; i < 3; i++) {
+    await page.mouse.move(floorBed.x + floorBed.width * 0.25, floorBed.y + floorBed.height / 2);
+    await page.mouse.wheel(0, -120);
+    await new Promise((r) => setTimeout(r, 80));
+  }
+  await settle();
+  const stillAtFloor = await page.evaluate('__kinect.editor.view.window()');
+  check(near(atFloor.spanSec, 0.25, 1e-6),
+    'the window really is at the minimum before the notches, or the clamp is not the thing under test',
+    `${atFloor.spanSec.toFixed(6)}s`);
+  check(near(stillAtFloor.spanSec, atFloor.spanSec, 1e-9),
+    '  and three more zoom-ins at the clamp leave the width where it is',
+    `${atFloor.spanSec.toFixed(6)}s -> ${stillAtFloor.spanSec.toFixed(6)}s`);
+  check(near(stillAtFloor.startSec, atFloor.startSec, 1e-6),
+    '  and leave the window where it is rather than panning it out from under the pointer',
+    `${anchorSec.toFixed(4)}s under the pointer, window `
+    + `${atFloor.startSec.toFixed(4)}s -> ${stillAtFloor.startSec.toFixed(4)}s`);
+  await page.evaluate('__kinect.editor.view.fit()');
+  await settle();
+
+  // **The seek storm has one more door, and it is a playhead sitting on a cut.** After a
+  // rescale the boundary is a float and the playhead is a frame, so a playhead that was
+  // exactly on `clipIn` can land a fraction of a frame outside the rescaled one - and
+  // `setClipInOut` buys a full accurate seek for it, on every `input` event of a drag.
+  // The count row further up parks the playhead in the interior and cannot see this.
+  await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
+  await settle();
+  await page.evaluate('__kinect.timeline.transport().seek(10)');
+  await settle();
+  await page.locator('#tSetIn').click();
+  await settle();
+  const onCut = await page.evaluate(`(() => ({
+    programSec: __kinect.timeline.transport().programSec,
+    in: __kinect.editor.clipRange().in,
+  }))()`);
+  check(near(onCut.programSec, onCut.in ?? -1, 1e-9),
+    'the playhead is sitting exactly on the in point, which is the case the count row never drives',
+    `playhead ${onCut.programSec.toFixed(4)}s, in ${(onCut.in ?? -1).toFixed(4)}s`);
+  await page.evaluate('__kinect.timeline.counters.seeks = 0');
+  await page.evaluate(`(() => {
+    const el = document.getElementById('tRate');
+    for (let i = 0; i < 12; i++) {
+      el.value = String(__kinect.editor.rateSlider.toValue(2.3 + i * 0.01));
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await settle();
+  const boundarySeeks = await page.evaluate('__kinect.timeline.counters.seeks');
+  check(boundarySeeks <= 2,
+    '  and twelve slider steps from there still cost one accurate seek, not one per step',
+    `${boundarySeeks} seeks`);
+  await page.locator('#tClearRange').click();
+  await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
   await settle();
 
   // **A wheel notch is not three pixels, and on Firefox that is what it reports.**
