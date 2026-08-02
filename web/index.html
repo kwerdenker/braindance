@@ -677,8 +677,14 @@
   <div id="hint">drag to orbit · scroll to zoom · right-drag to pan · <b>H</b> hides panel</div>
 
   <section id="timeline" hidden aria-label="Timeline">
+    <!-- `tabindex` because the role is a promise. A functional `separator` that only a
+         pointer can move tells assistive technology there is a control here and then
+         answers nothing when it is asked to move it - and the thing behind it is the
+         only way to reveal lanes past the fold or give the height back to the stage.
+         `aria-valuenow` and its bounds are written by `applyLaneHeight`, which is the
+         one writer of the height they describe. -->
     <div class="tgrip" id="tGrip" role="separator" aria-orientation="horizontal"
-      aria-label="Resize the timeline"></div>
+      tabindex="0" aria-label="Resize the timeline" aria-valuemin="0" aria-valuenow="0"></div>
     <!-- Row one: the transport, and what the transport is addressed in. Everything
          here answers "where am I and how fast am I going", including the in/out pair,
          which is where the playhead is allowed to be. -->

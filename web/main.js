@@ -5295,8 +5295,15 @@ function laneHeightCeiling() {
  */
 function applyLaneHeight() {
   const wanted = userLaneHeight ?? Math.round(innerHeight * DEFAULT_LANES_SHARE);
+  const reachable = Math.min(laneStackHeight, laneHeightCeiling());
   const height = Math.min(laneStackHeight, Math.max(0, Math.min(wanted, laneHeightCeiling())));
   ui.root.style.setProperty('--tlanes-h', `${height}px`);
+  // The separator says what it is currently at and what it can reach, written here
+  // rather than by the two gestures that move it, for the same reason `--tlanes-h` is:
+  // this is the one place that knows the height after both bounds have been applied,
+  // and a value announced from anywhere else would be the height that was asked for.
+  ui.grip.setAttribute('aria-valuenow', String(height));
+  ui.grip.setAttribute('aria-valuemax', String(Math.max(0, reachable)));
 }
 
 // One scroller and one mirror. The rail has `overflow: hidden` so there is no second
@@ -5341,6 +5348,51 @@ ui.grip.addEventListener('pointermove', (e) => {
   });
 });
 
+/**
+ * The same splitter from the keyboard, because the pointer was the only way to it.
+ *
+ * A step is a lane row rather than a pixel. What is being resized is a stack of rows,
+ * so a press that moves less than one of them looks like a control that does nothing -
+ * and reaching a lane past the fold would take dozens of presses. Home and End are the
+ * two ends the drag can reach, which is what `aria-valuemin`/`max` announce.
+ *
+ * Written against the height the strip *has* rather than against `userLaneHeight`,
+ * which is null until something drags it - so the first press moves from where the
+ * splitter visibly is instead of jumping from the default it was never told about.
+ */
+const LANE_KEY_STEP = 22;
+
+ui.grip.addEventListener('keydown', (e) => {
+  const from = parseFloat(getComputedStyle(ui.root).getPropertyValue('--tlanes-h')) || 0;
+  const ceiling = Math.min(laneStackHeight, laneHeightCeiling());
+  const to = e.key === 'ArrowUp' ? from + LANE_KEY_STEP
+    : e.key === 'ArrowDown' ? from - LANE_KEY_STEP
+      : e.key === 'PageUp' ? from + LANE_KEY_STEP * 4
+        : e.key === 'PageDown' ? from - LANE_KEY_STEP * 4
+          : e.key === 'Home' ? 0
+            : e.key === 'End' ? Math.max(0, ceiling)
+              : null;
+  if (to === null) return;
+  // Only once it is going to act, so Tab and everything else still leave the strip.
+  e.preventDefault();
+  userLaneHeight = Math.max(0, to);
+  applyLaneHeight();
+  resize();
+  placeChrome();
+  rememberLaneHeight();
+});
+
+/** Where the splitter has been put, kept for this browser rather than for the clip. */
+function rememberLaneHeight() {
+  // Stored as what was asked for rather than as what the clamp allowed, so a strip
+  // dragged tall on a big screen is still tall when the window is made big again.
+  try {
+    localStorage.setItem(LANES_HEIGHT, String(userLaneHeight));
+  } catch {
+    // Storage is a convenience here; the gesture already worked.
+  }
+}
+
 for (const type of ['pointerup', 'pointercancel']) {
   ui.grip.addEventListener(type, () => {
     if (!gripDrag) return;
@@ -5350,13 +5402,7 @@ for (const type of ['pointerup', 'pointercancel']) {
     gripFrame = 0;
     resize();
     placeChrome();
-    // Stored as what was asked for rather than as what the clamp allowed, so a strip
-    // dragged tall on a big screen is still tall when the window is made big again.
-    try {
-      localStorage.setItem(LANES_HEIGHT, String(userLaneHeight));
-    } catch {
-      // Storage is a convenience here; the drag already worked.
-    }
+    rememberLaneHeight();
   });
 }
 
