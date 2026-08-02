@@ -33,7 +33,7 @@
 //      tested" is an assertion this file makes about itself.
 //
 //   node server/index.js &
-//   node tools/editor-check.mjs --url http://localhost:8080 --take 2026-08-02-take1
+//   node tools/editor-check.mjs --url http://localhost:8080 --take sample
 //   node tools/editor-check.mjs --mutate plant-unswept-control --no-render  # must FAIL
 //   node tools/editor-check.mjs --mutate lanes-clear-siblings  --no-render  # must FAIL
 //   node tools/editor-check.mjs --mutate rate-holds-program    --no-render  # must FAIL
@@ -70,7 +70,14 @@ const flag = (name, fallback = null) => {
 const REPO = fileURLToPath(new URL('..', import.meta.url));
 const URL_BASE = flag('--url', 'http://localhost:8080');
 const EDITOR_PATH = '/edit';
-const TAKE = flag('--take', '2026-08-02-take1');
+// `sample` rather than a dated take id, because the default has to name something
+// that can exist on a machine that is not this one. A recorder-issued id carries
+// the day it was shot - `2026-08-02-take1` was the default here, and it resolves
+// only on the machine that recorded it, on that date. Everywhere else the tool
+// spent thirty seconds waiting for a take the server answers 404 for and then
+// exited 2, which is the honest code but a wasted run and a confusing message.
+// `sample` is the name `npm run replay` and `make-fixture.js` already assume.
+const TAKE = flag('--take', 'sample');
 const HEADED = argv.includes('--headed');
 const MUTATE = flag('--mutate');
 const NO_RENDER = argv.includes('--no-render');

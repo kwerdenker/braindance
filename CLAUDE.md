@@ -344,7 +344,7 @@ node tools/keyframe-check.mjs --url http://localhost:8080 # step 5: tracks, reti
 node tools/keyframe-check.mjs --mutate pose-linear        # ... and must FAIL mutated
 node tools/export-check.mjs --url http://localhost:8080   # step 6: resolution, export, the file
 node tools/export-check.mjs --mutate pointsize-absolute   # ... and must FAIL mutated
-node tools/library-check.mjs --url http://localhost:8080  # step 7: library, recorder, routes
+node tools/library-check.mjs                              # step 7: library, recorder, routes
 node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL
 node tools/editor-check.mjs --url http://localhost:8080   # the editor's controls: that they exist, that pressing them changes something
 node tools/editor-check.mjs --mutate lanes-clear-siblings --no-render  # ... and must FAIL
@@ -353,8 +353,11 @@ node tools/monitor-check.mjs                              # step 9: the monitor'
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate expand-shifts-by-a-block   # ... and must FAIL mutated
-node tools/guard-check.mjs                                # the socket's origin rule, and the bind
+node tools/sensor-view-check.mjs                          # the intrinsics a take was shot with, against a build that assumes them
+node tools/sensor-view-check.mjs --mutate fov-hardcoded   # ... and must FAIL mutated
+node tools/guard-check.mjs                                # the socket's origin rule, the bind, and the rebinding rule
 node tools/guard-check.mjs --mutate upgrade-skips-origin  # ... and must FAIL mutated
+node tools/guard-check.mjs --mutate host-accepts-a-name   # ... and must FAIL mutated
 node tools/jobs-check.mjs                                 # step 8: the queue, the pin, and a real render
 node tools/jobs-check.mjs --mutate claim-ignores-renderer # ... and must FAIL mutated
 ```
@@ -407,6 +410,54 @@ node tools/registration-check.mjs                    # our registration == upstr
 node tools/registration-check.mjs --mutate one-lsb   # ... and must FAIL mutated
 ```
 
+These two need nothing at all - no server, no browser, no sensor, no network - which
+is what lets CI run them:
+
+```
+node tools/syntax-check.mjs                          # every JS file this repo ships parses
+node tools/release-gate-check.mjs                    # the .npmrc supply-chain gate is actually armed
+node tools/release-gate-check.mjs --mutate wrong-unit # ... and must FAIL (also: no-gate, absent)
+```
+
+`release-gate-check` exists because **npm fails open on a value it cannot parse.**
+`min-release-age=2d` is a warning rather than an error and the install proceeds
+ungated, so a wrong unit reads exactly like a configured gate to anybody reading the
+file. The only way to tell them apart is to ask npm what it *derived*, which is why
+the check reads `npm config get before` and not the key itself - npm answers `null`
+for the key whether it took or not. It masks the user and global config layers while
+it runs, and that is load-bearing rather than tidiness: this machine carries the same
+gate in `~/.npmrc`, so an unmasked run reads a date, passes, and proves nothing about
+the repo.
+
+`syntax-check` refuses to pass on finding no files, for the reason this file keeps
+restating: a checker that globbed wrong prints a clean result about nothing. The roots
+must exist, each must yield files, and the count is printed beside the verdict so a
+number that has quietly halved is visible rather than implied. It also asserts that
+every tool in `tools/` is named in this file - see below.
+
+And the four that are not proof tools, listed because a tool nobody documented is a
+tool nobody runs:
+
+```
+node tools/fake-grabber.mjs        # a grabber that needs no sensor, for driving the server
+node tools/make-fixture.js         # loops one short capture into an arbitrarily long one
+node tools/sweep-all.mjs           # every mutation of every tool; needs a server and hours
+node tools/settle-probe.mjs        # does settle()'s drain scale with the take or the ceiling
+tools/monitor-cost-ab.mjs          # the monitor's cost on a capture node, over SSH
+tools/pi-registration-ab.sh        # the threading A/B runbook for a capture node
+```
+
+**That list is enforced rather than maintained, because the version of it that was
+maintained had already rotted.** This file said "all six" tools refuse an unmatched
+mutation when eleven do, said "the four server tools" invert nothing when five do,
+documented a `--url` flag `library-check` does not have, and omitted `sensor-view-check`
+entirely - a 1277-line proof tool that `editor-check` cites three times. Every one of
+those was found by counting rather than by reading.
+
+Fixing the six names would have closed the instance and left the class open, which is
+the mistake this file names elsewhere. So `syntax-check` now walks `tools/` and fails
+on any file not mentioned here, and the check runs in CI - a tool added later is asked
+by existing. The falsification control is adding a tool without documenting it.
 **`vendor-check` reads the built artifact as well as the source, and that closes most
 of the gap it landed with.** Sections 1-4 prove `third_party/` is upstream plus the
 declared edits; section 5 asserts the library actually installed at `vendor/prefix`
@@ -465,21 +516,35 @@ found something" — so the convention was reached twice independently and the t
 are describing one rule rather than two.
 
 `--mutate <name>` serves a deliberately broken `main.js` into the running server, or for the
-two vendoring tools rebuilds a deliberately broken source tree. All six refuse a mutation
-whose text they cannot find exactly once, because a replacement that silently matched nothing
-would run the unmutated page and be recorded as the check having missed a bug it was never
-shown. **A mutation is a piece of source text, so a mutation stops matching the moment the
-code it names is edited** — three of `timeline-check`'s nine had to be re-anchored when step 5
-rewrote the retime seam, and the refusal is what surfaced that rather than a silent pass.
+two vendoring tools rebuilds a deliberately broken source tree. **Eleven tools carry
+mutations** — editor, export, guard, jobs, keyframe, library, monitor, registration,
+sensor-view, timeline and vendor — and all of them refuse a mutation whose text they cannot
+find exactly once, because a replacement that silently matched nothing would run the unmutated
+page and be recorded as the check having missed a bug it was never shown. **A mutation is a
+piece of source text, so a mutation stops matching the moment the code it names is edited** —
+three of `timeline-check`'s nine had to be re-anchored when step 5 rewrote the retime seam,
+and the refusal is what surfaced that rather than a silent pass.
 
-**The two sides disagree about what a caught mutation exits, and the disagreement runs the
-dangerous way, so read the assertion count and never the code.** The four server tools exit
-non-zero when they catch one. `vendor-check` and `registration-check` invert it — caught is
-exit **0** with `caught, as required (N assertions fired)`, and exit **1** is `NOT CAUGHT`,
-the case that actually matters. So anything gating on "non-zero means caught" reads a genuine
-miss by the newer tools as a catch, which is the one direction that cannot be allowed to fail
-quietly. This is why the rule is worded the way it is: count failed assertions, never exit
-codes.
+**The tools disagree about what a caught mutation exits, the disagreement runs the dangerous
+way, and it is worse than this paragraph used to say — so read the assertion count and never
+the code.** Counted rather than recalled, because the previous count here said "six" and
+"four" when the real numbers were eleven and five, which is the drift this file warns about
+happening to this file:
+
+- **Five exit non-zero on a catch and say `NOT CAUGHT` when they miss**: `guard-check`,
+  `jobs-check`, `editor-check`, `monitor-check`, `sensor-view-check`.
+- **Two invert it**: `vendor-check` and `registration-check`, where caught is exit **0** with
+  `caught, as required (N assertions fired)` and exit **1** is `NOT CAUGHT`. Anything gating on
+  "non-zero means caught" reads a genuine miss by these two as a catch.
+- **Four have no `NOT CAUGHT` branch at all** and simply exit on their failure count:
+  `timeline-check`, `export-check`, `keyframe-check`, `library-check`. **A mutation these four
+  fail to catch exits 0**, which reads as a clean pass rather than as the check being blind.
+  That is the same direction as the inverted pair and it is silent rather than merely
+  confusing, so it is the worse of the two shapes.
+
+Which is why the rule is worded the way it is: count failed assertions, never exit codes — and
+read *which* assertions fired, because a tool that counts its own crash as a failure reports a
+catch it never made.
 
 `keyframe-check` runs its cheapest claim first, on a 60-second budget, and stops the run if
 it fails. That is not ordering by cost: an evaluator that announces its writes schedules a

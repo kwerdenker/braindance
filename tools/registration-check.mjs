@@ -99,6 +99,38 @@ if (mutation && !MUTATIONS[mutation]) {
 }
 
 // --- build ----------------------------------------------------------------
+// Upstream's own FindTurboJPEG searches `/usr/local/opt/jpeg-turbo` for Homebrew and
+// nothing else, which is the Intel prefix - so on Apple Silicon it finds nothing and
+// the library will not configure. Hence the override, and hence the override being
+// darwin-only: turbojpeg is an ordinary system package everywhere else, sitting in the
+// default prefixes upstream's module already searches, and forcing these cache values
+// unconditionally aimed a Linux or Pi build at a macOS path holding a `.dylib`. That is
+// not a degraded run, it is a configure failure, on two of this project's three target
+// platforms - and `native/CMakeLists.txt` had it right for the grabber the whole time.
+//
+// It cannot literally be the grabber's pattern, which reaches for pkg-config first:
+// upstream's module has no pkg-config path at all, so the only lever from out here is
+// the cache. What carries across is the shape - resolve rather than assume, and only
+// where the default search is known to miss. The prefix comes from `brew --prefix`
+// rather than from a constant because a Homebrew that is not in the expected place is
+// exactly what a constant cannot see.
+function turboJpegOverrides() {
+  if (process.platform !== 'darwin') return [];
+  let base = null;
+  const asked = spawnSync('brew', ['--prefix', 'jpeg-turbo'], { encoding: 'utf8' });
+  if (asked.status === 0) base = asked.stdout.trim();
+  if (!base || !existsSync(base)) {
+    base = ['/opt/homebrew/opt/jpeg-turbo', '/usr/local/opt/jpeg-turbo'].find((p) => existsSync(p)) ?? null;
+  }
+  // No Homebrew turbojpeg is not this tool's failure to report. Say nothing and let
+  // upstream's module search - macports and a hand-built prefix both land in paths it
+  // already knows, and if it genuinely finds nothing, cmake says so in its own words.
+  if (!base) return [];
+  const lib = join(base, 'lib', 'libturbojpeg.dylib');
+  if (!existsSync(join(base, 'include', 'turbojpeg.h')) || !existsSync(lib)) return [];
+  return [`-DTurboJPEG_INCLUDE_DIRS=${join(base, 'include')}`, `-DTurboJPEG_LIBRARIES=${lib}`];
+}
+
 function buildPrefix(srcDir, prefix, buildDir, label) {
   const openclOn = process.platform === 'darwin';
   // A CMake build directory remembers the source it was generated from and
@@ -116,8 +148,7 @@ function buildPrefix(srcDir, prefix, buildDir, label) {
     `-DCMAKE_INSTALL_PREFIX=${prefix}`,
     '-DENABLE_CXX11=ON', '-DENABLE_CUDA=OFF',
     `-DENABLE_OPENCL=${openclOn ? 'ON' : 'OFF'}`, `-DENABLE_OPENGL=${openclOn ? 'OFF' : 'ON'}`,
-    '-DTurboJPEG_INCLUDE_DIRS=/opt/homebrew/opt/jpeg-turbo/include',
-    '-DTurboJPEG_LIBRARIES=/opt/homebrew/opt/jpeg-turbo/lib/libturbojpeg.dylib']);
+    ...turboJpegOverrides()]);
   sh('cmake', ['--build', buildDir, '--target', 'install', '-j8']);
   console.log(`built ${label}`);
 }

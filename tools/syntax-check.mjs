@@ -1,0 +1,156 @@
+#!/usr/bin/env node
+// Parses every JavaScript file this repo ships. Nothing else - no server, no browser,
+// no sensor, no dependencies - which is what makes it the one thing CI can run on a
+// fresh clone and mean it.
+//
+//   node tools/syntax-check.mjs [--root <dir>]
+//
+// A syntax checker that finds no files exits 0, and that is the whole reason this is a
+// tool rather than a `find | xargs node --check` in package.json. Rename a directory,
+// get a glob subtly wrong, run it from the wrong place, and the clean pass it prints is
+// about nothing at all - the coverage claim that is an assertion rather than something
+// enforced, which this repo keeps writing paragraphs about. So the roots have to exist,
+// each has to yield files, the count has to clear a floor, and the count is printed
+// beside the verdict so a number that has quietly halved is visible rather than implied.
+//
+// The floors are a tripwire and not a manifest. They are set well under what the tree
+// holds, because a floor that tracks the real count exactly becomes a chore that gets
+// bumped without being read, and the failure being guarded against is zero rather than
+// one fewer than last week.
+//
+// **`node --check` can stop detecting syntax errors entirely, and it does it quietly.**
+// Found by mutation rather than by reading, on the first control this tool was given: a
+// copy of the tree with `const a = {` appended to `web/format.js` passed all 33 files,
+// zero failed, exit 0. The copy had no `package.json`, so Node had nothing to say
+// whether a `.js` file is a module - and in that state a `.js` file that *looks* like
+// ESM and is also broken comes back rc=0 on v26.0.0, while the identical content as
+// `.mjs`, or under either `"type"`, comes back rc=1. Measured all four ways. So the root
+// must carry a `package.json`, and, because "must" is a word rather than a mechanism,
+// the same broken file is fed through first and the run refuses to continue unless it is
+// rejected. Without that canary this whole tool is a green light wired to nothing.
+import { execFileSync } from 'node:child_process';
+import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const argv = process.argv.slice(2);
+const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = argv.includes('--root') ? argv[argv.indexOf('--root') + 1] : REPO;
+
+// The server, the tools and the browser bundle. Everything else with a .js in it is
+// either vendored, built or a capture, and none of those are ours to parse.
+const FLOORS = { server: 5, tools: 12, web: 2 };
+
+const check = (file) => {
+  try {
+    execFileSync(process.execPath, ['--check', file], { stdio: ['ignore', 'pipe', 'pipe'] });
+    return null;
+  } catch (err) {
+    return (err.stderr || err.message || '').toString().trim();
+  }
+};
+
+let failed = 0;
+const fail = (line) => { failed++; console.log(`  FAIL  ${line}`); };
+
+// A missing root, or one with no package.json, is the operator pointing this at
+// something that is not a checkout - "the check did not run" rather than "the check
+// found something", which is the reading the rest of the suite gives exit 2.
+const missing = ['package.json', ...Object.keys(FLOORS)].filter((name) => !existsSync(join(ROOT, name)));
+if (missing.length) {
+  console.log(`DID NOT RUN - ${ROOT} has no ${missing.join(', ')}, so this is not a checkout of this repo`);
+  process.exit(2);
+}
+
+// The canary, in a directory of its own governed by this root's own `package.json`, so
+// the thing being proved is the parse mode this run will actually get. It is a `.js`
+// rather than a `.mjs` on purpose: `.mjs` is unambiguous and would sail through the
+// exact configuration that swallows the error.
+const scratch = mkdtempSync(join(tmpdir(), 'syntax-check-'));
+try {
+  copyFileSync(join(ROOT, 'package.json'), join(scratch, 'package.json'));
+  const canary = join(scratch, 'canary.js');
+  writeFileSync(canary, 'export const broken = {\n');
+  if (check(canary) === null) {
+    console.log('DID NOT RUN - node --check accepted a file that does not parse, so nothing below would have found one either');
+    console.log(`  ${process.execPath} ${process.version}, root ${ROOT}`);
+    process.exit(2);
+  }
+} finally {
+  rmSync(scratch, { recursive: true, force: true });
+}
+
+// Symlinked directories are skipped rather than walked. In a git worktree the heavy
+// shared trees are symlinked back to the main checkout - .gitignore's own header
+// records vendor and node_modules arriving that way - and following one turns a
+// six-second check into a parse of somebody else's library.
+function walk(dir, out = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isSymbolicLink()) continue;
+    const p = join(dir, entry.name);
+    if (entry.isDirectory()) walk(p, out);
+    else if (entry.name.endsWith('.js') || entry.name.endsWith('.mjs')) out.push(p);
+  }
+  return out;
+}
+
+let total = 0;
+for (const [name, floor] of Object.entries(FLOORS)) {
+  const files = walk(join(ROOT, name));
+  total += files.length;
+  if (files.length < floor) {
+    fail(`${name}/ holds ${files.length} JavaScript files, under the floor of ${floor} - either the tree lost something or this walk stopped finding it`);
+  }
+  for (const file of files) {
+    const err = check(file);
+    // Node pads its report with blank lines around the offending source, and a plain
+    // head of it printed four of them and cut the `SyntaxError:` line off the bottom -
+    // a failure that named the file and nothing about what was wrong with it.
+    if (err) fail(`${relative(ROOT, file)}\n          ${err.split('\n').filter((l) => l.trim()).slice(0, 4).join('\n          ')}`);
+  }
+  console.log(`  ${name}/  ${files.length} files parsed`);
+}
+
+// **Every tool has to be named in CLAUDE.md, and this is what makes that true rather
+// than aspirational.** The list in that file is how anybody finds the suite, and the
+// maintained-by-hand version of it had already rotted badly: it said "all six" tools
+// refuse an unmatched mutation where eleven do, documented a `--url` flag
+// `library-check` does not have, and omitted `sensor-view-check` altogether - a
+// 1277-line proof tool that `editor-check` cites three times by name. A tool nobody
+// documented is a tool nobody runs, and the file that was supposed to prevent that was
+// itself the thing drifting.
+//
+// Fixing the names would have closed the instance and left the class open. So the
+// question is asked of the directory rather than of a list: anything in `tools/` that
+// CLAUDE.md does not mention fails here, and a tool added next year is asked by
+// existing. The control is adding a file to `tools/` without documenting it.
+//
+// Checked by basename rather than by path, because the file refers to them both ways -
+// `node tools/vendor-check.mjs` in the invocation blocks and bare `vendor-check` in the
+// prose - and requiring one spelling would be a rule about formatting rather than about
+// coverage.
+const DOC = join(ROOT, 'CLAUDE.md');
+if (!existsSync(DOC)) {
+  fail('CLAUDE.md is missing, so the claim that every tool is documented cannot be tested');
+} else {
+  const doc = readFileSync(DOC, 'utf8');
+  const shipped = readdirSync(join(ROOT, 'tools'))
+    .filter((f) => /\.(mjs|js|sh)$/.test(f))
+    .sort();
+  const undocumented = shipped.filter((f) => !doc.includes(f));
+  if (shipped.length === 0) {
+    fail('tools/ yielded no tools to check against CLAUDE.md, so this assertion passed on nothing');
+  } else if (undocumented.length) {
+    fail(`CLAUDE.md never mentions ${undocumented.join(', ')} - a tool nobody documented is a tool nobody runs`);
+  } else {
+    console.log(`  tools/  all ${shipped.length} named in CLAUDE.md`);
+  }
+}
+
+console.log(`\n${total} JavaScript files, ${failed} failed`);
+// Said out loud because `npm test` runs this, and a green `npm test` that meant "the
+// suite passed" would be the most expensive wrong impression in the repo. Nothing here
+// executes a line of what it parsed.
+console.log('syntax only - no proof tool ran here; see CLAUDE.md "Proof tools" for the suite and what each of them needs');
+process.exit(failed ? 1 : 0);

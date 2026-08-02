@@ -85,13 +85,34 @@ const EDITOR_PATH = '/edit';
 const TAKE = flag('--take', 'sample');
 const HEADED = argv.includes('--headed');
 const MUTATE = flag('--mutate');
-// The literal commit rather than HEAD, for the same reason registry-check pins
-// one: the moment this step is committed, HEAD contains the reference scaling and
-// the control arm would be the same build twice. The refusal below would catch it
-// loudly, which is better than a silent pass and worse than not needing catching.
-const BEFORE = flag('--before', '00173b2');
-const FFMPEG = flag('--ffmpeg', '/opt/homebrew/bin/ffmpeg');
-const FFPROBE = flag('--ffprobe', '/opt/homebrew/bin/ffprobe');
+// Not HEAD, for the same reason registry-check resolves one: the moment this step is
+// committed, HEAD contains the reference scaling and the control arm would be the same
+// build twice. The refusal below would catch it loudly, which is better than a silent
+// pass and worse than not needing catching.
+//
+// Not a literal hash either, which is what this was until preparing the repository for
+// release rewrote the history and every pinned SHA stopped resolving - see the longer
+// note in registry-check. A marker is content, so it survives the rewrite that identity
+// does not.
+const BEFORE = flag('--before') ?? revBeforeMarker('bufferHeight / 1080.0');
+
+function revBeforeMarker(marker) {
+  const introduced = execFileSync(
+    'git', ['-C', REPO, 'log', '-S', marker, '--format=%H', '--reverse', '--', 'web/main.js'],
+    { encoding: 'utf8', maxBuffer: 1 << 26 },
+  ).split('\n')[0].trim();
+  if (!introduced) {
+    throw new Error(`no commit in this history introduces ${JSON.stringify(marker)} to web/main.js`);
+  }
+  return `${introduced}^`;
+}
+// Bare names, resolved through PATH, because an absolute Homebrew default is a macOS
+// path on a project that also ships to Linux and the Pi - and `jobs-check` two files
+// over has always spawned a bare `ffprobe`, so the pair disagreed about where ffmpeg
+// lives while claiming to test the same pipeline. The flags stay for the case the
+// default cannot serve: a second ffmpeg, or one deliberately off the path.
+const FFMPEG = flag('--ffmpeg', 'ffmpeg');
+const FFPROBE = flag('--ffprobe', 'ffprobe');
 const SHOTS = flag('--shots');
 
 // The editor's stage for every claim that is not about resolution, and it is the

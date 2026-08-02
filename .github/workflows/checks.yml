@@ -1,0 +1,95 @@
+# What CI can honestly run here, which is less than the suite and says so.
+#
+# Almost every proof tool in this repo needs something a hosted runner does not have:
+# a running server, a GPU browser, ffmpeg, a built libfreenect2 prefix, or a Kinect on
+# the USB bus. Wiring those in would produce a workflow that is red from the first push
+# and ignored by the second, so they are named at the bottom rather than attempted.
+#
+# Nothing here installs a dependency, which keeps the runner off the package registry
+# entirely - the checks below need no module this repo does not already contain, so an
+# install would only add a network dependency and a supply-chain surface to a workflow
+# whose whole job is to be trustworthy.
+#
+# `npm ci` does work, for the record: the lockfile carries the declared devDependency
+# and installs clean from a directory holding nothing but package.json, the lockfile
+# and .npmrc. It is left out because it is not needed here, not because it is broken.
+#
+# The actions are pinned by commit rather than by tag, because a tag is mutable and this
+# tree enforces a 48-hour release age on everything else it pulls in. The tag each SHA
+# stood for is in the comment beside it, so bumping one is a deliberate edit.
+name: checks
+
+on:
+  push:
+  pull_request:
+
+# Read-only. Nothing here publishes, comments or writes a ref, and a token scoped wider
+# than the job needs is the part of a compromised action that does the damage.
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    name: parse every JavaScript file
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The declared floor and a current release. The floor is the interesting one:
+        # `engines.node` is a claim about what this tree runs on, and parsing it on that
+        # exact version is the cheapest test of the claim there is. Measured before it
+        # was written down - 18.15.0 parses all 34 files and runs the checker itself.
+        node: ['18.15.0', 'lts/*']
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+      # Its own canary runs first and refuses the whole run if `node --check` has stopped
+      # detecting broken files - which it silently does on a tree whose package.json has
+      # no "type", measured on v26.0.0. So a green tick here is the mechanism having been
+      # shown to work on this runner rather than an assumption that it does.
+      - run: node tools/syntax-check.mjs
+
+  supply-chain-gate:
+    name: the minimum release age is armed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          # Not the 18.15.0 above: `min-release-age` arrived in npm 11, and npm 9 ships
+          # with Node 18 - so that arm would fail on the runner's npm rather than on
+          # anything in this repo. The check names that as its own row when it happens.
+          node-version: 'lts/*'
+      - name: .npmrc gate
+        run: node tools/release-gate-check.mjs
+      # Broken on purpose, three ways, every run. A gate check nobody has tried to slip
+      # past is a green tick of unknown sensitivity, and both failure shapes it exists for
+      # are silent: npm treats a wrong unit as a warning and a missing file as no opinion.
+      # Caught is exit 0 for this tool, NOT CAUGHT is exit 1 - so `set -e` is what makes
+      # a miss in the middle of the loop fail the step rather than being overwritten by
+      # the next iteration's success.
+      - name: and it rejects the three ways it could be wrong
+        run: |
+          set -euo pipefail
+          for m in wrong-unit no-gate absent; do
+            node tools/release-gate-check.mjs --mutate "$m"
+          done
+
+# Not run here, and what each would need:
+#
+#   determinism, index, registry, timeline, keyframe, export, library, editor, monitor,
+#   jobs, sensor-view   a running server and a GPU browser; export also needs ffmpeg and
+#                       ffprobe, and jobs needs a real Chromium rather than the bundled
+#                       headless shell, which it refuses to substitute for
+#   guard-check         no browser, but it spawns servers that import ws out of
+#                       node_modules, and it needs a non-internal IPv4 to prove the bind -
+#                       so it needs the install this workflow deliberately does not do
+#   vendor-check        no server, no browser, no network, and it belongs here. Left out
+#                       only because it answers exit 2 - "source proven, artifact
+#                       untested" - on a clone with no vendor/prefix, which wants a
+#                       deliberate exit-code contract rather than a plain run step
+#   registration-check  builds two libfreenect2 prefixes and reads a corpus dumped off a
+#                       real sensor
+#   monitor-cost-ab     a capture node with a Kinect attached

@@ -2,7 +2,7 @@
 
 `libfreenect2/` is upstream's source at **v0.2.1**
 (`fd64c5d9b214df6f6a55b4419357e51083f15d93`), committed here rather than cloned,
-plus the one local edit described below. `node tools/vendor-check.mjs` proves
+plus the two local edits described below. `node tools/vendor-check.mjs` proves
 that sentence mechanically and offline.
 
 ## Why the tree and not a clone or a submodule
@@ -37,7 +37,13 @@ scarce, and every file removed is a file the manifest can no longer vouch for.
 
 ## What we changed
 
-Two files.
+Two files. Both carry a notice of modification in their header, because
+Apache-2.0 section 4(b) requires a modified file we redistribute to say so, and
+because a reader who lands in one of these files by grepping should not have to
+find this document to learn it is not upstream. The notice is part of the
+content `vendor-check` pins, so it is enforced rather than asserted: strip one
+and the content assertion fires, exactly as it does for the code beneath it.
+`revert-local-edit` is already the control for that pin.
 
 ### `src/registration.cpp` — thread the occlusion filter
 
@@ -131,33 +137,51 @@ full measurement.
 
 `third_party/libfreenect2.manifest` records the git blob hash of all 140 files as
 upstream published them at v0.2.1. `tools/vendor-check.mjs` hashes our tree and
-asserts three things: every upstream file is present and unchanged except the one
-declared above, the declared file matches the exact content we reviewed, and no
-file exists that upstream didn't ship.
+asserts five things: every upstream file is present and unchanged except the two
+declared above, the set that actually differs is exactly the declared set in both
+directions, each declared file matches the exact content we reviewed, no file
+exists that upstream didn't ship, and the harness oracle beside the tree is still
+upstream's own `registration.cpp` byte for byte. The fifth reaches past the
+source: the library installed at `vendor/prefix` has to carry
+`LIBFREENECT2_REG_THREADS`, so a stale prefix built from something else cannot
+pass as a build of this tree.
 
-That middle assertion is there because the first version of this tool didn't have
-it. It checked only that the patched file *differed* from upstream, and mutation
-testing showed why that is not the same claim: reverting the sub-9 condition while
-leaving the patch's comment in place still "differed", so the check passed a tree
-with the fix removed. Pinning the content hash is what turns "somebody touched
-this file" into "this file is what we signed off".
+The content pin is the third of those, and it is there because the first version
+of this tool didn't have it. It checked only that the patched file *differed*
+from upstream, and mutation testing showed why that is not the same claim:
+reverting the sub-9 condition while leaving the patch's comment in place still
+"differed", so the check passed a tree with the fix removed. Pinning the content
+hash is what turns "somebody touched this file" into "this file is what we
+signed off".
 
 Run the controls with `--mutate`; each must be caught, and the count of failed
 assertions is the thing to read, not the exit code:
 
 ```
-node tools/vendor-check.mjs                          # PASS, 283 assertions
+node tools/vendor-check.mjs                             # PASS, 288 assertions
 node tools/vendor-check.mjs --mutate undeclared-edit    # must FAIL
 node tools/vendor-check.mjs --mutate revert-local-edit  # must FAIL
 node tools/vendor-check.mjs --mutate extra-file         # must FAIL
 node tools/vendor-check.mjs --mutate missing-file       # must FAIL
+node tools/vendor-check.mjs --mutate oracle-drift       # must FAIL
+node tools/vendor-check.mjs --mutate stale-prefix       # must FAIL
 ```
 
+Six, and the last two are the ones this list went without for a while, which is
+worth stating rather than quietly fixing: `oracle-drift` is the control for the
+oracle assertion and `stale-prefix` for the artifact assertion, so a list naming
+only the first four taught a four-control sweep of a tool that has six. Both are
+also the two the repo's `CLAUDE.md` names, so the two documents now agree.
+
 Mutations run against a throwaway copy, so a falsification run never leaves the
-vendored tree altered.
+vendored tree altered. `stale-prefix` is the exception to "needs nothing built":
+it points the artifact assertion at `vendor/prefix-oracle`, which only exists
+after a `registration-check` run, and its absence is exit 2 rather than a pass.
 
 ## Changing the vendored source
 
 Edit the file, then update its pinned hash in `DECLARED_EDITS` in
-`tools/vendor-check.mjs` and say why here. The check failing after a deliberate
-edit is the design working — a vendored tree should not be quietly editable.
+`tools/vendor-check.mjs` and say why here. A file being changed for the first
+time also needs the section 4(b) notice in its header. The check failing after a
+deliberate edit is the design working — a vendored tree should not be quietly
+editable.

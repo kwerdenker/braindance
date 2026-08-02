@@ -61,8 +61,11 @@ const has = (n) => argv.includes(n);
 
 const HOST = flag('--host', 'braindancePi.local');
 const USER = flag('--user', 'braindancepi');
+// The conventional key name rather than one particular machine's. This defaulted to a
+// personal filename, which is a default that resolves for exactly one person and sends
+// everybody else to an ssh error about a file they were never told to look for.
 const KEY = flag('--key', `${process.env.HOME}/.ssh/id_ed25519`);
-const DIR = flag('--dir', '~/kinect-nle');
+const DIR = flag('--dir', '~/braindance');
 const PORT = Number(flag('--port', '8080'));
 const WINDOW = Number(flag('--window', '40'));
 const ROUNDS = Number(flag('--rounds', '3'));

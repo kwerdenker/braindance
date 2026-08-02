@@ -24,6 +24,16 @@
  * either License.
  */
 
+/*
+ * NOTICE OF MODIFICATION. This file is not upstream libfreenect2. It was
+ * changed by Tim Kraus on 2026-07-31, on top of upstream v0.2.1, for the
+ * Braindance project: a depth frame that is missing only the unused
+ * 10th sub-image is now accepted, where upstream required all ten sub-images
+ * before handing the frame to the processor. The change is one condition, and
+ * it is commented at the point it is made. third_party/UPSTREAM.md carries the
+ * reasoning and the measurement.
+ */
+
 /** @file depth_packet_stream_parser.cpp Parser for getting packets from the depth stream. */
 
 #include <libfreenect2/depth_packet_stream_parser.h>

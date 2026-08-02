@@ -1,0 +1,19 @@
+Braindance
+Copyright 2026 Tim Kraus
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+This product includes software developed as part of the OpenKinect Project
+(http://www.openkinect.org/).
+
+Portions of this product are derived from libfreenect2 v0.2.1
+(https://github.com/OpenKinect/libfreenect2), Copyright (c) 2014-2015
+individual OpenKinect contributors. libfreenect2 is offered under either the
+Apache License, Version 2.0 or the GNU General Public License, version 2.0;
+this product elects the Apache License, Version 2.0. Its source is vendored
+under third_party/libfreenect2/, two files are modified and marked as such,
+and the APACHE20, GPL2 and CONTRIB files ship alongside it unchanged.
+
+The vendored tree also carries components under other licenses, and this
+product depends on third-party software it does not redistribute. Both are
+enumerated in THIRD_PARTY-NOTICES.md.

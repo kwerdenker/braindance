@@ -1,20 +1,35 @@
 {
-  "name": "kinect-experiments",
+  "name": "braindance",
   "version": "0.1.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server/index.js",
-    "replay": "node server/index.js --replay captures/sample.knct",
-    "record": "node server/index.js --record"
+  "description": "Volumetric capture and non-linear editing for the Kinect v2: a native grabber, a Node server, a browser point-cloud viewer, a take recorder and library, a keyframe editor and a render queue.",
+  "private": true,
+  "author": "Tim Kraus <tim@timkraus.eu>",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/totally-tim/braindance.git"
+  },
+  "bugs": {
+    "url": "https://github.com/totally-tim/braindance/issues"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
   "type": "module",
+  "engines": {
+    "node": ">=18.15.0"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "replay": "node server/index.js --replay captures/sample.knct",
+    "record": "node server/index.js --record",
+    "syntax": "node tools/syntax-check.mjs",
+    "test": "npm run test:offline",
+    "test:offline": "node tools/syntax-check.mjs && node tools/release-gate-check.mjs"
+  },
   "dependencies": {
     "three": "^0.185.1",
     "ws": "^8.21.1"
+  },
+  "devDependencies": {
+    "playwright": "^1.62.1"
   }
 }

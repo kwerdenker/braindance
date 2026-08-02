@@ -12,14 +12,29 @@
 // Playwright context destruction and a real catch all exit non-zero, so fails=0 is a
 // crash to investigate rather than a success to record - retried on the crash
 // signature alone and reported UNPROVEN otherwise.
+//
+//   node tools/sweep-all.mjs [--out <dir>]     # SWEEP_URL picks the server, :8080 by default
+//
+// It needs a running server and a browser, and it takes hours - this is the sweep a
+// merge waits on, not something to reach for while iterating.
 
 import { spawn } from 'node:child_process';
 import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+// Aliased because every promise in this file names its own `resolve`, and a path
+// helper that four callbacks quietly shadow is a trap for whoever edits it next.
+import { dirname, join, resolve as resolvePath } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
 
-const ROOT = '<REDACTED-LOCAL-PATH>';
-const OUT = '<REDACTED-LOCAL-PATH>';
+// Both of these were absolute paths belonging to the session that wrote this file - a
+// worktree and a scratchpad that exist on one machine, for one afternoon. So the tool
+// ran nothing anywhere else, and the way it failed was to spawn `node tools/...` in a
+// directory that is not a checkout, which arrives as every mutation reporting UNPROVEN
+// rather than as a missing path. The repo is found from this file instead, because a
+// tool that lives in `tools/` already knows where the tree is.
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const argv = process.argv.slice(2);
+const OUT = resolvePath(argv.includes('--out') ? argv[argv.indexOf('--out') + 1] : join(ROOT, '.sweep-all'));
 const URL = process.env.SWEEP_URL ?? 'http://localhost:8080';
 const CRASH = 'Execution context was destroyed';
 const TOOLS = ['library', 'timeline', 'keyframe', 'export'];

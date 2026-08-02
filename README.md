@@ -1,9 +1,27 @@
-# kinect-experiments
+# Braindance
 
-Realtime Kinect v2 point cloud in the browser. A native grabber pulls depth and
-registered colour from [libfreenect2](https://github.com/OpenKinect/libfreenect2),
-a Node server fans the frames out over WebSocket, and a Three.js viewer unprojects
-them on the GPU using the sensor's own intrinsics.
+A volumetric capture and non-linear editing system for the Kinect v2. It records
+what a depth sensor saw, and then lets you fly a camera through the recording
+afterwards — the shot is chosen at edit time rather than at capture time, because
+the footage is a cloud of points in space rather than a picture of them.
+
+A native grabber pulls depth and registered colour from
+[libfreenect2](https://github.com/OpenKinect/libfreenect2), a Node server fans the
+frames out over WebSocket, and a Three.js viewer unprojects them on the GPU using
+the sensor's own intrinsics. On top of that sits a recorder, a take library that
+reconciles between two machines, a keyframe editor with a retime curve, and a
+render queue that exports video through ffmpeg.
+
+**Status: complete and working, maintained as a personal project.** All nine steps
+of the build order in `docs/recording-and-nle.md` are done. It runs on macOS
+(Apple Silicon) and on a Raspberry Pi capture node. There is no release cadence and
+no support commitment — see [CONTRIBUTING.md](CONTRIBUTING.md) for what that means
+in practice.
+
+> *Braindance* is a term from the Cyberpunk tabletop and video games, used here
+> because it names the idea exactly: a recorded experience you can step into and
+> look around inside. This project is not affiliated with or endorsed by CD Projekt
+> Red or R. Talsorian Games.
 
 ```
 Kinect v2 ──USB3──▶ native/grabber ──framed stdout──▶ server/index.js ──WebSocket──▶ web/main.js
@@ -21,11 +39,27 @@ rate is the one thing that explains an image looking stale.
 
 ## Run it
 
+You need **Node 18.15 or newer**, and for anything involving the sensor you need the
+native grabber built first — see [Building the native side](#building-the-native-side),
+which is a one-time step that needs no network.
+
 ```bash
-npm start                 # live sensor, viewer on http://localhost:8080
-npm run record            # live + write captures/sample.knct
-npm run replay            # replay a capture, no sensor needed
+npm install
+npm start                 # live sensor, menu on http://localhost:8080
+npm run record            # live sensor, and record every take to captures/
+npm run replay            # replay a capture you already have, no sensor needed
 ```
+
+`npm start` lands on a menu, not directly on the viewer — from there you pick the
+live viewer, the take library, or the editor.
+
+**`npm run replay` needs a capture, and none ships with this repository.** Captures
+are large and binary, so `captures/` is gitignored and there is no sample to clone.
+If you have a Kinect, record one first with `npm run record`; if you do not, most of
+this program cannot be exercised, and that is worth knowing before you invest an
+evening. `tools/make-fixture.js` loops one short real capture into an arbitrarily
+long one, which is how the index and the frame API get tested without shooting for
+five minutes.
 
 Options pass through to the grabber:
 
@@ -33,9 +67,10 @@ Options pass through to the grabber:
 node server/index.js --pipeline cpu     # CPU depth instead of OpenCL
 node server/index.js --no-color         # depth only, no colour stream
 node server/index.js --port 9000
-node server/index.js --record captures/session.knct
+node server/index.js --record           # a flag, not a path - takes are named and
+                                        # placed in captures/ by the recorder
 node server/index.js --replay captures/session.knct
-node server/index.js --host 0.0.0.0      # reachable from other machines - see below
+node server/index.js --host 0.0.0.0     # reachable from other machines - see below
 ```
 
 **The server binds loopback unless you pass `--host`, and a capture node needs it.**
@@ -55,12 +90,64 @@ which is load-bearing rather than lax: every call across the capture-node link i
 server-side `fetch` and none of them has an origin to declare.
 `node tools/guard-check.mjs` proves both halves.
 
+Two things that paragraph does not cover, and both matter before you point this at a
+network. **The origin rule stops hostile web pages and nothing else** — a request with
+no `Origin` passes on purpose, so curl, a script, or any other machine on the Wi-Fi is
+allowed to do everything. And **comparing `Origin` against `Host` cannot survive DNS
+rebinding**: a name an attacker controls, re-resolved onto the address you listen on,
+makes the two headers match because they are the same name. That was measured reaching
+every mutating route on the *default loopback bind*, up to and including deleting a
+take, so the guard additionally requires that a browser arrived at an address rather
+than a name. If you reach this server through a browser at some other hostname, that
+request is now refused — which is the rule working rather than a bug.
+
+[SECURITY.md](SECURITY.md) has the threat model and exactly what `--host 0.0.0.0`
+exposes.
+
 `--replay` is the one to reach for when iterating on shaders: it loops a recorded
 capture so you can work on the visuals with the sensor unplugged. It replays the
 *recorded* arrival spacing, not a uniform 30fps — a live stream runs p50 64ms
 against p90 222ms, and pacing every frame evenly would hand the viewer the one
 cadence that never happens, so smoothing tuned against replay would look right
 there and stutter on the sensor.
+
+## The four surfaces
+
+`npm start` opens a menu onto four things, and most of the program lives in the
+three that are not the viewer. The full design and the reasoning behind it are in
+[`docs/recording-and-nle.md`](docs/recording-and-nle.md), which is the canonical
+document and is long.
+
+**The viewer** is the live cloud — orbit around what the sensor sees right now, with
+the render modes below. This is the part the rest of this README describes.
+
+**The recorder** writes takes. It arms, waits for the sensor's hello so the take
+carries the intrinsics it was shot with, and streams frames straight to disk in the
+same framing the wire uses, so a capture file is byte-identical to what the grabber
+emitted. You can drop marks while a take is running, and it refuses to start a take
+it does not have disk space to finish. Its preview clip range is cosmetic and
+deliberately cannot reach the grabber's `--min-depth`/`--max-depth`, which clip on
+the GPU before a frame exists — getting those two backwards destroys footage in the
+one situation where nobody is watching for it.
+
+**The library** is the gallery of takes, and it reconciles across two machines. A
+capture node on the network and the machine you edit on each hold takes; the library
+joins them on content hash rather than on filename, because two machines can hold
+genuinely different takes under one name, and writing one over the other to satisfy
+a naming convention would destroy footage. Takes can be pulled down, and a copy can
+be reclaimed on the node after the local one is re-hashed.
+
+**The editor** is where a take becomes a shot. The camera is keyframed through the
+recorded volume on its own track, the look is keyframed on others, and a retime
+curve maps program time onto source time so the footage can be slowed, held or run
+backwards independently of the camera move. Seeking to a frame and playing to that
+frame produce the same image, which is a property `tools/timeline-check.mjs` exists
+to prove rather than assert.
+
+**The render queue** takes finished edits and produces video. Jobs are claimed by a
+worker pinned to the renderer class it will actually draw with, frames are pushed to
+ffmpeg over a socket, and the queue survives a restart because it is records on disk
+rather than state in a process.
 
 ## Viewer controls
 
@@ -177,31 +264,45 @@ static, with only 0.06% of pixels exceeding the snap threshold between frames.
 ## Building the native side
 
 Both builds are one-time, and neither needs the network. libfreenect2's source is
-in this repo at `third_party/libfreenect2` — upstream v0.2.1 plus our one edit,
-see `third_party/UPSTREAM.md` — and builds into the gitignored `vendor/prefix`:
+in this repo at `third_party/libfreenect2` — upstream v0.2.1 plus our declared
+edits, see `third_party/UPSTREAM.md` — and builds into the gitignored
+`vendor/prefix`. Expect a few minutes for the first build.
+
+Install the dependencies first:
+
+```bash
+brew install libusb jpeg-turbo cmake                       # macOS
+sudo apt install libusb-1.0-0-dev libturbojpeg0-dev cmake  # Debian / Raspberry Pi OS
+```
+
+Then, on macOS with Homebrew:
 
 ```bash
 cmake -S third_party/libfreenect2 -B vendor/build \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DCMAKE_INSTALL_PREFIX="$PWD/vendor/prefix" \
   -DENABLE_CXX11=ON -DENABLE_OPENCL=ON -DENABLE_OPENGL=OFF -DENABLE_CUDA=OFF \
-  -DTurboJPEG_INCLUDE_DIRS=/opt/homebrew/opt/jpeg-turbo/include \
-  -DTurboJPEG_LIBRARIES=/opt/homebrew/opt/jpeg-turbo/lib/libturbojpeg.dylib
+  -DTurboJPEG_INCLUDE_DIRS="$(brew --prefix jpeg-turbo)/include" \
+  -DTurboJPEG_LIBRARIES="$(brew --prefix jpeg-turbo)/lib/libturbojpeg.dylib"
 cmake --build vendor/build --target install -j8
 
 cmake -S native -B native/build && cmake --build native/build -j8
 ```
 
-On the Pi, swap `-DENABLE_OPENCL=ON -DENABLE_OPENGL=OFF` for `OFF`/`ON` — V3D has
-OpenGL and no OpenCL, and the grabber's `--pipeline` is guarded by whichever the
-library was actually compiled with rather than falling through silently.
+`brew --prefix` rather than a literal `/opt/homebrew` because that path is
+Apple-Silicon-only — Intel Macs put it at `/usr/local`, and a hardcoded prefix is a
+build failure whose message does not mention the prefix.
+
+On Linux and the Pi, drop both `TurboJPEG_*` flags entirely — pkg-config finds it —
+and swap `-DENABLE_OPENCL=ON -DENABLE_OPENGL=OFF` for `OFF`/`ON`. V3D has OpenGL
+and no OpenCL, and the grabber's `--pipeline` is guarded by whichever the library
+was actually compiled with rather than falling through silently.
 
 `node tools/vendor-check.mjs` proves the source is upstream v0.2.1 plus exactly
-the declared edit, offline, before you trust a build of it.
+the declared edits, offline, before you trust a build of it.
 
-Needs `brew install libusb jpeg-turbo cmake`. OpenGL is off deliberately — it only
-drives libfreenect2's own viewer, which we don't use, and it's the most deprecated
-path on macOS.
+OpenGL is off on macOS deliberately — it only drives libfreenect2's own viewer,
+which we don't use, and it's the most deprecated path on the platform.
 
 Depth runs through OpenCL on the GPU, and `--pipeline cpu` exists for comparison
 rather than for use. Measured on a healthy link, the two differ by more than 2x:

@@ -24,6 +24,16 @@
  * either License.
  */
 
+/*
+ * NOTICE OF MODIFICATION. This file is not upstream libfreenect2. It was
+ * changed by Tim Kraus on 2026-07-31, on top of upstream v0.2.1, for the
+ * Braindance project: the occlusion filter inside Registration::apply
+ * is split across threads, banded by linear index rather than by row, with the
+ * thread count read from the LIBFREENECT2_REG_THREADS environment variable and
+ * defaulting to 2. Every altered region below is marked "LOCAL EDIT";
+ * third_party/UPSTREAM.md carries the reasoning and the measurements.
+ */
+
 /** @file Implementation of merging depth and color images. */
 
 #define _USE_MATH_DEFINES

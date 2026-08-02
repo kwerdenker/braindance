@@ -56,9 +56,28 @@ const URL_BASE = flag('--url', 'http://localhost:8080');
 // intercepted by it, and those two have to agree or the interception misses.
 const RECORDER_PATH = '/record';
 const CAPTURE = flag('--capture') ?? join(REPO, 'captures/sample.knct');
-// The literal commit rather than HEAD: once step 3 is committed, HEAD is the
-// registry and the before-arm would be comparing the tree against itself.
-const BEFORE_REV = flag('--before', '057dc4b');
+// Not HEAD: once step 3 is committed, HEAD is the registry and the before-arm would
+// be comparing the tree against itself. And not a literal hash either, which is what
+// this was until preparing the repository for release rewrote the history - stripping
+// commit trailers with `git filter-repo` moves every hash after the first rewritten
+// commit, so the pinned rev named nothing and the tool died inside `git show` with
+// `invalid object name` before asserting anything. That exits non-zero and reads
+// exactly like a check that ran and failed.
+//
+// A marker is content rather than identity, so it survives a rewrite. The refusal
+// below stays the control: a search that resolved to the wrong commit trips it.
+const BEFORE_REV = flag('--before') ?? revBeforeMarker('const PARAMS');
+
+function revBeforeMarker(marker) {
+  const introduced = execFileSync(
+    'git', ['log', '-S', marker, '--format=%H', '--reverse', '--', 'web/main.js'],
+    { cwd: REPO, encoding: 'utf8', maxBuffer: 1 << 26 },
+  ).split('\n')[0].trim();
+  if (!introduced) {
+    throw new Error(`no commit in this history introduces ${JSON.stringify(marker)} to web/main.js`);
+  }
+  return `${introduced}^`;
+}
 const HEADED = argv.includes('--headed');
 const SOURCE_FRAMES = Number(flag('--frames', '6'));
 const STRIDE = Number(flag('--stride', '4'));

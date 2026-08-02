@@ -30,6 +30,13 @@ const MANIFEST = join(ROOT, 'third_party', 'libfreenect2.manifest');
 // was gone. "Differs from upstream" is not "contains our change", and pinning
 // the exact content is the difference between the two.
 //
+// The pin now holds one more thing than it did. Both files carry a notice of
+// modification in their header, which is what Apache-2.0 section 4(b) requires
+// of a modified file we redistribute, and that notice is inside the content the
+// hash covers - so stripping it fails this check rather than quietly shipping a
+// changed upstream file that claims to be upstream. The disclosure is enforced
+// rather than asserted, which is the same reading as everything else here.
+//
 // `marker` is a string the edit puts into the *compiled* library, and it is what
 // section 5 reads. Only one of the two edits has one, which is stated here rather
 // than papered over: the sub-9 fix changes `== 0x3ff` to `& 0x1ff`, which compiles
@@ -37,12 +44,12 @@ const MANIFEST = join(ROOT, 'third_party', 'libfreenect2.manifest');
 const DECLARED_EDITS = new Map([
   ['src/depth_packet_stream_parser.cpp', {
     why: 'accept depth frames missing only the unused 10th sub-image',
-    ours: 'ab437103d6d73daa220fdc2d42971ef06b998804',
+    ours: '70aebcc30122fbefbb73cf6761b70388071deef2',
     marker: null,
   }],
   ['src/registration.cpp', {
     why: 'thread the occlusion filter, banded by linear index',
-    ours: '229c0f6d0346f133259c6d37b8fbb56b80f3d832',
+    ours: '7e6037cd7e7d6f5496a693adcc44e9c2893ff426',
     marker: 'LIBFREENECT2_REG_THREADS',
   }],
 ]);
