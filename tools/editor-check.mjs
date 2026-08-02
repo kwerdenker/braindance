@@ -12,9 +12,10 @@
 // were all correct, `export-check` drove in/out through `activeDeliverable`, and
 // `paintTimeline` went on writing `style.left` onto two nodes no document contained.
 // **No proof tool in this repo referenced `#tIn`, `#tOut` or `.tcut` at all.** That is
-// `CLAUDE.md`'s "is there an object here that every observation happens to skip", one
-// step further on than the version already recorded there - here the skipped object
-// was not an excluded file but a control the interface tells the user it has.
+// `docs/instruments.md`'s "is there an object here that every observation happens to
+// skip", one step further on than the version already recorded there - here the
+// skipped object was not an excluded file but a control the interface tells the user
+// it has.
 //
 // So the organising rule of this file is two things at once:
 //
@@ -944,7 +945,7 @@ try {
   // reddened its four rows correctly and then died dereferencing a null `#tOut` -
   // which this file reports as DID NOT RUN with exit 2, the code reserved for the
   // harness failing. A mutation that is caught and then crashes reads as a mutation
-  // that was never tested, which is the same confusion `CLAUDE.md` records under
+  // that was never tested, the same confusion `docs/instruments.md` records under
   // "a mutation run that exits non-zero with zero failed assertions did not run",
   // arriving from the other direction. A check has to survive the fault it checks for.
   const markersUsable = boxes.in !== null && boxes.out !== null;
@@ -1015,14 +1016,14 @@ try {
   //
   // Two positions and two directions, because program and source time agree
   // trivially at program 0 and a single arm cannot tell holding one from holding the
-  // other. `CLAUDE.md` has this failure twice already under "what do my arms agree
-  // about".
+  // other. `docs/instruments.md` has this failure twice already under "what do my
+  // arms agree about".
   // **The slider's `value` is a position, not a rate.** Its travel is logarithmic, so
   // writing `2.35` into it asks for the top of the range and every row below would go
   // on asserting about 4x while claiming to be about 2.35x - a check retargeted
-  // invisibly, which is the shape `CLAUDE.md` records twice. The rate goes through the
-  // page's own mapping, and the rate that came out is checked against the one that went
-  // in rather than assumed.
+  // invisibly, which is the shape `docs/instruments.md` records twice. The rate goes
+  // through the page's own mapping, and the rate that came out is checked against the
+  // one that went in rather than assumed.
   const driveRate = async (rate) => {
     await page.evaluate(`(() => {
       const el = document.getElementById('tRate');
@@ -1079,9 +1080,9 @@ try {
   // either. 1.20 -> 2.35 is the pair from the report.
   //
   // One row per marker kind rather than one boolean over all of them, because a
-  // cumulative assertion says something broke and not which term - `CLAUDE.md` has that
-  // as its own rule after step 6 measured three grade terms down one row. The mark is
-  // the odd one and belongs here for it: it is stored in source milliseconds and drawn
+  // cumulative assertion says something broke and not which term - `docs/instruments.md`
+  // has that as its own rule after step 6 measured three grade terms down one row. The
+  // mark is the odd one and belongs here for it: it is stored in source milliseconds and drawn
   // through the curve, so it must hold still *without* being rescaled, which is what
   // separates "every term was carried" from "the ruler never moved at all".
   const STRIP = () => {
@@ -1380,8 +1381,8 @@ try {
   // is sampled at 7s, inside 5s..9s, and not at 3s. Sampling at 3s is what this row
   // did first and it failed against a working build: the handle had moved, the curve
   // it shapes had moved, and the probe was sitting in the neighbouring segment where
-  // the answer is the same either way. That is `CLAUDE.md`'s "place a probe where its
-  // answer would be different" arriving one more time.
+  // the answer is the same either way. That is `docs/instruments.md`'s "place a probe
+  // where its answer would be different" arriving one more time.
   //
   // Both samples are kept, which makes the row say more than it used to: the handle
   // shapes its own segment *and leaves its neighbour alone*, which is two claims a
@@ -1764,7 +1765,7 @@ try {
   // and the old `t/duration` are the same expression - so an arm at fit-zoom passes
   // identically on a build that has no window at all, and would report coverage for
   // the one thing it cannot see. This is the mirror of section 4's rate-1 dead zone
-  // and the same rule `CLAUDE.md` states after step 6's aspect ratio.
+  // and the same rule `docs/instruments.md` states after step 6's aspect ratio.
   //
   // The window is deliberately off-centre as well as narrow, because a window centred
   // on the clip is a second agreement: zooming about the centre and zooming about the

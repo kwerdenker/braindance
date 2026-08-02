@@ -126,13 +126,11 @@ const STAGE = { width: 640, height: 400 };
 // arrived in a tool as a ten-second timeout that names nothing about the strip.** The
 // bar became two rows, `--timeline-h` went 104 to 148, and this file - which never
 // mentions the timeline except here - hung in `setStage` waiting for a buffer height
-// the fit had made 44px shorter. `CLAUDE.md` records the same shape when the stage
-// was first letterboxed and four tools found out one at a time. Measuring closes it:
-// the next change to the strip is absorbed instead of discovered.
-// A first guess at the timeline strip, and nothing more: `openPage` measures the real
-// height after load and corrects the viewport. It is deliberately not asserted against
-// `--timeline-h` - a tool that had to be edited whenever the strip grew is the copy
-// that went stale here once already.
+// the fit had made 44px shorter. `docs/instruments.md` records the same shape when
+// the stage was first letterboxed and four tools found out one at a time. Measuring
+// closes it: the next change to the strip is absorbed instead of discovered. It is
+// deliberately not asserted against `--timeline-h` either - a tool that had to be
+// edited whenever the strip grew is the copy that went stale here once already.
 const TIMELINE_H_GUESS = 148;
 
 // The document's own pair. Same 1.6 aspect, an exact 2x so the downsample is a
@@ -1231,7 +1229,7 @@ const PIPELINES = [
 // the noise, which is the kind of margin this file refuses to call a detection when
 // it finds one anywhere else. The per-term rows are load-bearing here and `full` is
 // the integration row, which is the same conclusion the cumulative-table rule in
-// CLAUDE.md reached from the other direction.
+// `docs/instruments.md` reached from the other direction.
 //
 // One bound this table does not cover, named here rather than left to be found:
 // both arms are 600 and 1200 and the export menu goes to 2160. Bloom's bright pass
