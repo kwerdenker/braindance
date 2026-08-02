@@ -248,6 +248,29 @@ const MUTATIONS = {
     ]],
   },
 
+  // The overview's wheel reads its x through the ruler's mapping, so it zooms about a
+  // window position while the pointer is over a clip position. The ruler's own two
+  // wheel rows go on passing, which is what makes this diagnostic of the branch rather
+  // than of zooming.
+  'mini-wheel-uses-ruler': {
+    file: 'web/main.js',
+    edits: [[
+      '  return surface === ui.mini ? f : view.a + f * (view.b - view.a);',
+      '  return view.a + f * (view.b - view.a);',
+    ]],
+  },
+
+  // The height is applied but never stored, so it is gone on the next load. Reddens
+  // only the reload row - every other splitter row runs inside one page and cannot
+  // tell.
+  'splitter-forgets': {
+    file: 'web/main.js',
+    edits: [[
+      '      localStorage.setItem(LANES_HEIGHT, String(userLaneHeight));',
+      '      void LANES_HEIGHT;',
+    ]],
+  },
+
   // The space bar stops reaching the transport. Everything else about the keyboard
   // stays, so this reddens the transport rows and leaves the stepping and range rows
   // alone - which is what makes it diagnostic of its own term.
@@ -1798,6 +1821,34 @@ try {
       `${held.before.toFixed(3)}s -> ${held.after.toFixed(3)}s`);
   }
 
+  // The overview's own wheel, which is a different mapping rather than the same
+  // handler on a second element: an x on the ruler is a position in the *window* and an
+  // x here is a position in the *clip*, so reading both through one of the two is how a
+  // wheel over the overview zooms somewhere the cursor is not. Nothing else drives that
+  // branch - `zoom-about-centre` replaces the line both surfaces share.
+  // The observable is *not* "the cursor still points at the same moment" - over the
+  // overview that is true by construction, since the overview never zooms. It is that
+  // the moment the cursor is over keeps its place inside the window, which is what an
+  // anchor means, and it is the thing the two mappings disagree about: through the
+  // ruler's mapping, 30% of the overview is read as 30% *of the window*, and the moment
+  // actually under the cursor falls out of the window entirely.
+  await page.evaluate('__kinect.editor.view.set(0.2, 0.8)');
+  await settle();
+  const miniWheelBox = await page.locator('#tMini').boundingBox();
+  const beforeMiniWheel = await page.evaluate('__kinect.editor.view.window()');
+  const clipAt30 = beforeMiniWheel.duration * 0.3;
+  const placeInWindow = (w) => (clipAt30 - w.startSec) / w.spanSec;
+  await page.mouse.move(miniWheelBox.x + miniWheelBox.width * 0.3, miniWheelBox.y + miniWheelBox.height / 2);
+  await page.mouse.wheel(0, -300);
+  await settle();
+  const afterMiniWheel = await page.evaluate('__kinect.editor.view.window()');
+  check(near(placeInWindow(afterMiniWheel), placeInWindow(beforeMiniWheel), 0.02)
+    && afterMiniWheel.spanSec < beforeMiniWheel.spanSec * 0.8,
+    '  a wheel over the overview anchors on the clip position under the pointer, not on the window one',
+    `30% of the clip is ${clipAt30.toFixed(2)}s, at ${(placeInWindow(beforeMiniWheel) * 100).toFixed(1)}% `
+    + `of the window before and ${(placeInWindow(afterMiniWheel) * 100).toFixed(1)}% after, `
+    + `span ${beforeMiniWheel.spanSec.toFixed(2)}s -> ${afterMiniWheel.spanSec.toFixed(2)}s`);
+
   // The cost of it. A zoom is dozens of events and the structural path calls `resize()`,
   // so this is the same claim the key-drag row makes, read off the same counters.
   await page.evaluate('__kinect.timeline.counters.laneRebuilds = 0; __kinect.timeline.counters.laneRepositions = 0');
@@ -1962,8 +2013,35 @@ try {
     '  and at most a frame\'s worth once the frame runs, which is what the throttle is for',
     `${afterFrame - burst.before} resizes in total for 40 moves`);
 
+  // The height outlives the page, which is the only reason it is in `localStorage` at
+  // all - and a build that never called `setItem` would pass every row above. Same
+  // shape as the overview box: painted correctly forever, driven by nothing. The
+  // reload is the whole test, so it is worth the take opening a second time.
+  // Dragged well clear of the default rather than a little way from it. The first
+  // version moved 90px and landed at 325 against a 315px default, so `splitter-forgets`
+  // was caught by a 10px margin - a row that would have gone quiet the moment somebody
+  // changed `DEFAULT_LANES_SHARE`, which is a control passing by coincidence.
+  const askedFor = await dragGrip(200);
+  const defaulted = Math.round(VIEWPORT.height * 0.35);
+  check(Math.abs(askedFor.lanes - defaulted) > 60,
+    'the dragged height is nowhere near the default, so the reload row below means something',
+    `dragged to ${askedFor.lanes}px against a ${defaulted}px default`);
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForFunction('!!globalThis.__kinect', null, { timeout: 30000 });
+  await page.waitForFunction('!!globalThis.__kinect.timeline.transport()', null, { timeout: 30000 });
+  await settle();
+  await page.evaluate(`__kinect.keyframes.setTracks(${JSON.stringify(
+    Object.fromEntries(LANED.map((n) => [n, [{ t: 1, value: 0.2 }, { t: 5, value: 0.5 }]])),
+  )})`);
+  await settle();
+  const reloaded = await page.evaluate('__kinect.editor.strip()');
+  check(near(reloaded.lanes, askedFor.lanes, 2),
+    'the height survives a reload, which is the only reason it is stored at all',
+    `${askedFor.lanes}px before, ${reloaded.lanes}px after`);
+
   // Put it back, so nothing below inherits a strip somebody dragged.
   await page.evaluate('__kinect.keyframes.setTracks({})');
+  await page.evaluate("localStorage.removeItem('kinect.lanesHeight')");
   await settle();
 
   check(errors.length === 0, 'the page reported no errors while any of this happened',
