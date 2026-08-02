@@ -4,6 +4,9 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Kinect v2</title>
+<!-- Before the page's own rules on purpose: nav.css owns how the chips look and the
+     page owns where they sit, so a placement rule here has to win the tie. -->
+<link rel="stylesheet" href="/nav.css" />
 <style>
   /* The same palette the gallery restates, restated again. web/index.html is
      the system and each page carries its own copy of the names it uses, which is the
@@ -72,6 +75,10 @@
   .entry .dest { font-size: 9px; color: var(--faint); letter-spacing: 0.14em; text-transform: uppercase; }
   .entry .dest.fallthrough { color: var(--warn); }
 
+  /* Nothing else in this header competes for the right-hand end, so the nav takes it
+     directly rather than through a neighbour's auto margin the way the gallery's does. */
+  .surfacenav { margin-left: auto; }
+
   @media (max-width: 560px) {
     .menu { grid-template-columns: minmax(0, 1fr); align-content: start; }
   }
@@ -82,6 +89,14 @@
 <header class="head">
   <h1>Kinect v2</h1>
   <div class="sum">record, keep, re-photograph</div>
+  <!-- Here the nav is mostly saying where you are, since the three tiles below it are
+       this page's whole reason to exist. It is drawn anyway, marked as current: two
+       chips in the same corner on every surface is the claim, and a control that
+       vanishes on one of the three is a control people stop looking for. -->
+  <nav class="surfacenav" id="navRow" aria-label="Surfaces">
+    <a id="toMenu" aria-current="page">menu</a>
+    <a id="toLibrary" href="/gallery">gallery</a>
+  </nav>
 </header>
 
 <main class="menu" aria-label="Main menu">

@@ -338,6 +338,34 @@ it, and JSON quoting carries newlines as two literal characters. Ship it base64.
 node `pkill -f` matches the remote shell running your own command — resolve listeners by port
 through `ss`.
 
+**Never `git stash` in a worktree of this repo.** The stash is a single ref in the shared
+`.git`, so every worktree pushes onto one stack. A session here stashed to take a baseline
+measurement, a concurrent session in `ridgehead` stashed ninety seconds later, and the pop
+restored *ridgehead's* `server/index.js` into this tree while orphaning six files of this
+one's — silently, because the pop was redirected to `/dev/null` and only its exit code would
+have said so. Nothing is lost when it happens, since the stash commits survive as unreachable
+objects (`git fsck --unreachable`, then read `%s` for `On <branch>:` and take `^3` for the
+untracked file), but the recovery is long and the interference runs both ways. To take a
+baseline, copy the modified files somewhere outside the repo, `git checkout --` them, measure,
+and copy them back.
+
+**And that session was the reason four proof-tool runs failed, in two different ways.**
+`library-check` binds **fixed** ports — 8210 and 8211, plus `MAC_PORT + 2/4/5` — so two
+worktrees running it at once do not get an address-in-use error, they get each other's server:
+the arm here stat-ed `three-warning-take.knct`, a fixture belonging to the other tree, and
+reported the run as not finishing. Pass `--node-port`/`--mac-port` and take a range nothing
+else holds. The second way is quieter and worse, because it looks like a finding: under
+contention the preset-apply evaluate dies with `Resulting promise was garbage collected`, a
+sibling of the `Execution context was destroyed` the call is already wrapped against, and the
+run stops at 139 of 256 assertions. That reproduced **five times** against a change while a
+baseline taken on an idle machine passed twice, which reads as a regression with a clean
+control — and the change was innocent. What settled it was running the *unmodified* tree
+back to back in the same conditions, where it crashed identically. **Before believing a
+proof tool caught your change, re-run the baseline in the conditions the failure happened
+in, not the conditions the baseline happened in** — and check `pgrep -f "tools/.*-check.mjs"`
+first, because on this machine another agent's run is the normal state rather than the
+exception.
+
 ## Proof tools
 
 Each takes a running server and exits non-zero on failure.
@@ -358,6 +386,7 @@ node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL
 node tools/editor-check.mjs --url http://localhost:8080   # the editor's controls: that they exist, that pressing them changes something
 node tools/editor-check.mjs --mutate lanes-clear-siblings --no-render  # ... and must FAIL
 node tools/editor-check.mjs --mutate plant-unswept-control --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate nav-at-the-foot --no-render       # ... and must FAIL
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated
@@ -407,6 +436,20 @@ without it, "every control was tested" is a sentence the tool writes about itsel
 file** because each was NOT CAUGHT against a build with a fix removed: the rule they named
 had been made redundant by the two-row bar, which is worth knowing about the fix as well as
 about the check.
+
+`nav-at-the-foot` is the control for a second claim section 1 makes, that the way out of the
+editor is *reachable* rather than merely present — it was under thirteen groups of sliders at
+the end of a column that scrolls, which is being in the document and nowhere on the screen.
+**Its first probe sat in a dead zone of exactly the kind recorded above**: it scrolled the
+column to its end and asked whether the nav was inside the panel, and the end of the travel is
+precisely where a nav at the foot *is* visible — the mutation came back 683px down and
+comfortably in view, reddening only the structural half of the row. The end a foot-nav fails is
+the top, where the panel sits when you arrive, so both ends are read now and the mutated build
+answers 1958px. The probe is also the one thing in section 1 that moves the page it measures,
+and leaving the column scrolled put section 8's crop sliders under different pointer
+coordinates: the crop rows went from 0.005% apart to 0.446% and read as a rendering regression
+the change had caused. It restores the scroll position now. **Both flaws were found by running
+the mutation and reading which rows fired, not by reading the probe.**
 
 The two below need no server, and `registration-check` needs no sensor either -
 it runs on a corpus of `Registration::apply` inputs dumped by
