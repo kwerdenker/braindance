@@ -55,9 +55,23 @@ Everything, to everyone who can route to the port:
 - `GET /library/all` and `GET /capture/:id/file`: list every take and download the footage.
 - `POST /library/delete/:id`: destroy a take. This is the only irreversible action in the tool.
   The `confirm` flag it requires is an interlock against a misclick, not a check on who is asking.
+- `POST /library/rename/:id`: rename a take. Recoverable — the content hash does not move, so
+  every project built on it still resolves — but the name an operator reads on a tile is not
+  the name they left it under.
 - `PUT /projects/:name`, `/presets/:name`, `/deliverables/:name`: overwrite saved work.
 - `POST /jobs`: queue renders, without limit, on the disk your takes are being written to.
 - The WebSocket: the live sensor feed, and the recorder's controls.
+
+`POST /library/reveal/:id` is the one route that does **not** widen with the bind, and it is
+called out here because it is the only route in the program that starts a process — the
+platform's file manager, on a take's own path. It refuses any caller whose socket is not
+loopback, read off `remoteAddress` rather than off anything the client sends, so binding to
+`0.0.0.0` does not hand it to the network. What it grants a caller who is already on the
+machine is a file manager window on a path under the captures directory: the id is held to
+`VALID_ID`, the path is asserted to be a direct child of that directory, the program is a
+fixed string per platform, and the arguments are an array with no shell between them, so a
+filename cannot become a command however it is spelt. `--reveal-with` substitutes the program
+for a proof tool; on an operator's machine it is never passed.
 
 ## Staying safe
 
@@ -68,6 +82,13 @@ Everything, to everyone who can route to the port:
 - **Put it behind something if it must cross a network you do not control.** An SSH tunnel or a
   WireGuard link, with the server still bound to loopback on the far side, gives you the
   authentication and the transport security this program deliberately does not have.
+  **A tunnelled browser counts as local, and that is the point.** The server's one test for
+  "is this person here" is whether the connection arrived on loopback, and a forwarded port
+  terminates on the host — so a tunnelled browser gets the uncapped monitor rate and is offered
+  *Show in Finder*, which opens a window on the host rather than where you are sitting. Nothing
+  is being bypassed: whoever built the tunnel authenticated to the host to do it, which is more
+  than this program asks of a browser sitting at the machine. Treat tunnel access as equivalent
+  to sitting down at it, because that is what it is.
 - **Nothing here is safe to expose to the internet.** Not behind a reverse proxy, not on a
   forwarded port.
 
