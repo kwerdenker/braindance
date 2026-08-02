@@ -12,8 +12,9 @@ import { MessageParser, encodeMessage, TYPE_HELLO, TYPE_FRAME } from './protocol
 import { openCapture, withCapture, captureIdFor, openCaptureCount, decimatePayload } from './capture.js';
 import { handleExportSocket, MAX_FRAME_BYTES } from './export.js';
 import {
-  VALID_ID, DocumentStore, NodeLink, appendMarks, downloadTake, downloadsInFlight, hashFile,
-  markWriteCount, readMarkLog, readMarks, reconcile, remaining, removeTake, resolveMarks, scanTakes,
+  VALID_ID, DocumentStore, NodeLink, PROJECT_VERSION, appendMarks, downloadTake, downloadsInFlight,
+  hashFile, markWriteCount, readMarkLog, readMarks, reconcile, remaining, removeTake, resolveMarks,
+  scanTakes,
 } from './library.js';
 import { Recorder } from './recorder.js';
 import { JobStore } from './jobs.js';
@@ -183,7 +184,22 @@ const captureAliases = new Map();
 // a socket per session would leave a standalone node with an empty selector -
 // which is exactly the shoot where the operator cannot go and fix it.
 const PROJECTS = new DocumentStore(resolve(flag('--projects', join(ROOT, 'projects'))), 'project');
-const PRESETS = new DocumentStore(resolve(flag('--presets', join(ROOT, 'presets'))), 'preset');
+// The five looks that ship, served out of the repo beside the user's own library.
+//
+// A second *read* root rather than files copied into the user's directory on first
+// run, and the difference shows up the second time you start the program: a copy is
+// somebody's document the moment it lands, so re-grading a shipped look could never
+// reach anybody who had already run the thing once, and deleting one would leave a
+// hole nothing refills. Read from here, a built-in is always the current one, a save
+// over its name forks it into the user's directory, and removing the fork brings the
+// shipped look back. `--builtin-presets` exists so a check can point the search path
+// somewhere it controls.
+const PRESETS = new DocumentStore(
+  resolve(flag('--presets', join(ROOT, 'presets'))),
+  'preset',
+  PROJECT_VERSION,
+  resolve(flag('--builtin-presets', join(ROOT, 'presets-builtin'))),
+);
 const DELIVERABLES = new DocumentStore(resolve(flag('--deliverables', join(CAPTURES_DIR, '..', 'deliverables'))), 'deliverable', 1);
 // The render queue's records. A flag for the same reason the document stores take
 // one: a capture node and an editing machine are the same program, and running

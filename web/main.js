@@ -4664,6 +4664,9 @@ const ui = {
   preset: document.getElementById('tPreset'),
   presetApply: document.getElementById('tPresetApply'),
   presetSave: document.getElementById('tPresetSave'),
+  presetExport: document.getElementById('tPresetExport'),
+  presetImport: document.getElementById('tPresetImport'),
+  presetFile: document.getElementById('tPresetFile'),
   project: document.getElementById('tProject'),
   projectOpen: document.getElementById('tProjectOpen'),
   projectSave: document.getElementById('tProjectSave'),
@@ -5712,10 +5715,68 @@ async function refreshPresets() {
   // views rather than two lists that could drift.
   for (const el of [ui.preset, ui.recPreset]) {
     el.replaceChildren(new Option('—', ''));
-    for (const doc of list) el.appendChild(new Option(doc.name, doc.name));
+    // A shipped look is marked rather than segregated into its own group, because it
+    // is the same kind of document and saving over one forks it: a separator implying
+    // two libraries would be describing the storage rather than what you can do. The
+    // value stays the bare name, so everything downstream is unchanged.
+    for (const doc of list) el.appendChild(new Option(doc.builtin ? `${doc.name} ·` : doc.name, doc.name));
     if (appliedPreset) el.value = appliedPreset.name;
   }
   return list;
+}
+
+/**
+ * A preset as a file, both ways.
+ *
+ * The document *is* the file format - `{ version, values }`, the same bytes the store
+ * writes - so there is nothing to convert in either direction and no second shape that
+ * could drift from the first. Export is those bytes with a name on them; import is
+ * `JSON.parse` and then the ordinary apply path.
+ *
+ * **Import goes through `params.apply` and not near a uniform**, which is the whole of
+ * what makes an arriving file safe. A hand-edited or truncated preset is exactly the
+ * caller `normalise` was hardened for: a scalar must be a number, a step must be a
+ * boolean, and anything else throws at the key that is wrong instead of writing a
+ * plausible-looking look. It also closes the prototype question by construction -
+ * `specOf` asks `Object.hasOwn(PARAMS, name)`, so a file carrying `__proto__` as an own
+ * enumerable property, which `JSON.parse` genuinely does produce where an assignment
+ * would not, is refused as an unknown parameter rather than reaching anything.
+ */
+function exportPresetFile(name, body) {
+  const url = URL.createObjectURL(new Blob([`${JSON.stringify(body, null, 2)}\n`], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${name}.braindance-preset.json`;
+  a.click();
+  // Revoked on the next turn rather than immediately: the click is dispatched
+  // synchronously but the fetch of the blob is not, and revoking in this task can
+  // land first and save a zero-byte file.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+async function importPresetFile(file) {
+  const text = await file.text();
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`${file.name} is not JSON: ${err.message}`);
+  }
+  // Applied before it is saved, deliberately. The store checks the version and the
+  // name; only the registry can say whether the values are values, and a file that
+  // cannot be applied has no business entering a library where it will sit looking
+  // like a look until somebody picks it.
+  const name = file.name.replace(/\.braindance-preset\.json$|\.json$/i, '');
+  applyStoredPreset({ name, rev: 'sha256:imported', body });
+  const res = await fetch(`/presets/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const saved = await res.json();
+  if (saved.error) throw new Error(saved.error);
+  appliedPreset = { name: saved.name, rev: saved.rev };
+  return saved;
 }
 
 async function refreshProjects() {
@@ -6834,6 +6895,40 @@ ui.presetSave.addEventListener('click', async () => {
     await refreshPresets();
     ui.note.textContent = `saved ${saved.name} · ${saved.rev.slice(7, 15)}`;
     history.commit();
+  } catch (err) {
+    showTimelineError(err);
+  }
+});
+
+// The look on screen, not the document the picker happens to be pointing at. Those are
+// the same thing only until you move a slider, and exporting what you can see is the
+// answer that is right in both cases - the picker's name is used for the filename
+// because it is the best guess at what to call it, which is a different question.
+ui.presetExport.addEventListener('click', () => {
+  try {
+    const name = ui.preset.value || appliedPreset?.name || 'look';
+    exportPresetFile(name, presetFromCurrentLook());
+    ui.note.textContent = `exported ${name}.braindance-preset.json`;
+  } catch (err) {
+    showTimelineError(err);
+  }
+});
+
+// The button and the input are two halves of one control: a file input cannot be
+// styled into the strip, and one that opens on its own is a control nobody can find.
+ui.presetImport.addEventListener('click', () => ui.presetFile.click());
+ui.presetFile.addEventListener('change', async () => {
+  const file = ui.presetFile.files?.[0];
+  // Cleared before the await rather than after, so choosing the same file twice in a
+  // row fires `change` the second time. An input that keeps its value is an import
+  // button that works once per file per session.
+  ui.presetFile.value = '';
+  if (!file) return;
+  try {
+    const saved = await importPresetFile(file);
+    await refreshPresets();
+    ui.preset.value = saved.name;
+    ui.note.textContent = `imported ${saved.name} · ${saved.rev.slice(7, 15)}`;
   } catch (err) {
     showTimelineError(err);
   }

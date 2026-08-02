@@ -192,6 +192,37 @@ library — five documents under `presets-builtin/`, one per reading, with `blac
 carrying the twelve values the old mode wrote — and a preset is look values and nothing
 else, so applying one never moves your camera.
 
+### Presets
+
+A preset is a document: `{ version, values }`, one number per look parameter. The five
+that ship are served read-only from `presets-builtin/` beside your own library in
+`presets/`, and they are marked with a `·` in the picker.
+
+**Saving over a shipped name forks it rather than overwriting it.** The write lands in
+your library and shadows the built-in; delete the fork and the shipped look comes back.
+So the five are starting points you cannot damage, and re-grading one in a later release
+reaches everybody rather than only people who had not run the program yet.
+
+`export` writes the look on screen — not the document the picker happens to name, which
+are the same thing only until you move a slider — as `<name>.braindance-preset.json`.
+`import` reads one back. The bytes are the document, so a look is something you can keep
+in a repository, mail to somebody, or edit in a text editor.
+
+An imported file is applied through the registry before it is saved, which is what makes
+that safe: a scalar carrying a string fails at the key that is wrong instead of writing a
+plausible-looking look, and a file carrying `__proto__` is refused as an unknown
+parameter. A file is the one door into the program that nothing upstream validates, so
+nothing about it is taken on trust — `editor-check` section 9 drives the whole round trip
+in a browser, and `import-skips-normalise` is the mutation that must break it.
+
+Documents from before the readings landed are version 3 and will not open. The
+conversion is total and lossless, so it is a one-shot over files rather than a second
+reader inside the program:
+
+```
+node tools/convert-presets.mjs presets projects
+```
+
 Two controls decide how much white ends up on the geometry, which is the first
 thing to reach for if the look feels blown out:
 

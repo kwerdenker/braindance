@@ -560,10 +560,24 @@ export async function removeTake(dir, id, { hash, verifiedElsewhere = null }) {
  * two that drift.
  */
 export class DocumentStore {
-  constructor(dir, kind, version = PROJECT_VERSION) {
+  /**
+   * `builtinDir` is a second root the store *reads* and never writes, and it is a
+   * search path rather than a second implementation.
+   *
+   * The five looks that ship live there. What makes one root enough machinery is that
+   * a built-in is an ordinary document in the ordinary format - the same
+   * `{ version, values }` a user's own preset is, hashed the same way, applied through
+   * the same door - so the only thing that distinguishes it is which directory it came
+   * out of. Reads prefer the user's copy and fall back to the shipped one; writes only
+   * ever land in the user's directory, which is what makes "saving over a built-in
+   * forks it" fall out of the lookup rather than needing a rule of its own. Removing
+   * the fork brings the shipped look back, which is the same fact read the other way.
+   */
+  constructor(dir, kind, version = PROJECT_VERSION, builtinDir = null) {
     this.dir = dir;
     this.kind = kind;
     this.version = version;
+    this.builtinDir = builtinDir;
     // Every write and every removal this store has ever done. Monotonic, never
     // reset, and the reason it exists is `markWriteCount` above: a handler that
     // writes and puts the bytes back is invisible to a before-and-after reading of
@@ -576,16 +590,43 @@ export class DocumentStore {
     return join(this.dir, `${name}.json`);
   }
 
-  async list() {
-    let files;
+  /**
+   * Where a name is read from: the user's copy if there is one, the shipped one
+   * otherwise. The name is validated first for the same reason `pathFor` validates
+   * it - a name that cannot name a document must not be joined onto either root.
+   */
+  async readPathFor(name) {
+    const own = this.pathFor(name);
+    if (!this.builtinDir) return { path: own, builtin: false };
     try {
-      files = (await readdir(this.dir)).filter((f) => f.endsWith('.json')).sort();
+      await stat(own);
+      return { path: own, builtin: false };
     } catch {
-      return [];
+      return { path: join(this.builtinDir, `${name}.json`), builtin: true };
     }
+  }
+
+  async list() {
+    const filesIn = async (dir) => {
+      try {
+        return (await readdir(dir)).filter((f) => f.endsWith('.json')).sort();
+      } catch {
+        return [];
+      }
+    };
+    const own = await filesIn(this.dir);
+    // The user's own names win, so a fork shadows the look it was forked from rather
+    // than appearing beside it under the same name. Built-ins that have not been forked
+    // come first, because they are the starting points and a library that opened with
+    // somebody's twelve experiments buries them.
+    const owned = new Set(own);
+    const shipped = this.builtinDir
+      ? (await filesIn(this.builtinDir)).filter((f) => !owned.has(f)).map((f) => [this.builtinDir, f, true])
+      : [];
+    const files = [...shipped, ...own.map((f) => [this.dir, f, false])];
     const out = [];
-    for (const file of files) {
-      const path = join(this.dir, file);
+    for (const [dir, file, builtin] of files) {
+      const path = join(dir, file);
       try {
         const text = await readFile(path, 'utf8');
         const st = await stat(path);
@@ -599,6 +640,9 @@ export class DocumentStore {
           rev: `sha256:${createHash('sha256').update(text).digest('hex')}`,
           bytes: st.size,
           savedAt: st.mtimeMs,
+          // Which root it came out of, so the picker can say which looks ship and a
+          // check can assert that saving over one forked it rather than overwrote it.
+          builtin,
           body: JSON.parse(text),
         });
       } catch { /* a document this build cannot read is not a reason to hide the rest */ }
@@ -607,8 +651,9 @@ export class DocumentStore {
   }
 
   async read(name) {
-    const text = await readFile(this.pathFor(name), 'utf8');
-    return { name, rev: `sha256:${createHash('sha256').update(text).digest('hex')}`, body: JSON.parse(text) };
+    const { path, builtin } = await this.readPathFor(name);
+    const text = await readFile(path, 'utf8');
+    return { name, rev: `sha256:${createHash('sha256').update(text).digest('hex')}`, builtin, body: JSON.parse(text) };
   }
 
   /**

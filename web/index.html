@@ -636,8 +636,16 @@
           <button data-ease="smooth" type="button">smooth</button>
           <button data-ease="hold" type="button">hold</button>
           <button id="tDeleteKey" type="button" title="Delete the selected key (Del)">delete</button></span>
+        <!-- A look is a file, so it leaves and arrives as one. `export` writes the same
+             bytes the store holds and `import` reads them back through the registry's
+             own door, which is what makes a hand-edited file fail at the key that is
+             wrong rather than load as a plausible look. The file input is hidden
+             because a bare one cannot be styled into the strip and its label is the
+             button beside it. A name ending in `·` in the picker is one that ships. -->
         <label class="tchip">look<select id="tPreset"><option value="">—</option></select>
-          <button id="tPresetApply" type="button">apply</button><button id="tPresetSave" type="button">save</button></label>
+          <button id="tPresetApply" type="button">apply</button><button id="tPresetSave" type="button">save</button
+          ><button id="tPresetExport" type="button">export</button><button id="tPresetImport" type="button">import</button>
+          <input id="tPresetFile" type="file" accept=".json,application/json" hidden></label>
         <label class="tchip">project<select id="tProject"><option value="">—</option></select>
           <button id="tProjectOpen" type="button">open</button><button id="tProjectSave" type="button">save</button></label>
         <label class="tchip">deliverable<select id="tDeliverable"><option value="">—</option></select>

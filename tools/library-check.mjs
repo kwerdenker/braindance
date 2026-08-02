@@ -254,6 +254,29 @@ const MUTATIONS = {
   // mutations nobody can map back to a hazard. The property it protected - that
   // applying a stored preset lands the user's own values and not somebody else's - is
   // still asserted, by the section that applies a preset and compares the look.
+  // A save over a shipped look overwrites it instead of forking it. The control for
+  // the built-in root: without it, "the shipped looks cannot be lost" is a claim the
+  // check makes about itself, and every row of it would pass just as well against a
+  // store with one directory. The write path is what is mutated rather than the read
+  // path, because a read that fell back correctly and a write that landed in the
+  // wrong place look identical from the listing.
+  //
+  // Narrow on purpose. A first pass routed *every* write through `readPathFor`, which
+  // sends a name that exists in neither root to the shipped directory - so saving a
+  // brand new preset landed somewhere nothing looked, the run died 135 assertions in
+  // with an ENOENT, and the fork rows it was written for never executed. A mutation
+  // that kills the harness before reaching its target is not a caught mutation. This
+  // one moves only names that already ship, which is exactly the fork it must break.
+  'write-overwrites-builtin': { file: 'server/library.js', edits: [[
+    `    const path = this.pathFor(name);
+    // Captured here, on the same tick as the increment.`,
+    `    let path = this.pathFor(name);
+    if (this.builtinDir) {
+      const shipped = join(this.builtinDir, \`\${name}.json\`);
+      try { await stat(shipped); path = shipped; } catch { /* not a shipped name */ }
+    }
+    // Captured here, on the same tick as the increment.`,
+  ]] },
   // Marks are drawn at their source fraction rather than through the retime curve,
   // which is identical at rate 1 with no keys and wrong everywhere else.
   'marks-ignore-retime': { file: 'web/main.js', edits: [[
@@ -744,6 +767,11 @@ function stageServer() {
   // mutations run against a staged copy rather than an edit-and-restore. It is
   // 312K, so the isolation costs nothing worth counting.
   cpSync(join(REPO, 'web'), join(root, 'web'), { recursive: true });
+  // The looks that ship, copied in because the server resolves its built-in preset
+  // root relative to its own location and a staged tree without them serves an empty
+  // library - which would leave the fork-on-write rows below asserting against five
+  // documents that were not there rather than against five that are.
+  cpSync(join(REPO, 'presets-builtin'), join(root, 'presets-builtin'), { recursive: true });
   for (const name of ['node_modules', 'vendor']) {
     const from = join(REPO, name);
     if (existsSync(from) && !existsSync(join(root, name))) symlinkSync(from, join(root, name));
@@ -901,8 +929,12 @@ function checkLogPredicate() {
 }
 
 const getJson = async (url, init) => (await fetch(url, init)).json();
-const post = (url, body) => getJson(url, {
-  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}),
+// The method is a parameter because the document routes take three of them and the
+// difference is the behaviour under test: a PUT to a shipped preset's name has to fork
+// it and a DELETE of the fork has to bring the shipped one back, and neither claim can
+// be made through a helper that can only POST.
+const post = (url, body, method = 'POST') => getJson(url, {
+  method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}),
 });
 
 // ------------------------------------------------------------------- playwright
@@ -2051,6 +2083,56 @@ async function runChecks() {
     check(stillTuned === TUNED.bloom,
       'editing the preset afterwards does not reach back into the clip - the values were copied in',
       `bloom ${stillTuned}`);
+
+    // ------------------------------------------------- the looks that ship
+    //
+    // Five documents served out of a second, read-only root beside the user's own
+    // library. The rows below are about the one behaviour that root has to get right:
+    // **a save over a shipped name forks it rather than overwriting it.** Without
+    // that, the first person to tweak Blackwall loses it for good, and "the shipped
+    // looks cannot be lost" is a sentence the design writes about itself.
+    //
+    // Driven against the real `presets-builtin/` rather than a directory invented
+    // here, so the check sweeps the looks the product actually offers. A tool holding
+    // its own five constants would keep passing after somebody re-graded them.
+    const shipped = JSON.parse(readFileSync(join(REPO, 'presets-builtin/blackwall.json'), 'utf8'));
+    const shippedNames = readdirSync(join(REPO, 'presets-builtin'))
+      .filter((f) => f.endsWith('.json')).map((f) => f.replace(/\.json$/, '')).sort();
+    const listed = await getJson(`${macUrl}/presets`);
+    const listedBuiltin = listed.presets.filter((d) => d.builtin).map((d) => d.name).sort();
+    check(shippedNames.length > 0 && eq(listedBuiltin, shippedNames),
+      'every look that ships is listed, and says it ships',
+      `${listedBuiltin.join(' ')} against ${shippedNames.join(' ')}`);
+
+    // The fork. Written through the same route a save uses, because the claim is about
+    // that route rather than about a helper.
+    // **The staged copy, not the repo's.** The server reads its built-in root out of
+    // the tree it was started from, so asserting the repo's file is unchanged asserts
+    // something the server could not have done under any implementation - a row that
+    // passes by construction and reads exactly like a fork-on-write that works. The
+    // file under test is the one the process can actually reach.
+    const builtinPath = join(root, 'presets-builtin/blackwall.json');
+    const bytesBefore = readFileSync(builtinPath, 'utf8');
+    const forkBody = { version: PROJECT_VERSION, values: { ...shipped.values, bloom: 5.5 } };
+    await post(`${macUrl}/presets/blackwall`, forkBody, 'PUT');
+    check(readFileSync(builtinPath, 'utf8') === bytesBefore,
+      'saving over a shipped look leaves the shipped file byte-identical',
+      `${bytesBefore.length} bytes`);
+    const forkPath = join(WORK, 'presets/blackwall.json');
+    check(existsSync(forkPath), 'and the save landed in the user\'s own library instead',
+      existsSync(forkPath) ? readdirSync(join(WORK, 'presets')).join(' ') : 'no fork on disk');
+    const afterFork = await getJson(`${macUrl}/presets/blackwall`);
+    check(afterFork.builtin === false && afterFork.body.values.bloom === 5.5,
+      'and reading the name now answers the fork, not the look it was forked from',
+      `builtin=${afterFork.builtin} bloom=${afterFork.body.values.bloom}`);
+
+    // And the other direction, which is the same fact read backwards: removing the
+    // fork brings the shipped look back rather than leaving a hole where a name was.
+    await post(`${macUrl}/presets/blackwall`, null, 'DELETE');
+    const afterRemove = await getJson(`${macUrl}/presets/blackwall`);
+    check(afterRemove.builtin === true && afterRemove.body.values.bloom === shipped.values.bloom,
+      'and removing the fork brings the shipped look back',
+      `builtin=${afterRemove.builtin} bloom=${afterRemove.body.values.bloom}`);
 
     // A preset from a version this build does not read.
     const refusedPreset = await page.evaluate(`(() => {

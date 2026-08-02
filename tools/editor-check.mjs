@@ -56,10 +56,12 @@
 
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, statSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
+import { PROJECT_VERSION } from '../web/format.js';
 
 const argv = process.argv.slice(2);
 const flag = (name, fallback = null) => {
@@ -68,6 +70,10 @@ const flag = (name, fallback = null) => {
 };
 
 const REPO = fileURLToPath(new URL('..', import.meta.url));
+// Section 9 writes preset files and catches a download. Outside the repo, because a
+// proof tool that writes into its own subject makes every later run untrustworthy -
+// the same reason the staged tree exists in `library-check`.
+const TMP = mkdtempSync(join(tmpdir(), 'editor-check-'));
 const URL_BASE = flag('--url', 'http://localhost:8080');
 const EDITOR_PATH = '/edit';
 // `sample` rather than a dated take id, because the default has to name something
@@ -95,6 +101,24 @@ const MUTATIONS = {
   // put back. A button nobody has taught this file to drive must be a failure rather
   // than a control that quietly went unswept, or "every control was tested" is a
   // sentence this tool writes about itself with nothing enforcing it.
+  // Import writes the file's values straight at the uniforms instead of through the
+  // registry. The control for section 9's two refusal rows: a file is the one door
+  // into this program that nothing upstream validates, so "a hand-edited preset cannot
+  // put a wrong image on screen" rests entirely on `params.apply` meeting every value.
+  // The mutated build accepts a string where a scalar belongs and accepts a key called
+  // `__proto__`, and both rows have to go red - a build that only caught one of them
+  // would mean the other row was being carried by the first.
+  'import-skips-normalise': {
+    file: 'web/main.js',
+    edits: [[
+      "  applyStoredPreset({ name, rev: 'sha256:imported', body });",
+      '  for (const [k, v] of Object.entries(body.values ?? {})) {\n'
+      + '    if (globalThis.__kinect?.uniforms?.[k]) globalThis.__kinect.uniforms[k].value = v;\n'
+      + '  }\n'
+      + "  appliedPreset = { name, rev: 'sha256:imported' };",
+    ]],
+  },
+
   'plant-unswept-control': {
     file: 'web/index.html',
     edits: [[
@@ -386,6 +410,9 @@ const DRIVER_IDS = {
   tPreset: 'library-check applies a preset and compares the look',
   tPresetApply: 'library-check',
   tPresetSave: 'library-check',
+  tPresetExport: 'section 9 - exports the look and reads the file the browser wrote',
+  tPresetImport: 'section 9 - opens the picker the file input is the other half of',
+  tPresetFile: 'section 9 - a file is set on it and the look it names arrives',
   tProject: 'library-check opens a project and compares the document',
   tProjectOpen: 'library-check',
   tProjectSave: 'library-check',
@@ -455,7 +482,10 @@ async function openEditor() {
     headless: !HEADED,
     args: ['--disable-features=LocalNetworkAccessChecks'],
   });
-  const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1 });
+  // Downloads accepted, because section 9 catches one: a look leaves this program as a
+  // file the browser writes, and a context that discards downloads would fail that row
+  // for a reason that is about Playwright rather than about the export.
+  const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1, acceptDownloads: true });
   await context.addInitScript(PICKER_STUB);
   const page = await context.newPage();
   const errors = [];
@@ -1372,6 +1402,85 @@ try {
 
   check(errors.length === 0, 'the page reported no errors while any of this happened',
     errors.length ? errors.slice(0, 3).join(' | ') : '');
+
+  // =========================================== 9. a look leaves and arrives as a file
+  //
+  // The one part of the preset library that is not HTTP: a look goes out through a
+  // browser download and comes back through a file input. Neither can be reached from
+  // `library-check`, which drives the routes - the download is a Blob the page makes
+  // and never sends anywhere, and the import applies the file *before* it saves it,
+  // which is the half that decides whether a hand-edited preset can put a wrong image
+  // on screen. So it is driven here, where there is a browser.
+  console.log('\n[9] a look leaves as a file and comes back as one');
+  {
+    const known = { bloom: 2.75, grain: 0.66, readBlackwall: 1, readRgb: 0 };
+    await page.evaluate(`globalThis.__kinect.applyPreset(${JSON.stringify(known)})`);
+    await settle();
+
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.evaluate("document.getElementById('tPresetExport').click()"),
+    ]);
+    const saved = join(TMP, download.suggestedFilename());
+    await download.saveAs(saved);
+    const exported = JSON.parse(readFileSync(saved, 'utf8'));
+    check(/\.braindance-preset\.json$/.test(download.suggestedFilename()),
+      'export writes a named file the browser actually downloaded', download.suggestedFilename());
+    // The bytes are the document, so the assertion is on the values rather than on a
+    // shape this file invents: what came out has to be the look that was on screen.
+    const wrong = Object.entries(known).filter(([n, v]) => exported.values?.[n] !== v);
+    check(exported.version === PROJECT_VERSION && wrong.length === 0,
+      'and what it wrote is the look that was on screen, at this build\'s version',
+      wrong.length ? wrong.map(([n, v]) => `${n} ${exported.values?.[n]} not ${v}`).join(' ') : `version ${exported.version}`);
+
+    // Edited outside the program, which is the whole point of a file: a look you can
+    // put in a repository, mail to somebody, or change in a text editor.
+    const edited = join(TMP, 'edited-outside.braindance-preset.json');
+    const nextBody = { ...exported, values: { ...exported.values, bloom: 4.4, grain: 0.13 } };
+    writeFileSync(edited, `${JSON.stringify(nextBody, null, 2)}\n`);
+    await page.evaluate("globalThis.__kinect.params.reset(globalThis.__kinect.params.names('look'))");
+    await settle();
+    await page.setInputFiles('#tPresetFile', edited);
+    await page.waitForFunction("document.getElementById('tNote').textContent.startsWith('imported')", null, { timeout: 15000 });
+    await settle();
+    const back = await page.evaluate("(() => { const k = globalThis.__kinect; return JSON.stringify({ bloom: k.params.get('bloom'), grain: k.params.get('grain'), readBlackwall: k.params.get('readBlackwall'), stamp: k.library.appliedPreset() }); })()");
+    const landed = JSON.parse(back);
+    check(landed.bloom === 4.4 && landed.grain === 0.13 && landed.readBlackwall === 1,
+      'and importing it puts the edited look on screen', `bloom ${landed.bloom} grain ${landed.grain}`);
+    check(landed.stamp?.name === 'edited-outside',
+      'and stamps the clip with where it came from', JSON.stringify(landed.stamp?.name));
+
+    // The refusal, and it is the row that matters most: a file is the one door into
+    // this program that nothing else validates. `params.apply` meets every value, so a
+    // scalar carrying a string throws at that key rather than writing a plausible look
+    // - and the image must not have moved on the way to finding out.
+    const bad = join(TMP, 'not-a-look.braindance-preset.json');
+    writeFileSync(bad, `${JSON.stringify({ version: PROJECT_VERSION, values: { bloom: 'loud' } }, null, 2)}\n`);
+    await page.setInputFiles('#tPresetFile', bad);
+    await page.waitForFunction("document.getElementById('tNote').textContent.includes('bloom')", null, { timeout: 15000 })
+      .catch(() => {});
+    const afterBad = await page.evaluate("(() => ({ note: document.getElementById('tNote').textContent, bloom: globalThis.__kinect.params.get('bloom') }))()");
+    check(/bloom/.test(afterBad.note) && afterBad.bloom === 4.4,
+      'a malformed file is refused at the key that is wrong, and leaves the look alone',
+      `"${afterBad.note}" with bloom still ${afterBad.bloom}`);
+
+    // And the prototype question, which a file can ask and an assignment cannot.
+    // `JSON.parse` creates `__proto__` as an own enumerable property where
+    // `p.x.__proto__ = v` invokes the setter and creates nothing - so this is the one
+    // shape that has to be sent as source rather than built in JS, and it is the exact
+    // inverse of the JSON.stringify trap this repo already records.
+    const proto = join(TMP, 'proto.braindance-preset.json');
+    writeFileSync(proto, `{ "version": ${PROJECT_VERSION}, "values": { "__proto__": { "polluted": true }, "bloom": 1 } }\n`);
+    const parsedHasOwn = Object.keys(JSON.parse(readFileSync(proto, 'utf8')).values).includes('__proto__');
+    check(parsedHasOwn, 'the probe really contains __proto__ as an own key, or the row below tests nothing');
+    await page.setInputFiles('#tPresetFile', proto);
+    await page.waitForFunction("document.getElementById('tNote').textContent.includes('__proto__')", null, { timeout: 15000 })
+      .catch(() => {});
+    const afterProto = await page.evaluate("(() => ({ note: document.getElementById('tNote').textContent, polluted: ({}).polluted ?? null, bloom: globalThis.__kinect.params.get('bloom') }))()");
+    check(/__proto__/.test(afterProto.note) && afterProto.polluted === null && afterProto.bloom === 4.4,
+      'and a file carrying __proto__ is refused as an unknown parameter, polluting nothing',
+      `"${afterProto.note}" polluted=${afterProto.polluted}`);
+  }
 } catch (err) {
   crashed = err;
 } finally {
