@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Kinect v2</title>
 <style>
-  /* The same palette the gallery restates, restated again. docs/design/tokens.css is
+  /* The same palette the gallery restates, restated again. web/index.html is
      the system and each page carries its own copy of the names it uses, which is the
      convention library.html already set. */
   :root {
@@ -152,8 +152,9 @@ const gallery = (reason) => ({ href: '/gallery', reason, take: null, project: nu
 /**
  * Where the Editor tile goes, and why.
  *
- * **Matched by hash and never by the saved id**, which is the decision at
- * docs/recording-and-nle.md:577 - a project names its capture by content. A take
+ * **Matched by hash and never by the saved id**: a project names its capture by
+ * content, which is the same rule `server/library.js` reconciles two machines by
+ * and is stated at length there. A take
  * downloaded from the node whose name collided with one already here is stored as
  * `${id}-${hash.slice(7, 15)}.knct`, so the same id names different footage on two
  * machines and resuming by id would open the wrong take while looking like it

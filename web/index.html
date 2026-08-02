@@ -12,10 +12,10 @@
     --accent: #5ad1c4;
     --red: #ff3b4e;
 
-    /* The timeline's share of the system in docs/design/tokens.css, restated in
-       this file's own names rather than copied in as a second token file - two
-       copies of a palette is two things to keep in step, and the studies are
-       studies. Elevation on dark is carried by lightness, never by a shadow. */
+    /* This block is the palette. The gallery and the menu restate it in their own
+       names rather than importing a shared token file, because two copies of a
+       palette is two things to keep in step and a third file naming them again is
+       a third. Elevation on dark is carried by lightness, never by a shadow. */
     --paper-1: #0d1014;
     --paper-2: #151920;
     --paper-3: #1e232b;
@@ -172,10 +172,9 @@
   /* ── timeline ──────────────────────────────────────────────────────────────
      A strip under the stage rather than over it: the bottom of the frame is
      where a subject's feet are, and grading against an occluded image is the
-     one thing an editor must not ask for. Layout and interaction follow
-     docs/design/editor.html - play, two clocks, readout chips, a ruler in
-     program time with the playhead on it. The lanes, keys and retime curve that
-     study also shows are step 5's. */
+     one thing an editor must not ask for. Play, two clocks, readout chips, and
+     a ruler in program time with the playhead on it - the coordinate choice is
+     the one the README states, and everything here is measured in it. */
   #timeline {
     position: fixed; left: 0; right: 0; bottom: 0;
     height: calc(var(--timeline-h) + var(--tlanes-h));

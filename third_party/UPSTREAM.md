@@ -127,11 +127,20 @@ the unused 10th sub-image. The depth solve reads sub-images 0–8 — nine
 measurements, three phase steps across three modulation frequencies — and the
 tenth is commented out in the CPU processor and never fetched by the OpenCL
 kernel, so requiring all ten discarded frames over ~300 KB that nothing reads.
+Measured on a degraded link, **6.8% of all discarded frames were missing nothing
+but sub-image 9**.
 
-Worth **+12.9%** on a degraded USB topology (12.82 → 14.48 fps), measured as an
-interleaved A/B with both paths in one binary. Inert on a healthy link, where
-nothing is dropped. `README.md` and `docs/performance-investigation.md` carry the
-full measurement.
+Worth **+12.9%** there (12.82 → 14.48 fps), measured as an interleaved A/B — old,
+new, old, new, old, new — with both paths in one binary behind a temporary switch,
+and every new-path run beat every old-path run. Inert on a healthy link, where
+nothing is dropped, so it stays as insurance for a marginal one. Depth output is
+unchanged, because the bytes it stops waiting for were never an input to the solve.
+
+**The interleaving is why the number is 12.9 and not 23.** A first pass comparing
+four runs before the change against three after showed +23%, and drift between
+measurement sessions accounted for most of that difference. Sequential
+before-and-after is not trustworthy on this rig, and this is the measurement that
+established it.
 
 ## How the proof works
 

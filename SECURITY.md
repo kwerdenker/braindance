@@ -6,8 +6,8 @@ library, and delete footage. There are no accounts, no tokens and no TLS. It is 
 driving a sensor on a network you control, and it is built on the assumption that reaching it
 is itself the permission.
 
-That assumption is only honest if the boundaries around it are stated plainly, so this document
-states them, including the one that turned out to be wrong.
+That assumption is only honest if the boundaries around it are stated plainly, including the one
+that turned out to be wrong.
 
 ## What protects you, and what does not
 
@@ -21,9 +21,9 @@ content type — the three things a page you merely visit cannot produce togethe
 carrying **no** `Origin` passes on purpose: every call across the capture-node link is a
 server-side `fetch`, and nothing in Node has an origin to declare.
 
-The consequence is worth being blunt about: **the origin rule stops hostile web pages and stops
-nothing else.** Any non-browser client that can route to the port — curl, a script, another
-machine on the Wi-Fi — sends no `Origin` and is allowed to do everything.
+**The origin rule stops hostile web pages and stops nothing else.** Any non-browser client that
+can route to the port — curl, a script, another machine on the Wi-Fi — sends no `Origin` and is
+allowed to do everything.
 
 **Host equality alone does not survive DNS rebinding, so the guard does not rely on it.** The
 original rule compared `Origin` against `Host`, and a name an attacker controls, re-resolved
@@ -50,14 +50,14 @@ working, not a bug, and the fix is to reach it by address or to add your case de
 
 Everything, to everyone who can route to the port:
 
-- `POST /record/start`, `/record/stop`, `/record/mark` — arm the node, end a shoot in progress,
+- `POST /record/start`, `/record/stop`, `/record/mark`: arm the node, end a shoot in progress,
   or write marks into someone else's take.
-- `GET /library/all` and `GET /capture/:id/file` — list every take and download the footage.
-- `POST /library/delete/:id` — destroy a take. This is the only irreversible action in the tool.
+- `GET /library/all` and `GET /capture/:id/file`: list every take and download the footage.
+- `POST /library/delete/:id`: destroy a take. This is the only irreversible action in the tool.
   The `confirm` flag it requires is an interlock against a misclick, not a check on who is asking.
-- `PUT /projects/:name`, `/presets/:name`, `/deliverables/:name` — overwrite saved work.
-- `POST /jobs` — queue renders, without limit, on the disk your takes are being written to.
-- The WebSocket — the live sensor feed, and the recorder's controls.
+- `PUT /projects/:name`, `/presets/:name`, `/deliverables/:name`: overwrite saved work.
+- `POST /jobs`: queue renders, without limit, on the disk your takes are being written to.
+- The WebSocket: the live sensor feed, and the recorder's controls.
 
 ## Staying safe
 

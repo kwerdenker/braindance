@@ -24,9 +24,15 @@ not a rejection.
 
 ## How this repo decides things
 
-`docs/recording-and-nle.md` is the canonical design and it is long. Its decisions are settled.
-If reality contradicts it, **report the contradiction rather than quietly redesigning around
-it** — that has happened several times and reporting was the right move every time.
+**The shipped program is the design.** A long design document and a set of HTML studies used to
+carry it; they were deleted once the thing they described was built, because a drawing of a
+surface that now exists can only drift out of step with it. The README carries the architecture,
+the wire format and the measurements, and the rest of the reasoning lives in the code's comments,
+which are long on purpose.
+
+If reality contradicts an intention you find there, **report the contradiction rather than quietly
+redesigning around it** — that has happened several times and reporting was the right move every
+time.
 
 The other thing to know is that this repository measures rather than reasons, and it is strict
 about it:

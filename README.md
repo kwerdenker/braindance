@@ -12,8 +12,7 @@ the sensor's own intrinsics. On top of that sits a recorder, a take library that
 reconciles between two machines, a keyframe editor with a retime curve, and a
 render queue that exports video through ffmpeg.
 
-**Status: complete and working, maintained as a personal project.** All nine steps
-of the build order in `docs/recording-and-nle.md` are done. It runs on macOS
+**Status: complete and working, maintained as a personal project.** It runs on macOS
 (Apple Silicon) and on a Raspberry Pi capture node. There is no release cadence and
 no support commitment — see [CONTRIBUTING.md](CONTRIBUTING.md) for what that means
 in practice.
@@ -54,12 +53,11 @@ npm run replay            # replay a capture you already have, no sensor needed
 live viewer, the take library, or the editor.
 
 **`npm run replay` needs a capture, and none ships with this repository.** Captures
-are large and binary, so `captures/` is gitignored and there is no sample to clone.
-If you have a Kinect, record one first with `npm run record`; if you do not, most of
-this program cannot be exercised, and that is worth knowing before you invest an
-evening. `tools/make-fixture.js` loops one short real capture into an arbitrarily
-long one, which is how the index and the frame API get tested without shooting for
-five minutes.
+are large and binary, so `captures/` is gitignored. If you have a Kinect, record one
+first with `npm run record`; if you do not, most of this program cannot be exercised,
+and that is worth knowing before you invest an evening. `tools/make-fixture.js` loops
+one short real capture into an arbitrarily long one, which is how the index and the
+frame API get tested without shooting for five minutes.
 
 Options pass through to the grabber:
 
@@ -73,53 +71,40 @@ node server/index.js --replay captures/session.knct
 node server/index.js --host 0.0.0.0     # reachable from other machines - see below
 ```
 
-**The server binds loopback unless you pass `--host`, and a capture node needs it.**
-There is no authentication anywhere in this program: whoever can reach the port can
-arm the recorder, start a take and stop one. On a Mac you are editing on, that is
-nothing anybody else should be able to reach, so the default is `127.0.0.1`. A
-capture node is the case where being reachable is the entire point — a browser on
-the Mac driving a Pi over Wi-Fi — so start the node with `--host 0.0.0.0` and it
-says on stdout that it did. Being on a network you trust is doing the work there;
-the flag just makes that a decision somebody took rather than the default.
+**There is no authentication anywhere in this program**, so whoever can reach the port
+can arm the recorder, start a take and stop one. The server binds `127.0.0.1` unless you
+pass `--host`, and says on stdout when it did. A capture node is the case where being
+reachable is the entire point — a browser on the Mac driving a Pi over Wi-Fi — and there
+the network you trust is doing the work; the flag only makes that a decision somebody
+took rather than the default.
 
-The WebSocket is held to the same origin rule the mutating HTTP routes are, because
-`WebSocket` is exempt from the same-origin policy and sends no preflight — so
-without it, any page you visited could open a socket against a node on your own
-network and drive the recorder. A request carrying no `Origin` at all still passes,
-which is load-bearing rather than lax: every call across the capture-node link is a
-server-side `fetch` and none of them has an origin to declare.
-`node tools/guard-check.mjs` proves both halves.
-
-Two things that paragraph does not cover, and both matter before you point this at a
-network. **The origin rule stops hostile web pages and nothing else** — a request with
-no `Origin` passes on purpose, so curl, a script, or any other machine on the Wi-Fi is
-allowed to do everything. And **comparing `Origin` against `Host` cannot survive DNS
-rebinding**: a name an attacker controls, re-resolved onto the address you listen on,
-makes the two headers match because they are the same name. That was measured reaching
-every mutating route on the *default loopback bind*, up to and including deleting a
-take, so the guard additionally requires that a browser arrived at an address rather
-than a name. If you reach this server through a browser at some other hostname, that
-request is now refused — which is the rule working rather than a bug.
-
-[SECURITY.md](SECURITY.md) has the threat model and exactly what `--host 0.0.0.0`
-exposes.
+Mutating routes and the WebSocket upgrade additionally require a same-origin `Origin`
+and an address rather than a hostname — the socket included, because `WebSocket` is
+exempt from the same-origin policy and sends no preflight, so without the rule any page
+you visited could open one against a node on your own network and drive the recorder. It
+stops hostile pages and it stops nothing else: curl, a script or another machine on the
+Wi-Fi sends no origin and is allowed everything. The hostname half was added because
+comparing `Origin` against `Host` was measured reaching every mutating route on the
+*default loopback bind* through DNS rebinding, up to and including deleting a take, so a
+browser arriving at any other hostname is now refused — which is the rule working rather
+than a bug. `node tools/guard-check.mjs` proves both halves, and
+[SECURITY.md](SECURITY.md) has the threat model and exactly what `--host 0.0.0.0` exposes.
 
 `--replay` is the one to reach for when iterating on shaders: it loops a recorded
 capture so you can work on the visuals with the sensor unplugged. It replays the
-*recorded* arrival spacing, not a uniform 30fps — a live stream runs p50 64ms
-against p90 222ms, and pacing every frame evenly would hand the viewer the one
-cadence that never happens, so smoothing tuned against replay would look right
-there and stutter on the sensor.
+*recorded* arrival spacing rather than a uniform 30fps, because frames do not arrive
+evenly — a live stream on a degraded link runs p50 64ms against p90 222ms, and pacing
+them evenly would hand the viewer the one cadence that never happens, so smoothing
+tuned against replay would look right there and stutter on the sensor.
 
 ## The four surfaces
 
 `npm start` opens a menu onto four things, and most of the program lives in the
-three that are not the viewer. The full design and the reasoning behind it are in
-[`docs/recording-and-nle.md`](docs/recording-and-nle.md), which is the canonical
-document and is long.
+three that are not the viewer. The reasoning behind each one lives in the comments
+of the file that implements it.
 
 **The viewer** is the live cloud — orbit around what the sensor sees right now, with
-the render modes below. This is the part the rest of this README describes.
+the render modes below.
 
 **The recorder** writes takes. It arms, waits for the sensor's hello so the take
 carries the intrinsics it was shot with, and streams frames straight to disk in the
@@ -146,8 +131,35 @@ to prove rather than assert.
 
 **The render queue** takes finished edits and produces video. Jobs are claimed by a
 worker pinned to the renderer class it will actually draw with, frames are pushed to
-ffmpeg over a socket, and the queue survives a restart because it is records on disk
-rather than state in a process.
+ffmpeg over a socket, and the queue survives a restart because it lives as records on
+disk rather than as state in a process.
+
+### Program time is the edit coordinate
+
+Source time is a position inside the capture; program time is a position inside the
+output. Under normal speed they advance together, and under a ramp, a hold or a reverse
+they are genuinely different numbers — so every keyframe has to be stamped in one of
+them, and both readings compile into working software that behaves differently. Every
+track here, including the retime curve itself, is in program time, and rendering is
+forward-only: `programTime = k / outputFps`, evaluate the tracks,
+`sourceMs = retime(programTime)`, binary-search the index.
+
+Three consequences worth knowing before changing anything near it:
+
+- **Export needs no inverse.** Keying in source time would force export to invert the
+  retime curve to learn which source time each output frame wants, which requires the
+  curve to stay monotonic — so a hold or a reverse breaks it outright.
+- **The virtual camera keeps its own pace when the footage slows**, which is the
+  creative point rather than a side effect: the whole idea is re-photographing a take,
+  and a photographer's movement is independent of what they are filming.
+- **`fade` and `wake` stay in source time anyway**, because they drive surface memory,
+  which advances per source frame. Converting them would mean dividing by the local
+  retime slope, which is zero at a hold, so every trail would snap off exactly where a
+  freeze should hold it.
+
+Frame index was rejected as a coordinate for a measured reason: capture frames are not
+evenly spaced in time (the p50/p90 spread above), so constant motion through index space
+is visibly variable motion through real time.
 
 ## Viewer controls
 
@@ -161,13 +173,37 @@ Drag to orbit, scroll to zoom, right-drag to pan, `H` hides the panel.
 | Contour | topographic bands sweeping through depth |
 | Blackwall | crimson containment volume, cyan scan sweep, torn datastream bands |
 
-## Persistence
+Blackwall is a pipeline preset rather than just a shader branch: selecting it switches
+the points to additive blending and drives the whole post chain (scan, rim, bloom,
+trails, RGB split, scanlines, grain, glitch). Leaving it restores a neutral view. Every
+value stays on its own slider afterwards, so the preset is a starting point.
 
-A ray landing on a different surface between frames is a death and a birth. The
-viewer used to teleport the point, which was the loudest artifact in the image —
-3.14% of pixels flip valid/zero every frame pair, 44x more than the snap
-threshold ever touches. A ping-pong float target now remembers where each ray
-used to be and how long ago it swapped, so:
+Two controls decide how much white ends up on the geometry, which is the first
+thing to reach for if the look feels blown out:
+
+- **`scan`** is the plane sweeping through depth. Because it keys off distance
+  rather than screen position, it lands on an angled surface as a diagonal band
+  that drifts across it. Wide and hot, it reads as a light leak dragging over the
+  scene instead of something scanning it, so it is kept narrow and tinted cyan.
+- **`rim`** brightens depth discontinuities. It gives the subject its edge
+  definition, but under additive blending plus bloom it washes broad surfaces
+  toward white — turn it down before turning down bloom.
+
+`turbulence` displaces points with a time-varying noise field. The `near`/`far`
+depth clip is the most useful control for isolating a person from the room.
+`cull speckle` drops points whose neighbours disagree, which cleans up the
+sensor's own edge noise — measured at sigma ~= 3.5 + 1.3*d mm, so 4.6mm at 0.75m
+rising to 10mm at 4.25m. `render %` scales the drawing buffer, and it is the one
+control that reliably buys back frame time on a large display, for the reason the
+[rendering cost](#rendering-cost) table gives.
+
+## Surface memory
+
+A ray landing on a different surface between frames is a death and a birth, and
+teleporting the point was the loudest artifact in the image — 3.14% of pixels flip
+valid/zero every frame pair, 44x more than the snap threshold ever touches. A
+ping-pong float target now remembers where each ray used to be and how long ago it
+swapped, so:
 
 - **`fade`** cross-fades the transition: the new point ramps in over the same
   window the old one thins out. 120ms by default. This is the correctness half.
@@ -185,39 +221,16 @@ leaves the draw range and the original 217088-point draw is restored exactly.
 `__kinect.stateStats()` reads the memory back if a static scene ever starts
 shedding.
 
-Blackwall is a pipeline preset rather than just a shader branch: selecting it
-switches the points to additive blending and drives the whole post chain (scan,
-rim, bloom, trails, RGB split, scanlines, grain, glitch). Leaving it restores a
-neutral view. Every value stays on its own slider afterwards, so the preset is a
-starting point.
-
-Two controls decide how much white ends up on the geometry, which is the first
-thing to reach for if the look feels blown out:
-
-- **`scan`** is the plane sweeping through depth. Because it keys off distance
-  rather than screen position, it lands on an angled surface as a diagonal band
-  that drifts across it. Wide and hot, it reads as a light leak dragging over the
-  scene instead of something scanning it, so it is kept narrow and tinted cyan.
-- **`rim`** brightens depth discontinuities. It gives the subject its edge
-  definition, but under additive blending plus bloom it washes broad surfaces
-  toward white — turn it down before turning down bloom.
-
-`turbulence` displaces points with a time-varying noise field. The `near`/`far`
-depth clip is the most useful control for isolating a person from the room.
-`cull speckle` drops points whose neighbours disagree, which cleans up the
-sensor's own edge noise — measured at sigma ~= 3.5 + 1.3*d mm, so 4.6mm at 0.75m
-rising to 10mm at 4.25m. `render %` scales the drawing buffer and is
-the one control that reliably buys back frame time on a large display.
-
 ## Frame interpolation
 
 The sensor delivers 30fps on a healthy USB topology, and far less on a bad one,
 while the display runs at 120Hz — so the vertex shader blends between the last
-two depth frames rather than holding each one until the next arrives. Two details make this an improvement rather than a regression:
+two depth frames rather than holding each one until the next arrives. Two details
+make this an improvement rather than a regression:
 
 - **Blend time comes from measured arrival spacing**, kept as an EMA, not an
   assumed 30fps. On a healthy link arrivals are a clean 33ms apart and the EMA is
-  nearly a constant; on a degraded one they ran p50 64ms against p90 222ms, and
+  nearly a constant; on a degraded one they run at the p50/p90 spread above, and
   guessing that interval wrong stutters worse than not blending at all. The blend
   clamps at 1.0 so a late frame holds on the newest data rather than
   extrapolating past it.
@@ -225,6 +238,12 @@ two depth frames rather than holding each one until the next arrives. Two detail
   jumps metres between frames, and interpolating that draws a smear through empty
   space for the whole interval. Above the `snap mm` threshold the point jumps to
   the new depth.
+
+Both branches are verified against synthetic depth planes rendered to an offscreen
+target: a 1200 mm jump lands exactly on the new depth rather than the lerp midpoint,
+and a 100 mm drift interpolates to the midpoint. Worth re-checking against a capture
+with real motion — the sample this was written against is nearly static, with only
+0.06% of pixels exceeding the snap threshold between frames.
 
 ## Rendering cost
 
@@ -242,8 +261,8 @@ The point pass does not scale with resolution; the post chain does:
 
 So the 217k points are bound by vertex work and texture fetches, not fill rate —
 resolution is nearly free for them. The post chain costs roughly 0.2 ms per
-megapixel on top, which is what the `render %` slider exists to control on a large
-display. At 120Hz the budget is 8.33 ms per frame.
+megapixel on top, which is what the `render %` slider exists to control. At 120Hz
+the budget is 8.33 ms per frame.
 
 The one optimisation that mattered was returning early on `mm <= 0.0` before the
 four neighbour `texelFetch` calls, which cut the point pass from 1.44 ms to
@@ -255,11 +274,46 @@ separately and made no difference here (0.71 vs 0.74 ms), so it is kept for the
 look rather than for speed. Bloom runs at half the buffer resolution because it is
 the most expensive pass in the chain.
 
-Interpolation's two branches are verified against synthetic depth planes rendered
-to an offscreen target: a 1200 mm jump lands exactly on the new depth rather than
-the lerp midpoint, and a 100 mm drift interpolates to the midpoint. Worth
-re-checking against a capture with real motion — `captures/sample.knct` is nearly
-static, with only 0.06% of pixels exceeding the snap threshold between frames.
+## What did not work, measured rather than assumed
+
+Kept because a negative result nobody wrote down is a negative result somebody
+re-derives. Each of these looked obviously worth doing and none of them survived
+measurement, on a fixed 40–45s window with a 6s warmup discarded.
+
+**Transfer-pool tuning does nothing.** libfreenect2 uses a different isochronous
+pool on macOS (`ir_pkts_per_xfer=128, ir_num_xfers=4`) than elsewhere (`8`/`60`),
+and all four knobs take env overrides. Sweeping them across 13 runs, delivered fps
+spans 1.03fps — while four runs of the *identical* baseline span 0.60fps. Every knob is
+barely above run-to-run noise, and the Linux default was the worst of the set, so
+Apple's choice is not a bug waiting to be fixed.
+
+**`--no-color` does not halve the drop rate.** An older README claim said it did.
+Controlled, drops went slightly *up* (1046/min with colour, 1089 without). The
+mechanism was always weak: SuperSpeed isochronous bandwidth is reserved, so bulk
+colour transfers cannot preempt the depth endpoint's allocation. Colour is
+exonerated.
+
+**The depth solve is not the bottleneck, and a Metal port would not help.** The
+vendored OpenCL kernels benchmark at 0.75–0.85 ms per frame against an 80–90 ms
+frame interval, and the solve already runs on its own `AsyncPacketProcessor`
+thread — so making it faster cannot raise USB intake by one frame. Porting to
+Metal is a contingency against Apple dropping OpenCL, not a performance change.
+
+**What *is* worth watching** is `Registration::apply` at 6.3 ms/frame, because it
+runs serially in the grabber's frame loop and lands directly on capture-to-wire
+latency. The whole serial half of that loop measures 7.1 ms against a 33 ms budget,
+which `grabber --profile` prints per segment. That number is also a correction: it
+was carried as 4.5 ms for a long time, and `--profile` over three runs gives
+6.05 / 6.33 / 6.53 at p50 — the inherited figure was roughly 40% low. Its occlusion
+filter's share has *not* been re-measured on this machine and should not be quoted
+as if it had.
+
+**Compressing the wire is possible but bounded by colour.** 434 KB of the 486 KB
+frame is uncompressed depth, and an early estimate put zstd-over-temporal-deltas
+at 35–45 Mbit/s. Measured, that was optimistic: per-frame zstd manages 1.75x on
+depth, and an explicit u16 temporal delta plus zstd reaches 2.75x on depth and
+2.30x overall — 117 Mbit/s down to 51. Colour compresses at exactly 1.00x, being
+already JPEG, which floors the whole thing.
 
 ## Building the native side
 
@@ -296,13 +350,12 @@ build failure whose message does not mention the prefix.
 On Linux and the Pi, drop both `TurboJPEG_*` flags entirely — pkg-config finds it —
 and swap `-DENABLE_OPENCL=ON -DENABLE_OPENGL=OFF` for `OFF`/`ON`. V3D has OpenGL
 and no OpenCL, and the grabber's `--pipeline` is guarded by whichever the library
-was actually compiled with rather than falling through silently.
+was actually compiled with rather than falling through silently. OpenGL is off on
+macOS deliberately: it only drives libfreenect2's own viewer, which we don't use,
+and it is the most deprecated path on the platform.
 
 `node tools/vendor-check.mjs` proves the source is upstream v0.2.1 plus exactly
 the declared edits, offline, before you trust a build of it.
-
-OpenGL is off on macOS deliberately — it only drives libfreenect2's own viewer,
-which we don't use, and it's the most deprecated path on the platform.
 
 Depth runs through OpenCL on the GPU, and `--pipeline cpu` exists for comparison
 rather than for use. Measured on a healthy link, the two differ by more than 2x:
@@ -312,17 +365,11 @@ rather than for use. Measured on a healthy link, the two differ by more than 2x:
 | OpenCL | 30.0 | 0 |
 | CPU | 14.4 | 638 |
 
-Both runs saw the same two USB subsequence failures, so delivery was identical
-and the solve is the only variable. The CPU path is plain scalar C++ on a single
-`AsyncPacketProcessor` thread — libfreenect2 ships no hand-written SIMD for depth
-on any architecture — which puts it at roughly 70ms per frame against a 33ms
-budget. The OpenCL kernels run the same solve in 0.75–0.85ms, some 80x faster.
-
-That ratio is about the depth solve only. `Registration::apply` costs a further
-6.3ms/frame and runs serially in the grabber's frame loop, so it is the number
-to watch if the depth solve ever stops being the ceiling. The whole serial half
-of that loop measures 7.1ms against a 33ms budget, which `grabber --profile`
-will print per segment.
+Both runs saw the same two USB subsequence failures, so delivery was identical and
+the solve is the only variable. The CPU path is plain scalar C++ on a single
+`AsyncPacketProcessor` thread — libfreenect2 ships no hand-written SIMD for depth on
+any architecture — which puts it at roughly 70ms per frame against a 33ms budget.
+The OpenCL kernels run the same solve in 0.75–0.85ms, some 80x faster.
 
 ## Wire format
 
@@ -339,9 +386,9 @@ type 2  frame  [u32 depthBytes][u32 colorBytes][u64 timestampMs]
                [JPEG of the registered 512x424 colour image]
 ```
 
-Measured over `captures/sample.knct`: 434,176 bytes of depth plus a 49–59KB JPEG,
-486KB per frame all in. At 30fps that is 14.6MB/s, or 117Mbit/s per connected
-browser. Fine over ethernet, right at the practical ceiling of Wi-Fi.
+Measured over a real capture: 434,176 bytes of depth plus a 49–59KB JPEG, 486KB per
+frame all in. At 30fps that is 14.6MB/s, or 117Mbit/s per connected browser. Fine
+over ethernet, right at the practical ceiling of Wi-Fi.
 
 The grabber writes frames to stdout and every log line to stderr — a single stray
 log line on stdout would desync the stream permanently.
@@ -349,50 +396,49 @@ log line on stdout would desync the stream permanently.
 The browser needs `fx/fy/cx/cy` from the hello message to unproject; hardcoded
 intrinsics skew the cloud in a way that is hard to spot and hard to attribute.
 
-## The one edit we carry in libfreenect2
+## The edits we carry in libfreenect2
 
-libfreenect2 assembles each depth frame from ten sub-images and discards the
-whole frame unless all ten arrive. But the depth solve reads only sub-images
-0–8 — nine measurements, three phase steps for each of three modulation
-frequencies. The tenth is commented out in the CPU processor (`// 10th
-measurement`) and never fetched by the OpenCL kernel.
+Two, both in the vendored source itself rather than in a patch file, and both
+pinned by `tools/vendor-check.mjs` so they cannot quietly revert.
 
-So frames were being thrown away over ~300KB of data that nothing reads.
-Measured: 6.8% of all discarded frames were missing nothing but sub-image 9.
+**Accepting depth frames that are missing only the unused 10th sub-image.**
+libfreenect2 discards a frame unless all ten arrive, but the depth solve reads
+only 0–8, so frames were being thrown away over ~300KB that nothing reads. Worth
++12.9% on the degraded topology — 12.82fps to 14.48fps — and inert on a healthy
+one, where nothing is dropped.
 
-Accepting them was worth **+12.9%** on the degraded topology — 12.82fps to
-14.48fps, measured as an interleaved A/B (old, new, old, new, old, new) with
-both paths in one binary behind a temporary switch. Every new-path run beat
-every old-path run.
+**Threading registration's occlusion filter.** On an M2 Max at four threads that is
+worth 2.07ms of registration's 5.76ms p50, but the shipped default is two, because
+the capture node measures four as the worst threaded setting there is. The
+constrained machine decides.
 
-On a healthy topology nothing is dropped, so the patch is inert. It stays as
-insurance: it costs nothing and it keeps a marginal link from throwing away
-frames it did not need to. Depth output is unchanged, because the bytes the patch stops
-waiting for were never an input to the solve.
-
-The interleaving matters: a first pass comparing four runs before against three
-after showed +23%, but drift between measurement sessions accounted for most of
-the difference. Sequential before/after is not trustworthy on this rig.
-
-It lives in the vendored source itself, at
-`third_party/libfreenect2/src/depth_packet_stream_parser.cpp`, and
-`tools/vendor-check.mjs` pins its exact content so it cannot quietly revert.
-It used to be a `.patch` file applied to a gitignored clone, which meant the
-source existed in two representations that could disagree.
-`docs/performance-investigation.md` has the full measurements.
+`third_party/UPSTREAM.md` carries both in full: what changed, why the tree is
+committed rather than cloned, and the interleaved A/B behind each number.
 
 ## Resolved: USB topology was the whole bottleneck
 
 The sensor ran at 12–15fps for a long time, with ~1000 discarded depth frames a
 minute. It was the hub chain, and nothing else. Moving it from three hubs deep on
-a Thunderbolt dock to a single hub on its own controller took it to **a flat
-30.00fps with zero drops** — 1200 frames in 40 seconds, three runs, identical:
+a Thunderbolt dock to a single hub on its own controller took it to a flat
+30.00fps with zero drops, 1200 frames in 40 seconds, three runs, identical:
 
 | topology | fps | drops/min |
 | --- | --- | --- |
 | 3 hubs deep on the dock | 12.82 | ~1000 |
 | ditto, with the sub-9 patch | 14.48 | ~950 |
-| **1 hub, own controller** | **30.00** | **0** |
+| 1 hub, own controller | 30.00 | 0 |
+
+The sensor is greedy in a way that hubs handle badly: the depth endpoint declares a
+33,792-byte isochronous packet per 125µs microframe, which *reserves* 2.16Gbit/s of
+the link whether or not it is used, against 90MB/s of payload actually sent at 30fps
+before colour. Anything sharing that controller competes for what is left, and in the
+old topology the sensor was a *sibling* of the last hub, sharing its parent with the
+network interface. libfreenect2 reports continuous `not all subsequences received`
+there — isochronous packets dropped, so most depth frames arrive incomplete and get
+discarded.
+
+Replay from a file held a steady 29fps throughout all of it, which is what ruled out
+the browser and the GPU path as the bottleneck.
 
 Check the link is actually SuperSpeed before measuring anything — a USB 2.0 cable
 enumerates fine and then fails to stream:
@@ -405,50 +451,6 @@ ioreg -p IOUSB -w0 -l | grep -A 40 "Xbox NUI Sensor@" | grep "Device Speed"
 v2 cannot stream on it — libfreenect2 fails at `failed to claim interface with
 IrInterfaceId(=1)`, which reads like a permissions problem and is not one.
 
-The old topology, kept because it is a good example of what to avoid — the sensor
-was a *sibling* of the last hub, sharing its parent with the network interface:
-
-```
-AppleT8112USBXHCI@00000000
-└─ USB3 HUB@00200000
-   └─ USB3.1 Hub@00240000
-      ├─ NuiSensor Adaptor@00242000 → Xbox NUI Sensor@00242100
-      └─ USB3.0 Hub@00241000
-         └─ USB 10/100/1000 LAN@00241400   (en26, the default route)
-```
-
-libfreenect2 reports continuous `not all subsequences received` — isochronous USB
-packets are being dropped, so most depth frames arrive incomplete and get discarded.
-
-The sensor is greedy in a way that hubs handle badly. Depth arrives as ten raw
-11-bit phase images per frame, `512*424*11/8 * 10` = 2.98MB, so 90MB/s (716Mbit/s)
-of payload at 30fps before colour. Worse, the depth endpoint declares a max iso
-packet size of `0x8400` = 33,792 bytes per 125µs microframe, which *reserves*
-2.16Gbit/s of the link whether or not it is used. Anything sharing that controller
-is competing for what is left.
-
-Measurements:
-
-| Setup | Result |
-| --- | --- |
-| CPU depth, through the dock | 597 USB drops, 206 frames lost to slow depth processing |
-| OpenCL depth, through the dock | ~1000 drops/min, ~0 lost to processing — GPU keeps up fine |
-| Replay from file | a steady 29fps — the browser and GPU path are not the bottleneck |
-
-The Kinect v2 needs sustained isochronous USB3 bandwidth — it reserves
-2.16Gbit/s of the link whether it uses it or not — and it will not tolerate a
-hub chain. One hub is fine; three was not.
-
-Two workarounds that sound plausible and were measured **not** to work, so nobody
-re-derives them:
-
-- **`--no-color` does not halve the drop rate.** An earlier version of this file
-  claimed it did. Under a controlled 40s window drops went slightly *up*
-  (1046 → 1089/min). SuperSpeed isochronous bandwidth is reserved, so the bulk
-  colour stream cannot preempt the depth endpoint's allocation.
-- **Transfer-pool tuning does nothing.** libfreenect2 uses a different iso pool
-  on macOS (`ir_pkts_per_xfer=128, ir_num_xfers=4`) than elsewhere (`8`/`60`),
-  and all four knobs are env-overridable. Across 13 runs sweeping them, delivered
-  fps spanned 1.03fps while four runs of the *identical* baseline spanned
-  0.60fps — the effect of every knob is inside run-to-run noise, and the Linux
-  default was the worst of the set.
+Two workarounds that sound plausible and were measured *not* to work are in
+[What did not work](#what-did-not-work-measured-rather-than-assumed): `--no-color`,
+and tuning the isochronous transfer pool.

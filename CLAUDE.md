@@ -1,15 +1,24 @@
 # Working in this repo
 
-`docs/recording-and-nle.md` is the canonical design and it is long (~1590 lines) with the
-build order at the end. Read it before implementing anything, and re-read it after a
-compaction. Its decisions are settled — if reality contradicts it, **report the
-contradiction rather than silently redesigning**. That has happened, and reporting was the
-right move each time.
+**The shipped program is the design.** There was a long design document and a set of HTML
+studies, and they were deleted when the thing they described was finished and working —
+a drawing of a surface that now exists is a second representation that can only drift out
+of step with the first. `README.md` carries what survived: the architecture, the wire
+format, the four surfaces, the measurements, and the negative results worth not
+re-deriving. The reasoning that used to live in the design doc now lives where it is
+enforced — in the code's comments, which are long on purpose, and in the proof tools.
+
+What has not changed is what to do when reality disagrees with an intention: **report the
+contradiction rather than silently redesigning**. That has happened repeatedly and
+reporting was the right move every time. The difference is only that the intention is now
+read out of the code and its comments rather than out of a document that could quietly
+stop being true.
 
 ## Measurement culture
 
-This repo measures rather than reasons. Several inherited estimates in these docs turned out
-~40% wrong when finally profiled, and the docs record the corrections.
+This repo measures rather than reasons. Several inherited estimates turned out ~40% wrong when
+finally profiled - `Registration::apply` was carried as 4.5ms against a measured 6.3 - and the
+corrections are recorded beside the numbers rather than replacing them silently.
 
 - **"This should be faster" is not evidence.** Measure it.
 - **Interleaved A/B, never sequential before/after.** A sequential comparison on this rig
