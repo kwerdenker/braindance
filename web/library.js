@@ -547,6 +547,29 @@ function menuItemsFor(take) {
   ];
 }
 
+/**
+ * Which control a control is, and how to find that control again once the surface
+ * holding it has been rebuilt.
+ *
+ * **One rule, because there are two places that rebuild a surface and put focus back
+ * on it** - `openViewer` after arrow-browsing, and `run` after an action it held the
+ * surface down for - and two rules that agreed today would be the shape this file
+ * spends its comments refusing. Neither can key on the node: `#vActs` is emptied and
+ * refilled and the ⋯ is cloned, so every control is a new element after a rebuild.
+ * Neither can key on the visible text either: a menu item's label carries the node's
+ * name, so a rebuild that learned a different name would be looking for a control that
+ * no longer answers.
+ *
+ * `data-act` is what they key on instead, because it is already this page's term for
+ * which control a control is - `addButton` sets it on everything it makes and the test
+ * API keys on it. The ⋯ in the viewer is markup in `library.html` rather than an
+ * `addButton`, so it answers to its id, which its clone carries too.
+ */
+const controlKey = (el) => el?.dataset?.act || el?.id || null;
+const findControl = (host, key) => (key && host?.isConnected
+  ? host.querySelector(`[data-act="${CSS.escape(key)}"], #${CSS.escape(key)}`)
+  : null);
+
 /** Closes whichever ⋯ menu is open, if any. */
 function closeMenus(except = null) {
   for (const menu of document.querySelectorAll('.menu:not([hidden])')) {
@@ -956,18 +979,34 @@ async function run(host, message, action, watch = null, { refresh: doRefresh = t
   // take that cannot be opened, both of which the server then refuses. The failure
   // path did it for every action, not only for Reveal.
   const was = buttons.map((b) => b.disabled);
-  // **And which one had focus, because disabling the focused element blurs it.** A
-  // menu item chosen by keyboard closes its menu, which puts focus on the ⋯ toggle -
-  // and this then disables that toggle, so the browser drops focus to the body and the
-  // viewer stops receiving keys. `closeMenus` restoring focus was necessary and not
-  // sufficient: the thing that takes it away is here. Restored after the buttons are,
-  // and only if the node is still in the document and live, since a repaint may have
-  // replaced the whole surface - that case is `openViewer`'s to handle and it does.
-  const hadFocus = buttons.indexOf(document.activeElement);
+  // **And which control had focus, taken as a name here rather than looked for later,
+  // because disabling the focused element blurs it.** A menu item chosen by keyboard
+  // closes its menu, which puts focus on the ⋯ toggle - and this then disables that
+  // toggle, so the browser drops focus to the body and the viewer stops receiving keys.
+  // `closeMenus` restoring focus was necessary and not sufficient: the thing that takes
+  // it away is here.
+  //
+  // It was an index into `buttons`, which could only ever work for the one action that
+  // does not repaint. Every other action awaits `refresh`, which empties `#vActs` and
+  // clones the ⋯, so by the time `restore` runs every node in `buttons` is detached and
+  // the liveness test declined all of them. `openViewer` cannot cover that gap either:
+  // it reads the focus that is live at the time, and this function has already taken it
+  // away, so the rebuild it performs on this path sees the body and can identify
+  // nothing. Hence the rule, which is that **whoever takes focus away is who puts it
+  // back** - and the two never both fire, because `openViewer` places focus only on the
+  // rebuild it was given live focus for, which is arrow-browsing.
+  const wanted = host?.contains(document.activeElement) ? controlKey(document.activeElement) : null;
   const restore = () => {
     buttons.forEach((b, i) => { b.disabled = was[i]; });
-    const back = hadFocus >= 0 ? buttons[hadFocus] : null;
-    if (back?.isConnected && !back.disabled) back.focus();
+    if (!wanted) return;
+    // The control may not have come back under that name: a download that succeeds
+    // turns Download into Open, and a reclaim takes the menu item that started it out
+    // of the menu. Focus falls to the surface's ⋯ then, because what has to hold is
+    // that focus is still inside the surface - a dialog that has dropped focus to the
+    // body stops receiving arrow keys, and browsing dies silently one step later.
+    const back = findControl(host, wanted)
+      ?? (host?.isConnected ? host.querySelector('[aria-haspopup="menu"]') : null);
+    if (back && !back.disabled) back.focus();
   };
   for (const b of buttons) b.disabled = true;
   say(message);
@@ -1247,10 +1286,12 @@ function openViewer(key) {
   // The actions, which are the tile's - one surface should not offer a take a
   // different set of things to do from the other.
   const acts = document.getElementById('vActs');
-  // Read before the rebuild empties everything, and by label because the nodes it
-  // names are about to stop existing.
-  const focusWas = document.activeElement === document.getElementById('vMore') ? 'more'
-    : (acts.contains(document.activeElement) ? document.activeElement.textContent : null);
+  // Read before the rebuild empties everything, and as a name because the nodes it
+  // names are about to stop existing. Null whenever focus is not live inside the
+  // viewer, which is every rebuild `run` asked for: it disables the focused control
+  // first, so there is nothing here to read and putting focus back is its job rather
+  // than this one's. See `controlKey` for why the two share a rule and not a caller.
+  const focusWas = viewer.contains(document.activeElement) ? controlKey(document.activeElement) : null;
   acts.replaceChildren();
   // **The surface an action is running on is this one, so this is what `run` holds
   // down.** It used to hand over the grid tile behind the modal, which disabled
@@ -1308,16 +1349,19 @@ function openViewer(key) {
   // sends them at `document.activeElement` now, and a row asserts focus is still inside
   // the viewer after a move.
   vMore.replaceWith(freshMore);
-  // Where focus was before any of this surface was rebuilt, restored to the control
-  // that replaced it. `vMore` was the case the review named and the one a
-  // keyboard-opened viewer lands on, but `#vActs` is emptied and refilled on every
-  // rebuild too - so a Download or Reclaim started from the keyboard lost focus the
-  // moment it succeeded, for the same reason and with the same result: arrow-browsing
-  // stops reaching the viewer's handler. Restoring by label rather than by node,
-  // because every one of these buttons is a new element.
-  if (focusWas === 'more') freshMore.focus();
-  else if (focusWas) {
-    const same = [...acts.querySelectorAll('.act')].find((b) => b.textContent === focusWas);
+  // Where focus was before this surface was rebuilt, moved to the control that replaced
+  // it. **This covers the rebuild that arrives with focus still live, which is
+  // arrow-browsing, and only that one.** The rebuild an action asks for arrives with
+  // focus already on the body, because `run` disabled the control to hold the surface
+  // down - `focusWas` is null there by construction, and `run` places focus itself. A
+  // second attempt here would be a rediscovery of something already known, and the two
+  // would drift.
+  //
+  // Found by name rather than by node, because every one of these buttons is a new
+  // element by the time this line runs; falling back to the ⋯ when the name did not
+  // come back, since a take that changed state offers a different set of actions.
+  if (focusWas) {
+    const same = findControl(viewer, focusWas);
     (same && !same.disabled ? same : freshMore).focus();
   }
   for (const old of viewer.querySelectorAll('.vhead .menu')) old.remove();

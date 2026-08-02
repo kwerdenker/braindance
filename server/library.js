@@ -830,12 +830,34 @@ export async function renameTake(dir, id, requested, { hash, recordingPath = nul
   try {
     await unlink(from);
   } catch (err) {
-    // The capture now has both names and this could not drop the old one, so the
-    // rename is undone rather than left half-done: a second entry nobody asked for is
-    // worse than a name that did not change.
-    await unlink(target).catch(() => {});
-    if (marksMoved) await unlink(marksPathFor(target)).catch(() => {});
-    throw err;
+    // **ENOENT is not a failure to undo, it is the old name already being gone - and
+    // undoing it here destroys the take.** The link above returning true proves `from`
+    // existed at that moment, so the only way it can be missing now is a concurrent
+    // operation having removed it, and `removeTake` is the one that does: it streams a
+    // sha256 of the whole capture before unlinking, which is a window long enough to
+    // hold this entire rename. Delete unlinks the old name, this unlink reports ENOENT,
+    // and the rollback below then unlinks `target` - which by then is the capture's last
+    // directory entry, so two individually safe actions destroy the footage between
+    // them. The take is already where this rename wanted it, so there is nothing to put
+    // back: the operation has succeeded and says so.
+    //
+    // This is the reading the block above already argues for. Its answer to the process
+    // dying mid-rename is that a capture reachable under two names is "the opposite kind
+    // of failure from the one being closed, and the right way round", and the same
+    // ordering holds here: a delete that returns while the take survives under its new
+    // name is a surprising answer, and a rollback that unlinks the only remaining entry
+    // is unrecoverable. Two concurrent renames of one take land in the same place, both
+    // linking their own target and the loser finding the source gone - which now leaves
+    // two names for one capture that the reconciliation joins by hash, rather than one
+    // rename silently deleting the other's result.
+    if (err.code !== 'ENOENT') {
+      // Every other errno does mean the capture has both names and this could not drop
+      // the old one, so the rename is undone rather than left half-done: a second entry
+      // nobody asked for is worse than a name that did not change.
+      await unlink(target).catch(() => {});
+      if (marksMoved) await unlink(marksPathFor(target)).catch(() => {});
+      throw err;
+    }
   }
   if (marksMoved) await unlink(marksPathFor(from)).catch(() => {});
   // The sidecar validates on the capture's size and modification time, both of which
