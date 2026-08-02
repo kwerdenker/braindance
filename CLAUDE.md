@@ -114,6 +114,9 @@ node tools/editor-check.mjs --mutate plant-unswept-control --no-render # ... and
 node tools/editor-check.mjs --mutate nav-at-the-foot --no-render       # ... and must FAIL
 node tools/editor-check.mjs --mutate orbit-pumps-on-change --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate orbit-arms-into-playback --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate orbit-arms-stale-position --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate release-seeks-past-target --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate pin-keeps-orbit-armed --no-render  # ... and must FAIL
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated

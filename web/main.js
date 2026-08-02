@@ -5202,10 +5202,23 @@ let orbiting = false;
 // accurate seek is deferred until it has, or it would land on a pose the camera is
 // still moving away from and the release would visibly jump.
 let orbitSettling = false;
+// What the orbit arms, and it is a flag rather than a position on purpose. Writing
+// `timeline.programSec` here would be reading the transport from inside its own
+// render: `programSec` is `frame / outputFps`, and both `seekNow` and `draftNow`
+// assign `this.frame` only after their render loop has finished, so a `change` raised
+// by `advanceNavigation` part-way through a seek reads the position the transport is
+// leaving rather than the one it is travelling to. A scrub or an arrow seek started
+// while a release was still settling would arm that stale position behind itself, and
+// the next animation turn would pump it and pull the viewport back off the moment the
+// user had just picked. Naming only *that* a redraw is wanted and letting
+// `pumpParkedDraft` read the position when it pumps - outside every render - makes
+// that staleness unrepresentable, rather than something each navigation entry point
+// added later has to remember to cancel.
+let orbitRedrawWanted = false;
 controls.addEventListener('start', () => { orbiting = true; orbitSettling = false; });
 controls.addEventListener('change', () => {
   if ((!orbiting && !orbitSettling) || !timeline || timeline.playing) return;
-  draftWanted = timeline.programSec;
+  orbitRedrawWanted = true;
 });
 controls.addEventListener('end', () => {
   orbiting = false;
@@ -5225,19 +5238,35 @@ controls.addEventListener('end', () => {
  */
 function pumpParkedDraft() {
   // Dropped rather than left standing, and this is the half that has to be said. An
-  // armed position is only meaningful while something will consume it, and three
-  // states mean nothing will: playing, exporting, and a `drive.pin` that detached the
-  // loop. Leaving it armed used to be harmless because nothing read the flag; now
+  // armed position is only meaningful while something will consume it, and two of the
+  // three states where nothing will are visible from in here: playing and exporting.
+  // Leaving it armed used to be harmless because nothing read the flag; now
   // `settled()` does, so a drag interrupted by hitting play would arm a draft nothing
   // could serve and every tool in the suite would hang on the call it synchronises
   // on. Neither state loses a picture by clearing: `play` seeks when a draft is up,
   // and an export repaints at the end.
+  //
+  // The third state is `drive.pin`, and it cannot be handled here for the reason that
+  // makes it dangerous - it takes the animation loop away, so this function stops
+  // being called at all and no condition written inside it can run. It clears the
+  // same three flags itself, at the moment it detaches.
   if (!timeline || timeline.playing || exporting) {
     draftWanted = null;
+    orbitRedrawWanted = false;
     orbitSettling = false;
     return;
   }
   if (draftWanted !== null) {
+    pumpDraft();
+    return;
+  }
+  // The orbit's own turn, and the position is read here rather than where it was
+  // armed - see `orbitRedrawWanted` above for why that read has to happen outside a
+  // render. A scrub or a seek owns `draftWanted` in the branch above, so this can
+  // never paint over one that is already queued.
+  if (orbitRedrawWanted && !draftBusy) {
+    orbitRedrawWanted = false;
+    draftWanted = timeline.programSec;
     pumpDraft();
     return;
   }
@@ -7468,7 +7497,7 @@ globalThis.__kinect = {
         await new Promise((resolve) => { setTimeout(resolve, 0); });
         await timeline?.idle();
         if (!repaintWanted && !repaintBusy && !repaintScheduled && !timeline?.working
-          && draftWanted === null && !draftBusy && !orbitSettling) return;
+          && draftWanted === null && !draftBusy && !orbitRedrawWanted && !orbitSettling) return;
       }
       throw new Error('the transport never settled');
     },
@@ -7548,6 +7577,18 @@ globalThis.__kinect = {
   drive: {
     /** Detaches the live loop and feeds a run of capture frame payloads instead. */
     pin(buffer) {
+      // Cleared here rather than in `pumpParkedDraft`, and the asymmetry is the whole
+      // reason this is a separate site: the other two states that strand an armed
+      // position leave the loop running, so the loop is able to notice them. This one
+      // takes the loop away, so afterwards there is nothing left to notice anything.
+      // A drag that armed a redraw or entered release settling before a check pinned
+      // its inputs would leave `settled()` running out its two hundred iterations and
+      // throwing - in every tool in the suite, since they all synchronise on it. The
+      // rule this states is for whatever detaches the loop next: taking the clock
+      // away is the last moment anything can drop what the clock was going to serve.
+      draftWanted = null;
+      orbitRedrawWanted = false;
+      orbitSettling = false;
       renderer.setAnimationLoop(null);
       detachStream();
       pinnedPairs = new PinnedPairSource(buffer);

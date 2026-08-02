@@ -52,6 +52,30 @@ readback itself, because a comparison of two identical zero-filled arrays also r
 bit-identity: holding the camera still gives 0 differing bytes and nudging it 0.25m gives
 383,769 at worst 255/255.
 
+### A flag that the right answer and the wrong one both set
+
+Section 9's release row asserted `(await read()).drafted === false` and called that "the
+release still lands the accurate image". It does not. `seekNow` clears `drafted` whatever
+position it was handed, so a release that seeked *accurately to the wrong moment* — the
+mutation is `timeline.programSec + 1` — set the flag to false and passed the row, while the
+viewport visibly sat a second away from where the hand let go. The row read the transport's
+bookkeeping and named the rendered result.
+
+The tell is one word doing two jobs. "Accurate" in the flag means *a seek ran rather than a
+draft*; "accurate" in the claim means *the seek went where it should have*. **Ask which of the
+readings a broken build would also produce** — here, every one of them, because the only thing
+the flag can distinguish is which method ran.
+
+What replaced it compares pictures, and it takes two rows rather than one: a comparison that
+cannot separate two moments would pass on every build there is, so the row that says it *can*
+has to come first. The statistic is forty tile means over the stage rather than one lit count
+over it, because a cloud a second along mostly redistributes its brightness instead of changing
+how much of it there is, and a scalar can come out equal for two genuinely different pictures.
+Measured, one screenshot per arm on an idle machine: the released picture sits 0.24/255 from an
+accurate seek to the same moment on the worst of the forty tiles, where a seek one second away
+sits 4.48 — an eighteen-fold separation, and the claim row asks for a fourfold one.
+`release-seeks-past-target` is the control, and it moves that worst tile to 4.50.
+
 ## Mutation-test the instrument, don't just reason about it
 
 Deliberately break the thing under test, run the check, and confirm it fails on the
