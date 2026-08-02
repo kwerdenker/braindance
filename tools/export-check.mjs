@@ -78,6 +78,17 @@ const flag = (name, fallback = null) => {
 
 const REPO = fileURLToPath(new URL('..', import.meta.url));
 const URL_BASE = flag('--url', 'http://localhost:8080');
+
+// The shipped Blackwall look, read out of the document that ships it. Every arm below
+// that used to say `setMode(4)` needs these twelve values and not just the crimson
+// shading: bloom, trails, rgbSplit, scanlines and grain are the terms the grade rows
+// measure, and a row that selected the reading alone would be measuring all five at
+// zero while reporting on them by name. That is the dead-zone failure this file has
+// already recorded three of, so the look comes from the product rather than from a
+// list typed in here that could quietly stop matching it.
+const BLACKWALL_LOOK = JSON.parse(
+  readFileSync(new URL('../presets-builtin/blackwall.json', import.meta.url), 'utf8'),
+).values;
 // The editor, which `/?take=` opened until the main menu took `/`. Named once
 // because the page is opened at it and the cross-build arm's markup is
 // intercepted by it, and those two have to agree or the interception misses.
@@ -763,7 +774,26 @@ const INSTALL = `(() => {
 const RES_ARM = `async ({ label, look, at, resLook, camera }) => {
   const k = globalThis.__kinect;
   const ex = globalThis.__ex;
-  k.setMode(4);
+  // Blackwall, and the graded look it comes with rather than the reading alone. This
+  // was k.setMode(4), which did both at once: it selected the shading *and* applied
+  // twelve hardcoded values, and the note further down about arms inheriting "whatever
+  // the previous one left" is about exactly that write. The readings are registry
+  // parameters now and the look is a document, so the two halves are spelled out - and
+  // reaching for the reading alone would have left bloom, trails, rgbSplit, scanlines
+  // and grain at zero, which is every term the grade rows below are trying to measure.
+  //
+  // **Each build gets its own Blackwall, and that is the whole point of the branch.**
+  // The obvious version of this merges today's look into every arm and lets the
+  // unknown-name filter drop the readings on the older module. It is wrong, and wrong
+  // in the units this file exists to be careful about: pointSize is pixels at 1080p
+  // here and was pixels at the drawing buffer at the revision the cross-build arm
+  // plays, so 8.1 written into that build is not the same size, it is 1.8 times too
+  // big. Measured - the old arm drew 1.82..3.8px where it should draw 1.02..2.1px, and
+  // the two rebase rows came back at luminance ratio 0.342 against an expected 1.0,
+  // which reads as the entire look having failed to rebase. The build that still has
+  // setMode has its own graded values and must be left to apply them.
+  if (k.setMode) k.setMode(4);
+  else k.params.apply(${JSON.stringify(BLACKWALL_LOOK)});
   // Only what the build in front of us declares. The cross-build arm plays an older
   // module, and today's OFF names parameters that build has never heard of - applying
   // them throws "unknown parameter noise" from inside the registry's own door, which is
@@ -927,6 +957,18 @@ async function openPage(viewport, source = mutatedBody, html = null) {
  * else. Anything that is not that error propagates on the first attempt, because a
  * check that retried real failures would be a check that reports whichever attempt
  * it liked.
+ *
+ * **`Resulting promise was garbage collected` is the same failure wearing a third
+ * name**, and it was added to the pattern on evidence rather than on the family
+ * resemblance. Playwright says it when the execution context is disposed while an
+ * evaluate's promise is still pending, which is the same renderer going away that
+ * produces the other two - and the determinism section is where it lands, because
+ * that is the one place three browsers render a full export back to back. Measured
+ * across three consecutive runs on an otherwise unchanged tree: run 0 failed, then
+ * run 1 failed and run 0 passed, then all 42 assertions passed. A failure that moves
+ * between arms and then stops is not a defect in what is under test, and the row it
+ * reddens - "both determinism runs completed" - is exactly the row that would have
+ * caught a real one.
  */
 async function onFreshPage(what, work, attempts = 3) {
   for (let attempt = 1; ; attempt++) {
@@ -937,7 +979,7 @@ async function onFreshPage(what, work, attempts = 3) {
       return { ok: true, value };
     } catch (err) {
       const message = String(err.message ?? err);
-      if (!/Execution context was destroyed|Target (page|closed)|crashed/i.test(message)) {
+      if (!/Execution context was destroyed|Target (page|closed)|crashed|promise was garbage collected/i.test(message)) {
         return { ok: false, error: message };
       }
       if (attempt >= attempts) return { ok: false, error: `${message} (${attempts} attempts)` };
@@ -1150,7 +1192,7 @@ const PIPELINES = [
   ['nobloom', { look: { bloom: 0 } }],
   ['full', { look: {} }],
   // The world-space terms, last on purpose. An arm applies its look over whatever the
-  // previous one left - `setMode(4)` writes Blackwall and nothing resets the rest - so a
+  // previous one left - the Blackwall look goes on and nothing resets the rest - so a
   // region row placed higher up would leak its geometry into every row below it and
   // move calibrations that were measured without it. At the end it can only inherit,
   // and each of these names every term it depends on rather than relying on that.
@@ -1658,7 +1700,9 @@ console.log('\n[3] an exported frame is the frame the editor showed at that prog
 const EDITOR_ARM = `(async ({ frames, fps }) => {
   const k = globalThis.__kinect;
   const ex = globalThis.__ex;
-  k.setMode(4);
+  // The graded look, not the reading alone - see BLACKWALL_LOOK. setMode(4) used to be
+  // both in one call, and this arm depended on the half it did not name.
+  k.applyPreset(${JSON.stringify(BLACKWALL_LOOK)});
   ex.pinCamera();
   await k.timeline.settled();
   const t = k.timeline.transport();
@@ -1748,7 +1792,8 @@ for (let i = 0; i < 2; i++) {
   const run = await onFreshPage(`determinism run ${i}`, async (page) => {
     await page.evaluate(`(async () => {
       const k = globalThis.__kinect;
-      k.setMode(4);
+      // The graded look, not the reading alone - see BLACKWALL_LOOK.
+      k.applyPreset(${JSON.stringify(BLACKWALL_LOOK)});
       globalThis.__ex.pinCamera();
       await k.timeline.settled();
     })()`);
@@ -1840,7 +1885,8 @@ if (lossless.ok && twice[0]?.ok) {
   const odd = await onFreshPage('the unfamiliar-size export', async (page) => {
     await page.evaluate(`(async () => {
       const k = globalThis.__kinect;
-      k.setMode(4);
+      // The graded look, not the reading alone - see BLACKWALL_LOOK.
+      k.applyPreset(${JSON.stringify(BLACKWALL_LOOK)});
       globalThis.__ex.pinCamera();
       await k.timeline.settled();
     })()`);

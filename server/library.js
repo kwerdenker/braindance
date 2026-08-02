@@ -942,16 +942,61 @@ export async function revealTake(dir, id, { program = null } = {}) {
 // ------------------------------------------------- projects and the preset library
 
 /**
+ * The JSON documents in a directory, by name, sorted - and **the one place that
+ * decides a missing directory may read as an empty one.**
+ *
+ * Only `ENOENT` is an absence. Every other reason `readdir` can fail is a directory
+ * that exists and holds documents this process could not enumerate: `EACCES` on a
+ * volume mounted without search permission, `ENOTDIR` from a path that names a file,
+ * an I/O error. Turned into `[]` those answer 200 with a shorter library and nothing
+ * anywhere to say why - a picker that has lost every fork looks exactly like a fresh
+ * install, and the render queue with an unreadable directory looks exactly like a
+ * queue that has drained.
+ *
+ * Shared rather than copied, because the copy is how this got out of step in the
+ * first place: `readPathFor` was taught the ENOENT rule and `DocumentStore.list` was
+ * not, so a store whose fork lookup refused an unsearchable directory went on
+ * listing past it. One implementation means the *next* caller inherits the rule by
+ * calling this rather than by being remembered.
+ */
+export async function listJsonNames(dir, { required = false, what = 'directory' } = {}) {
+  try {
+    return (await readdir(dir)).filter((f) => f.endsWith('.json')).sort();
+  } catch (err) {
+    // `required` is for a root that was configured on purpose and has no fallback
+    // behind it, where even absence is a broken deployment rather than a fresh one.
+    if (required || err?.code !== 'ENOENT') {
+      throw new Error(`the ${what} ${dir} cannot be read: ${err.message}`);
+    }
+    return [];
+  }
+}
+
+/**
  * A directory of JSON documents with a version on every one. Projects and presets
  * are the same storage problem - small JSON, named by the user, content-hashed so
  * a provenance stamp can point at a revision - so they are one class rather than
  * two that drift.
  */
 export class DocumentStore {
-  constructor(dir, kind, version = PROJECT_VERSION) {
+  /**
+   * `builtinDir` is a second root the store *reads* and never writes, and it is a
+   * search path rather than a second implementation.
+   *
+   * The five looks that ship live there. What makes one root enough machinery is that
+   * a built-in is an ordinary document in the ordinary format - the same
+   * `{ version, values }` a user's own preset is, hashed the same way, applied through
+   * the same door - so the only thing that distinguishes it is which directory it came
+   * out of. Reads prefer the user's copy and fall back to the shipped one; writes only
+   * ever land in the user's directory, which is what makes "saving over a built-in
+   * forks it" fall out of the lookup rather than needing a rule of its own. Removing
+   * the fork brings the shipped look back, which is the same fact read the other way.
+   */
+  constructor(dir, kind, version = PROJECT_VERSION, builtinDir = null) {
     this.dir = dir;
     this.kind = kind;
     this.version = version;
+    this.builtinDir = builtinDir;
     // Every write and every removal this store has ever done. Monotonic, never
     // reset, and the reason it exists is `markWriteCount` above: a handler that
     // writes and puts the bytes back is invisible to a before-and-after reading of
@@ -964,16 +1009,60 @@ export class DocumentStore {
     return join(this.dir, `${name}.json`);
   }
 
-  async list() {
-    let files;
+  /**
+   * Where a name is read from: the user's copy if there is one, the shipped one
+   * otherwise. The name is validated first for the same reason `pathFor` validates
+   * it - a name that cannot name a document must not be joined onto either root.
+   */
+  async readPathFor(name) {
+    const own = this.pathFor(name);
+    if (!this.builtinDir) return { path: own, builtin: false };
     try {
-      files = (await readdir(this.dir)).filter((f) => f.endsWith('.json')).sort();
-    } catch {
-      return [];
+      await stat(own);
+      return { path: own, builtin: false };
+    } catch (err) {
+      // **Only "there is no fork" falls back.** A bare catch here treats every reason
+      // `stat` can fail as an absence, and the ones that are not absences are exactly
+      // the ones where a fork does exist - an unsearchable directory, an I/O error on
+      // the volume the user's library lives on. The read then succeeds against the
+      // shipped document and serves it under the forked name, so somebody gets the
+      // starting point where they saved their grade and nothing anywhere says so.
+      // That is the same failure the fork rule exists to prevent, arriving from the
+      // other direction, and it is worse than an error because it looks like a look.
+      if (err?.code !== 'ENOENT') throw err;
+      return { path: join(this.builtinDir, `${name}.json`), builtin: true };
     }
+  }
+
+  async list() {
+    /**
+     * **The two roots fail differently, and collapsing them into one empty list is how
+     * the five shipped looks can go missing without anybody being told.**
+     *
+     * The user's own directory not existing is the ordinary state of a fresh node: it
+     * is made on the first write and an empty shelf is the honest report until then.
+     * The built-in root is the opposite - it is only ever consulted because somebody
+     * configured it, it is the sole source of the looks that ship, and the picker has
+     * no fallback behind it. A deployment that omitted `presets-builtin/`, or a
+     * `--builtin-presets` pointing one directory too high, used to answer 200 with an
+     * empty library, which reads as "this node has no presets" rather than as "this
+     * node is broken". Required where it is configured, optional where it is the
+     * user's - and optional means *absent*, which is `listJsonNames`'s whole subject.
+     */
+    const own = await listJsonNames(this.dir, { what: `${this.kind} directory` });
+    // The user's own names win, so a fork shadows the look it was forked from rather
+    // than appearing beside it under the same name. Built-ins that have not been forked
+    // come first, because they are the starting points and a library that opened with
+    // somebody's twelve experiments buries them.
+    const owned = new Set(own);
+    const shipped = this.builtinDir
+      ? (await listJsonNames(this.builtinDir, { required: true, what: `shipped ${this.kind} directory` }))
+        .filter((f) => !owned.has(f)).map((f) => [this.builtinDir, f, true])
+      : [];
+    const files = [...shipped, ...own.map((f) => [this.dir, f, false])];
     const out = [];
-    for (const file of files) {
-      const path = join(this.dir, file);
+    for (const [dir, file, builtin] of files) {
+      const path = join(dir, file);
       try {
         const text = await readFile(path, 'utf8');
         const st = await stat(path);
@@ -987,6 +1076,9 @@ export class DocumentStore {
           rev: `sha256:${createHash('sha256').update(text).digest('hex')}`,
           bytes: st.size,
           savedAt: st.mtimeMs,
+          // Which root it came out of, so the picker can say which looks ship and a
+          // check can assert that saving over one forked it rather than overwrote it.
+          builtin,
           body: JSON.parse(text),
         });
       } catch { /* a document this build cannot read is not a reason to hide the rest */ }
@@ -995,8 +1087,9 @@ export class DocumentStore {
   }
 
   async read(name) {
-    const text = await readFile(this.pathFor(name), 'utf8');
-    return { name, rev: `sha256:${createHash('sha256').update(text).digest('hex')}`, body: JSON.parse(text) };
+    const { path, builtin } = await this.readPathFor(name);
+    const text = await readFile(path, 'utf8');
+    return { name, rev: `sha256:${createHash('sha256').update(text).digest('hex')}`, builtin, body: JSON.parse(text) };
   }
 
   /**

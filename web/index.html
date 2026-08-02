@@ -80,16 +80,6 @@
   .row output { flex: 0 0 42px; text-align: right; font-variant-numeric: tabular-nums; }
   input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); height: 3px; }
 
-  .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
-  .modes button {
-    padding: 5px 4px; border: 1px solid var(--line); border-radius: 5px; cursor: pointer;
-    background: transparent; color: var(--dim); font: inherit; font-size: 10px;
-  }
-  .modes button:hover { border-color: rgba(255,255,255,0.28); color: var(--ink); }
-  .modes button[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: #04231f; }
-  .modes button.wide { grid-column: 1 / -1; }
-  .modes button.wide[aria-pressed=true] { background: var(--red); border-color: var(--red); color: #17000a; }
-
   .check { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; cursor: pointer; }
   .check input { accent-color: var(--accent); margin: 0; }
 
@@ -135,11 +125,11 @@
      range; everything below that is the grade, and the grade is the editor's job.
      But a big screen before a take is a good place to find out where a look wants to
      go, so the rest is one button away rather than absent. Hidden with a class and
-     not by leaving the controls out of the document: the registry stamps every
-     slider's bounds at boot and throws if a look parameter has no control, so a
-     surface that built a subset would stop being checkable against the registry at
-     all. Source order matters here - both selectors have the same specificity, and
-     the second is what lets the button win. */
+     not by leaving the controls out of the document: the generator emits a row for
+     every parameter the registry declares and refuses to boot when the count comes
+     out short, so a surface that built a subset would stop being checkable against
+     the registry at all. Source order matters here - both selectors have the same
+     specificity, and the second is what lets the button win. */
   body:not(.editing) .lookgroup { display: none; }
   body.extended .lookgroup { display: block; }
   .check input:disabled { opacity: 0.4; }
@@ -459,41 +449,11 @@
         edited in the world, so there is no slider for it.</div>
     </div>
 
-    <div class="group">
-      <label>Shading</label>
-      <div class="modes" id="modes">
-        <button data-mode="0" aria-pressed="true">RGB</button>
-        <button data-mode="1" aria-pressed="false">Depth</button>
-        <button data-mode="2" aria-pressed="false">Ghost</button>
-        <button data-mode="3" aria-pressed="false">Contour</button>
-        <button data-mode="4" aria-pressed="false" class="wide">BLACKWALL</button>
-      </div>
-    </div>
-
-    <!-- Framing: what you can see, and where you are seeing it from. `sensor view` is
-         navigation and writes nothing - distinct from `look through it` above, which
-         adopts the program camera whose pose is document state. -->
-    <div class="group">
-      <label>Framing (metres)</label>
-      <div class="btnrow">
-        <button id="camSensor" type="button">sensor view</button>
-      </div>
-      <div class="row"><span>near</span><input id="near" type="range"><output></output></div>
-      <div class="row"><span>far</span><input id="far" type="range"><output></output></div>
-      <!-- The other four faces of the box near and far already close in depth. Metres
-           in the sensor frame, so the six together are a cuboid you can shrink onto a
-           subject rather than a rectangle drawn on the picture: a wedge cropped in
-           image space would take the wall behind the subject along with the subject's
-           elbow, because it widens with distance and a room does not. -->
-      <div class="row"><span>left</span><input id="left" type="range"><output></output></div>
-      <div class="row"><span>right</span><input id="right" type="range"><output></output></div>
-      <div class="row"><span>bottom</span><input id="bottom" type="range"><output></output></div>
-      <div class="row"><span>top</span><input id="top" type="range"><output></output></div>
-      <div class="btnrow"><button id="cropReset" type="button">open the box</button></div>
-      <div id="cropNote">The top-down draws this box in x and z. It has no y, so the
-        bottom and top faces do not show there — judge those in the picture.</div>
-      <div id="recRange">preview only</div>
-    </div>
+    <!-- Everything between the camera group and here is generated from the registry at
+         boot: the two Reading groups and the framing box, whose rows, headings and
+         notes are declared in `PANEL_GROUPS` in main.js beside the parameters they are
+         a view on. They are inserted before `#sensorGroup`, which is what puts them
+         where they used to be written. -->
 
     <div class="group" id="sensorGroup">
       <label>Sensor</label>
@@ -518,93 +478,16 @@
       <button id="extended" type="button" aria-pressed="false">extended settings</button>
     </div>
 
-    <!-- Below here is the grade, and every group is one stage of the pipeline rather
-         than one subject heading. The order is the order the image is built in:
-         what the depth signal is conditioned into, where the points are moved to,
-         how they are drawn, what colour they take, what persists between frames, and
-         what the optics do to the result. -->
-    <div class="group lookgroup">
-      <label>Depth conditioning</label>
-      <label class="check"><input id="interpolate" type="checkbox"> interpolate frames</label>
-      <div class="row"><span>snap mm</span><input id="snapDelta" type="range"><output></output></div>
-      <label class="check"><input id="denoise" type="checkbox"> cull speckle</label>
-      <div class="row"><span>edge tol</span><input id="edgeTol" type="range"><output></output></div>
-    </div>
-
-    <div class="group lookgroup">
-      <label>Displacement</label>
-      <div class="row"><span>turbulence</span><input id="noise" type="range"><output></output></div>
-      <div class="row"><span>grain m</span><input id="noiseScale" type="range"><output></output></div>
-      <div class="row"><span>speed</span><input id="noiseSpeed" type="range"><output></output></div>
-      <div class="row"><span>glitch</span><input id="glitch" type="range"><output></output></div>
-    </div>
-
-    <!-- One region in the room, read three ways: it displaces, it scrambles, and it
-         masks. Everything here is metres in the sensor frame, so a look holds at any
-         output size without being referred to 1080p the way the screen-space terms
-         are. Half-extents at zero with a radius is a sphere; raise them and it becomes
-         a rounded box; take two to zero and it is a capsule. No shape selector,
-         because an enum could not keyframe and these sliders can. -->
-    <div class="group lookgroup">
-      <label>Region (metres)</label>
-      <div class="row"><span>x</span><input id="regionX" type="range"><output></output></div>
-      <div class="row"><span>y</span><input id="regionY" type="range"><output></output></div>
-      <div class="row"><span>z</span><input id="regionZ" type="range"><output></output></div>
-      <div class="row"><span>width</span><input id="regionW" type="range"><output></output></div>
-      <div class="row"><span>height</span><input id="regionH" type="range"><output></output></div>
-      <div class="row"><span>depth</span><input id="regionD" type="range"><output></output></div>
-      <div class="row"><span>radius</span><input id="regionRound" type="range"><output></output></div>
-      <div class="row"><span>falloff</span><input id="regionSoft" type="range"><output></output></div>
-      <div class="row"><span>push</span><input id="regionPush" type="range"><output></output></div>
-      <div class="row"><span>scramble</span><input id="regionNoise" type="range"><output></output></div>
-      <div class="row"><span>mask</span><input id="regionMask" type="range"><output></output></div>
-    </div>
-
-    <div class="group lookgroup">
-      <label>Points</label>
-      <div class="row"><span>size</span><input id="pointSize" type="range"><output></output></div>
-      <div class="row"><span>opacity</span><input id="opacity" type="range"><output></output></div>
-      <label class="check"><input id="additive" type="checkbox"> additive glow</label>
-    </div>
-
-    <div class="group lookgroup">
-      <label>Colour &amp; tone</label>
-      <div class="row"><span>brightness</span><input id="exposure" type="range"><output></output></div>
-      <div class="row"><span>thermal</span><input id="thermal" type="range"><output></output></div>
-      <div class="row"><span>edges</span><input id="edges" type="range"><output></output></div>
-      <div class="row"><span>rim</span><input id="rim" type="range"><output></output></div>
-      <div class="row"><span>scan</span><input id="scan" type="range"><output></output></div>
-    </div>
-
-    <!-- The three terms that accumulate across frames, together. Fade and wake are
-         the surface memory and trails is the afterimage buffer; they were two groups
-         apart while doing one thing, which is how a look gets tuned twice. -->
-    <div class="group lookgroup">
-      <label>Time (ms)</label>
-      <div class="row"><span>fade</span><input id="fade" type="range"><output></output></div>
-      <div class="row"><span>wake</span><input id="wake" type="range"><output></output></div>
-      <div class="row"><span>trails</span><input id="trails" type="range"><output></output></div>
-    </div>
-
-    <div class="group lookgroup">
-      <label>Optical</label>
-      <div class="row"><span>bloom</span><input id="bloom" type="range"><output></output></div>
-      <div class="row"><span>rgb split</span><input id="rgbSplit" type="range"><output></output></div>
-      <div class="row"><span>scanlines</span><input id="scanlines" type="range"><output></output></div>
-      <div class="row"><span>grain</span><input id="grain" type="range"><output></output></div>
-    </div>
-
-    <!-- The two parameters that are not part of the clip, in the one group that says
-         so. They are tagged `view` in the registry, they get no keyframe control and
-         no preset carries them - and while they sat inside look groups that read as
-         an oversight rather than as the split it is. -->
-    <div class="group lookgroup">
-      <label>Viewer</label>
-      <label class="check"><input id="spin" type="checkbox"> auto-orbit</label>
-      <div class="row"><span>render %</span><input id="renderScale" type="range"><output></output></div>
-      <div id="viewNote">Not saved with the clip and not exported: these change what you
-        are looking at, not what the frame is.</div>
-    </div>
+    <!-- The grade is generated too, and it lands here: every `lookgroup` is inserted
+         after `#extendedRow`, the button that reveals them, which is the last static
+         node in the scrolling body. The anchor used to be `#navRow` and could not stay
+         one - the nav was pinned into `#panelHead` on the way in, so it now sits above
+         the status line, and a group inserted before it would be built into the head
+         rather than into the column it belongs to.
+         The order down the panel is the order `PANEL_GROUPS` declares, and it is still
+         the order the image is built in: what the depth signal is conditioned into,
+         where the points are moved to, how they are drawn, what colour they take, what
+         persists between frames, and what the optics do to the result. -->
   </div><!-- #panelBody -->
   </div><!-- #panel -->
 
@@ -660,8 +543,16 @@
           <button data-ease="smooth" type="button">smooth</button>
           <button data-ease="hold" type="button">hold</button>
           <button id="tDeleteKey" type="button" title="Delete the selected key (Del)">delete</button></span>
+        <!-- A look is a file, so it leaves and arrives as one. `export` writes the same
+             bytes the store holds and `import` reads them back through the registry's
+             own door, which is what makes a hand-edited file fail at the key that is
+             wrong rather than load as a plausible look. The file input is hidden
+             because a bare one cannot be styled into the strip and its label is the
+             button beside it. A name ending in `·` in the picker is one that ships. -->
         <label class="tchip">look<select id="tPreset"><option value="">—</option></select>
-          <button id="tPresetApply" type="button">apply</button><button id="tPresetSave" type="button">save</button></label>
+          <button id="tPresetApply" type="button">apply</button><button id="tPresetSave" type="button">save</button
+          ><button id="tPresetExport" type="button">export</button><button id="tPresetImport" type="button">import</button>
+          <input id="tPresetFile" type="file" accept=".json,application/json" hidden></label>
         <label class="tchip">project<select id="tProject"><option value="">—</option></select>
           <button id="tProjectOpen" type="button">open</button><button id="tProjectSave" type="button">save</button></label>
         <label class="tchip">deliverable<select id="tDeliverable"><option value="">—</option></select>

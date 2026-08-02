@@ -14,9 +14,15 @@ Counted rather than recalled:
 
 - **Five exit non-zero on a catch and say `NOT CAUGHT` when they miss**: `guard-check`,
   `jobs-check`, `editor-check`, `monitor-check`, `sensor-view-check`.
-- **Two invert it**: `vendor-check` and `registration-check`, where caught is exit **0** with
-  `caught, as required (N assertions fired)` and exit **1** is `NOT CAUGHT`. Anything gating on
-  "non-zero means caught" reads a genuine miss by these two as a catch.
+- **Three invert it**: `vendor-check`, `registration-check` and `registry-check`, where caught
+  is exit **0** with `caught, as required (N assertions fired)` and exit **1** is `NOT CAUGHT`.
+  Anything gating on "non-zero means caught" reads a genuine miss by these three as a catch.
+  `registry-check` joined this group rather than the first deliberately, because it is the only
+  one of the twelve where all three outcomes have their own code: it exits **2** with `DID NOT
+  RUN` on a crash, on the same reading `registration-check` reserves 2 for. That is not
+  hypothetical — two of its four mutations reddened their intended row and *then* died on
+  Playwright's `Target page, context or browser has been closed`, and without the crash handler
+  each would have exited non-zero having asserted the right thing for the wrong reason.
 - **Four have no `NOT CAUGHT` branch at all** and simply exit on their failure count:
   `timeline-check`, `export-check`, `keyframe-check`, `library-check`. **A mutation these four
   fail to catch exits 0**, which reads as a clean pass rather than as the check being blind.
@@ -42,10 +48,11 @@ same way. The convention was reached independently several times and it is one r
 `--mutate <name>` serves a deliberately broken `main.js` into the running server, or for the
 two vendoring tools rebuilds a deliberately broken source tree.
 
-**Eleven tools carry mutations** — editor, export, guard, jobs, keyframe, library, monitor,
-registration, sensor-view, timeline and vendor — and all of them refuse a mutation whose text
-they cannot find exactly once, because a replacement that silently matched nothing would run
-the unmutated page and be recorded as the check having missed a bug it was never shown.
+**Twelve tools carry mutations** — editor, export, guard, jobs, keyframe, library, monitor,
+registration, registry, sensor-view, timeline and vendor — and all of them refuse a mutation
+whose text they cannot find exactly once, because a replacement that silently matched nothing
+would run the unmutated page and be recorded as the check having missed a bug it was never
+shown.
 
 **A mutation is a piece of source text, so a mutation stops matching the moment the code it
 names is edited** — three of `timeline-check`'s nine had to be re-anchored when step 5 rewrote

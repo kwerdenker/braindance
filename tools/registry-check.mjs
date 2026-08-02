@@ -78,6 +78,119 @@ function revBeforeMarker(marker) {
   }
   return `${introduced}^`;
 }
+// ------------------------------------------------------------------ mutations
+//
+// This file had no mutations for its whole life, and the rewrite that put the readings
+// in the registry is what made that untenable. The blend is arithmetic in a shader
+// compiled by a driver, and the two claims this tool now rests on - that a single
+// reading is the identity and that a mix is a ratio - are precisely the kind that pass
+// by construction when the instrument is pointed slightly wrong. A check nobody has
+// broken on purpose is a check nobody knows the sensitivity of.
+//
+// Each entry names the row it must redden, and they are chosen to redden *different*
+// rows: a mutation that fails everything cannot say which claim is load-bearing, which
+// is the same reason `expand-shifts-by-a-block` exists beside `bind-ignores-grid` in
+// monitor-check.
+const MUTATIONS = {
+  // Section 1b, the readRgb row and only that row. Alpha is the asymmetric half of this
+  // blend and the place a rewrite of it actually breaks: three readings multiply
+  // `alpha` and two do not, so the two that do not have to contribute a factor of
+  // exactly 1.0 to the accumulator rather than nothing at all. A build that forgot
+  // renders RGB completely transparent while every other reading stays correct.
+  //
+  // **This replaced a mutation that was caught for the wrong reason**, which is worth
+  // recording because it is the failure this repo keeps producing in the direction that
+  // looks like coverage. `blend-drops-alpha` removed the `* norm` from the alpha line
+  // and claimed the three alpha-writing rows of 1b; measured, it left the whole of 1b
+  // passing and reddened 8b instead - because at a single reading `norm` is 1.0 and
+  // dropping a multiplication by 1.0 is not a mutation at all. It was a second, weaker
+  // spelling of `mix-ignores-normalisation`, indistinguishable from it by the rows that
+  // went red, so it could not tell anybody which claim was load-bearing.
+  'rgb-contributes-no-alpha': {
+    from: '    alphaFactor += readRgb;',
+    to: '    alphaFactor += 0.0;',
+    fails: 'the readRgb row of 1b, alone - the other four readings are untouched',
+  },
+  // Section 1b, the readGhost row and only that row. The three alpha-writing readings
+  // had their expressions moved verbatim out of the old branches, so what is at risk
+  // there is transcription rather than arithmetic - and a check that compared only
+  // colour would pass a build that dropped a term from one of them.
+  'ghost-alpha-term-dropped': {
+    from: '    alphaFactor += (0.25 + 0.75 * rim + 0.25 * lum) * readGhost;',
+    to: '    alphaFactor += (0.25 + 0.75 * rim) * readGhost;',
+    fails: 'the readGhost row of 1b, alone - so 1b compares alpha and not just colour',
+  },
+  // Section 8b: the mix stops being a ratio while every single reading stays exactly
+  // right, because dividing by 1.0 is what dividing by the sum already does when one
+  // weight is 1 and the rest are 0. This is the mutation section 1b cannot see and the
+  // whole reason 8b exists.
+  'mix-ignores-normalisation': {
+    from: 'float norm = readSum > 0.0 ? 1.0 / readSum : 0.0;',
+    to: 'float norm = readSum > 0.0 ? 1.0 : 0.0;',
+    fails: 'the scale-cancels row of 8b, with every row of 1b still passing',
+  },
+  // Section 8's falsification sweep: one weight reaches no pixel. Dropping it from the
+  // restore then changes nothing, so it lands in the no-effect bucket, which is a
+  // failure unless the name is in the declared exceptions - and it is not.
+  // Its reach widened when the readings grew constants of their own, and the record says
+  // so rather than being left at the number it was caught with once: switching the ghost
+  // block off takes `ghostRim` and `ghostFill` into the no-effect bucket with it, because
+  // a per-reading term is only observable through the reading it belongs to. Three names
+  // in that bucket rather than one is the right answer here, and a fourth would mean a
+  // parameter had quietly become reachable only from ghost.
+  'weight-ignored': {
+    from: '  if (readGhost > 0.0) {',
+    to: '  if (false) {',
+    fails: 'readGhost, ghostRim and ghostFill in the drop-one sweep, plus readGhost\'s 1b row',
+  },
+};
+
+const MUTATE = flag('--mutate');
+if (MUTATE && !Object.hasOwn(MUTATIONS, MUTATE)) {
+  throw new Error(`unknown mutation ${JSON.stringify(MUTATE)} - have ${Object.keys(MUTATIONS).join(', ')}`);
+}
+
+// A run that died is not a run that found something, and under `--mutate` the two are
+// indistinguishable to anything reading the exit code: a Playwright page that dropped
+// its execution context exits non-zero with nothing asserted, which reads exactly like
+// a caught mutation. So a crash gets its own verdict and its own code.
+//
+// This is not hypothetical here. `rgb-contributes-no-alpha` and `ghost-alpha-term-dropped`
+// both reddened their intended row and then died on `Target page, context or browser has
+// been closed` on their first run, and both reproduced cleanly on the next - the same
+// several-WebGL-pages flake `export-check` retries by name. Without this handler each of
+// those would have exited non-zero having asserted the right thing for the wrong reason,
+// and the two are indistinguishable from outside. Not retried here, deliberately: a
+// check that retried would have to decide which failures are real, and the verdict line
+// saying DID NOT RUN costs one re-run and no judgement.
+process.on('unhandledRejection', (err) => {
+  console.log(`\n[registry] DID NOT RUN - ${err instanceof Error ? err.message : String(err)}`);
+  if (err instanceof Error && err.stack) console.log(err.stack.split('\n').slice(1, 4).join('\n'));
+  process.exit(2);
+});
+process.on('uncaughtException', (err) => {
+  console.log(`\n[registry] DID NOT RUN - ${err instanceof Error ? err.message : String(err)}`);
+  if (err instanceof Error && err.stack) console.log(err.stack.split('\n').slice(1, 4).join('\n'));
+  process.exit(2);
+});
+
+// The mutated module, served into every page this file opens. Refused when the anchor
+// is not found exactly once, for the reason every other tool here refuses it: a
+// replacement that silently matched nothing would run the unmutated page and be
+// recorded as the check having missed a bug it was never shown. And a mutation is a
+// piece of source text, so it stops matching the moment the code it names is edited -
+// the refusal is what surfaces that rather than a silent pass.
+const mutatedSource = (() => {
+  if (!MUTATE) return null;
+  const js = readFileSync(join(REPO, 'web/main.js'), 'utf8');
+  const { from, to } = MUTATIONS[MUTATE];
+  const hits = js.split(from).length - 1;
+  if (hits !== 1) {
+    throw new Error(`mutation ${MUTATE} matched its anchor ${hits} times, not once: ${JSON.stringify(from)}`);
+  }
+  return { js: js.replace(from, to), html: readFileSync(join(REPO, 'web/index.html'), 'utf8') };
+})();
+
 const HEADED = argv.includes('--headed');
 const SOURCE_FRAMES = Number(flag('--frames', '6'));
 const STRIDE = Number(flag('--stride', '4'));
@@ -191,6 +304,26 @@ const LANDING = {
   regionMask: 'k.uniforms.regionMask.value',
   glitch: 'k.uniforms.glitch.value',
   spin: 'k.controls.autoRotate',
+  // The five readings land on uniforms of their own name, which is the one place in
+  // this table where the parameter and the uniform were deliberately made to match:
+  // the shader reads them as a set, and a landing site that renamed them on the way
+  // through would be a second table to keep in step with the first.
+  readRgb: 'k.uniforms.readRgb.value',
+  readDepth: 'k.uniforms.readDepth.value',
+  readGhost: 'k.uniforms.readGhost.value',
+  readContour: 'k.uniforms.readContour.value',
+  readBlackwall: 'k.uniforms.readBlackwall.value',
+  rgbSaturation: 'k.uniforms.rgbSaturation.value',
+  depthGamma: 'k.uniforms.depthGamma.value',
+  ghostRim: 'k.uniforms.ghostRim.value',
+  ghostFill: 'k.uniforms.ghostFill.value',
+  contourBands: 'k.uniforms.contourBands.value',
+  // The one parameter here that is not a single uniform write: it is half a band's
+  // width, and the shader takes the two edges it makes. Named as the pair rather than
+  // as one of them for the reason the region's components are - an apply that wrote the
+  // same edge twice, or moved one and not the other, reads identically at either one.
+  contourWidth: '[k.uniforms.contourLo.value, k.uniforms.contourHi.value]',
+  blackwallSweep: 'k.uniforms.blackwallSweep.value',
   scan: 'k.uniforms.scanAmount.value',
   rim: 'k.uniforms.rimAmount.value',
   thermal: 'k.uniforms.thermal.value',
@@ -239,6 +372,23 @@ const EXPECT = {
   regionMask: (v) => v,
   glitch: (v) => v,
   spin: (v) => v,
+  readRgb: (v) => v,
+  readDepth: (v) => v,
+  readGhost: (v) => v,
+  readContour: (v) => v,
+  readBlackwall: (v) => v,
+  rgbSaturation: (v) => v,
+  depthGamma: (v) => v,
+  ghostRim: (v) => v,
+  ghostFill: (v) => v,
+  contourBands: (v) => v,
+  // Written as the same double-precision arithmetic the registry does, so the two agree
+  // bit for bit rather than nearly: the whole reason the edges are computed off the GPU
+  // is that a half minus this width is a different float in float32, and a check that
+  // rounded its expectation differently from the build would be measuring its own
+  // arithmetic.
+  contourWidth: (v) => [0.5 - v, 0.5 + v],
+  blackwallSweep: (v) => v,
   scan: (v) => v,
   rim: (v) => v,
   thermal: (v) => v,
@@ -318,6 +468,37 @@ const SCRAMBLE = {
   regionMask: 0.4,
   glitch: 0.31,
   spin: true,
+  // All five readings live at once, which is what keeps every per-reading term in the
+  // shader reachable from the one sweep this file runs. They are deliberately unequal:
+  // an even split would make the normalisation divide by exactly 1.0 whichever way the
+  // weights were read, so a build that summed them wrong would still agree here.
+  readRgb: 0.4,
+  readDepth: 0.3,
+  readGhost: 0.2,
+  readContour: 0.15,
+  readBlackwall: 0.6,
+  // The seven per-reading constants, every one off its default - and for the first two
+  // that is the whole point rather than a habit. Their defaults are the identity: a
+  // saturation of 1 and a gamma of 1 do nothing by construction, so leaving either at
+  // its default would have the drop-one sweep below record it as a parameter that
+  // cannot touch a pixel, which is true of the value and false of the parameter.
+  //
+  // `rgbSaturation` is also the one parameter in this table that needs an input the
+  // pinned fixture does not carry. The fixture drops the colour block, so `hasColor` is
+  // 0 and every point draws a flat grey - and saturation of grey is the identity at
+  // every value, which is a dead zone rather than a value that does nothing. The sweep
+  // plants a colour image for exactly that reason; see `plantColor` below.
+  //
+  // `blackwallSweep` is a speed, so it moves nothing in a frame at program time 0 and
+  // the run below deliberately spans a second: at 0.9 against its default the scan plane
+  // has travelled 0.62 of a period by the end of it.
+  rgbSaturation: 1.6,
+  depthGamma: 0.6,
+  ghostRim: 1.4,
+  ghostFill: 0.7,
+  contourBands: 27,
+  contourWidth: 0.25,
+  blackwallSweep: 0.9,
   scan: 0.72,
   rim: 0.28,
   // Order matters here and nowhere else in this file: the comparison against the
@@ -389,11 +570,17 @@ const readLanding = (page) => page.evaluate(landingReader);
 // Everything the two arms of the before/after comparison can both answer. No
 // `k.params` here: the committed page has none, and a snapshot that only the new
 // page could produce would compare nothing.
+// `mode` and the `#modes` pressed states used to be in here, and they cannot be: the
+// integer uniform and the five buttons exist on one side of this comparison only, so
+// the field would read `0 -> undefined` at every stage and the arm would fail on the
+// change it is meant to be measuring. What replaced the mode is five ordinary look
+// parameters, which arrive in `dom` and `readouts` with every other slider - and the
+// claim that each of them renders what its mode rendered is not a state comparison at
+// all. It is section 1b, which hashes the framebuffer.
 const snapshotWith = (reader) => `(() => {
   const k = globalThis.__kinect;
   return {
     landing: ${reader},
-    mode: k.uniforms.mode.value,
     fog: k.scene.fog.color.getHex(),
     dom: Object.fromEntries([...document.querySelectorAll('#panel input')]
       .map((el) => [el.id, el.type === 'checkbox' ? el.checked : el.value])),
@@ -410,7 +597,6 @@ const snapshotWith = (reader) => `(() => {
       .filter((r) => r.querySelector('input')?.type === 'range')
       .map((r) => [r.querySelector('input').id,
         r.querySelector('output')?.textContent ?? '(no output element)'])),
-    pressed: [...document.querySelectorAll('#modes button')].map((b) => b.getAttribute('aria-pressed')),
   };
 })()`;
 
@@ -425,7 +611,11 @@ const context = await browser.newContext({ viewport: VIEW, deviceScaleFactor: 1 
 
 const fixture = buildFixture(CAPTURE);
 
-async function openPage({ source = null, pin = false } = {}) {
+// A page with no source of its own is this tree's page, which under `--mutate` means
+// the mutated one. The arms that name a source are the historical revisions, and they
+// are deliberately left alone: mutating the thing a comparison is measured *against*
+// would move both sides and prove nothing.
+async function openPage({ source = mutatedSource, pin = false } = {}) {
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (err) => errors.push(String(err)));
@@ -500,7 +690,7 @@ async function openPage({ source = null, pin = false } = {}) {
 
 // =============================================================== 1. before/after
 
-console.log(`[registry] nothing moved: boot state and both mode presets against ${BEFORE_REV}`);
+console.log(`[registry] nothing moved: boot state against ${BEFORE_REV}`);
 
 const beforeSource = {
   js: execFileSync('git', ['show', `${BEFORE_REV}:web/main.js`], { cwd: REPO, encoding: 'utf8', maxBuffer: 1 << 26 }),
@@ -513,10 +703,17 @@ if (beforeSource.js.includes('const PARAMS')) {
   throw new Error(`${BEFORE_REV}:web/main.js already contains the registry - pass an earlier rev with --before`);
 }
 
-// Each mode, then Blackwall and out of it twice, because the interesting case is
-// the transition rather than the state: entering writes twelve values and leaving
-// writes them back.
-const MODE_WALK = [4, 0, 1, 2, 3, 4, 2];
+// This used to walk every mode, then Blackwall and out of it twice, because the
+// interesting case was the transition rather than the state: entering wrote twelve
+// look values and leaving wrote them back. There is no such transition to walk any
+// more, and its absence is the change rather than a gap in the check - selecting a
+// reading writes the reading and nothing else, which is what "look and shading are
+// one thing" cost the mode. A walk asserting that entering Blackwall still rewrites
+// twelve sliders would be asserting the weld that was removed.
+//
+// So this arm compares boot state alone, and the claim it used to make about the
+// readings is made properly one section down: not "the sliders agree" but "the
+// framebuffer is identical", which is the equality the old walk was standing in for.
 
 // The program pose at a few positions, read in the same task as the render so the
 // live loop cannot re-render at 0 underneath the reading. Nothing draws the
@@ -547,21 +744,16 @@ const readPoses = `(() => {
   return out;
 })()`;
 
-async function walkModes(opts, reader = landingReader) {
+async function bootState(opts, reader = landingReader) {
   const { page, errors } = await openPage(opts);
-  const snapshot = snapshotWith(reader);
-  const out = { boot: await page.evaluate(snapshot) };
-  for (const [i, mode] of MODE_WALK.entries()) {
-    await page.click(`#modes button[data-mode="${mode}"]`);
-    out[`${i}:mode${mode}`] = await page.evaluate(snapshot);
-  }
+  const out = { boot: await page.evaluate(snapshotWith(reader)) };
   const poses = await page.evaluate(readPoses);
   return { out, poses, errors, page };
 }
 
-const beforeArm = await walkModes({ source: beforeSource }, tolerantLandingReader);
+const beforeArm = await bootState({ source: beforeSource }, tolerantLandingReader);
 await beforeArm.page.close();
-const afterArm = await walkModes({});
+const afterArm = await bootState({});
 await afterArm.page.close();
 
 // The camera is left out of the landing comparison, alone among the twenty-five,
@@ -621,6 +813,26 @@ const GOLDEN_ABSENT = new Set([
   // reason as the rest: the earlier revision has no such control, so there is nothing
   // to hold them to here. What they *are* held to is `monitor-check`.
   'monDivisor', 'monStride', 'monAcceptCost',
+  // The five readings, which are the parameters this comparison exists to be honest
+  // about. At that revision the reading was an integer uniform behind five buttons,
+  // so there is no earlier slider, readout or value to hold these to - the `camera`
+  // case, not the `pointSize` case. What makes the excuse safe rather than convenient
+  // is that their defaults are the boot mode: `readRgb` at 1 with the other four at 0
+  // is what `mode == 0` was, so a build with them renders exactly what a build without
+  // them rendered, which is precisely the equality the rest of this arm is measuring.
+  // That the equality actually holds is not taken on trust here either - section 1b
+  // hashes the framebuffer of each reading against the mode it replaced.
+  'readRgb', 'readDepth', 'readGhost', 'readContour', 'readBlackwall',
+  // The seven constants each reading is made of, excused on exactly the terms above and
+  // for a reason that is the same sentence twice over. At the pinned revision every one
+  // of these was a literal inside a mode branch, so there is no earlier slider, readout
+  // or value to hold them to - and each one defaults to the literal it replaced, so a
+  // build with them renders precisely what a build without them rendered. That is the
+  // equality this arm measures, and section 1b is where it stops being an excuse and
+  // becomes a framebuffer hash: every one of these lives inside a reading, so a default
+  // that drifted moves that reading's image and fails there by name.
+  'rgbSaturation', 'depthGamma', 'ghostRim', 'ghostFill',
+  'contourBands', 'contourWidth', 'blackwallSweep',
 ]);
 const absentBefore = (name, before) => GOLDEN_ABSENT.has(name) && before === undefined;
 
@@ -698,22 +910,135 @@ check(eq(afterArm.poses['0.7'], afterArm.poses['1.9']),
 console.log(`  pose at 0.7s ${show(afterArm.poses['0.7'].position.map((x) => +x.toFixed(6)))} `
   + `q ${show(afterArm.poses['0.7'].quaternion.map((x) => +x.toFixed(6)))}`);
 
-{
-  const blackwall = afterArm.out['0:mode4'];
-  const neutral = afterArm.out['1:mode0'];
-  console.log('\n  Blackwall writes: '
-    + Object.entries(blackwall.dom)
-      .filter(([id, v]) => neutral.dom[id] !== v)
-      .map(([id, v]) => `${id}=${v}`).join(' '));
-  console.log('  neutral restores: '
-    + Object.entries(neutral.dom)
-      .filter(([id, v]) => blackwall.dom[id] !== v)
-      .map(([id, v]) => `${id}=${v}`).join(' '));
-}
-
 if (beforeArm.errors.length || afterArm.errors.length) {
   console.log(`  page errors: ${[...beforeArm.errors, ...afterArm.errors].join(' | ')}`);
   failures++;
+}
+
+// ================================ 1b. each reading renders what its mode rendered
+
+// The claim the whole look/shading merge rests on, and the only one in this file that
+// compares two revisions by their pixels rather than by their state.
+//
+// Dissolving `mode` into five weights rewrote the arithmetic every fragment goes
+// through: what was one branch of a five-way `if` is now a weighted sum divided by
+// the sum of the weights. The intent is that a single reading at 1.0 is arithmetically
+// the identity - `x * 1.0 / 1.0` - so every look ever authored, every saved project and
+// every preset renders the pixels it always did. That is an argument, and an argument
+// about floating point in a shader compiled by a driver is worth exactly nothing until
+// it is hashed.
+//
+// **Why this is not section 1 with another field bolted on.** Section 1 compares
+// uniforms, slider values and readouts. It cannot answer this: the mode and the five
+// weights exist on opposite sides of the comparison, so there is no field the two arms
+// could both fill in. And its before-arm is deliberately a *pre-registry* revision -
+// `--before` refuses any rev containing `const PARAMS` - which is a page with no
+// `k.drive` and therefore no way to read a pixel at all.
+//
+// So this arm takes its own revision. `--against` wants the commit before the readings
+// landed, which is a rev that has both the registry and the drive harness: exactly the
+// rev `--before` will not accept. Two flags because they are two different questions.
+// Before the readings are committed there is no commit introducing them, so the
+// marker resolves to nothing and HEAD is the correct answer - that is the whole of
+// the working-tree case, where the change under test is exactly what is uncommitted.
+// Falling back is only safe because of the refusal below: if this ever silently
+// resolved to a rev that already has the readings, the arm would compare the tree
+// against itself and print five matching hashes as a pass.
+const AGAINST_REV = flag('--against')
+  ?? (execFileSync('git', ['log', '-S', 'readBlackwall', '--format=%H', '--', 'web/main.js'],
+    { cwd: REPO, encoding: 'utf8', maxBuffer: 1 << 26 }).trim()
+    ? revBeforeMarker('readBlackwall')
+    : 'HEAD');
+
+// Each reading, and the mode it was. The old build selects by writing the integer
+// uniform directly rather than by clicking its button, and that is the point of the
+// arm rather than a shortcut: `setMode(4)` applied a hardcoded twelve-value preset on
+// the way past, so a click would be comparing the reading *plus a look* against the
+// reading alone, and the whole reason this change exists is that those were welded.
+// What is under test is the reading.
+const READING_WAS = { readRgb: 0, readDepth: 1, readGhost: 2, readContour: 3, readBlackwall: 4 };
+
+console.log(`\n[registry] each reading renders what its mode rendered, at ${AGAINST_REV}`);
+
+{
+  const againstSource = {
+    js: execFileSync('git', ['show', `${AGAINST_REV}:web/main.js`], { cwd: REPO, encoding: 'utf8', maxBuffer: 1 << 26 }),
+    html: execFileSync('git', ['show', `${AGAINST_REV}:web/index.html`], { cwd: REPO, encoding: 'utf8', maxBuffer: 1 << 26 }),
+  };
+  // The mirror of section 1's refusal, and it runs the other way. That one refuses a rev
+  // that already has the registry; this one refuses a rev that already has the readings,
+  // because serving today's page into both arms would print five matching hashes under a
+  // heading claiming they came from different code - which is the failure mode this file
+  // has recorded happening once already.
+  if (againstSource.js.includes('readBlackwall')) {
+    throw new Error(`${AGAINST_REV}:web/main.js already contains the readings - pass an earlier rev with --against`);
+  }
+  if (!againstSource.js.includes('uniforms.mode.value')) {
+    throw new Error(`${AGAINST_REV}:web/main.js has no mode uniform to compare against`);
+  }
+
+  // Both arms are pinned to the same frames and the same camera, so the only thing
+  // that differs between them is the shader. `params.reset()` first on each, because a
+  // reading has to be measured against the same defaults the other arm booted with.
+  const hashesFor = async (opts, select) => {
+    const { page: p, errors } = await openPage({ ...opts, pin: true });
+    await p.evaluate(async () => {
+      const buffer = await (await fetch('/__pinned.bin')).arrayBuffer();
+      globalThis.__kinect.drive.pin(buffer);
+    });
+    const at = await p.evaluate(`(() => {
+      const times = globalThis.__kinect.drive.times();
+      return times.slice(0, ${SOURCE_FRAMES});
+    })()`);
+    const out = {};
+    for (const [reading, mode] of Object.entries(READING_WAS)) {
+      out[reading] = await p.evaluate(`(async () => {
+        ${PAGE_HELPERS}
+        k.params.reset();
+        ${select}
+        k.drive.reset();
+        pinCamera(k.freeCamera);
+        const hashes = [];
+        for (const t of ${JSON.stringify(at)}) {
+          k.drive.stepTo(t);
+          hashes.push(await sha256(k.drive.readPixels()));
+        }
+        return hashes;
+      })()`.replace(/\$MODE/g, String(mode)).replace(/\$READING/g, JSON.stringify(reading)));
+    }
+    await p.close();
+    return { out, errors };
+  };
+
+  const oldArm = await hashesFor({ source: againstSource }, 'k.uniforms.mode.value = $MODE;');
+  const newArm = await hashesFor({}, 'k.readings().forEach((n) => k.params.set(n, 0)); k.params.set($READING, 1);');
+
+  for (const [reading, mode] of Object.entries(READING_WAS)) {
+    const a = oldArm.out[reading];
+    const b = newArm.out[reading];
+    const first = a.findIndex((h, i) => h !== b[i]);
+    check(eq(a, b),
+      `${reading.padEnd(13)} at 1.0 is bit-identical to mode ${mode} at ${AGAINST_REV}`,
+      first < 0 ? `${a.length} frames` : `frame ${first}: ${a[first].slice(0, 12)} vs ${b[first].slice(0, 12)}`);
+  }
+
+  // The falsification control, and it is the reason the five rows above mean anything.
+  // Five hashes agreeing across two revisions would agree just as well if the pinned
+  // run rendered nothing at all, or rendered the same thing whatever was selected - a
+  // black frame is bit-identical to a black frame. So the readings have to differ from
+  // *each other*: five distinct images on each side, which is what makes "identical
+  // across the revisions" a statement about the readings rather than about the harness.
+  for (const [armName, arm] of [['old', oldArm], ['new', newArm]]) {
+    const distinct = new Set(Object.values(arm.out).map((hs) => hs.join('|'))).size;
+    check(distinct === Object.keys(READING_WAS).length,
+      `and the ${armName} arm's five readings are five different images`,
+      `${distinct} distinct of ${Object.keys(READING_WAS).length}`);
+  }
+
+  if (oldArm.errors.length || newArm.errors.length) {
+    console.log(`  page errors: ${[...oldArm.errors, ...newArm.errors].join(' | ')}`);
+    failures++;
+  }
 }
 
 // ============================================================ the working page
@@ -783,19 +1108,28 @@ console.log('\n[registry] the declaration');
   console.log(`        composition ${tags.composition.length}: ${tags.composition.join(' ')}`);
   console.log(`        view ${tags.view.length}: ${tags.view.join(' ')}`);
 
-  // The mode is a property of the clip and must not be a parameter with an
-  // interpolation kind: a mode key would rewrite twelve other tracks at the
-  // instant it fired.
-  check(!('mode' in declared), 'the mode is not a registry parameter');
-  const modeIsClipState = await page.evaluate(`(() => {
-    const k = globalThis.__kinect;
-    const before = k.mode();
-    k.setMode(3);
-    const after = [k.mode(), k.uniforms.mode.value];
-    k.setMode(before);
-    return after;
-  })()`);
-  check(eq(modeIsClipState, [3, 3]), 'the mode is clip state, written by a user action', show(modeIsClipState));
+  // This row used to assert the opposite: `!('mode' in declared)`, on the reasoning
+  // that a mode key would rewrite twelve other tracks at the instant it fired. That
+  // reasoning was about the twelve values `setMode` bundled in, not about the reading,
+  // and unbundling it removed both the bundle and the objection. The row is inverted
+  // rather than deleted because the property is still worth pinning down - it is just
+  // the other property now, and a build that reintroduced an integer mode beside the
+  // weights would fail here.
+  check(!('mode' in declared), 'there is no mode parameter left to keyframe against');
+  const readings = await page.evaluate('globalThis.__kinect.readings()');
+  const missing = readings.filter((n) => !(n in declared));
+  check(readings.length > 0 && missing.length === 0,
+    'every reading is a registry parameter',
+    missing.length ? `not declared: ${missing.join(', ')}` : readings.join(' '));
+  // Scalar and look, both load-bearing and for different reasons. `step` would hold
+  // until the next key, which is a reading that snaps rather than dissolves - the one
+  // capability this change exists to add. And `view` would keep them out of a preset
+  // and out of the undo snapshot, which is where the mode effectively sat.
+  const wrongSpec = readings.filter((n) => declared[n].kind !== 'scalar' || declared[n].tag !== 'look');
+  check(wrongSpec.length === 0,
+    'and each one is a look-tagged scalar, so it presets and it dissolves',
+    wrongSpec.length ? wrongSpec.map((n) => `${n} kind=${declared[n].kind} tag=${declared[n].tag}`).join('; ')
+      : `${readings.length} readings`);
 }
 
 // ================================== 2b. the write path refuses what it cannot hold
@@ -897,17 +1231,40 @@ console.log('\n[registry] a serialised project is document state, never view sta
 
 console.log('\n[registry] the panel carries no parameter data of its own');
 {
+  // The strong form of this row, and it had to become the strong form: the panel's rows
+  // are generated from the registry now, so no registry-owned input appears in the
+  // markup at all - and the old row, which kept the inputs whose id is a parameter and
+  // asserted none of them carried a range, passed on an empty set having examined
+  // nothing. A row that cannot fail is worse than no row, because it reads as coverage.
+  //
+  // So the claim is the one generation actually makes, with the count printed beside it
+  // and a floor under the scan for the same reason `syntax-check` refuses to pass on
+  // finding no files: a regex that stopped matching `<input` would otherwise report a
+  // clean panel about nothing. What the markup still legitimately carries is the sensor
+  // and monitor controls, the retime slider, the export name and the preset file picker -
+  // eight, none of them registry-owned - and the floor sits well under that deliberately,
+  // because this row is about the scan working rather than about the number. A gate set at
+  // exactly today's count would fail the next honest markup edit, which is the zero-margin
+  // threshold this repo has already been bitten by once.
+  //
+  // The second clause is the sharper half. `id="..."` is matched with double quotes, so an
+  // input written with single quotes would parse as having no id, drop out of the owned
+  // comparison, and be reported as a clean panel - the regex failing in precisely the
+  // direction that looks like a pass. Every input tag has to yield an id or the scan is
+  // not reading what it claims to read.
   const html = readFileSync(join(REPO, 'web/index.html'), 'utf8');
   const owned = new Set(Object.keys(declared));
-  const offenders = [];
-  for (const tag of html.match(/<input[^>]*>/g) ?? []) {
-    const id = tag.match(/id="([^"]+)"/)?.[1];
-    if (!id || !owned.has(id)) continue;
-    const carried = ['value', 'min', 'max', 'step'].filter((a) => tag.includes(`${a}="`));
-    if (/\schecked[\s>]/.test(tag)) carried.push('checked');
-    if (carried.length) offenders.push(`${id}[${carried.join(',')}]`);
-  }
-  check(offenders.length === 0, 'no registry-owned input declares a range or a default in the markup', offenders.join(' '));
+  const tags = html.match(/<input[^>]*>/g) ?? [];
+  const ids = tags.map((tag) => tag.match(/id="([^"]+)"/)?.[1]).filter(Boolean);
+  const MARKUP_INPUT_FLOOR = 4;
+  check(tags.length >= MARKUP_INPUT_FLOOR && ids.length === tags.length,
+    `the markup scan found the inputs it is supposed to read (${tags.length} of at least ${MARKUP_INPUT_FLOOR}, all with ids)`,
+    `${ids.join(' ')}`);
+  const inMarkup = ids.filter((id) => owned.has(id));
+  check(inMarkup.length === 0,
+    `no registry-owned input is written in the markup at all - every one of the ${owned.size} `
+    + 'is generated from the registry, so there is no second copy of a range to drift',
+    inMarkup.join(' '));
 
   const stamped = await page.evaluate(`(() => {
     const k = globalThis.__kinect;
@@ -1120,15 +1477,21 @@ console.log('\n[registry] the panel is a view, in both directions');
 
 console.log('\n[registry] a preset can only be applied by a user action');
 {
+  // A look to apply, written here rather than taken from the page. It used to be
+  // `k.presets.BLACKWALL`, a hardcoded constant the module exported for this and for
+  // `setMode` to bundle in - and the bundling is what the readings replaced, so the
+  // constant went with it. A preset is a document now, and what this section is about
+  // is the guard rather than any particular look, so two values are enough.
+  const A_LOOK = { bloom: 0.5, trails: 0.5 };
+
   const guard = await page.evaluate(`(() => {
     const k = globalThis.__kinect;
     k.params.reset();
-    k.setMode(0);
 
     // Outside evaluation it has to work, or the check below would pass on a
     // preset path that was simply broken.
     let outside = 'applied';
-    try { k.applyPreset(k.presets.BLACKWALL); } catch (e) { outside = String(e); }
+    try { k.applyPreset(${JSON.stringify(A_LOOK)}); } catch (e) { outside = String(e); }
     const applied = k.params.get('bloom');
     k.params.reset();
 
@@ -1138,28 +1501,35 @@ console.log('\n[registry] a preset can only be applied by a user action');
     const seen = {};
     k.scene.onBeforeRender = () => {
       k.scene.onBeforeRender = () => {};
-      try { k.applyPreset(k.presets.BLACKWALL); seen.preset = 'applied'; }
+      try { k.applyPreset(${JSON.stringify(A_LOOK)}); seen.preset = 'applied'; }
       catch (e) { seen.preset = 'refused'; }
-      try { k.setMode(4); seen.mode = 'applied'; }
-      catch (e) { seen.mode = 'refused'; }
       // An ordinary parameter write must stay legal: that is exactly what step 5's
       // tracks do every frame, and what the camera already does.
       try { k.params.set('bloom', 0.25); seen.param = 'written'; }
       catch (e) { seen.param = String(e); }
+      // And a reading is one of those writes now. This row used to be its opposite -
+      // "selecting a mode during evaluation is refused" - and the inversion is the
+      // capability rather than a relaxed guard: a mode was refused *because* selecting
+      // one applied a twelve-value preset behind it, so it could never be a track. A
+      // reading writes one number, which is what a track does every frame, so refusing
+      // it here would be refusing the dissolve this change exists to allow.
+      try { k.params.set('readBlackwall', 1); seen.reading = 'written'; }
+      catch (e) { seen.reading = String(e); }
     };
     k.drive.stepTo(0);
     k.scene.onBeforeRender = () => {};
 
-    return { outside, applied, seen, bloomAfter: k.params.get('bloom'), modeAfter: k.mode() };
+    return { outside, applied, seen, bloomAfter: k.params.get('bloom'), readingAfter: k.params.get('readBlackwall') };
   })()`);
 
   check(guard.outside === 'applied' && guard.applied === 0.5,
     'applying a preset outside evaluation writes it', `bloom=${guard.applied}`);
   check(guard.seen.preset === 'refused', 'applying a preset during evaluation is refused', show(guard.seen.preset));
-  check(guard.seen.mode === 'refused', 'selecting a mode during evaluation is refused', show(guard.seen.mode));
   check(guard.seen.param === 'written' && guard.bloomAfter === 0.25,
     'an ordinary parameter write during evaluation still works', `bloom=${guard.bloomAfter}`);
-  check(guard.modeAfter === 0, 'the refused mode change left the clip alone', `mode=${guard.modeAfter}`);
+  check(guard.seen.reading === 'written' && guard.readingAfter === 1,
+    'and a reading is an ordinary write, so a track can dissolve one under the playhead',
+    `readBlackwall=${guard.readingAfter}`);
 
   // What a preset carries is the look tag and nothing else, so the tag has to be
   // the thing that selects it rather than a label beside a hand-written list.
@@ -1252,15 +1622,49 @@ console.log('\n[registry] the camera pose goes in through the registry, not arou
 
 console.log('\n[registry] serialise, restore, and the image comes back byte for byte');
 
-// Blackwall, selected the way a user selects it, because scan and rim only reach
-// the shader in that branch and a sweep run in RGB would find them inert. The
-// parameter values on top of it are the scrambled set, so nothing here depends on
-// the preset's own numbers.
-await page.click('#modes button[data-mode="4"]');
+// The reading the sweep runs in is now part of the scrambled set rather than a click
+// that precedes it, and that is a repair rather than a translation. This used to click
+// the Blackwall button, because `scan` and `rim` reach the shader only inside that
+// branch and a sweep run in RGB would have found them inert - a real hole, correctly
+// closed for the parameters that existed then. The same hole reopened wider the moment
+// the readings became parameters: `params.reset()` boots `readRgb` at 1, so a sweep
+// that did not say otherwise would run entirely in RGB and record `scan`, `rim` and
+// every future per-reading term as unable to touch a pixel.
+//
+// So `SCRAMBLE` carries all five readings non-zero, and every reading's block is live
+// in every image the sweep hashes. That is the "what do all my arms agree about"
+// question asked of this file's own sweep, which had exactly one arm and one answer.
 await page.evaluate(async () => {
   const buffer = await (await fetch('/__pinned.bin')).arrayBuffer();
   globalThis.__kinect.drive.pin(buffer);
 });
+
+// And a colour image, because one parameter is only observable through one.
+//
+// `pin` above switches colour off - a JPEG decode is asynchronous and a pinned run that
+// raced it would hash a frame whose colour had or had not arrived - so every point in
+// every arm below draws the flat `vec3(0.7)` the shader falls back to. Saturation of a
+// uniform grey is the identity at every value, so `rgbSaturation` would have come out of
+// the drop-one sweep as a parameter that cannot reach a pixel: a probe standing in a
+// dead zone, reporting a clean pass on a build that had the term backwards.
+//
+// Four saturated pixels rather than a photograph, and the bytes live here rather than in
+// the page so this arm owns its own input. Both samplers are pointed at the one texture,
+// so nothing depends on which side of the pair `mixT` favours at a given position.
+await page.evaluate(`globalThis.__kinect.drive.plantColor(${JSON.stringify([
+  220, 30, 40, 255, 30, 200, 90, 255,
+  40, 70, 230, 255, 230, 200, 40, 255,
+])}, 2, 2)`);
+// Asserted rather than assumed, because the arm it exists for is a *negative* result
+// otherwise: a plant that silently failed leaves the grey behind, `rgbSaturation` lands
+// in the no-effect bucket, and the sweep reports a parameter that cannot reach a pixel
+// as though it had measured one.
+{
+  const planted = await page.evaluate('globalThis.__kinect.uniforms.hasColor.value');
+  check(planted === 1,
+    'the sweep runs against a colour image, so a colour term is not measured on grey',
+    `hasColor ${planted}`);
+}
 
 const positions = await page.evaluate(`(() => {
   const times = globalThis.__kinect.drive.times();
@@ -1320,6 +1724,52 @@ check(eq(serialised, JSON.parse(JSON.stringify(SCRAMBLE))),
 check(!eq(scrambledRun, defaultRun), 'and the defaults do not - the registry is what the image depends on');
 check(new Set(scrambledRun).size > positions.length / 2, 'the input moves across the run');
 
+// =================================== 8b. the mix is a mix, and it normalises
+
+// **The one property this file could not otherwise fail on, and it needed an oracle
+// nothing else here provides.** Section 1b compares each reading against the revision
+// before the weights existed, which is the strongest evidence available for a *single*
+// reading - and it is silent about mixing by construction, because a single reading at
+// 1.0 divides by 1.0 and any normalisation whatsoever is the identity there. Section 8
+// above compares a build against itself, so a build that mixed wrongly but consistently
+// reproduces its own run exactly and passes. The old build cannot mix at all, so there
+// is no earlier revision to hash against either.
+//
+// What is left is an identity the correct implementation satisfies and a wrong one does
+// not: the weights are a ratio, so scaling all of them by any constant must render the
+// *same image*. sum(k*w*c) / sum(k*w) cancels the k. A build dividing by a constant
+// instead of by the sum, or by the number of live readings, changes brightness the
+// moment the scale changes - while staying bit-identical on every single-reading arm,
+// which is exactly the shape section 1b cannot see.
+console.log('\n[registry] the readings mix as a ratio, so their scale cancels');
+{
+  // Deliberately not equal to each other and deliberately not summing to 1, so neither
+  // a build that ignored the denominator nor one that assumed the weights were already
+  // normalised can agree with the correct answer by luck.
+  const RATIO = { readRgb: 0.4, readDepth: 0.3, readGhost: 0.2, readContour: 0, readBlackwall: 0 };
+  const scaled = (k) => Object.fromEntries(Object.entries(RATIO).map(([n, v]) => [n, v * k]));
+
+  const atOne = await run(scaled(1));
+  const atTwo = await run(scaled(2));
+  check(eq(atOne, atTwo),
+    'doubling every weight renders the identical image, because a ratio has no scale',
+    eq(atOne, atTwo) ? `${atOne.length} frames` : `first divergence at image ${atOne.findIndex((h, i) => h !== atTwo[i])}`);
+
+  // And the control for that row, because two identical images prove nothing if the
+  // weights reach no pixel: the mix has to differ from each of the readings it is made
+  // of. Without this, a build that ignored the weights entirely would pass the row
+  // above perfectly - it renders the same image for every input, which is the strongest
+  // possible form of "the scale cancels".
+  const solo = {};
+  for (const name of Object.keys(RATIO)) {
+    solo[name] = await run({ ...Object.fromEntries(Object.keys(RATIO).map((n) => [n, 0])), [name]: 1 });
+  }
+  const sameAsSolo = Object.keys(RATIO).filter((n) => eq(atOne, solo[n]));
+  check(sameAsSolo.length === 0,
+    'and the mix is none of the readings it is made of',
+    sameAsSolo.length ? `identical to ${sameAsSolo.join(', ')} alone` : 'distinct from all five');
+}
+
 console.log('\n[registry] the falsification control: each parameter left out of the restore in turn');
 {
   const noEffect = [];
@@ -1351,5 +1801,21 @@ if (main.errors.length) {
 }
 
 await browser.close();
+
+if (MUTATE) {
+  // Three outcomes, three exit codes, because two of them are routinely confused for
+  // each other. `registration-check` reserves 2 for "the harness did not run" on the
+  // same reasoning and this joins it rather than inventing a fourth convention: a
+  // mutation that failed to compile, or a Playwright page that died, is not a mutation
+  // that was caught, and the difference is invisible to anything reading exit codes
+  // alone. The rows above are the answer - read which ones fired, not how many.
+  const caught = failures > 0;
+  console.log(`\n[registry] mutation ${MUTATE} ${caught
+    ? `caught, as required (${failures} assertions fired)`
+    : 'NOT CAUGHT'}`);
+  console.log(`           it should redden: ${MUTATIONS[MUTATE].fails}`);
+  process.exit(caught ? 0 : 1);
+}
+
 console.log(`\n[registry] ${failures ? `FAIL (${failures})` : 'PASS'}`);
 process.exit(failures ? 1 : 0);
