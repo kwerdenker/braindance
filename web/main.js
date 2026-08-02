@@ -5676,9 +5676,63 @@ function beginRateGesture() {
     // factors is the wrong number.
     rate: retime.rate,
     times: programTimeSnapshot(),
+    // Whether the slope was ever actually put anywhere. A gesture that only ever
+    // touched the control has nothing to seek for and nothing to undo but its pause.
+    applied: false,
   };
   // Paused once for the gesture rather than on every event, and resumed at the end.
   timeline.pause();
+}
+
+/**
+ * Ends the gesture, whichever event gets here first.
+ *
+ * **A gesture must end on release rather than on a change, because the two are not
+ * the same set of gestures** - and the difference was silent data loss. `change` fires
+ * only when the committed value differs from the one the control was picked up at, so
+ * two ordinary things ended nothing: a press that releases in place, and a drag that
+ * wanders and comes back. Measured in Chromium: the first emits `pointerdown ->
+ * pointerup` and the second `pointerdown -> input x6 -> pointerup`, neither with a
+ * `change` anywhere in it. The gesture therefore stayed live, holding a
+ * `programTimeSnapshot` of the document as it was *then* - and the next real speed
+ * change reused it, rewriting every key and both cuts from that stale snapshot and
+ * silently undoing whatever had been edited in between. The take stayed paused too,
+ * because the resume lives on the path that never ran.
+ *
+ * So every way out of the control ends it - `change`, `pointerup`, `pointercancel`,
+ * `keyup` - and the first one through does the work while the rest find it already
+ * ended. That ordering is measured rather than assumed: `pointerup` lands *before*
+ * `change` on a pointer drag, and `change` before `keyup` on an arrow key, so neither
+ * path has a winner that leaves the other's work undone. The control captures the
+ * pointer, so a release 600px outside it still arrives here.
+ */
+function endRateGesture() {
+  if (!rateGesture) return;
+  // A take closed while the slider was held leaves a gesture with nothing to end it
+  // against. Dropped rather than applied, because there is no transport to seek.
+  if (!timeline) { rateGesture = null; return; }
+  const { wasPlaying, applied, rate: began } = rateGesture;
+  if (!applied) {
+    rateGesture = null;
+    if (wasPlaying) timeline.play().catch(showTimelineError);
+    return;
+  }
+  const rate = rateFromSlider(ui.rate.value);
+  const program = applyRate(rate);
+  rateGesture = null;
+  // Whatever is queued behind the draft in flight would otherwise paint itself over
+  // the true image this is about to ask for.
+  draftWanted = null;
+  timingChanged();
+  timeline.seek(program)
+    .then(() => { if (wasPlaying) return timeline.play(); })
+    .catch(showTimelineError);
+  // A drag that came back to the slope it started at has restored the document
+  // exactly - `applyRate` reads every time from the snapshot rather than from where
+  // the last event left it - so there is nothing to remember. Committing anyway would
+  // put an undo step on the stack that undoes nothing. The true image is still asked
+  // for above, because the drafts along the way were real and one of them is on screen.
+  if (rate !== began) history.commit();
 }
 
 /**
@@ -5693,6 +5747,7 @@ function beginRateGesture() {
  */
 function applyRate(rate) {
   retime.rate = rate;
+  rateGesture.applied = true;
   const program = programHoldingAnchor();
   // `frameOf` rather than `frameAt`, and that is the second half of the ordering above.
   // `frameAt` clamps to the clip range, which at this instant is still the *previous*
@@ -5715,6 +5770,9 @@ function programHoldingAnchor() {
 
 ui.rate.addEventListener('pointerdown', beginRateGesture);
 ui.rate.addEventListener('keydown', beginRateGesture);
+for (const type of ['change', 'pointerup', 'pointercancel', 'keyup']) {
+  ui.rate.addEventListener(type, endRateGesture);
+}
 
 ui.rate.addEventListener('input', () => {
   if (!timeline) return;
@@ -5728,22 +5786,6 @@ ui.rate.addEventListener('input', () => {
   // seeks, each of which renders a whole pre-roll before it can show anything.
   draftWanted = program;
   pumpDraft();
-});
-
-ui.rate.addEventListener('change', () => {
-  if (!timeline) return;
-  beginRateGesture();
-  const program = applyRate(rateFromSlider(ui.rate.value));
-  const resume = rateGesture.wasPlaying;
-  rateGesture = null;
-  // Whatever is queued behind the draft in flight would otherwise paint itself over
-  // the true image this is about to ask for.
-  draftWanted = null;
-  timingChanged();
-  timeline.seek(program)
-    .then(() => { if (resume) return timeline.play(); })
-    .catch(showTimelineError);
-  history.commit();
 });
 
 ui.fps.addEventListener('change', () => {
