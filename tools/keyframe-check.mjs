@@ -71,7 +71,9 @@ const MUTATE = flag('--mutate');
 const SHOTS = flag('--shots');
 
 const STAGE = { width: 640, height: 400 };
-const CHROME_H = 104;
+// A first guess at the timeline strip; the real height is measured after load and the
+// viewport corrected. See the resize below the goto.
+const CHROME_H_GUESS = 148;
 
 // How far apart two images may be and still count as the same landing, and how far
 // apart a control has to be before its difference means anything. Between them is
@@ -713,7 +715,7 @@ const { chromium } = await loadPlaywright();
 // back to a software rasteriser would agree with itself for the wrong reason.
 const browser = await chromium.launch({ channel: 'chromium', headless: !HEADED });
 const context = await browser.newContext({
-  viewport: { width: STAGE.width, height: STAGE.height + CHROME_H },
+  viewport: { width: STAGE.width, height: STAGE.height + CHROME_H_GUESS },
   deviceScaleFactor: 1,
 });
 
@@ -762,6 +764,19 @@ await page.waitForFunction(() => !!globalThis.__kinect);
 // makes the buffer 640x360 with a 20px offset unless told otherwise. That moves
 // every buffer-size expectation and every pointer coordinate in this file.
 await page.evaluate('globalThis.__kinect.setTargetSize?.("640x400")');
+// The viewport is then sized to whatever the strip actually is, measured off the
+// page. `CHROME_H_GUESS` is a first guess and nothing more: it was 104 while the bar was
+// one row, the bar became two, and the stage quietly came out 570x356 while every
+// number in this file - including the `insetPct` denominator near the end - went on
+// being computed against 640x400. Nothing failed, which is the point: the figures
+// were simply about a smaller picture than the one they named.
+{
+  const strip = await page.evaluate(`(() => {
+    const el = document.getElementById('timeline');
+    return el && !el.hidden ? Math.round(el.getBoundingClientRect().height) : 0;
+  })()`);
+  await page.setViewportSize({ width: STAGE.width, height: STAGE.height + strip });
+}
 await page.waitForFunction(() => !!globalThis.__kinect.timeline.transport(), null, { timeout: 20000 });
 await page.evaluate(INSTALL);
 

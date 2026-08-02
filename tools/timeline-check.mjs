@@ -71,7 +71,9 @@ const SHOTS = flag('--shots');
 // document's draft-scrub figures were measured at - and the viewport is that plus
 // the timeline strip rather than the other way round.
 const STAGE = { width: 640, height: 400 };
-const TIMELINE_H = 104;
+// The first guess only. The strip is measured off the page after load and the
+// viewport corrected - see the resize below the goto, and the assertion beside it.
+const TIMELINE_H_GUESS = 148;
 
 // ------------------------------------------------------------------- thresholds
 //
@@ -372,7 +374,7 @@ const { chromium } = await loadPlaywright();
 // back to a software rasteriser would agree with itself for the wrong reason.
 const browser = await chromium.launch({ channel: 'chromium', headless: !HEADED });
 const context = await browser.newContext({
-  viewport: { width: STAGE.width, height: STAGE.height + TIMELINE_H },
+  viewport: { width: STAGE.width, height: STAGE.height + TIMELINE_H_GUESS },
   deviceScaleFactor: 1,
 });
 
@@ -403,6 +405,20 @@ await page.waitForFunction(() => !!globalThis.__kinect);
 // makes the buffer 640x360 with a 20px offset unless told otherwise. That moves
 // every buffer-size expectation and every pointer coordinate in this file.
 await page.evaluate('globalThis.__kinect.setTargetSize?.("640x400")');
+// And the viewport is sized to whatever the strip actually is, measured rather than
+// assumed. `TIMELINE_H` was a constant that went stale the moment the bar became two
+// rows, and staleness here is silent by construction: every image in this file is
+// compared against another image from the same run, so a stage 44px shorter than the
+// one named above agrees with itself perfectly and the header quietly stops being
+// true. The buffer is then asserted, because a tool whose first line says "640x400"
+// should be the thing that enforces it.
+{
+  const strip = await page.evaluate(`(() => {
+    const el = document.getElementById('timeline');
+    return el && !el.hidden ? Math.round(el.getBoundingClientRect().height) : 0;
+  })()`);
+  await page.setViewportSize({ width: STAGE.width, height: STAGE.height + strip });
+}
 await page.waitForFunction(() => !!globalThis.__kinect.timeline.transport(), null, { timeout: 20000 });
 await page.evaluate(INSTALL);
 
@@ -419,6 +435,12 @@ if (/swiftshader|software|llvmpipe/i.test(gpu.renderer)) {
   throw new Error(`software rasteriser (${gpu.renderer}) - the result would prove nothing`);
 }
 if (!gpu.colorBufferFloat) throw new Error('no EXT_color_buffer_float: the surface memory is not running at float');
+if (gpu.buffer[0] !== STAGE.width || gpu.buffer[1] !== STAGE.height) {
+  throw new Error(
+    `the stage came out ${gpu.buffer.join('x')} and this file's figures are ${STAGE.width}x${STAGE.height}: `
+    + 'the strip height or the letterbox moved and every number below would be measured somewhere else',
+  );
+}
 
 console.log(`[timeline] ${gpu.renderer}`);
 console.log(`[timeline] stage ${gpu.buffer.join('x')}, take ${TAKE}: ${TIMES.length} frames, `
@@ -1113,10 +1135,17 @@ console.log('\n== 5. a look change while paused rebuilds the image and the estim
   // has to be observed as work the transport actually did, and the image is the
   // second half of the claim rather than the whole of it.
   const renders = () => page.evaluate('globalThis.__kinect.timeline.counters.renders');
+  // Both events, because a real slider fires both and the two now mean different
+  // things. `input` is the cheap half of a drag - the speed control drafts a frame
+  // there rather than paying for an accurate seek per pointer event - and `change`
+  // is the release that asks for the true image. Dispatching only `input` would
+  // leave the rate nudge below asserting against a draft, which is not what it
+  // claims to be about.
   const slide = (id, value) => page.evaluate(`(() => {
     const el = document.getElementById(${JSON.stringify(id)});
     el.value = ${JSON.stringify(String(value))};
     el.dispatchEvent(new Event('input'));
+    el.dispatchEvent(new Event('change'));
   })()`);
 
   await page.evaluate(`(async () => {

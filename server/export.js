@@ -185,8 +185,15 @@ export function handleExportSocket(ws, { outDir, log = console.log }) {
     const frameBytes = width * height * 4;
     const temp = join(outDir, `${dirName}.part`);
     const scratchFile = join(temp, `${msg.name}.${ext}`);
+    // The same file as a URL. `output` is an absolute path on this machine, which is
+    // the right thing for a log line and useless to the page that asked for the
+    // render - it cannot fetch it, so it could not offer to save a copy of it
+    // anywhere. The static handler already serves this prefix out of the exports
+    // directory behind an `isInside` check, and both segments come from a name
+    // `validateExport` has already held to letters, digits, dot, dash and underscore.
+    const href = `/exports/${dirName}/${msg.name}.${ext}`;
     job = {
-      width, height, fps, frames, codec, frameBytes, output, outputDir, temp, scratchFile, name: msg.name, began: Date.now(),
+      width, height, fps, frames, codec, frameBytes, output, outputDir, temp, scratchFile, href, name: msg.name, began: Date.now(),
       project: msg.project ?? null,
       capture: msg.capture ?? null,
       renderer: msg.renderer ?? null,
@@ -210,7 +217,7 @@ export function handleExportSocket(ws, { outDir, log = console.log }) {
       finish().catch((err) => fail(String(err.message ?? err)));
     });
 
-    send({ ready: { output, codec, width, height, fps, frames, window: ACK_WINDOW } });
+    send({ ready: { output, href, codec, width, height, fps, frames, window: ACK_WINDOW } });
   };
 
   const frame = (data) => {
@@ -301,6 +308,7 @@ export function handleExportSocket(ws, { outDir, log = console.log }) {
     send({
       done: {
         output: job.output,
+        href: job.href,
         bytes: st.size,
         frames: received,
         rawBytes: bytes,

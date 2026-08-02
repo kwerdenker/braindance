@@ -346,6 +346,9 @@ node tools/export-check.mjs --url http://localhost:8080   # step 6: resolution, 
 node tools/export-check.mjs --mutate pointsize-absolute   # ... and must FAIL mutated
 node tools/library-check.mjs --url http://localhost:8080  # step 7: library, recorder, routes
 node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL
+node tools/editor-check.mjs --url http://localhost:8080   # the editor's controls: that they exist, that pressing them changes something
+node tools/editor-check.mjs --mutate lanes-clear-siblings --no-render  # ... and must FAIL
+node tools/editor-check.mjs --mutate plant-unswept-control --no-render # ... and must FAIL
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated
@@ -377,6 +380,21 @@ passing quietly.
 twice below it — so the list taught a six-tool sweep where there are seven. `plant-open-take`
 is the right mutation to name here rather than a milder one: it is the control for the hole
 that let a read route destroy the take being shot.
+
+`editor-check` enumerates rather than lists, and it exists because **the suite tested the
+model and never the control**. The clip in/out markers were detached from the document
+during boot for the whole life of the feature — `rebuildLanes` cleared `#tBeds` of every
+child that was neither `.ruler` nor the playhead, and `#tIn`/`#tOut` were neither. Nothing
+caught it because nothing looked: no proof tool referenced `#tIn`, `#tOut` or `.tcut` at
+all, and `export-check` drives in/out through `activeDeliverable`, which is the model. The
+model was perfect throughout; `paintTimeline` simply wrote `style.left` onto two nodes no
+document contained. So section 1 walks every interactive control the page renders and fails
+on any it has no driver for, with `plant-unswept-control` as the control for that claim —
+without it, "every control was tested" is a sentence the tool writes about itself.
+**Aiming its layout mutation took three attempts, and the two misses are recorded in the
+file** because each was NOT CAUGHT against a build with a fix removed: the rule they named
+had been made redundant by the two-row bar, which is worth knowing about the fix as well as
+about the check.
 
 The two below need no server, and `registration-check` needs no sensor either -
 it runs on a corpus of `Registration::apply` inputs dumped by

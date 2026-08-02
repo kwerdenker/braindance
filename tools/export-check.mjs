@@ -98,7 +98,17 @@ const SHOTS = flag('--shots');
 // export's output size too - so the arm that exports and the arm that seeks are
 // rendering into the same drawing buffer and no resize sits between them.
 const STAGE = { width: 640, height: 400 };
-const TIMELINE_H = 104;
+// A starting guess at the timeline strip's height, and only a guess - `setStage`
+// measures the real one off the page and corrects the viewport.
+//
+// **It used to be a constant, and that is the third time a strip-height change has
+// arrived in a tool as a ten-second timeout that names nothing about the strip.** The
+// bar became two rows, `--timeline-h` went 104 to 148, and this file - which never
+// mentions the timeline except here - hung in `setStage` waiting for a buffer height
+// the fit had made 44px shorter. `CLAUDE.md` records the same shape when the stage
+// was first letterboxed and four tools found out one at a time. Measuring closes it:
+// the next change to the strip is absorbed instead of discovered.
+const TIMELINE_H_GUESS = 148;
 
 // The document's own pair. Same 1.6 aspect, an exact 2x so the downsample is a
 // clean box filter, and a 960x704 viewport at deviceScaleFactor 1 gives exactly
@@ -808,7 +818,7 @@ async function openPage(viewport, source = mutatedBody, html = null) {
   // back to a software rasteriser would agree with itself for the wrong reason.
   const browser = await chromium.launch({ channel: 'chromium', headless: !HEADED });
   const context = await browser.newContext({
-    viewport: { width: viewport.width, height: viewport.height + TIMELINE_H },
+    viewport: { width: viewport.width, height: viewport.height + TIMELINE_H_GUESS },
     deviceScaleFactor: 1,
   });
   const page = await context.newPage();
@@ -918,19 +928,35 @@ async function onFreshPage(what, work, attempts = 3) {
  * whole point of them.
  */
 async function setStage(page, size) {
-  await page.setViewportSize({ width: size.width, height: size.height + TIMELINE_H });
-  // Optional, because the cross-build arms load an older `main.js` on purpose and
-  // that build has no letterbox - its buffer is the viewport, which is exactly what
-  // the wait below already expects. Guarding here rather than branching at the call
-  // sites keeps one function that means "put the stage at this size" on both builds.
-  await page.evaluate(`globalThis.__kinect.setTargetSize?.(${JSON.stringify(`${size.width}x${size.height}`)})`);
-  await page.waitForFunction(
-    `(() => {
-      const gl = globalThis.__kinect.renderer.getContext();
-      return gl.drawingBufferWidth === ${size.width} && gl.drawingBufferHeight === ${size.height};
-    })()`,
-    null, { timeout: 10000 },
-  );
+  // The strip's real height, off the page. It is `--timeline-h` plus a row per lane
+  // and neither term depends on the viewport, so one measurement is normally exact -
+  // the second pass only earns its keep if a lane appeared between the read and the
+  // resize, which changes the strip and therefore the stage under it.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const strip = await page.evaluate(`(() => {
+      const el = document.getElementById('timeline');
+      if (!el || el.hidden) return 0;
+      return Math.round(el.getBoundingClientRect().height);
+    })()`);
+    await page.setViewportSize({ width: size.width, height: size.height + strip });
+    // Optional, because the cross-build arms load an older `main.js` on purpose and
+    // that build has no letterbox - its buffer is the viewport, which is exactly what
+    // the wait below already expects. Guarding here rather than branching at the call
+    // sites keeps one function that means "put the stage at this size" on both builds.
+    await page.evaluate(`globalThis.__kinect.setTargetSize?.(${JSON.stringify(`${size.width}x${size.height}`)})`);
+    try {
+      await page.waitForFunction(
+        `(() => {
+          const gl = globalThis.__kinect.renderer.getContext();
+          return gl.drawingBufferWidth === ${size.width} && gl.drawingBufferHeight === ${size.height};
+        })()`,
+        null, { timeout: attempt === 1 ? 5000 : 10000 },
+      );
+      return;
+    } catch (err) {
+      if (attempt === 2) throw err;
+    }
+  }
 }
 
 const main = await openPage(STAGE);

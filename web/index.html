@@ -30,7 +30,7 @@
        one thing allowed to grow it, and they do it through a second variable the
        lane builder writes - a lane appearing is a structural change and should
        move the stage, where a three-digit frame count should not. */
-    --timeline-h: 104px;
+    --timeline-h: 148px;
     --tlanes-h: 0px;
   }
   * { box-sizing: border-box; }
@@ -186,14 +186,23 @@
   body.editing #hint { display: none; }
   body.editing #panel { max-height: calc(100vh - var(--timeline-h) - var(--tlanes-h) - 32px); }
 
-  /* Fixed height and one line of chips, both load-bearing. The strip's height is a
-     constant the stage is sized against, so a wrapping chip row would not make the
-     strip taller - it would push the lanes out of the bottom of it, and a key
-     dragged in a lane would land somewhere else because the lane had moved under
-     the pointer. Measured, not theorised: a slow retime ramp makes the pre-roll
-     readout long enough to wrap at 1280px, and that is exactly what it did. */
-  .tbar { flex: none; height: 51px; display: flex; align-items: center; gap: 16px;
+  /* Two rows, both of a fixed height, and the fixedness is the load-bearing half
+     rather than the count. The strip's height is a constant the stage is sized
+     against, so a row that *wrapped* would not make the strip taller - it would push
+     the lanes out of the bottom of it, and a key dragged in a lane would land
+     somewhere else because the lane had moved under the pointer. A deliberate second
+     row of known height keeps that property exactly where wrapping breaks it, and
+     `--timeline-h` carries the sum.
+
+     One row was not enough for the controls the editor actually has. Measured: with
+     an ordinary deliverable name in the select, the render button sat 82px past the
+     right edge at 1512px - the width this is documented to run at - and
+     `elementFromPoint` over it returned nothing at all. Transport above, document and
+     export below, so neither has to win the same width. */
+  .tbar { flex: none; display: flex; align-items: center; gap: 16px;
     padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  .tbar.transport { height: 51px; }
+  .tbar.document { height: 44px; gap: 10px; }
 
   .tplay {
     width: 34px; height: 34px; flex: none; display: grid; place-items: center;
@@ -221,9 +230,19 @@
 
   /* The pinned end of the bar: never scrolled, so the render control is on screen at
      every window width. It gives ground before the scroller does - the note truncates
-     rather than squeezing the chips that carry controls. */
-  .tpin { flex: none; display: flex; gap: 8px; align-items: center; max-width: 46%; }
-  .tpin #tExportNote { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+     rather than squeezing the chips that carry controls.
+
+     `min-width: 0` on everything inside it is the actual fix for the clipping, and it
+     is narrower than "the bar had too much in it". A flex child's default is
+     `min-width: auto`, which means "never shrink below your intrinsic width" - and a
+     `<select>` takes its intrinsic width from its longest option. So one long
+     deliverable name set a floor this 46% box could not shrink under, the pin
+     overflowed its container, and the render button went off the edge still believing
+     it was laid out. Nothing about it was visible: it was not hidden, it was outside. */
+  .tpin { flex: none; display: flex; gap: 8px; align-items: center; max-width: 46%; min-width: 0; }
+  .tpin > * { min-width: 0; }
+  .tpin select { min-width: 0; text-overflow: ellipsis; }
+  .tpin #tExportNote { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tpin #tExportNote:empty { display: none; }
   .tchip {
     flex: none;
@@ -231,6 +250,18 @@
     border: 1px solid var(--line); border-radius: 4px; background: var(--paper-2);
     font-size: 9px; color: var(--dim); white-space: nowrap;
   }
+  /* A name is typed rather than chosen, so it is the one text field in the strip. */
+  .tchip input[type=text] {
+    width: 118px; min-width: 0; border: 1px solid var(--line); border-radius: 3px;
+    background: var(--paper-1); color: var(--ink); font: inherit; font-size: 9px; padding: 1px 4px;
+  }
+  .tchip input[type=text]:focus-visible { outline: 1px solid var(--accent); outline-offset: 0; }
+  .tchip.bad input[type=text] { border-color: var(--red); }
+  /* The ease presets. Disabled until a key with a shapeable segment is selected,
+     because a row of live buttons that write nothing is the same dead affordance the
+     handle on a flat segment was. */
+  .tease button { padding: 1px 5px; }
+  .tease.off { opacity: 0.45; }
   .tchip b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; }
   .tchip input[type=range] { width: 92px; flex: none; }
   .tchip select {
@@ -249,6 +280,10 @@
   .tcol { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .tcol.rail { border-right: 1px solid var(--line); }
   .tcol.beds { position: relative; }
+  /* The rebuild's own territory. It empties this and nothing else, so a sibling in
+     either column - the cuts, the playhead, the shading - is out of its reach because
+     of where it sits rather than because the loop remembers to skip it. */
+  .tstack { display: flex; flex-direction: column; flex: none; min-width: 0; }
 
   /* The ruler row keeps the height the strip already had, so a clip with no keys
      is exactly the surface step 4 left behind. Every other row is fixed and adds
@@ -287,11 +322,34 @@
   .tplayhead::before { content: ""; position: absolute; top: 0; left: -5px;
     border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 7px solid var(--ink); }
 
+  /* What falls outside in..out, dimmed. Two markers alone say where the boundaries
+     are and leave "which side is kept" to be worked out, which is the wrong way round
+     for the one setting that decides what a render contains. Deliberately over the
+     lanes as well as the ruler: a key in the shaded region is a key the export will
+     not reach, and that is worth seeing. */
+  .tshade { position: absolute; top: 0; bottom: 0; background: rgba(5, 7, 10, 0.58);
+    pointer-events: none; z-index: 1; }
+
   /* In/out markers. They live on the same coordinate as the playhead and can be
      dragged to set the clip range. A triangle points inward so the two do not
      collide when they are close. */
   .tcut { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--accent);
     cursor: ew-resize; z-index: 4; }
+  /* The grab zone, which is not the line. A 1px target plus a 10px triangle at one
+     end is a control you have to aim at, and these two are how a clip gets trimmed -
+     measured at 1.0px wide before this. The line stays 1px because a thick one would
+     be a poor ruler; only the hit area grows.
+
+     Each one reaches *inward*, and that is not symmetry for its own sake. `out` sits
+     at `left: 100%` while nothing is trimmed, which puts it exactly on the right edge
+     of the strip - so a zone centred on it hangs half outside the window, and
+     `elementFromPoint` found 5 grabbable pixels there rather than 11. Reaching into
+     the kept range instead keeps the whole zone on screen at either extreme, and it
+     is where the pointer wants to be anyway: you drag the edge of the block you are
+     keeping. Where the two nearly coincide `out` wins, being later in the markup. */
+  .tcut::after { content: ""; position: absolute; top: 0; bottom: 0; }
+  .tcut-in::after { left: -4px; width: 16px; }
+  .tcut-out::after { left: -12px; width: 16px; }
   .tcut::before { content: ""; position: absolute; top: 0; left: -5px;
     border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 7px solid var(--accent); }
   .tcut.tcut-out::before { left: -4px; border-left: 4px solid var(--accent); border-right: 4px solid transparent; border-top: 0; border-bottom: 7px solid var(--accent); top: auto; bottom: 0; }
@@ -305,14 +363,20 @@
      is judged in the world rather than here. */
   .tlane { position: relative; height: 100%; touch-action: none; }
   .tlane svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  /* Both of these carry a transparent `::after` that is bigger than the shape, because
+     a rotated square is hit-tested through its transform - the corners of its bounding
+     box are dead, so the target is smaller than it measures. The diamonds were 9px and
+     the handles 7px, which is an aim rather than a click, and these two are the whole
+     of keyframe editing. The drawn shapes stay small; only the reach grows. */
   .tkey {
-    position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px;
+    position: absolute; width: 11px; height: 11px; margin: -5.5px 0 0 -5.5px;
     background: var(--dim); transform: rotate(45deg); cursor: grab; z-index: 2;
   }
+  .tkey::after, .thandle::after { content: ""; position: absolute; inset: -4px; }
   .tkey:hover { background: var(--ink); }
   .tkey.sel { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-low); }
   .thandle {
-    position: absolute; width: 7px; height: 7px; margin: -3.5px 0 0 -3.5px;
+    position: absolute; width: 11px; height: 11px; margin: -5.5px 0 0 -5.5px;
     border-radius: 50%; background: var(--paper-1); border: 1px solid var(--accent);
     cursor: grab; z-index: 2;
   }
@@ -506,7 +570,10 @@
   <div id="hint">drag to orbit · scroll to zoom · right-drag to pan · <b>H</b> hides panel</div>
 
   <section id="timeline" hidden aria-label="Timeline">
-    <div class="tbar">
+    <!-- Row one: the transport, and what the transport is addressed in. Everything
+         here answers "where am I and how fast am I going", including the in/out pair,
+         which is where the playhead is allowed to be. -->
+    <div class="tbar transport">
       <button id="tPlay" class="tplay" type="button" aria-label="Play">&#9654;</button>
       <div class="tclocks">
         <div class="tclock"><small>program</small><output id="tProgram">00:00.000</output></div>
@@ -516,46 +583,92 @@
         <label class="tchip">speed<input id="tRate" type="range" min="0.1" max="4" step="0.05" value="1"><b id="tRateOut">1.00&times;</b>
           <button class="kf" id="tRateKey" type="button" aria-label="Retime keyframe"><i></i></button></label>
         <label class="tchip">out fps<select id="tFps"><option>24</option><option>30</option><option>60</option><option>120</option></select></label>
+        <!-- The range the export takes, as numbers rather than only as two lines on
+             the ruler. The markers stay draggable; this is for reading the answer and
+             for setting it exactly where the playhead already is. -->
+        <span class="tchip">in <b id="tInOut">00:00.000</b><button id="tSetIn" type="button">set</button></span>
+        <span class="tchip">out <b id="tOutOut">end</b><button id="tSetOut" type="button">set</button></span>
+        <span class="tchip">length <b id="tClipLen">&mdash;</b><button id="tClearRange" type="button">whole clip</button></span>
+        <span class="tchip">marks <b id="tMarkCount">0</b><button id="tMark" type="button">mark here</button></span>
+        <!-- Controls above, readouts below, and the order is the whole of what makes
+             the scroller safe. This strip hides its scrollbar so the bar cannot grow,
+             so whatever sits at the right-hand end is off screen at a narrow window
+             with nothing to say it exists - which is exactly how the render button
+             was lost. A readout that scrolls away can be scrolled back to; a button
+             nobody knows about cannot. `pre-roll` in particular is the widest thing
+             in the bar and it grows with the retime, so it goes after everything
+             anybody has to press. -->
         <span class="tchip">pre-roll <b id="tPreroll">&mdash;</b></span>
         <span class="tchip">last <b id="tCost">&mdash;</b></span>
         <span class="tchip">undo <b id="tUndo">0</b></span>
+        <span class="tchip warn" id="tBehind"></span>
+        <span class="tchip" id="tNote"></span>
+      </div>
+    </div>
+
+    <!-- Row two: what the clip *is* and what comes out of it. -->
+    <div class="tbar document">
+      <div class="tchips">
+        <!-- Applies to whichever key is selected in a lane. The five cover what a
+             handle drag is usually reaching for, and a drag is still there for the
+             shape none of them is. -->
+        <span class="tchip tease off" id="tEase">selected key
+          <button data-ease="linear" type="button">lin</button>
+          <button data-ease="in" type="button">in</button>
+          <button data-ease="out" type="button">out</button>
+          <button data-ease="smooth" type="button">smooth</button>
+          <button data-ease="hold" type="button">hold</button>
+          <button id="tDeleteKey" type="button" title="Delete the selected key (Del)">delete</button></span>
         <label class="tchip">look<select id="tPreset"><option value="">—</option></select>
           <button id="tPresetApply" type="button">apply</button><button id="tPresetSave" type="button">save</button></label>
         <label class="tchip">project<select id="tProject"><option value="">—</option></select>
           <button id="tProjectOpen" type="button">open</button><button id="tProjectSave" type="button">save</button></label>
-        <span class="tchip">marks <b id="tMarkCount">0</b><button id="tMark" type="button">mark here</button></span>
-        <span class="tchip warn" id="tBehind"></span>
-        <span class="tchip" id="tNote"></span>
-      </div>
-      <!-- Outside the scroller on purpose. This strip overflows at 1512px - the width
-           of the laptop this is documented to run on - and its scrollbar is hidden so
-           the bar cannot grow and push the lanes out of the bottom. Export was the last
-           chip in it, which put the render button 224px past the right edge with
-           nothing on screen to say it existed: the one control that produces the
-           deliverable, unreachable on the machine the tool ships for. Pinned here it is
-           on screen at every width, and everything else is what scrolls.
-           The select is built from EXPORT_SIZES in main.js rather than written here, so
-           a proof tool sweeping the sizes sweeps the sizes the menu offers - the step 6
-           hole was a check whose four arms were all 1.6 while the menu was all 16:9,
-           and neither list knew about the other. -->
-      <div class="tpin">
-        <span class="tchip" id="tExportNote"></span>
         <label class="tchip">deliverable<select id="tDeliverable"><option value="">—</option></select>
           <button id="tDeliverableNew" type="button">new</button>
           <b id="tDeliverableReadout"></b></label>
+      </div>
+      <!-- Outside the scroller on purpose, and the scrollbar is hidden so the bar
+           cannot grow and push the lanes out of the bottom. Export was the last chip
+           in a single scrolling row, which put the render button off the right edge
+           with nothing on screen to say it existed: the one control that produces the
+           deliverable, unreachable on the machine the tool ships for.
+           The size select is built from EXPORT_SIZES in main.js rather than written
+           here, so a proof tool sweeping the sizes sweeps the sizes the menu offers -
+           the step 6 hole was a check whose four arms were all 1.6 while the menu was
+           all 16:9, and neither list knew about the other. -->
+      <div class="tpin">
+        <span class="tchip" id="tExportNote"></span>
+        <label class="tchip" id="tExportNameChip">name<input id="tExportName" type="text" spellcheck="false"
+          title="letters, digits, dot, dash and underscore - it names a file"></label>
         <label class="tchip">export<select id="tExportSize"></select>
-          <button id="tExport" type="button">render</button></label>
+          <button id="tExport" type="button">render</button>
+          <button id="tExportSave" type="button" disabled>save a copy&hellip;</button></label>
       </div>
     </div>
+    <!-- The lanes live inside `tRailLanes`/`tLanes` rather than directly in these two
+         columns, and that containment is a bug fix rather than tidiness. `rebuildLanes`
+         used to clear the columns of every child that was neither `.ruler` nor the
+         playhead, which is a rule about what to *spare* - so `tIn` and `tOut`, added
+         later and named in neither exemption, were detached during boot and never came
+         back. The in/out model kept working perfectly and `paintTimeline` went on
+         writing `style.left` onto two nodes no document contained. Owning a container
+         and emptying that closes the class: the next thing added to these columns is
+         out of the rebuild's reach by construction rather than by remembering. -->
     <div class="tlanes">
       <div class="tcol rail" id="tRail">
         <div class="trow ruler"><span>program</span></div>
+        <div class="tstack" id="tRailLanes"></div>
       </div>
       <div class="tcol beds" id="tBeds">
         <div class="trow ruler tbed" id="tBed">
           <div class="truler" id="tRuler"></div>
           <div class="tmarks" id="tMarks"></div>
         </div>
+        <div class="tstack" id="tLanes"></div>
+        <!-- What the export will not include, drawn rather than left to be inferred
+             from two thin markers. Behind the keys and in front of the ruler. -->
+        <div class="tshade" id="tShadeIn"></div>
+        <div class="tshade" id="tShadeOut"></div>
         <div class="tcut tcut-in" id="tIn" style="left: 0%"></div>
         <div class="tcut tcut-out" id="tOut" style="left: 100%"></div>
         <div class="tplayhead" id="tPlayhead" style="left: 0%"></div>

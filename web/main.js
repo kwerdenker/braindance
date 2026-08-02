@@ -2577,17 +2577,7 @@ const history = {
   },
 };
 
-addEventListener('keydown', (e) => {
-  if (e.key === 'h' || e.key === 'H') {
-    const p = document.getElementById('panel');
-    p.style.display = p.style.display === 'none' ? 'block' : 'none';
-    return;
-  }
-  if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) {
-    e.preventDefault();
-    history.undo();
-  }
-});
+// The keyboard lives with the controls it drives - see `the timeline UI` below.
 
 // ---------------------------------------------------------------- stream
 
@@ -2905,7 +2895,14 @@ const noop = () => {};
 // What the instrument reads instead of taking the transport's word for anything.
 // A check that asks "did the seek reset the accumulators" has to be able to see
 // that it did, or it is asserting the claim rather than enforcing it.
-const counters = { renders: 0, stateAdvances: 0, resets: 0, drafts: 0, seeks: 0, requests: 0, framesFetched: 0 };
+const counters = {
+  renders: 0, stateAdvances: 0, resets: 0, drafts: 0, seeks: 0, requests: 0, framesFetched: 0,
+  // The lane rebuild is the expensive one - it resizes the drawing buffer - and the
+  // reposition is the cheap one. Counted separately because "a drag no longer rebuilds"
+  // is a claim about which of the two ran, and a check that timed the drag instead
+  // would pass on a fast machine that rebuilt every move.
+  laneRebuilds: 0, laneRepositions: 0, laneFallbacks: 0,
+};
 
 // The one function mapping program time to source time. Everything above it works
 // in program time - the playhead, the look, the camera, every keyframe - and
@@ -4449,7 +4446,7 @@ async function exportClip(options = {}) {
       width, height, fps, from, to, onProgress: options.onProgress,
     });
     const sink = new ExportSink({
-      name: options.name ?? timeline.source.id,
+      name: options.name ?? exportBaseName(),
       width,
       height,
       fps,
@@ -4504,10 +4501,17 @@ const ui = {
   bed: document.getElementById('tBed'),
   rail: document.getElementById('tRail'),
   beds: document.getElementById('tBeds'),
+  // The two containers the lane rebuild owns and empties. Everything else in those
+  // columns is its sibling rather than its child, which is what stops the rebuild
+  // reaching the cuts again - see the note on `.tstack` in the markup.
+  railLanes: document.getElementById('tRailLanes'),
+  lanes: document.getElementById('tLanes'),
   ruler: document.getElementById('tRuler'),
   playhead: document.getElementById('tPlayhead'),
   in: document.getElementById('tIn'),
   out: document.getElementById('tOut'),
+  shadeIn: document.getElementById('tShadeIn'),
+  shadeOut: document.getElementById('tShadeOut'),
   note: document.getElementById('tNote'),
   cameraGroup: document.getElementById('cameraGroup'),
   camKey: document.getElementById('camKey'),
@@ -4517,6 +4521,17 @@ const ui = {
   exportSize: buildExportMenu(document.getElementById('tExportSize')),
   exportGo: document.getElementById('tExport'),
   exportNote: document.getElementById('tExportNote'),
+  exportName: document.getElementById('tExportName'),
+  exportNameChip: document.getElementById('tExportNameChip'),
+  exportSave: document.getElementById('tExportSave'),
+  inOut: document.getElementById('tInOut'),
+  outOut: document.getElementById('tOutOut'),
+  clipLen: document.getElementById('tClipLen'),
+  setIn: document.getElementById('tSetIn'),
+  setOut: document.getElementById('tSetOut'),
+  clearRange: document.getElementById('tClearRange'),
+  ease: document.getElementById('tEase'),
+  deleteKey: document.getElementById('tDeleteKey'),
   deliverable: document.getElementById('tDeliverable'),
   deliverableNew: document.getElementById('tDeliverableNew'),
   deliverableReadout: document.getElementById('tDeliverableReadout'),
@@ -4552,8 +4567,7 @@ const ui = {
 // getting longer - the pre-roll grows on a slow ramp, an export note arrives - does
 // not, which is the MutationObserver. Either one alone leaves a state where the fade
 // is wrong, and a fade that is wrong is worse than none.
-{
-  const chips = document.querySelector('.tchips');
+for (const chips of document.querySelectorAll('.tchips')) {
   const sayMore = () => chips.classList.toggle('more', chips.scrollWidth > chips.clientWidth + 1);
   new ResizeObserver(sayMore).observe(chips);
   new MutationObserver(sayMore).observe(chips, { subtree: true, childList: true, characterData: true });
@@ -4618,10 +4632,31 @@ function paintTimeline(t) {
   ui.play.setAttribute('aria-label', t.playing ? 'Pause' : 'Play');
   ui.program.textContent = timecode(program);
   ui.source.textContent = timecode(retime.sourceSecAt(program));
+  // The name an empty field will use, said on the field rather than only in the
+  // filename that turns up afterwards. Once, because it is a default and not a value.
+  if (!ui.exportName.placeholder) ui.exportName.placeholder = t.source.id;
   ui.playhead.style.left = `${(program / Math.max(1e-6, rulerDuration())) * 100}%`;
   const rangeDur = Math.max(1e-6, rulerDuration());
-  ui.in.style.left = `${(Math.min(clipIn, rangeDur) / rangeDur) * 100}%`;
-  ui.out.style.left = `${(Math.min(clipOut ?? rangeDur, rangeDur) / rangeDur) * 100}%`;
+  const inPct = (Math.min(clipIn, rangeDur) / rangeDur) * 100;
+  const outPct = (Math.min(clipOut ?? rangeDur, rangeDur) / rangeDur) * 100;
+  ui.in.style.left = `${inPct}%`;
+  ui.out.style.left = `${outPct}%`;
+  // What the export will leave out, shown rather than left to be worked out from
+  // the position of two thin lines. Nothing here decides anything - `exportClip`
+  // reads `clipIn`/`clipOut` directly - so this is the range made visible and not a
+  // second copy of it.
+  ui.shadeIn.style.left = '0%';
+  ui.shadeIn.style.width = `${inPct}%`;
+  ui.shadeOut.style.left = `${outPct}%`;
+  ui.shadeOut.style.width = `${Math.max(0, 100 - outPct)}%`;
+  // The same range as numbers. Two markers on a ruler say where the boundaries are
+  // and cannot say where they are to the millisecond, which is what an export needs
+  // - and "out" says `end` rather than a time when nothing has been set, because
+  // `clipOut === null` means the whole clip and following the duration around would
+  // read as a value somebody chose.
+  ui.inOut.textContent = timecode(clipIn);
+  ui.outOut.textContent = clipOut === null ? 'end' : timecode(clipOut);
+  ui.clipLen.textContent = `${Math.max(0, (clipOut ?? rangeDur) - clipIn).toFixed(2)}s`;
   const plan = t.preroll(program);
   // Both halves, because which one wins is the whole point of computing it: the
   // surface half moves with fade, wake, speed and output rate, the trails half
@@ -4830,23 +4865,193 @@ ui.play.addEventListener('click', () => {
   else timeline.play().catch(showTimelineError);
 });
 
-ui.rate.addEventListener('input', () => {
+// ------------------------------------------------------------ in and out
+
+/** Parks the playhead somewhere, stopping first. Seeks clamp into the clip range. */
+function goTo(sec) {
   if (!timeline) return;
-  // Speed is the retime's slope, which is document state rather than transport
-  // state - it is the one-key version of the curve, and the curve takes over the
-  // moment there are keys. Changing it moves where the playhead's program time
-  // lands in the take, so the image has to be rebuilt at the position the
-  // playhead already holds.
-  retime.rate = Number(ui.rate.value);
-  const wasPlaying = timeline.playing;
   timeline.pause();
-  timingChanged();
-  timeline.seek(Math.min(timeline.programSec, timeline.duration))
-    .then(() => { if (wasPlaying) return timeline.play(); })
-    .catch(showTimelineError);
+  timeline.seek(Math.max(0, Math.min(sec, timeline.duration))).catch(showTimelineError);
+}
+
+/**
+ * Puts one end of the export range where the playhead is.
+ *
+ * The markers on the ruler have always been draggable and were the only way to set
+ * this - which was academic, because they were not in the document at all. Even with
+ * them back, a drag cannot put a boundary on an exact frame, and an export range is
+ * exactly the setting where that matters.
+ */
+function setClipRangeFromPlayhead(which) {
+  if (!timeline) return;
+  const t = timeline.programSec;
+  if (which === 'in') setClipInOut({ in: Math.max(0, Math.min(t, clipOut ?? timeline.duration)) });
+  else setClipInOut({ out: Math.max(clipIn, Math.min(t, timeline.duration)) });
+  history.commit();
+}
+
+ui.setIn.addEventListener('click', () => setClipRangeFromPlayhead('in'));
+ui.setOut.addEventListener('click', () => setClipRangeFromPlayhead('out'));
+ui.clearRange.addEventListener('click', () => {
+  // `null` rather than the duration, so the range keeps meaning "to the end" if the
+  // retime later makes the program longer.
+  setClipInOut({ in: 0, out: null });
+  history.commit();
 });
 
-ui.rate.addEventListener('change', () => history.commit());
+// ------------------------------------------------------------ the keyboard
+
+const TYPING_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
+const isTyping = (el) => el instanceof HTMLElement && (TYPING_TAGS.has(el.tagName) || el.isContentEditable);
+
+const SHORTCUTS = 'space play/pause · arrows step a frame, with shift a second · '
+  + 'home/end · i/o set in/out, with shift jump to them · del removes the selected key · '
+  + 'm marks · cmd-z undoes · h hides the panel';
+
+/**
+ * The editor's keyboard, and the guard that has to come with it.
+ *
+ * Nothing here existed except `h` and Cmd-Z, so the space bar - the one key everybody
+ * tries first - did nothing at all. That old handler also had no typing guard, which
+ * was harmless only while the page had no text field: the export name arrived in this
+ * change and `i`, `o` and `m` are all letters somebody has to be able to type into it.
+ *
+ * **There is deliberately no J/K/L shuttle.** Reverse is not unimplemented here, it is
+ * unreachable: the surface memory and the afterimage are advanced one source frame at
+ * a time and neither can be walked back, which is why `retime.assertMonotonic` refuses
+ * a descending curve outright. A control offering reverse would be a control that
+ * cannot work, and the honest answer is not to draw one.
+ */
+addEventListener('keydown', (e) => {
+  if (isTyping(e.target)) return;
+
+  if (e.key === 'h' || e.key === 'H') {
+    const p = document.getElementById('panel');
+    p.style.display = p.style.display === 'none' ? 'block' : 'none';
+    return;
+  }
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) {
+    e.preventDefault();
+    history.undo();
+    return;
+  }
+  // Everything below is about a clip, and the recorder has none.
+  if (!EDITING || !timeline) return;
+  // A modifier other than shift means the key belongs to the browser or the OS.
+  // Shift is ours: it is the difference between a frame and a second.
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+  const step = (frames) => {
+    timeline.pause();
+    timeline.seek(Math.max(0, Math.min((timeline.frame + frames) / timeline.outputFps, timeline.duration)))
+      .catch(showTimelineError);
+  };
+
+  switch (e.key) {
+    case ' ':
+      // A focused button owns the space bar, because that is how a button is pressed
+      // without a mouse. The transport takes it only when nothing else has a claim -
+      // and pressing space just after clicking play still works, through the button.
+      if (e.target instanceof HTMLElement && e.target.closest('button, [role=button]')) return;
+      // Or the page scrolls under the strip.
+      e.preventDefault();
+      if (timeline.playing) timeline.pause();
+      else timeline.play().catch(showTimelineError);
+      return;
+    case 'ArrowRight': e.preventDefault(); step(e.shiftKey ? timeline.outputFps : 1); return;
+    case 'ArrowLeft': e.preventDefault(); step(e.shiftKey ? -timeline.outputFps : -1); return;
+    case 'Home': e.preventDefault(); goTo(timeline.clipInSec); return;
+    case 'End': e.preventDefault(); goTo(timeline.clipOutSec); return;
+    case 'i': case 'I':
+      e.preventDefault();
+      if (e.shiftKey) goTo(clipIn);
+      else setClipRangeFromPlayhead('in');
+      return;
+    case 'o': case 'O':
+      e.preventDefault();
+      if (e.shiftKey) goTo(clipOut ?? timeline.duration);
+      else setClipRangeFromPlayhead('out');
+      return;
+    case 'Delete': case 'Backspace': e.preventDefault(); deleteSelectedKey(); return;
+    case 'm': case 'M': e.preventDefault(); markHere().catch(showTimelineError); return;
+    case '?': e.preventDefault(); ui.note.textContent = SHORTCUTS; return;
+    default:
+  }
+});
+
+/**
+ * What a speed gesture holds still, captured once when it starts.
+ *
+ * Speed is the retime's slope, which is document state rather than transport state -
+ * it is the one-key version of the curve, and the curve takes over the moment there
+ * are keys. What changing it must *not* do is move the picture.
+ *
+ * **The anchor is source time, not program time, and that is the whole fix.** They
+ * are the same number only at rate 1: with program = source / rate, holding the
+ * playhead at program 10s across 1x -> 2x walks the image from source 10.000s to
+ * 20.000s - a different moment in the take arriving under a playhead that did not
+ * move. Measured at exactly those numbers before this, and it is the whole of "the
+ * frame that you're on is not the same anymore when you change the speed".
+ *
+ * Anchoring source settles the other half for free, and the arithmetic is the reason
+ * rather than a coincidence: the program length is `sourceDuration / rate` too, so
+ * the playhead lands at the same *fraction* of a ruler that rescaled underneath it.
+ * 10/44 and 5/22 are both 22.7%. The picture holds still and so does the playhead.
+ *
+ * Captured once for the gesture instead of recomputed per event because
+ * `timeline.frame` is an integer on the output grid, so every round trip through it
+ * quantises - and re-deriving the anchor from a quantised position lets a drag walk
+ * the frame it is supposed to be holding.
+ */
+let rateGesture = null;
+
+function beginRateGesture() {
+  if (rateGesture || !timeline) return;
+  rateGesture = { source: retime.sourceSecAt(timeline.programSec), wasPlaying: timeline.playing };
+  // Paused once for the gesture rather than on every event, and resumed at the end.
+  timeline.pause();
+}
+
+/** Where the anchored frame sits now that the slope has changed. */
+function programHoldingAnchor() {
+  return Math.max(0, Math.min(retime.programSecAt(rateGesture.source), timeline.duration));
+}
+
+ui.rate.addEventListener('pointerdown', beginRateGesture);
+ui.rate.addEventListener('keydown', beginRateGesture);
+
+ui.rate.addEventListener('input', () => {
+  if (!timeline) return;
+  beginRateGesture();
+  retime.rate = Number(ui.rate.value);
+  const program = programHoldingAnchor();
+  timeline.frame = timeline.frameAt(program);
+  // `moved` because a speed change rescales every lane and adds none: the set of
+  // lanes is a property of which tracks carry keys, which a slope cannot touch.
+  timingChanged({ moved: true });
+  // A cheap frame per event and a true one on release - the scrubber's rule, and
+  // here for a measured reason: twenty slider steps used to cost twenty accurate
+  // seeks, each of which renders a whole pre-roll before it can show anything.
+  draftWanted = program;
+  pumpDraft();
+});
+
+ui.rate.addEventListener('change', () => {
+  if (!timeline) return;
+  beginRateGesture();
+  retime.rate = Number(ui.rate.value);
+  const program = programHoldingAnchor();
+  const resume = rateGesture.wasPlaying;
+  rateGesture = null;
+  // Whatever is queued behind the draft in flight would otherwise paint itself over
+  // the true image this is about to ask for.
+  draftWanted = null;
+  timingChanged();
+  timeline.seek(program)
+    .then(() => { if (resume) return timeline.play(); })
+    .catch(showTimelineError);
+  history.commit();
+});
 
 ui.fps.addEventListener('change', () => {
   if (!timeline) return;
@@ -4953,14 +5158,18 @@ function laneReadout(owner) {
 
 /**
  * Rebuilds the lane rows. Called when the *set* of lanes or keys changes, never
- * per frame - the playhead moving repaints readouts through `paintLanes` and
- * touches no DOM structure, because rebuilding a lane under a drag would replace
- * the element the pointer is captured on.
+ * per frame and never per pointer move - see `repositionLanes` for why that
+ * distinction is worth two functions.
+ *
+ * It empties the two containers it owns rather than sweeping its columns for
+ * children it does not recognise. The old loop spared `.ruler` and the playhead and
+ * removed everything else, which silently destroyed the in/out markers on the first
+ * call - during boot, before anything was on screen to notice.
  */
 function rebuildLanes() {
-  for (const el of [...ui.rail.children, ...ui.beds.children]) {
-    if (!el.classList.contains('ruler') && el !== ui.playhead) el.remove();
-  }
+  counters.laneRebuilds++;
+  ui.railLanes.replaceChildren();
+  ui.lanes.replaceChildren();
   const rows = laneRows();
   const duration = Math.max(1e-6, rulerDuration());
 
@@ -4974,7 +5183,7 @@ function rebuildLanes() {
     value.dataset.readout = row.owner;
     value.textContent = laneReadout(row.owner);
     rail.append(label, value);
-    ui.rail.appendChild(rail);
+    ui.railLanes.appendChild(rail);
 
     const bed = document.createElement('div');
     bed.className = 'trow';
@@ -4982,8 +5191,11 @@ function rebuildLanes() {
     const lane = document.createElement('div');
     lane.className = 'tlane';
     lane.dataset.owner = row.owner;
+    // Held on the node so `repositionLanes` can read a lane's kind and range without
+    // rebuilding the row list, which is the whole point of the cheap path.
+    lane.__row = row;
     bed.appendChild(lane);
-    ui.beds.insertBefore(bed, ui.playhead);
+    ui.lanes.appendChild(bed);
     drawLane(lane, row, duration);
   }
 
@@ -4994,6 +5206,99 @@ function rebuildLanes() {
   placeChrome();
 }
 
+/**
+ * The same lanes, moved rather than rebuilt: `left`/`top` on the nodes that already
+ * exist and a fresh `points` on the curve, and nothing else.
+ *
+ * A drag is the reason this exists. `rebuildLanes` calls `resize()` because a lane
+ * appearing changes the strip's height and therefore the stage's - and a drag runs it
+ * on every pointer move, which measured **24 `renderer.setSize` calls in a ten-move
+ * key drag**. Resizing the drawing buffer at pointer rate is what "editing keyframes
+ * is unreliable" felt like from the outside.
+ *
+ * Returns false when the structure it is looking at no longer matches the tracks -
+ * a key sorted past its neighbour so a handle's segment is gone, a lane whose track
+ * emptied - and the caller falls back to a full rebuild. That fallback is safe
+ * mid-gesture for the reason the drag was built around: the pointer is captured on
+ * `ui.beds` and `laneDrag` holds key and row *objects*, so replacing the elements
+ * underneath it changes nothing about where the events go.
+ */
+function repositionLanes() {
+  const duration = Math.max(1e-6, rulerDuration());
+  for (const lane of ui.lanes.querySelectorAll('.tlane')) {
+    const row = lane.__row;
+    if (!row) return false;
+    const keys = keysOf(row.owner);
+    const nodes = lane.querySelectorAll('.tkey');
+    if (nodes.length !== keys.length) return false;
+    for (const node of nodes) {
+      if (!keys.includes(node.__key)) return false;
+      node.style.left = `${(node.__key.t / duration) * 100}%`;
+      node.style.top = `${keyY(row, node.__key)}%`;
+    }
+    for (const handle of lane.querySelectorAll('.thandle')) {
+      // The segment is recomputed rather than trusted. `__seg` was correct when the
+      // handle was drawn, and a key dragged past its neighbour re-sorts the track
+      // under it - so reading the stored index would move the handle by an ordering
+      // that no longer holds.
+      const i = keys.indexOf(handle.__key);
+      const seg = handle.__side === 'easeOut' ? i : i - 1;
+      if (i < 0 || seg < 0 || seg >= keys.length - 1) return false;
+      // A segment that went flat under the drag has no shape left to edit, so its
+      // handle has to go rather than be moved - which is a rebuild, not a move.
+      if (!segmentHasShape(keys, seg)) return false;
+      const point = handlePoint(row, keys, seg, handle.__side);
+      handle.__seg = seg;
+      handle.style.left = `${(point.t / duration) * 100}%`;
+      handle.style.top = `${point.y}%`;
+    }
+    const curve = lane.querySelector('polyline');
+    if (curve) curve.setAttribute('points', lanePoints(row.owner, duration));
+  }
+  return true;
+}
+
+/**
+ * The curve a scalar lane draws, as a `points` attribute in the 0..1000 by 0..100
+ * viewBox. One function because two callers want the same line: `drawLane` builds
+ * the polyline and `repositionLanes` rewrites it during a drag, and a second copy of
+ * this arithmetic would be a second thing to keep in step.
+ *
+ * **Known gap, carried deliberately.** The curve is drawn from the raw eased value
+ * while the parameter itself is clamped to its range on the way in, so an
+ * overshooting ease handle near a bound draws a curve leaving the lane where the
+ * rendered value simply saturates. The lane is then a picture of a value the clip
+ * cannot hold. The fix is to draw through `params.normalise` the way the keys
+ * already are.
+ */
+function lanePoints(owner, duration) {
+  const { min, max } = laneRange(owner);
+  const span = Math.max(1e-9, max - min);
+  const at = owner === 'retime'
+    ? (t) => retime.sourceSecAt(t)
+    : (t) => tracks.get(owner).valueAt(t);
+  const points = [];
+  for (let i = 0; i <= CURVE_SAMPLES; i++) {
+    const t = (i / CURVE_SAMPLES) * duration;
+    const y = 100 - ((at(t) - min) / span) * 100;
+    points.push(`${(i / CURVE_SAMPLES) * 1000},${Math.max(-20, Math.min(120, y)).toFixed(2)}`);
+  }
+  return points.join(' ');
+}
+
+/**
+ * Whether a segment has a shape an ease handle could edit.
+ *
+ * It does not when its two keys hold the same value, and that is arithmetic rather
+ * than a limitation to work around: the eased value is
+ * `a.value + (b.value - a.value) * ease(u)`, so with `b.value === a.value` it is
+ * `a.value` for every `u` and **no handle position changes anything that renders**.
+ * The old code half-knew this - it guarded the y write against a division by zero
+ * and left the handle on screen, so the control moved, wrote a number nothing reads,
+ * and looked broken. Not drawing it is the honest answer to the same fact.
+ */
+const segmentHasShape = (keys, seg) => Math.abs(keys[seg + 1].value - keys[seg].value) > 1e-9;
+
 function drawLane(lane, row, duration) {
   const keys = keysOf(row.owner);
   const x = (t) => (t / duration) * 100;
@@ -5003,26 +5308,9 @@ function drawLane(lane, row, duration) {
     // nothing at all about the shape between them - and the shape is exactly what
     // an ease handle edits. Drawn in a 0..1000 by 0..100 viewBox stretched to the
     // lane, so it costs nothing to redraw at a different width.
-    const { min, max } = laneRange(row.owner);
-    const span = Math.max(1e-9, max - min);
-    const at = row.owner === 'retime'
-      ? (t) => retime.sourceSecAt(t)
-      : (t) => tracks.get(row.owner).valueAt(t);
-    // **Known gap, carried deliberately.** The curve is drawn from the raw eased
-    // value while the parameter itself is clamped to its range on the way in, so an
-    // overshooting ease handle near a bound draws a curve leaving the lane where
-    // the rendered value simply saturates. The lane is then a picture of a value
-    // the clip cannot hold. The fix is to draw through `params.normalise` the way
-    // the keys already are.
-    const points = [];
-    for (let i = 0; i <= CURVE_SAMPLES; i++) {
-      const t = (i / CURVE_SAMPLES) * duration;
-      const y = 100 - ((at(t) - min) / span) * 100;
-      points.push(`${(i / CURVE_SAMPLES) * 1000},${Math.max(-20, Math.min(120, y)).toFixed(2)}`);
-    }
     const box = svg('svg', { viewBox: '0 0 1000 100', preserveAspectRatio: 'none' });
     box.appendChild(svg('polyline', {
-      points: points.join(' '), fill: 'none', stroke: 'var(--accent)',
+      points: lanePoints(row.owner, duration), fill: 'none', stroke: 'var(--accent)',
       'stroke-width': 1.4, 'vector-effect': 'non-scaling-stroke',
     }));
     lane.appendChild(box);
@@ -5047,6 +5335,8 @@ function drawLane(lane, row, duration) {
   for (const side of ['easeOut', 'easeIn']) {
     const seg = side === 'easeOut' ? i : i - 1;
     if (seg < 0 || seg >= keys.length - 1) continue;
+    // A flat segment gets none, for the reason `segmentHasShape` gives.
+    if (!segmentHasShape(keys, seg)) continue;
     const handle = document.createElement('div');
     handle.className = 'thandle';
     const point = handlePoint(row, keys, seg, side);
@@ -5120,6 +5410,7 @@ function paintLanes() {
   }
   for (const [name, btn] of keyButtons) paintKeyButton(name, btn);
   paintRateKey();
+  paintEase();
 }
 
 /** A lane appeared, moved or went away. */
@@ -5128,8 +5419,29 @@ function lanesChanged() {
   paintLanes();
 }
 
-/** The retime curve or the output rate moved, so every position on the ruler did. */
-function timingChanged() {
+/**
+ * A key or a handle moved and the set of them did not. The cheap half of the pair,
+ * and the one a pointer drag runs - it falls back to the expensive one only when the
+ * structure has actually drifted, which a drag mostly does not do.
+ */
+function lanesMoved() {
+  counters.laneRepositions++;
+  if (!repositionLanes()) {
+    counters.laneFallbacks++;
+    rebuildLanes();
+  }
+  paintLanes();
+}
+
+/**
+ * The retime curve or the output rate moved, so every position on the ruler did.
+ *
+ * `moved` says the *set* of lanes cannot have changed - which is true of a slope
+ * change, since which tracks carry keys is not something a slope can touch. It
+ * matters because the structural path resizes the drawing buffer, and a speed slider
+ * being dragged would do that once per pointer event.
+ */
+function timingChanged({ moved = false } = {}) {
   if (!timeline) return;
   ui.rate.value = String(retime.rate);
   ui.rateOut.textContent = `${retime.rate.toFixed(2)}×`;
@@ -5140,7 +5452,8 @@ function timingChanged() {
   ui.fps.value = String(timeline.outputFps);
   buildRuler();
   paintMarks();
-  lanesChanged();
+  if (moved) lanesMoved();
+  else lanesChanged();
 }
 
 // --------------------------------------------------------------- marks on the take
@@ -5344,6 +5657,21 @@ ui.beds.addEventListener('pointerdown', (e) => {
   if (!el || !timeline) return;
   e.preventDefault();
   e.stopPropagation();
+
+  // A second press on the same key removes it - see `lastKeyClick` for why this is
+  // not a `dblclick` listener. Before the capture, so a removed key never leaves a
+  // drag holding it.
+  if (el.dataset.role === 'key') {
+    const now = performance.now();
+    if (lastKeyClick.key === el.__key && now - lastKeyClick.at < DOUBLE_CLICK_MS) {
+      lastKeyClick = { key: null, at: 0 };
+      selection = { owner: el.__row.owner, key: el.__key };
+      deleteSelectedKey();
+      return;
+    }
+    lastKeyClick = { key: el.__key, at: now };
+  }
+
   ui.beds.setPointerCapture(e.pointerId);
   const lane = el.closest('.tlane');
   laneDrag = {
@@ -5381,7 +5709,11 @@ ui.beds.addEventListener('pointermove', (e) => {
       // another, so it sorts. The retime cannot and does not - see the clamp.
       tracks.get(row.owner).keys.sort((x, y) => x.t - y.t);
     }
-    if (row.owner === 'retime') timingChanged();
+    // The one thing a retime key drag moves that the lanes below do not cover. A
+    // mark is a source position and the curve carrying it onto the ruler is exactly
+    // what this drag bends, so the ticks walk while the ruler itself stays pinned to
+    // `laneDrag.duration` - see `rulerDuration`.
+    if (row.owner === 'retime') paintMarks();
   } else {
     const a = keys[laneDrag.seg];
     const b = keys[laneDrag.seg + 1];
@@ -5392,14 +5724,30 @@ ui.beds.addEventListener('pointermove', (e) => {
     // a handle past either end makes the timing curve fold back on itself and the
     // value would run backwards through part of the segment.
     h[0] = Math.min(1, Math.max(0, (laneProgramAt(e.clientX) - a.t) / dt));
-    if (Math.abs(dv) > 1e-9) h[1] = (value - a.value) / dv;
+    // `dv` is non-zero by construction - a handle only exists where
+    // `segmentHasShape` said there was a shape, and a handle drag moves no key
+    // value - so this is a backstop against writing NaN into the document rather
+    // than the reason y appears not to move. That was the old reading of the same
+    // line and it was wrong: on a flat segment y genuinely cannot do anything, and
+    // the fix was to stop drawing the handle rather than to force the write.
+    if (segmentHasShape(keys, laneDrag.seg)) h[1] = (value - a.value) / dv;
     // A look handle may overshoot - a value that swings past its key and comes
     // back is an ordinary creative choice. The retime's may not: y outside the unit
     // range makes the eased source time leave the segment's own bounds and run
     // downhill inside it, which is a reverse authored through the back door.
+    //
+    // But the overshoot is bounded, and the bound is what makes the control usable
+    // rather than a nicety. `h[1]` is a fraction of the *segment's* value span, so a
+    // drag across a lane that spans the whole parameter divides by whatever the two
+    // keys happen to differ by - and when they differ by little, a small movement is
+    // an enormous handle. Measured: a 20px drag on a segment spanning 0.6 of bloom's
+    // range put y at **-5.73**, a curve leaving its lane six times over for a
+    // gesture that looked like a nudge. One segment-span of overshoot each way keeps
+    // "past the key and back" and drops the part nobody can aim.
     if (row.owner === 'retime') h[1] = Math.min(1, Math.max(0, h[1]));
+    else h[1] = Math.min(2, Math.max(-1, h[1]));
   }
-  lanesChanged();
+  lanesMoved();
   requestRepaint();
 });
 
@@ -5416,6 +5764,173 @@ for (const type of ['pointerup', 'pointercancel']) {
     history.commit();
   });
 }
+
+// ------------------------------------------------- removing keys, and shaping them
+
+/**
+ * Removes a retime key, and refuses the one removal that would leave the curve with
+ * no head.
+ *
+ * **This closes a gap that was documented rather than fixed, and the delete gesture
+ * below is what made it reachable.** The curve is anchored by a key at program 0 -
+ * `clampRetimeKey` pins the first one there and the toggle plants it - because
+ * without it the head of the edit falls back to the extrapolation rule at the top of
+ * `sourceSecAt`. Remove the origin from a curve of two and the single remaining key
+ * extrapolates backwards: at `[t=0 v=0, t=10 v=8]`, dropping the first leaves
+ * `sourceSecAt(0)` answering `8 + (0 - 10) * rate`, which is a negative source time
+ * at the first frame of the clip. Nothing throws and nothing looks wrong; the clip
+ * simply starts somewhere nobody chose.
+ *
+ * So the rule is the whole class rather than the three-key case the old note named:
+ * the origin cannot go while anything follows it. On its own it is free to go, which
+ * is what turns the last two keys back into a plain slope.
+ */
+function removeRetimeKey(key) {
+  const i = retime.keys.indexOf(key);
+  if (i < 0) return false;
+  if (i === 0 && retime.keys.length > 1) {
+    ui.note.textContent = 'the first retime key anchors the start of the clip - '
+      + 'remove the ones after it first';
+    return false;
+  }
+  retime.keys.splice(i, 1);
+  // An origin key on its own says nothing a plain rate does not.
+  if (retime.keys.length === 1 && retime.keys[0].t === 0) retime.keys.length = 0;
+  return true;
+}
+
+/**
+ * Removes whichever key is selected in a lane.
+ *
+ * There was no way to do this at all. A key could be created from the panel, dragged
+ * in a lane and selected, and then only un-created by moving the playhead onto it and
+ * pressing the same button that made it - so a key placed by hand at a position the
+ * playhead could not be put back onto exactly was, in practice, permanent. Delete and
+ * Backspace on the selection both landed on nothing, and so did a double click.
+ */
+function deleteSelectedKey() {
+  if (!timeline || !selection) return false;
+  const { owner, key } = selection;
+  // A stale selection is not an error: an undo or a project load rebuilds every track
+  // from a snapshot, so the object this points at can simply stop being anybody's key.
+  if (!keysOf(owner).includes(key)) { selection = null; return false; }
+
+  if (owner === 'retime') {
+    if (!removeRetimeKey(key)) return false;
+    selection = null;
+    timingChanged();
+  } else {
+    tracks.get(owner).removeKey(key);
+    // A track with no keys left is not a track. The parameter keeps the value it is
+    // holding right now rather than snapping anywhere: `dropTrackIfEmpty` only stops
+    // the evaluator writing it, so what was on screen when the last key went is what
+    // stays on screen.
+    dropTrackIfEmpty(owner);
+    selection = null;
+    lanesChanged();
+  }
+  requestRepaint();
+  history.commit();
+  return true;
+}
+
+/**
+ * The shapes a handle drag is usually reaching for, as one press each.
+ *
+ * A key's `easeOut` is the first control point of the segment leaving it and its
+ * `easeIn` is the second control point of the segment arriving - see `scalarAt`. So
+ * "ease in" is about the incoming side and writes `easeIn`, "ease out" is about the
+ * outgoing side and writes `easeOut`, and they are not two halves of one number.
+ *
+ * `hold` is the one that reaches past the selected key, and it has to: holding a
+ * value across a segment means flattening *both* of that segment's control points,
+ * so it writes the next key's `easeIn` as well. It is a near-hold rather than a step
+ * - the value sits under 0.01 of its span for the first half of the segment and under
+ * 0.13 for seven eighths of it - because a true step is not expressible as a cubic
+ * and the retime forbids the handle positions that would come closest.
+ */
+const EASE_PRESETS = {
+  linear: { out: EASE_OUT_LINEAR, in: EASE_IN_LINEAR },
+  in: { in: [0.58, 1] },
+  out: { out: [0.42, 0] },
+  smooth: { out: [0.42, 0], in: [0.58, 1] },
+  hold: { out: [1, 0], nextIn: [1, 0] },
+};
+
+/**
+ * The selected key, if it is one a preset could shape. Null covers three different
+ * "no" answers on purpose - nothing selected, a selection the tracks no longer hold,
+ * and a key whose neighbouring segments are all flat - because the control is
+ * disabled for all three and the reason does not change what it does.
+ */
+function selectionEaseState() {
+  if (!timeline || !selection) return null;
+  const keys = keysOf(selection.owner);
+  const i = keys.indexOf(selection.key);
+  if (i < 0) return null;
+  const row = laneRows().find((r) => r.owner === selection.owner);
+  if (!row || row.kind !== 'scalar') return null;
+  const before = i > 0 && segmentHasShape(keys, i - 1);
+  const after = i < keys.length - 1 && segmentHasShape(keys, i);
+  return before || after ? { keys, i } : null;
+}
+
+function applyEasePreset(name) {
+  const state = selectionEaseState();
+  const spec = EASE_PRESETS[name];
+  if (!state || !spec) return false;
+  const { keys, i } = state;
+  if (spec.out) keys[i].easeOut = [...spec.out];
+  if (spec.in) keys[i].easeIn = [...spec.in];
+  if (spec.nextIn && i < keys.length - 1) keys[i + 1].easeIn = [...spec.nextIn];
+  // Cannot fire on the five above - every value is inside the unit box and none of
+  // them moves a key value, which is all this refuses. Called anyway because it is
+  // the guard that decides what a legal retime curve is, and a sixth preset added
+  // later should meet it here rather than in a render.
+  if (selection.owner === 'retime') retime.assertMonotonic(retime.keys);
+  lanesChanged();
+  requestRepaint();
+  history.commit();
+  return true;
+}
+
+for (const btn of ui.ease.querySelectorAll('button[data-ease]')) {
+  btn.addEventListener('click', () => {
+    const owner = selection?.owner ?? '';
+    if (applyEasePreset(btn.dataset.ease)) ui.note.textContent = `${btn.dataset.ease} ease on ${owner}`;
+  });
+}
+
+// Only meaningful while a key is selected, so the row goes quiet rather than staying
+// live and writing into nothing. The two halves have different conditions on purpose:
+// anything selected can be deleted, and only a key with a shapeable neighbour can be
+// eased - a lone key, or one between two flat segments, has nothing for a curve to say.
+function paintEase() {
+  const selected = Boolean(selection && keysOf(selection.owner).includes(selection.key));
+  const shapeable = Boolean(selectionEaseState());
+  ui.ease.classList.toggle('off', !selected);
+  for (const btn of ui.ease.querySelectorAll('button[data-ease]')) btn.disabled = !shapeable;
+  ui.deleteKey.disabled = !selected;
+}
+
+ui.deleteKey.addEventListener('click', () => { deleteSelectedKey(); });
+
+/**
+ * The double click that removes a key, tracked by hand in `pointerdown` rather than
+ * taken from a `dblclick` listener.
+ *
+ * A `dblclick` listener does not work here and the reason is worth writing down,
+ * because it looks like it should. The first click selects the key, selecting changes
+ * which ease handles exist, and that rebuilds the lane - so the second click lands on
+ * a *different element* than the first, and the browser dispatches `dblclick` at
+ * their nearest common ancestor, which is the lane. `e.target.closest('.tkey')` was
+ * therefore null on every double click. Measured: the listener fired and never once
+ * saw a key.
+ *
+ * The key *object* survives the rebuild, so it is what the pair is matched on.
+ */
+let lastKeyClick = { key: null, at: 0 };
+const DOUBLE_CLICK_MS = 400;
 
 // --------------------------------------------------- the keyframe controls
 
@@ -5475,17 +5990,16 @@ ui.rateKey.addEventListener('click', () => {
   const t = playheadSec();
   const tol = keyTolerance();
   const existing = retime.keys.find((k) => Math.abs(k.t - t) <= tol);
-  // **Known gap, carried deliberately.** Removing the origin key from a curve with
-  // three or more keys leaves a first key that is not at program 0, so the head of
-  // the edit falls back to the extrapolation rule the origin exists to remove.
-  // Nothing renders wrong - the curve is still monotonic and still evaluable - but
-  // the clip's first frame starts reading from a source time nobody chose. The fix
-  // is to refuse to remove the origin while anything sits after it.
-  if (existing && retime.keys.length > 1) {
-    retime.keys.splice(retime.keys.indexOf(existing), 1);
-    // The origin key is only meaningful with something after it.
-    if (retime.keys.length === 1 && retime.keys[0].t === 0) retime.keys.length = 0;
-  } else if (!existing) {
+  // Through the same door the lane's delete uses, so the rule protecting the origin
+  // is stated once. It used to be a note here saying the rule ought to exist.
+  //
+  // The condition is `existing` alone now, where it was `existing && length > 1`.
+  // Keying at program 0 on an empty curve plants exactly one key, and that guard then
+  // refused to take it back off - a toggle that could be switched on and not off, at
+  // the one position it is easiest to reach by accident.
+  if (existing) {
+    if (!removeRetimeKey(existing)) return;
+  } else {
     // The source time the curve already maps to, so planting a key never moves the
     // image. The origin comes with the first one, which is what keeps the curve
     // anchored at the head of the edit rather than at an extrapolation.
@@ -5975,14 +6489,68 @@ function sensorView() {
 
 ui.camSensor.addEventListener('click', () => { sensorView(); });
 
-// The export control: one size and one button. What is exported is the clip, at
-// the output rate the timeline is already set to, through the program camera -
-// which frames, which codec and where the file goes are the job queue's questions
-// rather than this one's, and inventing a dialog for them here would be inventing
-// the answers too.
+// ------------------------------------------------------------- the export controls
+
+/**
+ * Mirrored from `VALID_NAME` in `server/export.js`, **which is the canonical copy** -
+ * that one is enforced, this one is only what the field says before you press render.
+ *
+ * It stays a whitelist rather than a list of separators to reject, because it is the
+ * one thing between a name somebody typed and a path assembled out of it. The static
+ * handler's `isInside(EXPORTS_DIR, ...)` is the backstop, not the rule.
+ */
+const EXPORT_NAME_OK = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * One path to a saved copy, and a sentence where a second one would go.
+ * `showSaveFilePicker` is what writes the file where you point it. A hidden
+ * `<a download>` would put it in the browser's downloads folder instead, which is a
+ * different feature wearing the same button - so a browser without the API is told
+ * so rather than quietly handed the other thing.
+ */
+const CAN_SAVE_AS = typeof globalThis.showSaveFilePicker === 'function';
+
+/** What the render will be called. The field, or the take's id when it is empty. */
+function exportBaseName() {
+  const typed = ui.exportName.value.trim();
+  return typed || (timeline ? timeline.source.id : 'export');
+}
+
+function paintExportName() {
+  const typed = ui.exportName.value.trim();
+  const ok = typed === '' || EXPORT_NAME_OK.test(typed);
+  ui.exportNameChip.classList.toggle('bad', !ok);
+  ui.exportGo.disabled = exporting || !ok;
+  return ok;
+}
+
+ui.exportName.addEventListener('input', paintExportName);
+
+// The last render, and where to read it back from. `output` is an absolute path on
+// the server and the page cannot fetch it; `href` is the same file under the prefix
+// the static handler serves.
+let lastExport = null;
+
+function paintExportSave() {
+  ui.exportSave.disabled = !lastExport || !CAN_SAVE_AS;
+  ui.exportSave.title = CAN_SAVE_AS
+    ? (lastExport ? `Save a copy of ${lastExport.file}` : 'Render something first')
+    : 'This browser has no file picker - the render is in the exports directory on the server';
+}
+
+// The export control: one size, a name and one button. What is exported is the clip,
+// at the output rate the timeline is already set to, through the program camera -
+// which frames and which codec remain the job queue's questions rather than this
+// one's.
 ui.exportGo.addEventListener('click', async () => {
   if (exporting) return;
+  if (!paintExportName()) {
+    sayExport('that name would not be a filename - letters, digits, dot, dash and underscore');
+    return;
+  }
   ui.exportGo.disabled = true;
+  lastExport = null;
+  paintExportSave();
   const { outputSize } = activeDeliverable || {};
   sayExport(`export ${outputSize ?? '1920x1080'} starting`);
   try {
@@ -5991,15 +6559,42 @@ ui.exportGo.addEventListener('click', async () => {
         sayExport(`export ${Math.round((n / total) * 100)}% · frame ${n}/${total}`);
       },
     });
-    sayExport(`${done.output} · ${done.frames} frames · ${(done.bytes / 1e6).toFixed(1)} MB `
+    lastExport = { href: done.href, file: done.href.split('/').pop() };
+    sayExport(`${lastExport.file} · ${done.frames} frames · ${(done.bytes / 1e6).toFixed(1)} MB `
       + `in ${(done.elapsedMs / 1000).toFixed(1)}s`);
   } catch (err) {
     sayExport(`export failed: ${err.message}`);
     showTimelineError(err);
   } finally {
-    ui.exportGo.disabled = false;
+    paintExportName();
+    paintExportSave();
   }
 });
+
+ui.exportSave.addEventListener('click', async () => {
+  if (!lastExport) return;
+  try {
+    // **The picker opens before anything is awaited, and that ordering is the whole
+    // of whether this works.** `showSaveFilePicker` needs transient user activation,
+    // and awaiting a fetch first spends it - the sheet then never opens and the
+    // button reads as dead. So the sheet comes first and the bytes are fetched
+    // against a handle that already exists.
+    const handle = await globalThis.showSaveFilePicker({ suggestedName: lastExport.file });
+    const res = await fetch(lastExport.href);
+    if (!res.ok) throw new Error(`the render could not be read back: HTTP ${res.status}`);
+    const writable = await handle.createWritable();
+    // Streamed rather than buffered: a 4K render is gigabytes and holding one in an
+    // ArrayBuffer to hand it over in one piece would be a second copy for nothing.
+    await res.body.pipeTo(writable);
+    sayExport(`saved a copy of ${lastExport.file}`);
+  } catch (err) {
+    // Cancelling the sheet is an answer, not a failure.
+    if (err?.name === 'AbortError') return;
+    sayExport(`save failed: ${err.message}`);
+  }
+});
+
+paintExportSave();
 
 // ------------------------------------------------- the library controls in the editor
 
@@ -6600,6 +7195,31 @@ globalThis.__kinect = {
       project(i, plan) { return nodeScreenPoint(cameraKeys()[i].value.position, plan); },
     },
   },
+  /**
+   * The interaction layer's own state, for a check that drives real controls and
+   * then has to read what they did. Deliberately read-only apart from `selection`:
+   * every one of these was a claim nothing could see before, which is how a build
+   * shipped with the in/out markers detached and the delete gesture absent.
+   */
+  editor: {
+    clipRange: () => ({ in: clipIn, out: clipOut }),
+    selection: () => (selection ? { owner: selection.owner, t: selection.key.t } : null),
+    select(owner, index) {
+      const keys = keysOf(owner);
+      selection = keys[index] ? { owner, key: keys[index] } : null;
+      lanesChanged();
+      return Boolean(selection);
+    },
+    easeOf: (owner, i) => {
+      const k = keysOf(owner)[i];
+      return k ? { easeOut: [...k.easeOut], easeIn: [...k.easeIn] } : null;
+    },
+    easePresets: () => Object.keys(EASE_PRESETS),
+    shortcuts: () => SHORTCUTS,
+    exportName: () => ({ base: exportBaseName(), valid: EXPORT_NAME_OK.source, canSaveAs: CAN_SAVE_AS }),
+    lastExport: () => (lastExport ? { ...lastExport } : null),
+  },
+
   // No control switches the viewport yet - the free camera is what the live
   // viewer shows. This is how the program camera is reached until step 5 gives
   // it a path worth looking at and the top-down view a reason to draw its frustum.
