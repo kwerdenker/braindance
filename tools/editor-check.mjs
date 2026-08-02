@@ -32,9 +32,20 @@
 //      adds a button and must redden section 1 - without it, "every control was
 //      tested" is an assertion this file makes about itself.
 //
+//   3. **And enumerate from both ends, because the panel is generated now.** The rule
+//      above catches a control nothing drives. It cannot catch a control that is
+//      *missing*: the sweep is over what the page renders, so a parameter whose row
+//      never got built is not an uncovered control, it is an absence, and every row
+//      here would go on passing while a look value had no way to be reached. `main.js`
+//      refuses to boot when the generator's row count comes out short - but a build's
+//      own tripwire cannot be the only evidence its own generator is right, so the
+//      count is recomputed here from the registry and diffed against the sweep by name.
+//      `panel-row-skips-parameter` is that claim's control.
+//
 //   node server/index.js &
 //   node tools/editor-check.mjs --url http://localhost:8080 --take sample
 //   node tools/editor-check.mjs --mutate plant-unswept-control --no-render  # must FAIL
+//   node tools/editor-check.mjs --mutate panel-row-skips-parameter --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate lanes-clear-siblings  --no-render  # must FAIL
 //   node tools/editor-check.mjs --mutate rate-holds-program    --no-render  # must FAIL
 //   node tools/editor-check.mjs --mutate space-unbound         --no-render  # must FAIL
@@ -126,6 +137,33 @@ const MUTATIONS = {
       '        <span class="tchip" id="tNote"></span>\n'
       + '        <button id="tPlantedControl" type="button">planted</button>',
     ]],
+  },
+
+  // The mirror of the one above: a panel that is *missing* a control rather than
+  // carrying one nobody drives. The generator skips one registry entry, and the build's
+  // own count assertion is moved out of the way in the same breath - deliberately, and
+  // it is the whole point of the mutation. A plain omission is caught by `main.js`
+  // refusing to boot, which is the right behaviour for a user and useless as evidence
+  // here: the page never publishes anything, every tool reports DID NOT RUN, and an
+  // exit code with no assertions behind it is what this repo has twice written down as a
+  // bug found. So the mutation asks the sharper question - if the generator filtered
+  // wrongly *and* the build's own tripwire agreed with it, would anything notice? The
+  // answer has to be a failed assertion, and it has to come from a count this file
+  // recomputes rather than one the page reports.
+  //
+  // `ghostFill` rather than the first parameter of its group, because a group left with
+  // no rows at all trips a different refusal and the run would end as a crash again.
+  //
+  // Must redden: section 1's row "every parameter the registry declares has a control on
+  // the panel" - and that row alone, naming ghostFill. Nothing else here touches the
+  // panel's contents, so a run that reddens anything more is measuring something else.
+  'panel-row-skips-parameter': {
+    file: 'web/main.js',
+    edits: [
+      ['    if (spec.group !== group.key) continue;',
+        "    if (spec.group !== group.key || name === 'ghostFill') continue;"],
+      ['  if (panelRowsEmitted !== owned.length) {', '  if (panelRowsEmitted !== owned.length - 1) {'],
+    ],
   },
 
   // The bug that started this file. The rebuild goes back to clearing its columns of
@@ -601,6 +639,36 @@ try {
   // The rule half of the claim, so a build that removed every panel control could not
   // satisfy the row above by having nothing left to cover.
   check(sweep.length > 60, 'and the sweep found the panel, not an empty page', `${sweep.length} controls`);
+
+  // The other direction, and the panel being generated is what makes it necessary. Every
+  // row above asks whether the controls the page renders are driven; none of them can ask
+  // whether the controls the page *should* render are there. A generator that filtered one
+  // parameter out builds a smaller panel that works perfectly, and the look value it
+  // dropped simply has no way to be reached - which is the same class of hole as the
+  // in/out markers this file was written for, arriving through a different door.
+  //
+  // The expectation is recomputed here from the registry rather than read back from
+  // anything the page says about itself, because the failure being guarded against is a
+  // build whose own arithmetic is what went wrong. `main.js` throws at boot on this too,
+  // and that refusal is for whoever is looking at a blank panel; this row is the evidence.
+  const owned = await page.evaluate(`(() => {
+    const k = globalThis.__kinect;
+    return k.params.names().filter((n) => k.params.spec(n).tag !== 'composition');
+  })()`);
+  const swept = new Set(sweep.map((row) => row.id).filter(Boolean));
+  const absent = owned.filter((name) => !swept.has(name));
+  check(absent.length === 0,
+    `every parameter the registry declares has a control on the panel (${owned.length})`,
+    absent.length ? `no control for ${absent.join(', ')}` : `${owned.length} of ${owned.length}`);
+
+  // And the composition half, which is the same claim from the other side: a camera path
+  // is edited in the world, so a slider named after it means the look/composition split
+  // has been crossed. The registry refuses it at boot; this asks the rendered page.
+  const composition = await page.evaluate("globalThis.__kinect.params.names('composition')");
+  const withControls = composition.filter((name) => swept.has(name));
+  check(composition.length > 0 && withControls.length === 0,
+    'and no composition parameter has one, because composition is edited in the world',
+    withControls.length ? `${withControls.join(', ')} has a control` : `${composition.length} checked: ${composition.join(', ')}`);
   check(sweep.some((r) => r.id === 'tExport') && sweep.some((r) => r.id === 'tIn' || true),
     'the strip is among what was swept', `${sweep.filter((r) => r.inTbar).map((r) => r.id).filter(Boolean).slice(0, 6).join(', ')}...`);
 

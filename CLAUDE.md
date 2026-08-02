@@ -140,6 +140,39 @@ number by 4% - the probe needed the slider at full. And an export at the editor'
 own buffer size cannot tell an output size that reached the renderer from one that
 did not - that probe needed a size the editor is not.
 
+**A fourth dead zone, and this one was written into a design decision as a fact.** Step 3 of
+the effects rework added `rgbSaturation`, and the spec said a probe for the colourless-take
+path would stand in a dead zone because `captures/sample.knct` carries real JPEGs, so
+`hasColor == 1` in every arm of every tool. The first half is right and the second is false
+of the one tool that matters here: `registry-check` builds its own fixture with the colour
+block dropped, because a JPEG decode is asynchronous and a pinned run that raced it would
+hash a frame whose colour had or had not landed — and `drive.pin` therefore sets
+`hasColor = 0` itself. Every point in every arm draws a flat `vec3(0.7)`, and **saturation of
+a uniform grey is the identity at every value**, so the drop-one sweep would have recorded a
+new look parameter as one that cannot touch a pixel. The answer was to move the probe rather
+than to write the name into `NO_PIXEL_EFFECT`: `drive.plantColor` takes four saturated pixels
+from the check, and the arm asserts `hasColor` came back 1, because a plant that silently
+failed leaves the grey behind and the sweep then reports a dead zone as a measurement. **A
+tool's own synthetic fixture is not the take the program ships with, and a claim about "every
+arm" has to be read off the arms.**
+
+**A mutation whose only effect is that the page refuses to boot is not a usable mutation.**
+Step 2 replaced a boot invariant that had become a tautology - it looked a panel control up
+by id and threw when there was none, which stops being able to fail once the same pass
+creates the control it then looks for - with a count assertion: rows emitted against
+parameters declared. That refusal is right for whoever is looking at a blank panel and
+useless as evidence, because a page that throws during module evaluation publishes nothing,
+every tool reports DID NOT RUN, and an exit code with no assertions behind it is the thing
+this file twice records being written down as a bug found. So `panel-row-skips-parameter`
+skips a parameter **and moves the build's own tripwire out of the way in the same breath**,
+which is the sharper question anyway: if the generator filtered wrongly and the build's own
+count agreed with it, would anything notice? It has to be answered by a count the *tool*
+recomputes from the registry - `editor-check` section 1 diffs `params.names()` against the
+ids its sweep found, and fails naming the parameter. Reading a count the page reports would
+be the mutation editing its way past the check. The one-edit form was measured separately and
+by hand: it refuses to boot with `emitted 53 rows for 54 parameters` and never publishes
+`__kinect`.
+
 **Close the class, not the instance — and have the check enumerate it.** A review of step 7
 found six HTTP routes that changed something while dispatching on the path alone, one at a
 time, which makes six a floor rather than a total. Fixing them individually would have left
@@ -325,7 +358,38 @@ source, `timeline-check`'s page ARM and `export-check`'s `EDITOR_ARM` are all ba
 strings, and prose written into them in this repo's house style reaches for backticks around
 identifiers by reflex. Three times in one step the file stopped parsing at a word in a
 comment — `SyntaxError: Unexpected identifier 'opacity'` — which reads as a code error at a
-line containing no code. Inside a template literal, name things in plain words.
+line containing no code. Inside a template literal, name things in plain words. It happened a
+fourth time in step 3 of the effects rework, `Unexpected identifier 'rgb'`, at a comment
+explaining why a mix is guarded.
+
+**Replacing a shader literal with a uniform is not one question but two, and the second one
+is about the expression rather than the value.** Step 3 of the effects rework turned seven
+per-reading literals into parameters, each defaulting to exactly the literal it replaced, with
+`registry-check --against` hashing every reading against the build from before the readings
+existed. Five substitutions were exact on the first run. The two that were not are worth
+keeping:
+
+- **`pow(x, 1.0)` is not `x`.** Raising to the power of one is the mathematical identity and
+  not the arithmetic one - this GPU evaluates it as exp2 of the log2 and it comes back a few
+  last-bit values away. Ghost's exponent needed no guard, which is the other half of the
+  measurement: substituting a uniform *for a literal exponent* is exact, and it is asking for
+  the power of one that is not.
+- **A value that is bit-identical is not an expression that is bit-identical.** Guarding the
+  gamma with a ternary and handing the ramp the resulting variable produced a *third* image,
+  different from both `x` and `pow(x, 1.0)`: frame 0 came back `2cf348152757` unguarded,
+  `73d0479d20f9` through the ternary, and `885c07e968a6` - the old build's own hash - only when
+  the branch went around the whole statement so the default path *is* the old line. `depthRamp`
+  inlines to a mix by its argument over 0.33, so with the subtraction inside the call the
+  compiler contracts the two into one multiply-add and with a variable in its place it does
+  not. **To stay bit-exact, reach the old expression, do not recompute what it computed.**
+
+Two related roundings came out of the same step. The contour band edges are `0.5 ∓ width`, and
+doing that subtraction in the shader is float32: `f32(0.5) - f32(0.08)` is 0.42000001668930054
+where the literal `0.42` it replaces is 0.41999998688697815, so the width is halved either side
+of the middle **in double on the CPU** and uploaded as two uniforms, which lands on exactly the
+floats the literals did. And a `mix(x, y, 1.0)` is guarded rather than trusted for the same
+reason, since `x + (y - x)` is not always `y` - measured or not, the guard costs a coherent
+uniform branch and removes the question.
 
 **Adding rows to the panel broke a check that never mentioned the panel.** `#panel` is
 `position: fixed` at z-index 10 over the stage with `overflow-y: auto`, so `editor-check`'s
@@ -393,6 +457,7 @@ node tools/editor-check.mjs --url http://localhost:8080   # the editor's control
 node tools/editor-check.mjs --mutate lanes-clear-siblings --no-render  # ... and must FAIL
 node tools/editor-check.mjs --mutate plant-unswept-control --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate import-skips-normalise --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate panel-row-skips-parameter --no-render # ... and must FAIL
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated

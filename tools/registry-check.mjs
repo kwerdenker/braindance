@@ -132,10 +132,16 @@ const MUTATIONS = {
   // Section 8's falsification sweep: one weight reaches no pixel. Dropping it from the
   // restore then changes nothing, so it lands in the no-effect bucket, which is a
   // failure unless the name is in the declared exceptions - and it is not.
+  // Its reach widened when the readings grew constants of their own, and the record says
+  // so rather than being left at the number it was caught with once: switching the ghost
+  // block off takes `ghostRim` and `ghostFill` into the no-effect bucket with it, because
+  // a per-reading term is only observable through the reading it belongs to. Three names
+  // in that bucket rather than one is the right answer here, and a fourth would mean a
+  // parameter had quietly become reachable only from ghost.
   'weight-ignored': {
     from: '  if (readGhost > 0.0) {',
     to: '  if (false) {',
-    fails: 'readGhost in the drop-one sweep, plus its 1b row',
+    fails: 'readGhost, ghostRim and ghostFill in the drop-one sweep, plus readGhost\'s 1b row',
   },
 };
 
@@ -307,6 +313,17 @@ const LANDING = {
   readGhost: 'k.uniforms.readGhost.value',
   readContour: 'k.uniforms.readContour.value',
   readBlackwall: 'k.uniforms.readBlackwall.value',
+  rgbSaturation: 'k.uniforms.rgbSaturation.value',
+  depthGamma: 'k.uniforms.depthGamma.value',
+  ghostRim: 'k.uniforms.ghostRim.value',
+  ghostFill: 'k.uniforms.ghostFill.value',
+  contourBands: 'k.uniforms.contourBands.value',
+  // The one parameter here that is not a single uniform write: it is half a band's
+  // width, and the shader takes the two edges it makes. Named as the pair rather than
+  // as one of them for the reason the region's components are - an apply that wrote the
+  // same edge twice, or moved one and not the other, reads identically at either one.
+  contourWidth: '[k.uniforms.contourLo.value, k.uniforms.contourHi.value]',
+  blackwallSweep: 'k.uniforms.blackwallSweep.value',
   scan: 'k.uniforms.scanAmount.value',
   rim: 'k.uniforms.rimAmount.value',
   thermal: 'k.uniforms.thermal.value',
@@ -360,6 +377,18 @@ const EXPECT = {
   readGhost: (v) => v,
   readContour: (v) => v,
   readBlackwall: (v) => v,
+  rgbSaturation: (v) => v,
+  depthGamma: (v) => v,
+  ghostRim: (v) => v,
+  ghostFill: (v) => v,
+  contourBands: (v) => v,
+  // Written as the same double-precision arithmetic the registry does, so the two agree
+  // bit for bit rather than nearly: the whole reason the edges are computed off the GPU
+  // is that a half minus this width is a different float in float32, and a check that
+  // rounded its expectation differently from the build would be measuring its own
+  // arithmetic.
+  contourWidth: (v) => [0.5 - v, 0.5 + v],
+  blackwallSweep: (v) => v,
   scan: (v) => v,
   rim: (v) => v,
   thermal: (v) => v,
@@ -448,6 +477,28 @@ const SCRAMBLE = {
   readGhost: 0.2,
   readContour: 0.15,
   readBlackwall: 0.6,
+  // The seven per-reading constants, every one off its default - and for the first two
+  // that is the whole point rather than a habit. Their defaults are the identity: a
+  // saturation of 1 and a gamma of 1 do nothing by construction, so leaving either at
+  // its default would have the drop-one sweep below record it as a parameter that
+  // cannot touch a pixel, which is true of the value and false of the parameter.
+  //
+  // `rgbSaturation` is also the one parameter in this table that needs an input the
+  // pinned fixture does not carry. The fixture drops the colour block, so `hasColor` is
+  // 0 and every point draws a flat grey - and saturation of grey is the identity at
+  // every value, which is a dead zone rather than a value that does nothing. The sweep
+  // plants a colour image for exactly that reason; see `plantColor` below.
+  //
+  // `blackwallSweep` is a speed, so it moves nothing in a frame at program time 0 and
+  // the run below deliberately spans a second: at 0.9 against its default the scan plane
+  // has travelled 0.62 of a period by the end of it.
+  rgbSaturation: 1.6,
+  depthGamma: 0.6,
+  ghostRim: 1.4,
+  ghostFill: 0.7,
+  contourBands: 27,
+  contourWidth: 0.25,
+  blackwallSweep: 0.9,
   scan: 0.72,
   rim: 0.28,
   // Order matters here and nowhere else in this file: the comparison against the
@@ -772,6 +823,16 @@ const GOLDEN_ABSENT = new Set([
   // That the equality actually holds is not taken on trust here either - section 1b
   // hashes the framebuffer of each reading against the mode it replaced.
   'readRgb', 'readDepth', 'readGhost', 'readContour', 'readBlackwall',
+  // The seven constants each reading is made of, excused on exactly the terms above and
+  // for a reason that is the same sentence twice over. At the pinned revision every one
+  // of these was a literal inside a mode branch, so there is no earlier slider, readout
+  // or value to hold them to - and each one defaults to the literal it replaced, so a
+  // build with them renders precisely what a build without them rendered. That is the
+  // equality this arm measures, and section 1b is where it stops being an excuse and
+  // becomes a framebuffer hash: every one of these lives inside a reading, so a default
+  // that drifted moves that reading's image and fails there by name.
+  'rgbSaturation', 'depthGamma', 'ghostRim', 'ghostFill',
+  'contourBands', 'contourWidth', 'blackwallSweep',
 ]);
 const absentBefore = (name, before) => GOLDEN_ABSENT.has(name) && before === undefined;
 
@@ -1170,17 +1231,40 @@ console.log('\n[registry] a serialised project is document state, never view sta
 
 console.log('\n[registry] the panel carries no parameter data of its own');
 {
+  // The strong form of this row, and it had to become the strong form: the panel's rows
+  // are generated from the registry now, so no registry-owned input appears in the
+  // markup at all - and the old row, which kept the inputs whose id is a parameter and
+  // asserted none of them carried a range, passed on an empty set having examined
+  // nothing. A row that cannot fail is worse than no row, because it reads as coverage.
+  //
+  // So the claim is the one generation actually makes, with the count printed beside it
+  // and a floor under the scan for the same reason `syntax-check` refuses to pass on
+  // finding no files: a regex that stopped matching `<input` would otherwise report a
+  // clean panel about nothing. What the markup still legitimately carries is the sensor
+  // and monitor controls, the retime slider, the export name and the preset file picker -
+  // eight, none of them registry-owned - and the floor sits well under that deliberately,
+  // because this row is about the scan working rather than about the number. A gate set at
+  // exactly today's count would fail the next honest markup edit, which is the zero-margin
+  // threshold this repo has already been bitten by once.
+  //
+  // The second clause is the sharper half. `id="..."` is matched with double quotes, so an
+  // input written with single quotes would parse as having no id, drop out of the owned
+  // comparison, and be reported as a clean panel - the regex failing in precisely the
+  // direction that looks like a pass. Every input tag has to yield an id or the scan is
+  // not reading what it claims to read.
   const html = readFileSync(join(REPO, 'web/index.html'), 'utf8');
   const owned = new Set(Object.keys(declared));
-  const offenders = [];
-  for (const tag of html.match(/<input[^>]*>/g) ?? []) {
-    const id = tag.match(/id="([^"]+)"/)?.[1];
-    if (!id || !owned.has(id)) continue;
-    const carried = ['value', 'min', 'max', 'step'].filter((a) => tag.includes(`${a}="`));
-    if (/\schecked[\s>]/.test(tag)) carried.push('checked');
-    if (carried.length) offenders.push(`${id}[${carried.join(',')}]`);
-  }
-  check(offenders.length === 0, 'no registry-owned input declares a range or a default in the markup', offenders.join(' '));
+  const tags = html.match(/<input[^>]*>/g) ?? [];
+  const ids = tags.map((tag) => tag.match(/id="([^"]+)"/)?.[1]).filter(Boolean);
+  const MARKUP_INPUT_FLOOR = 4;
+  check(tags.length >= MARKUP_INPUT_FLOOR && ids.length === tags.length,
+    `the markup scan found the inputs it is supposed to read (${tags.length} of at least ${MARKUP_INPUT_FLOOR}, all with ids)`,
+    `${ids.join(' ')}`);
+  const inMarkup = ids.filter((id) => owned.has(id));
+  check(inMarkup.length === 0,
+    `no registry-owned input is written in the markup at all - every one of the ${owned.size} `
+    + 'is generated from the registry, so there is no second copy of a range to drift',
+    inMarkup.join(' '));
 
   const stamped = await page.evaluate(`(() => {
     const k = globalThis.__kinect;
@@ -1554,6 +1638,33 @@ await page.evaluate(async () => {
   const buffer = await (await fetch('/__pinned.bin')).arrayBuffer();
   globalThis.__kinect.drive.pin(buffer);
 });
+
+// And a colour image, because one parameter is only observable through one.
+//
+// `pin` above switches colour off - a JPEG decode is asynchronous and a pinned run that
+// raced it would hash a frame whose colour had or had not arrived - so every point in
+// every arm below draws the flat `vec3(0.7)` the shader falls back to. Saturation of a
+// uniform grey is the identity at every value, so `rgbSaturation` would have come out of
+// the drop-one sweep as a parameter that cannot reach a pixel: a probe standing in a
+// dead zone, reporting a clean pass on a build that had the term backwards.
+//
+// Four saturated pixels rather than a photograph, and the bytes live here rather than in
+// the page so this arm owns its own input. Both samplers are pointed at the one texture,
+// so nothing depends on which side of the pair `mixT` favours at a given position.
+await page.evaluate(`globalThis.__kinect.drive.plantColor(${JSON.stringify([
+  220, 30, 40, 255, 30, 200, 90, 255,
+  40, 70, 230, 255, 230, 200, 40, 255,
+])}, 2, 2)`);
+// Asserted rather than assumed, because the arm it exists for is a *negative* result
+// otherwise: a plant that silently failed leaves the grey behind, `rgbSaturation` lands
+// in the no-effect bucket, and the sweep reports a parameter that cannot reach a pixel
+// as though it had measured one.
+{
+  const planted = await page.evaluate('globalThis.__kinect.uniforms.hasColor.value');
+  check(planted === 1,
+    'the sweep runs against a colour image, so a colour term is not measured on grey',
+    `hasColor ${planted}`);
+}
 
 const positions = await page.evaluate(`(() => {
   const times = globalThis.__kinect.drive.times();

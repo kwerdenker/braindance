@@ -87,10 +87,13 @@
 // and B bit-identical to the clean run because `fx === fy` on both.
 // `sensor-view-keys-camera`: 7 fired, all in section 4, the project growing 1391 to
 // 2583 bytes and a `PUT /projects/__working__` appearing in the request log.
-// `keyframes-on-every-surface`: 2 fired, both of them recorder rows - 36 buttons in a
+// `keyframes-on-every-surface`: 2 fired, both of them recorder rows - 52 buttons in a
 // panel that should hold none, at every state of the extended toggle - with the
 // editor's own row green beside them, which is the asymmetry that makes the pair
-// worth having rather than one row saying something broke. `extended-always-open`: 3
+// worth having rather than one row saying something broke. That count was 36 when the
+// buttons were patched on by a loop of their own and is 52 now that the generator emits
+// one per look parameter, which is the same claim over a registry seven parameters
+// larger. `extended-always-open`: 3
 // fired, the grade visible on the recorder before any press and still visible after
 // the toggle is closed again, with the row that says one press reveals them all left
 // green - a rule that has stopped hiding cannot be told from a button that works by
@@ -238,11 +241,17 @@ const MUTATIONS = {
   // draws a lane, so nothing shows it. The asymmetry is the whole point of the
   // control: it must redden the recorder rows and leave the editor's alone, because
   // a mutation that reddens both cannot say which surface broke.
+  // Re-anchored when the panel became generated, and the refusal is what surfaced it:
+  // the gate used to sit on a second loop that patched keyframe buttons onto rows the
+  // markup already held, and that loop is gone because the row and its button are now
+  // built in one pass. The mutation is the same mutation - the surface stops deciding
+  // whether a look parameter gets a keyframe control - but the text it names moved, and
+  // an anchor matching 0 times exits 2 rather than passing quietly.
   'keyframes-on-every-surface': {
     file: 'web/main.js',
     edits: [[
-      'for (const name of EDITING ? params.names(\'look\') : []) {',
-      'for (const name of params.names(\'look\')) {',
+      "    if (EDITING && spec.tag === 'look') {",
+      "    if (spec.tag === 'look') {",
     ]],
   },
   // The grade stops being one button away and is simply there. Same specificity and

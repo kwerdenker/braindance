@@ -185,6 +185,23 @@ arithmetically the identity, which is what lets every look authored before this 
 the pixels it always did; `registry-check` proves that by hashing the framebuffer of
 each reading against the mode it replaced.
 
+**And each reading is adjustable rather than only selectable.** Seven of its constants
+were literals inside the shader branch it used to be — the colour's saturation, the depth
+ramp's gamma, the ghost shell's rim exponent and fill, the contour's bands per metre and
+line thickness, and the speed the Blackwall scan plane sweeps at. They are ordinary
+registry parameters, so they keyframe: a wall can stop scanning and start again, and a
+contour can tighten under the playhead. Every one defaults to exactly the literal it
+replaced, which is what keeps the equality above true — the framebuffer hash against the
+pre-reading build is what would catch a default that drifted.
+
+The panel itself is generated from the registry at boot rather than written beside it. A
+parameter is one entry naming its group and its label, and the row, its bounds, its
+readout and its keyframe control are all built from that — so adding an effect cannot
+produce a control the registry does not own or a parameter with no way to reach it. The
+generator refuses to boot if the rows it emitted are not the parameters that were
+declared, and `editor-check` recomputes that count from the registry rather than believing
+the page.
+
 The shading and the look used to be one gesture: selecting Blackwall applied twelve
 post-chain values with it, so you could not have the crimson volume without the grade or
 the grade without the volume. They are separate now. What ships instead is a preset
