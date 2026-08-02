@@ -120,15 +120,24 @@ const MUTATIONS = {
   // The mutated build accepts a string where a scalar belongs and accepts a key called
   // `__proto__`, and both rows have to go red - a build that only caught one of them
   // would mean the other row was being carried by the first.
+  // Both anchors moved when the import path was split into a refusal taken before the
+  // PUT and an apply taken after it, and the mutation has to remove *both* halves to
+  // still be the bypass it names: dropping only the apply leaves `refusePresetBody`
+  // normalising every value ahead of the store, which is the check under test wearing
+  // a different name. So the guard goes and the apply becomes a raw walk onto the
+  // uniforms, which is the shape a build that never learned about the registry has.
   'import-skips-normalise': {
     file: 'web/main.js',
-    edits: [[
-      "  applyStoredPreset({ name, rev: 'sha256:imported', body });",
-      '  for (const [k, v] of Object.entries(body.values ?? {})) {\n'
-      + '    if (globalThis.__kinect?.uniforms?.[k]) globalThis.__kinect.uniforms[k].value = v;\n'
-      + '  }\n'
-      + "  appliedPreset = { name, rev: 'sha256:imported' };",
-    ]],
+    edits: [
+      ['  refusePresetBody(name, body);\n', ''],
+      [
+        '  applyStoredPreset({ name: saved.name, rev: saved.rev, body });',
+        '  for (const [k, v] of Object.entries(body.values ?? {})) {\n'
+        + '    if (globalThis.__kinect?.uniforms?.[k]) globalThis.__kinect.uniforms[k].value = v;\n'
+        + '  }\n'
+        + '  appliedPreset = { name: saved.name, rev: saved.rev };',
+      ],
+    ],
   },
 
   'plant-unswept-control': {

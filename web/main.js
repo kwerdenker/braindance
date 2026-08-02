@@ -2034,7 +2034,23 @@ const params = {
    */
   apply(next) {
     refuseDuringEvaluation('a bulk write');
-    for (const [name, value] of Object.entries(next)) this.set(name, value);
+    // **Checked in full before anything is written**, because a bulk write that throws
+    // halfway leaves a look nobody authored. `set` writes as it walks, so a hand-edited
+    // `{ grain: 0.9, bloom: "loud" }` used to move grain, throw at bloom, and leave the
+    // page rendering a document that was reported as refused - and in no undo snapshot
+    // either, since the throw goes out past the `history.commit` that would have
+    // recorded it. Whatever caught the error then described a file that had already
+    // changed the image.
+    //
+    // `restoreProject` already knew this and pre-walked `params.spec` for it; the fix
+    // belongs here instead, because a name that exists is only half the question and
+    // every caller of the bulk door has the same problem. `normalise` is exactly "what
+    // `set` would store, without storing it", so this is the write's own rule asked
+    // early rather than a second opinion that could drift from it - and the second pass
+    // through it inside `set` is idempotent, which is the price of keeping one write
+    // path rather than a bypass that skips the checks by construction.
+    const checked = Object.entries(next).map(([name, value]) => [name, this.normalise(name, value)]);
+    for (const [name, value] of checked) this.set(name, value);
     return this;
   },
   /**
@@ -2899,12 +2915,22 @@ function restoreProject(project) {
   // version. A document that is not this build's version is refused, because a
   // document whose units cannot be recovered is one that renders wrong with
   // nothing to say why.
+  // Two different refusals wearing one sentence, and saying the wrong one is worse
+  // than saying nothing: the point-size rebase is what version *1* records, so telling
+  // somebody holding a version 3 project that its units cannot be recovered is false
+  // and sends them looking for a scale factor. Version 3 is the immediately preceding
+  // shape, it already had 1080p point sizes, and the only thing it carries that this
+  // build cannot read is `look.mode` - which converts losslessly. So the version it
+  // found decides which of the two it is told.
   if (project.version !== PROJECT_VERSION) {
+    const across = project.version === PROJECT_VERSION - 1
+      ? `version ${PROJECT_VERSION} carries the five reading weights where 3 carried a shading `
+        + 'mode, so run tools/convert-presets.mjs over the directory to bring it across'
+      : 'point size is pixels at 1080p from version 1 onwards and was pixels at the drawing '
+        + 'buffer before it, so there is no faithful reading of a document from before that';
     throw new Error(
       `this project is version ${JSON.stringify(project.version)} and this build reads `
-      + `version ${PROJECT_VERSION}: point size is pixels at 1080p in version ${PROJECT_VERSION} `
-      + 'and was pixels at the drawing buffer before it, so there is no faithful reading of '
-      + 'an unversioned file',
+      + `version ${PROJECT_VERSION}: ${across}`,
     );
   }
   if (!project.look || typeof project.look !== 'object') {
@@ -6143,16 +6169,40 @@ function presetFromCurrentLook(names) {
   return { version: PROJECT_VERSION, values: params.values(names ?? params.names('look')) };
 }
 
+/**
+ * Everything about a preset that can be refused without writing anything.
+ *
+ * Split out of `applyStoredPreset` so the import path can ask the question before it
+ * PUTs rather than after: a file has to be checked before it enters a library where it
+ * will sit looking like a look, and it has to be *applied* only once the store has
+ * answered with the revision it was given. Those were one gesture and could not be,
+ * because the gesture stamped a revision the store had not issued yet.
+ */
+function refusePresetBody(name, body) {
+  // The same two refusals `restoreProject` distinguishes, for the same reason: a
+  // version 3 preset is one command away from opening and telling its holder the point
+  // size cannot be recovered sends them after a scale factor that is not the problem.
+  if (body?.version !== PROJECT_VERSION) {
+    const across = body?.version === PROJECT_VERSION - 1
+      ? `version ${PROJECT_VERSION} carries the five reading weights where 3 carried a shading `
+        + 'mode, so run tools/convert-presets.mjs over the file to bring it across'
+      : 'point size is pixels at 1080p from version 1 onwards and was pixels at the drawing '
+        + 'buffer before it, so its look cannot be reconstructed';
+    throw new Error(
+      `preset ${name} is version ${JSON.stringify(body?.version)} and this build reads `
+      + `${PROJECT_VERSION}: ${across}`,
+    );
+  }
+  // The values, checked against the registry without reaching it. `params.apply` does
+  // this again on the way in and has to - this is the import path's early copy, taken
+  // before the PUT, so a file the registry would refuse never becomes a document.
+  for (const [key, value] of Object.entries(body.values ?? {})) params.normalise(key, value);
+}
+
 /** Applies a saved preset and stamps where it came from. */
 function applyStoredPreset(doc) {
   refuseDuringEvaluation('a stored preset applied');
-  if (doc.body.version !== PROJECT_VERSION) {
-    throw new Error(
-      `preset ${doc.name} is version ${JSON.stringify(doc.body.version)} and this build reads `
-      + `${PROJECT_VERSION}: point size is pixels at 1080p here and was pixels at the drawing `
-      + 'buffer before, so its look cannot be reconstructed',
-    );
-  }
+  refusePresetBody(doc.name, doc.body);
   params.apply(doc.body.values ?? {});
   appliedPreset = { name: doc.name, rev: doc.rev };
   requestRepaint();
@@ -6217,12 +6267,22 @@ async function importPresetFile(file) {
   } catch (err) {
     throw new Error(`${file.name} is not JSON: ${err.message}`);
   }
-  // Applied before it is saved, deliberately. The store checks the version and the
-  // name; only the registry can say whether the values are values, and a file that
-  // cannot be applied has no business entering a library where it will sit looking
-  // like a look until somebody picks it.
+  // **Checked before it is saved and applied only after**, which used to be one step
+  // and could not be. The store checks the version and the name; only the registry can
+  // say whether the values are values, and a file that cannot be applied has no
+  // business entering a library where it will sit looking like a look until somebody
+  // picks it - so the refusal still happens first, ahead of the PUT.
+  //
+  // What moved is the *apply*. Applying first meant stamping `sha256:imported`, a
+  // revision no store ever issued, and `applyStoredPreset` commits an undo snapshot
+  // and fires the auto-save on its way out - so the placeholder was written into the
+  // snapshot and into the working project, and replacing `appliedPreset` afterwards
+  // reached neither. Crash recovery restored the placeholder, and one edit followed by
+  // an undo put it back on screen. The store's answer is the first thing that knows the
+  // real revision, so nothing is stamped until it has answered.
   const name = file.name.replace(/\.braindance-preset\.json$|\.json$/i, '');
-  applyStoredPreset({ name, rev: 'sha256:imported', body });
+  refuseDuringEvaluation('a preset imported');
+  refusePresetBody(name, body);
   const res = await fetch(`/presets/${encodeURIComponent(name)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -6230,7 +6290,7 @@ async function importPresetFile(file) {
   });
   const saved = await res.json();
   if (saved.error) throw new Error(saved.error);
-  appliedPreset = { name: saved.name, rev: saved.rev };
+  applyStoredPreset({ name: saved.name, rev: saved.rev, body });
   return saved;
 }
 

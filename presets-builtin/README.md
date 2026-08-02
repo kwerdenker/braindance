@@ -22,3 +22,15 @@ either look was in pixels.
 The four non-Blackwall looks are deliberately identical apart from their reading. They are
 the neutral grade, which is what leaving Blackwall used to restore, and their job is to be a
 clean place to start rather than a look in their own right.
+
+**Each file carries the seven reading-detail values as well as the reading**, and writing
+them in changed no pixel: every one of the seven defaults to exactly the literal it replaced
+when the shader's per-reading constants became parameters, so these are the numbers all five
+looks were graded against, stated rather than inherited. What it changes is what applying a
+preset *does*. `applyStoredPreset` walks the keys the document names and nothing else, so
+while they were absent, picking `contour` after somebody had pulled `contourBands` to 60 gave
+them a contour at 60 bands and called it the shipped look — a document that renders
+differently depending on what you touched before it is not a look that ships. The line is
+drawn at the reading's own detail rather than at every look parameter: these seven are what
+the five readings *are*, where turbulence and the region box are grading you do on top of one,
+and a preset that reset those would stop being a starting point and become a document.
