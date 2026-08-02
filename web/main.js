@@ -6955,7 +6955,12 @@ function finishOrbitDrift() {
   if (!orbiting && !orbitSettling) return;
   const damped = controls.enableDamping;
   controls.enableDamping = false;
-  controls.update();
+  // Zero rather than no argument, and the difference is not cosmetic. `update()`
+  // called bare falls back to a fixed auto-rotate step, so with `spin` on this would
+  // add a turn nobody asked for - and with damping off for this one call it would
+  // land in full, putting the camera somewhere the manual glide was never heading.
+  // A delta of zero rotates by zero, which is what "finish what is owed" means.
+  controls.update(0);
   controls.enableDamping = damped;
 }
 
@@ -8477,6 +8482,14 @@ let nodeDrag = null;
 // Catching the event a level up is what makes `stopPropagation` mean anything.
 addEventListener('pointerdown', (e) => {
   if (!chromeOn || e.target !== renderer.domElement) return;
+  // Before the hit test rather than after it, because the hit carries a depth read
+  // through the camera and the drag then unprojects every pointer move through the
+  // same one. A camera still draining its release would be a different camera by the
+  // second move, so the plane the pointer is being read against would slide out from
+  // under the gesture and the node would land somewhere nobody pointed at. This is
+  // the third member of the class `finishOrbitDrift` exists for - reading the pose,
+  // fixing the pose, and now projecting through it.
+  finishOrbitDrift();
   const view = viewUnder(e.clientX, e.clientY);
   if (!view) return;
   const hit = nodeUnder(view);
