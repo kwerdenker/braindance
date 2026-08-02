@@ -5782,8 +5782,20 @@ function programHoldingAnchor() {
 }
 
 ui.rate.addEventListener('pointerdown', beginRateGesture);
-ui.rate.addEventListener('keydown', beginRateGesture);
-for (const type of ['change', 'pointerup', 'pointercancel', 'keyup']) {
+// The keys a range input answers, named rather than left unconditional. Tab fires
+// `keydown` here too and then takes the focus away *before* `keyup`, so an
+// unconditional start paused the take and handed the gesture to a control that has no
+// end handler for it. Measured: `keydown -> blur -> focusout -> button:keyup`, with the
+// keyup delivered to the button.
+const RATE_KEYS = new Set([
+  'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End',
+]);
+ui.rate.addEventListener('keydown', (e) => { if (RATE_KEYS.has(e.key)) beginRateGesture(); });
+// `blur` is in here for the same reason and is the one that closes the class: it is the
+// last event the control gets on *any* way out of it, including the ones nobody thought
+// of. It cannot pre-empt a commit either - on an arrow followed by Tab, `change` lands
+// three events before `blur`, so the gesture is already over by then.
+for (const type of ['change', 'pointerup', 'pointercancel', 'keyup', 'blur']) {
   ui.rate.addEventListener(type, endRateGesture);
 }
 
