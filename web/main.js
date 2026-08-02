@@ -5363,6 +5363,25 @@ function clipFractionAt(surface, clientX) {
 
 const onStripWheel = (surface) => (e) => {
   if (!timeline) return;
+  // A wheel that started inside the lane scroller, on the axis that scroller uses,
+  // belongs to it rather than to the zoom - so it is left alone entirely, native
+  // scrolling and all, rather than being handled here. `#tLanes` is a descendant of
+  // `ui.beds`, so without this every wheel over a lane bubbled to this listener, got
+  // `preventDefault`ed and zoomed, and the only way left to reach a lane below the fold
+  // was to find and drag a thin scrollbar.
+  //
+  // Only while the lanes actually overflow, asked of `scrollHeight` against
+  // `clientHeight` rather than of the scroll position - a rule keyed on position would
+  // hand the wheel back to the zoom at the top and bottom of the travel, which is a
+  // surface that changes what it does depending on how far you have already come. With
+  // room for every lane there is nothing to scroll and the wheel zooms as it does
+  // anywhere else on the strip.
+  //
+  // The axis test is the same one the branch below uses, so a horizontal pan over the
+  // lanes still pans rather than falling through to the browser.
+  if (Math.abs(e.deltaY) >= Math.abs(e.deltaX)
+    && ui.lanes.contains(e.target)
+    && ui.lanes.scrollHeight > ui.lanes.clientHeight) return;
   e.preventDefault();
   // A trackpad reports both axes at once and a mouse reports one, so the dominant
   // axis decides which gesture this is - reading both would zoom and pan on every
