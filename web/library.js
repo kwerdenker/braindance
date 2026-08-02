@@ -440,6 +440,30 @@ function addButton(row, label, cls, onClick, { disabled = false, why = '', item 
  * a control that vanishes reads as the page being broken, and on a touch panel there
  * is no tooltip to explain a control that stayed.
  */
+/**
+ * Why Delete cannot be pressed on this take, or an empty string when it can.
+ *
+ * **One function because two surfaces ask, and both of them were wrong about the same
+ * take.** A node-only take had a lit Delete on the tile and, once the viewer existed,
+ * a second lit Delete there - and `/library/delete/:id` answers 404 for it, because
+ * `serveRemoval` looks the take up among the local ones and there is no local one.
+ * Worse than a control that fails: the confirm in front of it reads "This is the only
+ * copy. Deleting it cannot be undone", which is the most alarming sentence this page
+ * can show, in front of a button that was never going to do anything.
+ *
+ * The review named the viewer's copy of this. Fixing that alone would have left the
+ * tile offering the same button with the same dialog, so the rule lives here and both
+ * surfaces read it - the same shape `menuItemsFor` already uses for the items whose
+ * answer depends on where a take is.
+ */
+function cannotDelete(take) {
+  if (take.recording === true) return warningsOf(take)[0].why;
+  if (take.state === 'remote') {
+    return `${take.id} is only on ${library.node?.name ?? 'the node'}, and delete removes a file on this machine`;
+  }
+  return '';
+}
+
 function menuItemsFor(take) {
   const shooting = take.recording === true;
   const onlyThere = take.state === 'remote';
@@ -515,6 +539,27 @@ document.addEventListener('pointerdown', (e) => {
   closeMenus();
 }, true);
 
+// **And Escape closes it, which `library.html` said next to the menu's own rules and
+// nothing here did.** The menu is a `div` rather than a `dialog`, so it gets none of
+// the cancel behaviour a browser would otherwise supply - a keyboard user who opened
+// one had a tap as the only way out, on a surface whose comment promised otherwise.
+// Captured, and the focus put back on the toggle that opened it, because a menu
+// dismissed while focus sat inside it would leave the caret nowhere.
+//
+// Stopped only when a menu was actually open: inside the viewer, Escape is the
+// browser's own way of closing the dialog, and swallowing it unconditionally would
+// take the way out of the surface away to close a menu that was not there.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const open = document.querySelector('.menu:not([hidden])');
+  if (!open) return;
+  e.stopPropagation();
+  e.preventDefault();
+  const toggle = open.parentElement.querySelector('[aria-haspopup="menu"]');
+  closeMenus();
+  toggle?.focus();
+}, true);
+
 /**
  * Builds a ⋯ menu into a container, hidden, with a toggle that opens it.
  *
@@ -533,7 +578,15 @@ function buildMenu(host, toggle, take, hostFor) {
   for (const entry of entries) {
     const b = addButton(menu, entry.label, 'mi', () => {
       closeMenus();
-      entry.run(hostFor());
+      // **Consumed here rather than at each item, because this is the boundary where a
+      // rejection stops having anywhere to go.** `run` reports the failure by putting
+      // it on the status line and then rethrows, which is right for the callers that
+      // await it - but a click handler is nobody's caller, so a Reveal that could not
+      // start its file manager became an unhandled rejection and a page-level error
+      // for a failure the page had already handled and displayed. Wrapped at the one
+      // place every item goes through, so an item added later cannot forget it; the
+      // items that open a dialog return undefined and pass through untouched.
+      Promise.resolve(entry.run(hostFor())).catch(() => {});
     }, { disabled: !entry.enabled, why: entry.why, item: entry.item });
     b.dataset.item = entry.item;
     b.role = 'menuitem';
@@ -719,12 +772,15 @@ function buildTile(take) {
 
   const acts = tile.querySelector('.acts');
   if (take.state === 'remote' && !shooting) {
+    // Caught for the reason the menu's boundary is: a click handler has no caller to
+    // rethrow to, and the node dropping mid-transfer is the ordinary failure here.
+    // The viewer's copy of this button already did; the tile's did not.
     addButton(acts, 'Download', 'act primary', () => run(
       tile,
       `downloading ${take.id} — asking ${library.node?.name ?? 'the node'} for ${gb(take.bytes)}`,
       () => post(`/library/download/${encodeURIComponent(take.id)}`),
       () => downloadProgress(take.id),
-    ));
+    ).catch(() => {}));
   } else {
     // A take that cannot be opened says so on the button rather than throwing when
     // pressed. Two frames is the floor for a pair source and a hello is what carries
@@ -737,8 +793,8 @@ function buildTile(take) {
     }, { disabled: !take.openable, why: cannotOpen(take) });
   }
   addButton(acts, 'Delete', 'act danger', () => askDelete(tile, take), {
-    disabled: shooting,
-    why: shooting ? warningsOf(take)[0].why : '',
+    disabled: Boolean(cannotDelete(take)),
+    why: cannotDelete(take),
   });
   const more = addButton(acts, '⋯', 'act more', () => {}, { item: 'more' });
   more.setAttribute('aria-haspopup', 'menu');
@@ -1135,7 +1191,10 @@ function openViewer(key) {
       location.href = `/edit?take=${encodeURIComponent(take.id)}`;
     }, { disabled: !take.openable, why: cannotOpen(take) });
   }
-  addButton(acts, 'Delete', 'act danger', () => askDelete(hostOf(), take));
+  addButton(acts, 'Delete', 'act danger', () => askDelete(hostOf(), take), {
+    disabled: Boolean(cannotDelete(take)),
+    why: cannotDelete(take),
+  });
   const vMore = document.getElementById('vMore');
   // Replaced rather than re-wired: the ⋯ in the header belongs to whichever take is
   // open, and a listener left on the old node would act on the take before this one.

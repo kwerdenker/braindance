@@ -514,17 +514,39 @@ async function downloadClaimed(node, take, dir) {
     // Footage destroyed by a transfer nobody would think of as a write to another
     // take.
     //
-    // The EEXIST branch is not a refusal, because refusing here would throw away a
-    // download that has already succeeded. It is the same answer the collision check
-    // at the top of this function gives, arrived at from the other side: the two
-    // takes coexist, and the one that turned up second wears the hash in its name.
-    try {
-      await link(temp, target);
-    } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
-      target = join(dir, `${take.id}-${take.hash.slice(7, 15)}.knct`);
-      await link(temp, target);
+    // EEXIST is not a refusal, because refusing here would throw away a download that
+    // has already succeeded. It is the same answer the collision check at the top of
+    // this function gives, arrived at from the other side: the two takes coexist, and
+    // the one that turned up second wears the hash in its name.
+    //
+    // **A list rather than one fallback, because the first version of this had a
+    // fallback that could be the name that just failed.** If the plain name was taken
+    // before the download began, the collision check at the top already moved `target`
+    // to the hashed one - so a rename onto *that* during the transfer gave EEXIST, and
+    // reassigning the hashed name retried the identical `link` and discarded gigabytes
+    // that had arrived and verified. Every candidate here is tried with `link`, which
+    // is the same atomic claim used above, so the loop cannot be a check-then-act
+    // however many names it walks.
+    const suffixed = join(dir, `${take.id}-${take.hash.slice(7, 15)}.knct`);
+    const candidates = [target, suffixed].filter((p, i, all) => all.indexOf(p) === i);
+    for (let n = 2; n <= 9; n++) candidates.push(join(dir, `${take.id}-${take.hash.slice(7, 15)}-${n}.knct`));
+    let claimed = null;
+    for (const candidate of candidates) {
+      try {
+        await link(temp, candidate);
+        claimed = candidate;
+        break;
+      } catch (err) {
+        if (err.code !== 'EEXIST') throw err;
+      }
     }
+    if (!claimed) {
+      throw new Error(
+        `${take.id} arrived and verified, but every name it could take in ${dir} is occupied `
+        + `(tried ${candidates.length}): move something out of the way and download it again`,
+      );
+    }
+    target = claimed;
     await unlink(temp);
     forgetCapture(target);
   } catch (err) {
