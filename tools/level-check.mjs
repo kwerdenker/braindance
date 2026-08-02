@@ -54,6 +54,8 @@
 //   node tools/level-check.mjs --mutate tilt-ignored             # must FAIL
 //   node tools/level-check.mjs --mutate crop-follows-tilt        # must FAIL
 //   node tools/level-check.mjs --mutate plan-ignores-tilt        # must FAIL
+//   node tools/level-check.mjs --mutate plan-skips-vertical-crop # must FAIL
+//   node tools/level-check.mjs --mutate region-follows-tilt      # must FAIL
 //   node tools/level-check.mjs --mutate sensor-view-ignores-tilt # must FAIL
 //   node tools/level-check.mjs --mutate level-writes-zero        # must FAIL
 //   node tools/level-check.mjs --mutate level-order-swapped      # must FAIL
@@ -104,8 +106,16 @@ const MUTATIONS = {
   // The picture levels and the box in the corner does not, which is exactly the state
   // this feature was built to end. Nothing outside section 3 can see it.
   'plan-ignores-tilt': { file: 'web/main.js', edits: [[
-    '      planVec.set(wx, -((row + 0.5 - cy) / fy) * z, -z).applyQuaternion(worldTilt);',
-    '      planVec.set(wx, -((row + 0.5 - cy) / fy) * z, -z);',
+    '      planVec.set(wx, wy, -z).applyQuaternion(worldTilt);',
+    '      planVec.set(wx, wy, -z);',
+  ]] },
+  // The plan culls on x alone, which is what it did while a top-down had no y to
+  // care about. Levelling turns sensor y into the plan's own x and z, so points the
+  // renderer discarded reappear inside the footprint - and only section 3's extent,
+  // measured with a crop that bites vertically, can see it.
+  'plan-skips-vertical-crop': { file: 'web/main.js', edits: [[
+    '      if (wy < uniforms.cropB.value || wy > uniforms.cropT.value) continue;\n',
+    '',
   ]] },
   // The sensor view keeps navigation's own pole and its own axis, so on a levelled
   // take the one button that means "exactly what the sensor shot" shows a rolled
@@ -120,8 +130,18 @@ const MUTATIONS = {
   // was nearly level to start with, which is why section 5 plants surfaces that are
   // not.
   'level-writes-zero': { file: 'web/main.js', edits: [[
-    '  params.set(\'roll\', roll);\n  params.set(\'tilt\', tilt);',
-    '  params.set(\'roll\', 0);\n  params.set(\'tilt\', 0);',
+    '  writeFromControl(\'roll\', roll);\n  writeFromControl(\'tilt\', tilt);',
+    '  writeFromControl(\'roll\', 0);\n  writeFromControl(\'tilt\', 0);',
+  ]] },
+  // The region is read after the model rotation instead of on the undisplaced
+  // sensor-space position, so a region placed on a subject slides off it the moment
+  // the room is levelled underneath. Section 2 is the only thing that can see it, and
+  // only because that section now switches a region effect on: with `regionPush`,
+  // `regionNoise` and `regionMask` all at zero the shader never evaluates the region
+  // coordinate at all, and this mutation and the fix draw the same picture.
+  'region-follows-tilt': { file: 'web/main.js', edits: [[
+    '  vec3 p0 = pos;',
+    '  vec3 p0 = (modelMatrix * vec4(pos, 1.0)).xyz;',
   ]] },
   // The pair is composed the other way round, `Rz(roll) * Rx(tilt)`. Every surface
   // that leans along one axis alone is levelled correctly by both orders, so this is
@@ -403,6 +423,33 @@ try {
     k.params.set('bottom', -0.35);
     k.params.set('top', 0.45);
   });
+  /**
+   * A region that actually bites, which this section claimed in its heading and did
+   * not do.
+   *
+   * The crop faces alone cannot prove the region is in sensor space: the shader gates
+   * the whole region evaluation behind `regionPush`, `regionNoise` and `regionMask`
+   * being non-zero, so with all three at their defaults the region coordinate is never
+   * read, and a build that evaluated it after the model rotation drew a pixel-identical
+   * picture and passed this section. `region-follows-tilt` is the control for that, and
+   * it fails only because this is here.
+   *
+   * A mask rather than a push, because a push moves points and a mask removes them: the
+   * surviving set is what the identity below compares, and a point shoved a little way
+   * along its own radius can still land on the pixel it left. The box is centred on the
+   * planted surface's own centre ray at two metres, so it takes a bite out of the
+   * middle of the plane rather than clipping a corner nothing would miss.
+   */
+  const armRegion = () => page.evaluate(() => {
+    const k = globalThis.__kinect;
+    k.params.set('regionZ', -2);
+    k.params.set('regionW', 0.25);
+    k.params.set('regionH', 0.25);
+    k.params.set('regionD', 0.25);
+    k.params.set('regionRound', 0.05);
+    k.params.set('regionSoft', 0.05);
+    k.params.set('regionMask', 1);
+  });
   /** Poses the program camera, optionally carried by the world's own rotation. */
   const poseProgram = (carry) => page.evaluate((withTilt) => {
     const k = globalThis.__kinect;
@@ -423,8 +470,16 @@ try {
 
   await setTilt(0, 0);
   await poseProgram(false);
+  const bare = await picture();
+  ok('the same surface through a fixed pose is stable', bare.stable);
+  await armRegion();
   const still = await picture();
-  ok('the same surface through a fixed pose is stable', still.stable);
+  // The row that stops the region rows below being vacuous. A region whose box missed
+  // the planted plane, or whose mask was left at zero, would satisfy every identity in
+  // this section by changing nothing - which is exactly the state this section was in.
+  ok('switching the region on takes points out of the picture, so it is in the proof at all',
+    bare.hash !== still.hash, `${bare.hash} then ${still.hash}`);
+  ok('and the picture with the region on is stable enough to compare', still.stable);
   await setTilt(22, 31);
   await poseProgram(true);
   const carried = await picture();
@@ -439,7 +494,13 @@ try {
   await page.evaluate(() => {
     const k = globalThis.__kinect;
     k.setViewCamera(k.freeCamera);
-    k.params.reset(['left', 'right', 'bottom', 'top']);
+    // The region goes back with the crop. Section 3 measures the plan cloud's extent
+    // and section 5 fits a plane through the planted samples, and a mask still eating
+    // the middle of that surface would be measuring a hole in both.
+    k.params.reset([
+      'left', 'right', 'bottom', 'top',
+      'regionZ', 'regionW', 'regionH', 'regionD', 'regionRound', 'regionSoft', 'regionMask',
+    ]);
   });
 
   // --- 3. the top-down is a top-down of the room ----------------------------
@@ -500,6 +561,24 @@ try {
     ok('a surface levelled flat covers the top-down in two directions',
       flatPlan.n > 200 && Math.min(flatPlan.w, flatPlan.h) > 8,
       `${flatPlan.n} plan points, ${flatPlan.w}x${flatPlan.h}px`);
+    // **The vertical crop, which this plan ignored on purpose until levelling existed.**
+    // While the top-down was drawn about the sensor's own axes, sensor y ran straight up
+    // the axis a top-down projects away, so a point cropped by `bottom`/`top` could not
+    // have landed on a pixel this view has and culling on x alone was free. Levelling
+    // mixes y into the plan's own x and z, and a point the renderer threw away now lands
+    // inside the footprint looking like geometry. Measured with the room still levelled
+    // flat, because that is the pose where the whole surface is in the box and a strip
+    // taken out of it is a change this extent can actually see.
+    await page.evaluate(() => {
+      const k = globalThis.__kinect;
+      k.params.set('bottom', -0.25);
+      k.params.set('top', 0.25);
+    });
+    const croppedPlan = await planExtent();
+    ok('and closing the crop in sensor y takes points out of it, which a plan culling on x alone cannot do',
+      croppedPlan.n > 0 && croppedPlan.n * 1.2 < flatPlan.n,
+      `${flatPlan.n} plan points with the crop open, ${croppedPlan.n} with bottom/top closed`);
+    await page.evaluate(() => globalThis.__kinect.params.reset(['bottom', 'top']));
     // A further quarter turn about x stands the same surface on its edge: whatever was
     // carried onto +Y goes to -Z, which is horizontal, so its top-down collapses to a
     // line. Two-sided on purpose - the fat reading alone passes on a plan that ignores

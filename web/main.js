@@ -7119,24 +7119,34 @@ function drawPlanCloud(rect) {
       // with, and reading the same two uniforms so there is one set of intrinsics
       // rather than two that can drift.
       const wx = ((col + 0.5 - cx) / fx) * z;
-      // The lateral crop, applied here for the same reason `near`/`far` are: a plan
-      // that drew points the renderer discards would be a second view disagreeing
+      const wy = -((row + 0.5 - cy) / fy) * z;
+      // All four lateral faces, applied here for the same reason `near`/`far` are: a
+      // plan that drew points the renderer discards would be a second view disagreeing
       // with the first, and the crop is exactly the setting somebody is looking at
-      // this plan to judge. **Only x, because a top-down has no y** - a point culled
-      // by `bottom`/`top` is still drawn here, which the panel says on its face
-      // rather than leaving to be discovered.
+      // this plan to judge.
+      //
+      // **This used to test x alone, on the grounds that a top-down has no y.** That
+      // was true of a plan drawn about the sensor's own axes, where sensor y ran
+      // straight up the axis the top-down projects away and a point cropped by
+      // `bottom`/`top` could only ever have landed on a pixel this view does not have.
+      // Levelling ends that: the rotation below mixes y into the plan's own x and z, so
+      // a point the renderer has thrown away now lands somewhere inside the footprint
+      // and sits there looking like geometry. The exclusion was load-bearing on an
+      // assumption this change removes, which is why it goes rather than being
+      // extended - it is the same six faces the vertex shader tests, and no fewer.
       //
       // Before the levelling and not after, which is the same ordering the vertex
       // shader has and has to be: the box is a place in the room in sensor metres, so
       // testing it against a rotated position would move all six faces every time the
       // room was levelled underneath them.
       if (wx < uniforms.cropL.value || wx > uniforms.cropR.value) continue;
+      if (wy < uniforms.cropB.value || wy > uniforms.cropT.value) continue;
       // A top-down of a canted room drawn about the sensor's axes is a slanted section
       // labelled TOP-DOWN, and that is what this drew before levelling existed: the
       // second visible symptom of the same bug, and the reason this loop needs the
       // full unprojection where it used to need one coordinate. The vertical drops out
       // *after* the rotation rather than before it, or the plan is still the sensor's.
-      planVec.set(wx, -((row + 0.5 - cy) / fy) * z, -z).applyQuaternion(worldTilt);
+      planVec.set(wx, wy, -z).applyQuaternion(worldTilt);
       const px = rect.x + rect.w / 2 + (planVec.x - TOP_CENTRE.x) * s;
       const py = rect.y + rect.h / 2 + (planVec.z - TOP_CENTRE.z) * s;
       if (px < rect.x || px > rect.x + rect.w || py < rect.y || py > rect.y + rect.h) continue;
@@ -7625,8 +7635,15 @@ function levelToCentre() {
   const horizontal = Math.hypot(fit.normal.x, fit.normal.y);
   const roll = THREE.MathUtils.radToDeg(Math.atan2(fit.normal.x, fit.normal.y));
   const tilt = THREE.MathUtils.radToDeg(Math.atan2(-fit.normal.z, horizontal));
-  params.set('roll', roll);
-  params.set('tilt', tilt);
+  // Through the control door rather than `params.set`, because these two are keyable
+  // and a bare write to a keyed parameter is the one thing the evaluator undoes: it
+  // rewrites every keyed parameter on the very next render, so the button would report
+  // an angle it had computed correctly while the image and the sliders sprang back to
+  // the old track, and the committed project would still hold the old keys. This is
+  // the same rule a dragged slider keeps, and it is kept here for the same reason -
+  // there is one write path for a parameter that might be keyed, not two.
+  writeFromControl('roll', roll);
+  writeFromControl('tilt', tilt);
   history.commit();
   requestRepaint();
   return {
