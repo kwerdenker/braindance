@@ -6209,10 +6209,44 @@ function refusePresetBody(name, body) {
       + `${PROJECT_VERSION}: ${across}`,
     );
   }
+  // A document with no values is not a look that happens to change nothing. `?? {}`
+  // used to make it one: the apply wrote nothing, the stamp went on anyway, and what
+  // came back was a clip claiming provenance from a file that had said nothing at all.
+  if (!body.values || typeof body.values !== 'object' || Array.isArray(body.values)) {
+    throw new Error(`preset ${name} carries no values object, so there is no look in it to apply`);
+  }
+
   // The values, checked against the registry without reaching it. `params.apply` does
   // this again on the way in and has to - this is the import path's early copy, taken
   // before the PUT, so a file the registry would refuse never becomes a document.
-  for (const [key, value] of Object.entries(body.values ?? {})) params.normalise(key, value);
+  //
+  // **Before the reading check below, deliberately.** A file gets told which of its
+  // keys is wrong ahead of being told which are missing, because the wrong one is the
+  // more specific answer and it is the one somebody editing a file by hand needs.
+  for (const [key, value] of Object.entries(body.values)) params.normalise(key, value);
+
+  // **And all five readings have to be there**, which is the whole reason there is a
+  // version 4. `format.js` puts it plainly about a version 3 file: every value it names
+  // is still a parameter, so the apply writes all of them without complaint and only
+  // the reading is missing, leaving whatever the previous document happened to select.
+  // A version 4 file that simply omits the five keys reaches that identical state while
+  // passing the version gate - the same look rendering as somebody else's shading,
+  // silently, only now with a stamp on it saying which file it came from. Everything
+  // that writes a preset writes all five: the converter emits them, and an export is
+  // `params.values` over the whole look tag. So a file missing them is hand-made, and
+  // this is the sentence it should get.
+  // Read off `READINGS`, which the registry derives from the `reading` flag itself, so a
+  // sixth reading added later is required here by existing. `params.spec` deliberately
+  // does not carry that flag, and filtering on it through there would have matched
+  // nothing and passed every file - a check asserting on an empty list.
+  const missing = READINGS.filter((n) => !Object.hasOwn(body.values, n));
+  if (missing.length) {
+    throw new Error(
+      `preset ${name} names no ${missing.join(', ')}: a version ${PROJECT_VERSION} look carries all `
+      + 'five reading weights, and one that leaves them out would render as whatever was on '
+      + 'screen before it',
+    );
+  }
 }
 
 /** Applies a saved preset and stamps where it came from. */

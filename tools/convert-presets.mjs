@@ -74,10 +74,20 @@ function convert(body, what) {
   // A project: the same move one level down, inside `look`.
   if (body.look && typeof body.look === 'object') {
     const { mode, params, ...look } = body.look;
+    // **A missing parameter map is a refusal, not an empty one.** Defaulting it to `{}`
+    // writes a version 4 file carrying only the readings, which then opens - the loader
+    // resets to defaults for every key the document does not name - so a damaged
+    // project comes back as a plausible look nobody authored. The version 3 loader
+    // refused this document; the converter must not be the thing that lets it through.
+    // And it is one-way: once the file says 4, this tool skips it, so the mistake
+    // cannot be found later by running the conversion again.
+    if (!params || typeof params !== 'object' || Array.isArray(params)) {
+      throw new Error(`${what}: look.params is ${JSON.stringify(params)}, so there is no authored look here to convert`);
+    }
     const next = {
       ...body,
       version: PROJECT_VERSION,
-      look: { ...look, params: { ...readingsFrom(mode, what), ...(params ?? {}) } },
+      look: { ...look, params: { ...readingsFrom(mode, what), ...params } },
     };
     // **And every undo snapshot with it**, which the spread above does not reach.
     // A saved project carries its history so undo survives a reload, and each entry
@@ -196,4 +206,10 @@ console.log(`\n[convert] ${DRY ? 'would rewrite' : 'rewrote'} ${rewritten} docum
 // skipped quietly: the whole point of refusing a version 3 file at load time is that
 // nobody ends up with a look they did not author, and a converter that shrugged at the
 // hard ones would hand back a directory that is half converted and says so nowhere.
-process.exit(failed.length ? 1 : 0);
+// **`process.exit` takes an argument, and an argument overrides `process.exitCode`.**
+// A directory that could not be read sets the code to 2 on its way past and then
+// carries on to the next one, so a run pointed at a missing directory inspected nothing
+// and used to say 0 - which is the answer a migration script reads as "everything is on
+// version 4 now". A failed document still wins with 1, because "a document failed" is
+// the more specific answer than "a directory could not be listed".
+process.exit(failed.length ? 1 : (process.exitCode || 0));

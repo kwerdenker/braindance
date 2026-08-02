@@ -601,7 +601,16 @@ export class DocumentStore {
     try {
       await stat(own);
       return { path: own, builtin: false };
-    } catch {
+    } catch (err) {
+      // **Only "there is no fork" falls back.** A bare catch here treats every reason
+      // `stat` can fail as an absence, and the ones that are not absences are exactly
+      // the ones where a fork does exist - an unsearchable directory, an I/O error on
+      // the volume the user's library lives on. The read then succeeds against the
+      // shipped document and serves it under the forked name, so somebody gets the
+      // starting point where they saved their grade and nothing anywhere says so.
+      // That is the same failure the fork rule exists to prevent, arriving from the
+      // other direction, and it is worse than an error because it looks like a look.
+      if (err?.code !== 'ENOENT') throw err;
       return { path: join(this.builtinDir, `${name}.json`), builtin: true };
     }
   }
