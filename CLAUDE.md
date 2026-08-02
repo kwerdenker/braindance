@@ -124,6 +124,7 @@ node tools/editor-check.mjs --mutate splitter-forgets --no-render      # ... and
 node tools/editor-check.mjs --mutate mini-wheel-uses-ruler --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate shortcuts-ignore-consumed --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate rate-release-reads-now --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate rate-ends-on-change --no-render # ... and must FAIL
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated

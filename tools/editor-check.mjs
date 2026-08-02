@@ -326,6 +326,18 @@ const MUTATIONS = {
     ],
   },
 
+  // `change` goes back to ending every gesture, so a held arrow key is one gesture per
+  // repeat again. Reddens the commit, seek and resume rows of the held-key block and
+  // leaves its "the speed moved" row green, which is what separates a control that
+  // stopped working from one that works six times over.
+  'rate-ends-on-change': {
+    file: 'web/main.js',
+    edits: [[
+      "ui.rate.addEventListener('change', () => { if (!rateGesture?.fromKey) endRateGesture(); });",
+      "ui.rate.addEventListener('change', endRateGesture);",
+    ]],
+  },
+
   // The space bar stops reaching the transport. Everything else about the keyboard
   // stays, so this reddens the transport rows and leaves the stepping and range rows
   // alone - which is what makes it diagnostic of its own term.
@@ -1048,6 +1060,86 @@ try {
   console.log('\n[4] the speed control holds the frame you are looking at');
   // =====================================================================
   //
+  // This block runs at the head of the section rather than at its tail, and that is a
+  // placement rather than a preference. At the tail it left section 5's ease-handle drag
+  // dead - the drag registered nothing, on a page whose state at that instant was
+  // byte-identical to a passing run's: same handle box, same selection, same focus, same
+  // transport, measured side by side. Whatever the block perturbs is not anything either
+  // run can read, so it goes where the rows that follow rebuild the document from scratch
+  // before they measure anything. Recorded rather than tidied away, because a
+  // reordering that fixes a failure nobody can explain is a fact about this file that the
+  // next person moving a block needs.
+  // **A held arrow key is one gesture to the user and was six to the control.** Chromium
+  // fires `keydown -> input -> change` on every auto-repeat and a single `keyup` at the
+  // end, so a `change` handler that ended the gesture unconditionally ended and restarted
+  // it per repeat - measured at six undo commits and six accurate pre-roll seeks for one
+  // held key, which is the seek storm this control was rewritten to avoid, surviving on
+  // the one gesture nobody watches. It lost the take as well: each repeat read
+  // `timeline.playing` off a transport the previous repeat had just paused.
+  //
+  // Driven as the OS delivers it - one real keydown, repeats carrying `repeat: true` with
+  // their `input`, and one keyup at the end. Both counters are read because they are two
+  // different costs of the same fault, and a row that reported only the commits would say
+  // nothing about the seeks a user actually waits for.
+  await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
+  await settle();
+  await page.evaluate("document.getElementById('tRate').focus()");
+  await page.evaluate('__kinect.timeline.transport().play()');
+  await new Promise((r) => setTimeout(r, 300));
+  const heldBefore = await page.evaluate(`(() => ({
+    playing: __kinect.timeline.transport().playing,
+    depth: __kinect.keyframes.undo.depth(),
+    seeks: __kinect.timeline.counters.seeks,
+    rate: __kinect.timeline.retime.rate,
+  }))()`);
+  await page.evaluate(`(() => {
+    const el = document.getElementById('tRate');
+    const step = 0.01;
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    for (let i = 1; i <= 6; i++) {
+      el.value = String(Number(el.value) + step);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', repeat: true, bubbles: true }));
+    }
+    el.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true }));
+  })()`);
+  await settle();
+  for (let i = 0; i < 60 && !(await page.evaluate('__kinect.timeline.transport().playing')); i++) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  const heldAfter = await page.evaluate(`(() => ({
+    playing: __kinect.timeline.transport().playing,
+    depth: __kinect.keyframes.undo.depth(),
+    seeks: __kinect.timeline.counters.seeks,
+    rate: __kinect.timeline.retime.rate,
+  }))()`);
+  check(heldBefore.playing && heldAfter.rate > heldBefore.rate,
+    'a held arrow key moves the speed, so the two counters below are counting a gesture that happened',
+    `${heldBefore.rate}x -> ${heldAfter.rate}x, take was running ${heldBefore.playing}`);
+  check(heldAfter.depth - heldBefore.depth === 1,
+    '  and costs one undo step for the whole hold, not one per repeat',
+    `depth ${heldBefore.depth} -> ${heldAfter.depth}`);
+  check(heldAfter.seeks - heldBefore.seeks <= 2,
+    '  and one accurate seek, which is the storm this control exists to avoid',
+    `${heldAfter.seeks - heldBefore.seeks} seeks for 6 repeats`);
+  check(heldAfter.playing,
+    '  and gives the take back, rather than losing the play intent on the first repeat',
+    `playing ${heldBefore.playing} -> ${heldAfter.playing}`);
+
+  // Stopped and put back to 1x before the rows below drive rates of their own. Leaving
+  // the take running at 1.248x here reddened the page-errors row at the very end of the
+  // file with `the retime curve runs backwards`: the accumulators walk forward one source
+  // frame at a time, so a rate driven underneath a playhead that is still moving asks the
+  // source to go back. The take being *running* is the whole point of the rows above, so
+  // this is the price of them rather than something to move.
+  await focusStage();
+  await page.evaluate('__kinect.timeline.transport().pause()');
+  await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
+  await page.evaluate('__kinect.timeline.transport().seek(0)');
+  await settle();
+
+
   // Two positions and two directions, because program and source time agree
   // trivially at program 0 and a single arm cannot tell holding one from holding the
   // other. `docs/instruments.md` has this failure twice already under "what do my

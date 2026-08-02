@@ -5799,9 +5799,14 @@ ui.rate.value = String(sliderFromRate(retime.rate));
  */
 let rateGesture = null;
 
-function beginRateGesture() {
+function beginRateGesture({ fromKey = false } = {}) {
   if (rateGesture || !timeline) return;
   rateGesture = {
+    // Whether a key is holding this open, which decides whether `change` may end it -
+    // see the listener wiring below. Read off how the gesture *started*, because the
+    // repeats after the first arrive as `input` and would otherwise look like a value
+    // written by a script.
+    fromKey,
     // The generation this gesture owns, kept rather than discarded - and the keeping
     // is the whole point. A gesture is held for as long as a finger or a key is down,
     // which is long enough for a project fetch started *before* it to land in the
@@ -5925,7 +5930,11 @@ function programHoldingAnchor() {
   return Math.max(0, Math.min(retime.programSecAt(rateGesture.source), timeline.duration));
 }
 
-ui.rate.addEventListener('pointerdown', beginRateGesture);
+// Wrapped rather than passed straight in, because the listener's first argument is a
+// `PointerEvent` and this function's is now an options object - handing it the event
+// would read `fromKey` off it and get `undefined`, which happens to be the right answer
+// today and would silently stop being one.
+ui.rate.addEventListener('pointerdown', () => beginRateGesture());
 // The keys a range input answers, named rather than left unconditional. Tab fires
 // `keydown` here too and then takes the focus away *before* `keyup`, so an
 // unconditional start paused the take and handed the gesture to a control that has no
@@ -5934,14 +5943,32 @@ ui.rate.addEventListener('pointerdown', beginRateGesture);
 const RATE_KEYS = new Set([
   'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End',
 ]);
-ui.rate.addEventListener('keydown', (e) => { if (RATE_KEYS.has(e.key)) beginRateGesture(); });
+ui.rate.addEventListener('keydown', (e) => { if (RATE_KEYS.has(e.key)) beginRateGesture({ fromKey: true }); });
 // `blur` is in here for the same reason and is the one that closes the class: it is the
 // last event the control gets on *any* way out of it, including the ones nobody thought
 // of. It cannot pre-empt a commit either - on an arrow followed by Tab, `change` lands
 // three events before `blur`, so the gesture is already over by then.
-for (const type of ['change', 'pointerup', 'pointercancel', 'keyup', 'blur']) {
+for (const type of ['pointerup', 'pointercancel', 'keyup', 'blur']) {
   ui.rate.addEventListener(type, endRateGesture);
 }
+// **`change` ends a gesture only when no key is holding one open, because a held arrow
+// key is not one gesture to this control - it is one per repeat.** Chromium fires
+// `keydown -> input -> change` on every auto-repeat and a single `keyup` at the end, so
+// an unconditional `change` handler ended and restarted the gesture on each one:
+// measured at six undo commits and six accurate pre-roll seeks for one held key, where
+// a drag of the same travel costs one of each. The seek storm this control was rewritten
+// to avoid was still there on the keyboard, behind the one gesture that cannot be
+// noticed by watching the pointer.
+//
+// It also lost the take. Each repeat's `beginRateGesture` read `timeline.playing` off a
+// transport the previous repeat had just paused, so `wasPlaying` was true only for the
+// first of six - and the resume the first one owned was invalidated by the second taking
+// the transport. Releasing the key left a running take stopped.
+//
+// The condition is on the gesture rather than on the event because `change` is still the
+// only ending a value written straight into the control ever gets - no pointer, no key,
+// which is how every tool that drives this slider works.
+ui.rate.addEventListener('change', () => { if (!rateGesture?.fromKey) endRateGesture(); });
 
 ui.rate.addEventListener('input', () => {
   if (!timeline) return;
