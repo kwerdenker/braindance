@@ -171,6 +171,61 @@ const MUTATIONS = {
     ]],
   },
 
+  // The wheel zooms about the middle of the window instead of about the pointer. The
+  // window still zooms, the ruler still relabels and every other row in section 9 goes
+  // on passing - which is what makes it the right control for that one claim, and what
+  // makes a check with a single centred arm blind to it.
+  'zoom-about-centre': {
+    file: 'web/main.js',
+    edits: [[
+      '    if (!view.zoomAbout(clipFractionAt(surface, e.clientX), factor)) return;',
+      '    if (!view.zoomAbout((view.a + view.b) / 2, factor)) return;',
+    ]],
+  },
+
+  // Pointer-to-time goes back to reading the whole clip. This is the shape a site the
+  // conversion missed would have: everything draws through the window and one place
+  // still divides by the duration, so the strip looks right and the pointer is wrong by
+  // a whole window.
+  'pointer-ignores-view': {
+    file: 'web/main.js',
+    edits: [[
+      '  timeAt(clientX) {\n'
+      + '    const r = ui.bed.getBoundingClientRect();\n'
+      + '    const f = r.width > 0 ? Math.min(1, Math.max(0, (clientX - r.left) / r.width)) : 0;\n'
+      + '    return Math.max(0, Math.min(this.duration, (this.a + f * (this.b - this.a)) * this.duration));',
+      '  timeAt(clientX) {\n'
+      + '    const r = ui.bed.getBoundingClientRect();\n'
+      + '    const f = r.width > 0 ? Math.min(1, Math.max(0, (clientX - r.left) / r.width)) : 0;\n'
+      + '    return f * this.duration;',
+    ]],
+  },
+
+  // One term of the seam, reverted on its own: the marks are placed against the clip
+  // while everything else is placed against the window. It must redden the culling row
+  // and leave the key, cut, playhead and ruler rows passing - a mutation that reddened
+  // everything would say something is broken without saying what.
+  'marks-ignore-view': {
+    file: 'web/main.js',
+    edits: [[
+      '    el.style.left = `${view.pct(at)}%`;\n    el.hidden = !view.holds(at);',
+      '    el.style.left = `${(at / total) * 100}%`;',
+    ]],
+  },
+
+  // The overview's edge handles stop resizing the window and pan it instead, which is
+  // what the box does when the `edge` branch is gone. The pan row and the centring row
+  // both still pass, so a red run names the zoom half specifically - and a handler that
+  // was wholly dead would redden all three, which is why this is the one control the
+  // three rows need rather than two.
+  'mini-ignores-edges': {
+    file: 'web/main.js',
+    edits: [[
+      "  const edge = e.target.classList.contains('w') ? 'w' : e.target.classList.contains('e') ? 'e' : null;",
+      '  const edge = null;',
+    ]],
+  },
+
   // The space bar stops reaching the transport. Everything else about the keyboard
   // stays, so this reddens the transport rows and leaves the stepping and range rows
   // alone - which is what makes it diagnostic of its own term.
@@ -1548,6 +1603,214 @@ try {
     '"open the box" puts all four planes back and the whole cloud with them',
     `planes ${planes.join(', ')}; lit ${litClosed.all} -> ${litReopened.all} against `
     + `${litDefault.all} open, ${(backWithin * 100).toFixed(3)}% apart`);
+
+  // =====================================================================
+  console.log('\n[9] the ruler shows a window, and the window can be driven');
+  // =====================================================================
+  //
+  // **Every arm here is zoomed and panned, and that is the design of the section
+  // rather than thoroughness.** With the window at the whole clip, `(t - start)/span`
+  // and the old `t/duration` are the same expression - so an arm at fit-zoom passes
+  // identically on a build that has no window at all, and would report coverage for
+  // the one thing it cannot see. This is the mirror of section 4's rate-1 dead zone
+  // and the same rule `CLAUDE.md` states after step 6's aspect ratio.
+  //
+  // The window is deliberately off-centre as well as narrow, because a window centred
+  // on the clip is a second agreement: zooming about the centre and zooming about the
+  // pointer give the same answer when the pointer is at the centre.
+  //
+  // A note on what section 1 does and does not cover, since it would otherwise read as
+  // covering this. Its sweep enumerates *form controls* - `input`, `select`, `button` -
+  // so the overview strip and its window box are no more enumerated by it than `#tIn`
+  // and `#tOut` are, and they are driven by name below for the same reason the cuts are
+  // driven by name in section 3.
+  await page.evaluate('__kinect.keyframes.setTracks({ bloom: [ { t: 2, value: 0.2 }, { t: 6, value: 0.9 }, { t: 20, value: 0.4 } ] })');
+  await page.evaluate("__kinect.editor.setMarks([{ id: 'm1', sourceMs: 3000 }, { id: 'm2', sourceMs: 22000 }])");
+  await page.evaluate('__kinect.editor.view.set(0.30, 0.42)');
+  await settle();
+  const win = await page.evaluate('__kinect.editor.view.window()');
+  check(!win.whole && win.spanSec < win.duration / 4,
+    'the strip can be zoomed into a window that is a fraction of the clip',
+    `${win.startSec.toFixed(2)}s..${win.endSec.toFixed(2)}s of ${win.duration.toFixed(2)}s`);
+
+  // The mapping and its inverse, at that window. Both directions are read off the page
+  // rather than one being recomputed here, because a check that reimplemented `pct` to
+  // test `secAtPct` would be comparing this file's arithmetic against itself.
+  const roundTrip = await page.evaluate(`(() => {
+    const out = [];
+    for (const p of [0, 12.5, 50, 87.5, 100]) {
+      const t = __kinect.editor.view.secAtPct(p);
+      out.push({ p, t, back: __kinect.editor.view.pct(t) });
+    }
+    return out;
+  })()`);
+  check(roundTrip.every((r) => near(r.back, r.p, 1e-6)),
+    '  and a percentage across it survives a round trip through program seconds',
+    roundTrip.map((r) => `${r.p}%->${r.t.toFixed(3)}s->${r.back.toFixed(3)}%`).join(' '));
+  check(near(roundTrip[0].t, win.startSec, 1e-6) && near(roundTrip[4].t, win.endSec, 1e-6),
+    '  and 0% and 100% are the edges of the window rather than the edges of the clip',
+    `0% is ${roundTrip[0].t.toFixed(3)}s, 100% is ${roundTrip[4].t.toFixed(3)}s, clip is 0..${win.duration.toFixed(2)}s`);
+
+  // The claim that matters to a pointer: clicking the ruler seeks to what the ruler
+  // says is there. This is the row a build that forgot the window fails, and it fails
+  // it by a whole window - which is why the tolerance is an output frame rather than
+  // anything looser.
+  const bedBox = await page.locator('#tBed').boundingBox();
+  const wantedAt25 = await page.evaluate('__kinect.editor.view.secAtPct(25)');
+  await page.mouse.click(bedBox.x + bedBox.width * 0.25, bedBox.y + bedBox.height / 2);
+  await settle();
+  const landedAt25 = await page.evaluate('__kinect.timeline.transport().programSec');
+  check(near(landedAt25, wantedAt25, 1 / 30 + 1e-6),
+    '  and a click a quarter of the way across it seeks to the time it names there',
+    `clicked 25%, wanted ${wantedAt25.toFixed(4)}s, landed ${landedAt25.toFixed(4)}s`);
+
+  // Markers outside the window. Hidden rather than removed, because `repositionLanes`
+  // refuses to run when the node count and the key count disagree.
+  const culled = await page.evaluate(`(() => {
+    const keys = [...document.querySelectorAll('.tlane[data-owner=bloom] .tkey')];
+    const marks = [...document.querySelectorAll('#tMarks .tmk')];
+    return {
+      keys: keys.length, keysShown: keys.filter((n) => !n.hidden).length,
+      marks: marks.length, marksShown: marks.filter((n) => !n.hidden).length,
+      lefts: keys.map((n) => parseFloat(n.style.left)),
+    };
+  })()`);
+  check(culled.keys === 3 && culled.keysShown === 0 && culled.marksShown === 0,
+    '  a marker the window does not hold is hidden rather than drawn off the edge',
+    `${culled.keysShown}/${culled.keys} keys and ${culled.marksShown}/${culled.marks} marks shown, `
+    + `key lefts ${culled.lefts.map((l) => `${l.toFixed(0)}%`).join(', ')}`);
+  check(culled.lefts.some((l) => l < 0) && culled.lefts.some((l) => l > 100),
+    '  and its node still carries the position it would have had, on both sides',
+    culled.lefts.map((l) => `${l.toFixed(0)}%`).join(', '));
+
+  // The ruler's own spacing. A window forty times narrower has to relabel, or the
+  // zoom bought nothing: the whole complaint was placing a key against 20-second
+  // gradations on an 800-second clip.
+  const ticksAt = () => page.evaluate(`[...document.querySelectorAll('#tRuler .ttick label')].map((l) => l.textContent)`);
+  const zoomedTicks = await ticksAt();
+  await page.evaluate('__kinect.editor.view.fit()');
+  await settle();
+  const fitTicks = await ticksAt();
+  check(zoomedTicks.join() !== fitTicks.join() && zoomedTicks.length > 2 && fitTicks.length > 2,
+    'the ruler picks its spacing from the window, not from the clip',
+    `fit: ${fitTicks.slice(0, 6).join(' ')} | zoomed: ${zoomedTicks.slice(0, 6).join(' ')}`);
+
+  // The overview, which is the only surface that must *not* go through the window.
+  await page.evaluate('__kinect.editor.view.set(0.30, 0.42)');
+  await settle();
+  const box = await page.evaluate(`({
+    left: document.getElementById('tMiniWin').style.left,
+    width: document.getElementById('tMiniWin').style.width,
+  })`);
+  check(near(parseFloat(box.left), 30, 0.5) && near(parseFloat(box.width), 12, 0.5),
+    'the overview draws the window on the whole clip, which is what says where you are',
+    `box at ${box.left} wide ${box.width}`);
+
+  // And it is *driven*, not merely drawn. The row above reads DOM state after no
+  // interaction at all, which this file's own header rules out - a build whose
+  // pointerdown handler never fires would paint that box correctly forever and pass
+  // it. That is the in/out markers again with a newer node, and section 1's sweep does
+  // not reach here to catch it: it enumerates form controls, and this is three divs.
+  const miniBox = await page.locator('#tMini').boundingBox();
+  const dragMini = async (fromF, toF, target) => {
+    await page.evaluate('__kinect.editor.view.set(0.30, 0.42)');
+    await settle();
+    const before = await page.evaluate('__kinect.editor.view.window()');
+    const y = miniBox.y + miniBox.height / 2;
+    // Aimed at the box's own edge handle rather than at a fraction of the strip, so
+    // the row fails when the handle moves rather than when the arithmetic does.
+    const grab = target ? await page.locator(target).boundingBox() : null;
+    const fromX = grab ? grab.x + grab.width / 2 : miniBox.x + miniBox.width * fromF;
+    await page.mouse.move(fromX, y);
+    await page.mouse.down();
+    await page.mouse.move(miniBox.x + miniBox.width * toF, y, { steps: 4 });
+    await page.mouse.up();
+    await settle();
+    return { before, after: await page.evaluate('__kinect.editor.view.window()') };
+  };
+
+  const panned = await dragMini(0.36, 0.56, '#tMiniWin');
+  check(near(panned.after.a - panned.before.a, 0.2, 0.02)
+    && near(panned.after.spanSec, panned.before.spanSec, 1e-6),
+    '  dragging the window box pans by what the pointer moved, and does not resize it',
+    `a ${panned.before.a.toFixed(3)} -> ${panned.after.a.toFixed(3)}, `
+    + `span ${panned.before.spanSec.toFixed(3)}s -> ${panned.after.spanSec.toFixed(3)}s`);
+
+  const stretched = await dragMini(0, 0.62, '#tMiniWin .e');
+  check(stretched.after.spanSec > stretched.before.spanSec * 1.4
+    && near(stretched.after.a, stretched.before.a, 0.01),
+    '  and dragging its right edge zooms out from that edge, holding the left one',
+    `span ${stretched.before.spanSec.toFixed(3)}s -> ${stretched.after.spanSec.toFixed(3)}s, `
+    + `a ${stretched.before.a.toFixed(3)} -> ${stretched.after.a.toFixed(3)}`);
+
+  await page.evaluate('__kinect.editor.view.set(0.30, 0.42)');
+  await settle();
+  const beforeCentre = await page.evaluate('__kinect.editor.view.window()');
+  await page.mouse.click(miniBox.x + miniBox.width * 0.8, miniBox.y + miniBox.height / 2);
+  await settle();
+  const afterCentre = await page.evaluate('__kinect.editor.view.window()');
+  check(near((afterCentre.a + afterCentre.b) / 2, 0.8, 0.02)
+    && near(afterCentre.spanSec, beforeCentre.spanSec, 1e-6),
+    '  and a click on open track centres the window there rather than moving one edge to it',
+    `centre ${((beforeCentre.a + beforeCentre.b) / 2).toFixed(3)} -> ${((afterCentre.a + afterCentre.b) / 2).toFixed(3)}, `
+    + `span ${afterCentre.spanSec.toFixed(3)}s`);
+
+  // Zooming about the pointer. Two positions, because a zoom about the centre holds
+  // the centre still and so does a zoom about a pointer that is at the centre - one
+  // arm cannot tell them apart, and the wrong build is the one that reads better.
+  const zoomAtFraction = async (f) => {
+    await page.evaluate('__kinect.editor.view.set(0.2, 0.8)');
+    await settle();
+    const before = await page.evaluate(`__kinect.editor.view.secAtPct(${f * 100})`);
+    const bb = await page.locator('#tBed').boundingBox();
+    await page.mouse.move(bb.x + bb.width * f, bb.y + bb.height / 2);
+    await page.mouse.wheel(0, -300);
+    await settle();
+    const after = await page.evaluate(`__kinect.editor.view.secAtPct(${f * 100})`);
+    return { before, after };
+  };
+  for (const f of [0.2, 0.8]) {
+    const held = await zoomAtFraction(f);
+    check(near(held.after, held.before, 0.05),
+      `a wheel zoom ${Math.round(f * 100)}% across the bed holds the program time under the pointer`,
+      `${held.before.toFixed(3)}s -> ${held.after.toFixed(3)}s`);
+  }
+
+  // The cost of it. A zoom is dozens of events and the structural path calls `resize()`,
+  // so this is the same claim the key-drag row makes, read off the same counters.
+  await page.evaluate('__kinect.timeline.counters.laneRebuilds = 0; __kinect.timeline.counters.laneRepositions = 0');
+  const wheelBox = await page.locator('#tBed').boundingBox();
+  await page.mouse.move(wheelBox.x + wheelBox.width / 2, wheelBox.y + wheelBox.height / 2);
+  for (let i = 0; i < 8; i++) await page.mouse.wheel(0, -100);
+  await settle();
+  const zoomCounters = await page.evaluate('({ ...__kinect.timeline.counters })');
+  check(zoomCounters.laneRepositions >= 6 && zoomCounters.laneRebuilds === 0,
+    '  and eight wheel notches take the cheap path every time, never the one that resizes the buffer',
+    `${zoomCounters.laneRepositions} repositions, ${zoomCounters.laneRebuilds} rebuilds`);
+
+  // The way back, and the way to the edit. Both are keys because a window you can only
+  // leave with a wheel is a window somebody gets stuck in.
+  await focusStage();
+  await page.keyboard.press('f');
+  await settle();
+  check((await page.evaluate('__kinect.editor.view.window()')).whole,
+    'f fits the whole clip back on the ruler', JSON.stringify(await page.evaluate('__kinect.editor.view.window()')));
+  await page.evaluate('__kinect.timeline.transport().seek(4)');
+  await settle();
+  await page.locator('#tSetIn').click();
+  await page.evaluate('__kinect.timeline.transport().seek(9)');
+  await settle();
+  await page.locator('#tSetOut').click();
+  await focusStage();
+  await page.keyboard.press('z');
+  await settle();
+  const framed = await page.evaluate('__kinect.editor.view.window()');
+  check(framed.startSec < 4 && framed.endSec > 9 && framed.spanSec < framed.duration / 2,
+    'z frames the trimmed range, which is the window an edit is actually made in',
+    `${framed.startSec.toFixed(2)}s..${framed.endSec.toFixed(2)}s around in 4s / out 9s`);
+  await page.locator('#tClearRange').click();
+  await page.evaluate('__kinect.editor.view.fit()');
+  await settle();
 
   check(errors.length === 0, 'the page reported no errors while any of this happened',
     errors.length ? errors.slice(0, 3).join(' | ') : '');

@@ -165,6 +165,13 @@ is visibly variable motion through real time.
 
 Drag to orbit, scroll to zoom, right-drag to pan, `H` hides the panel.
 
+The timeline's ruler shows a *window* of the clip rather than all of it, because a
+fifteen-minute take drawn across one screen puts a keyframe against gradations forty
+times coarser than the thing being placed. Scroll over the strip to zoom about the
+pointer, `+`/`-` to zoom about the playhead, `F` to fit the whole clip and `Z` to frame
+the trimmed range. The overview underneath is always the whole clip: drag its box to
+pan, drag an edge to zoom, click anywhere to go there.
+
 | Mode | What it does |
 | --- | --- |
 | RGB | registered colour mapped onto the depth points |

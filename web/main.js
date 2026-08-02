@@ -4646,6 +4646,11 @@ const ui = {
   railLanes: document.getElementById('tRailLanes'),
   lanes: document.getElementById('tLanes'),
   ruler: document.getElementById('tRuler'),
+  mini: document.getElementById('tMini'),
+  miniRange: document.getElementById('tMiniRange'),
+  miniMarks: document.getElementById('tMiniMarks'),
+  miniHead: document.getElementById('tMiniHead'),
+  miniWin: document.getElementById('tMiniWin'),
   playhead: document.getElementById('tPlayhead'),
   in: document.getElementById('tIn'),
   out: document.getElementById('tOut'),
@@ -4735,20 +4740,123 @@ function showTimelineError(err) {
   console.error('[timeline]', err);
 }
 
+// How little program time the strip will show. A window is bounded below so a wheel
+// cannot zoom into a point, where every position on screen is the same instant and the
+// gesture that got there has no inverse.
+const MIN_VIEW_SEC = 0.25;
+
 /**
- * The program length the ruler and the lanes are drawn against.
+ * The window of program time the strip is drawn against, and the only thing that turns
+ * a program second into a position on it.
  *
- * Frozen for the length of a lane drag, and that is not a nicety. The retime curve
- * *is* the program length: dragging one of its keys down slows the clip, which
- * lengthens the program, which rescales the ruler, which moves the key under a
- * pointer that has not moved horizontally - and the new position is read back as a
- * new program time, which slows it further. Measured before it was fixed: a
- * twelve-pixel vertical drag walked one key from 15.0s to 48.3s in four moves, and
- * the drag got faster the longer it went on.
+ * **It replaced `rulerDuration()` rather than joining it.** Eleven places used to work
+ * out a position by dividing by the clip's length, and a twelfth that kept doing so
+ * under a zoomed window would not look broken - it would draw its marker *unzoomed*,
+ * at a plausible place, silently disagreeing with the eleven around it. Deleting the
+ * old name is what makes a missed caller a throw on the first paint instead of a wrong
+ * picture nobody can see is wrong.
+ *
+ * **The window is held as fractions of the program duration, and that is load-bearing
+ * rather than a unit preference.** A speed change rescales the duration and every
+ * program time in the document by the same factor - see `reparameteriseProgramTime` -
+ * so a window in *seconds* would be a twelfth quantity somebody had to remember to
+ * scale, and forgetting it would move the visible footage on a gesture whose whole
+ * point is that nothing moves. In fractions there is nothing to remember: the ruler
+ * and the window rescale together and the same footage stays on screen because the
+ * arithmetic cannot express anything else.
+ *
+ * The one place that reads oddly is the consequence of the same choice, and it is
+ * worth stating so it is not filed as this bug returning: a *retime key* changes the
+ * program duration non-uniformly, so dragging one shifts the visible window on
+ * release. That is a different situation from the speed slider - there the map is
+ * uniform and nothing moves at all - and it is accepted rather than overlooked.
  */
-const rulerDuration = () => {
-  if (laneDrag) return laneDrag.duration;
-  return timeline ? timeline.duration : 1;
+const view = {
+  // The visible window, as fractions of `duration`. `0..1` is the whole clip.
+  a: 0,
+  b: 1,
+
+  /**
+   * The program length the ruler is drawn against.
+   *
+   * Frozen for the length of a lane drag, and that is not a nicety. The retime curve
+   * *is* the program length: dragging one of its keys down slows the clip, which
+   * lengthens the program, which rescales the ruler, which moves the key under a
+   * pointer that has not moved horizontally - and the new position is read back as a
+   * new program time, which slows it further. Measured before it was fixed: a
+   * twelve-pixel vertical drag walked one key from 15.0s to 48.3s in four moves, and
+   * the drag got faster the longer it went on.
+   */
+  get duration() {
+    if (laneDrag) return Math.max(1e-6, laneDrag.duration);
+    return Math.max(1e-6, timeline ? timeline.duration : 1);
+  },
+
+  get startSec() { return this.a * this.duration; },
+  get endSec() { return this.b * this.duration; },
+  get spanSec() { return (this.b - this.a) * this.duration; },
+  /** True when the whole clip is on screen, which is what the fit control returns to. */
+  get whole() { return this.a === 0 && this.b === 1; },
+
+  /** Where a program second sits across the bed, in percent. Off-window is out of 0..100. */
+  pct(t) {
+    return ((t / this.duration) - this.a) / Math.max(1e-9, this.b - this.a) * 100;
+  },
+
+  /** Program seconds at a percentage across the bed. The inverse of `pct`. */
+  secAtPct(p) {
+    return (this.a + (p / 100) * (this.b - this.a)) * this.duration;
+  },
+
+  /** Where the pointer is, in program seconds, clamped to the window it is over. */
+  timeAt(clientX) {
+    const r = ui.bed.getBoundingClientRect();
+    const f = r.width > 0 ? Math.min(1, Math.max(0, (clientX - r.left) / r.width)) : 0;
+    return Math.max(0, Math.min(this.duration, (this.a + f * (this.b - this.a)) * this.duration));
+  },
+
+  /**
+   * Whether a marker at `t` is worth drawing. The margin is a whole window because a
+   * curve is sampled across the visible span and a key's node is 11px wide - a marker
+   * just outside still has a corner inside, and hiding it would pop at the edge.
+   */
+  holds(t) {
+    const f = t / this.duration;
+    const margin = (this.b - this.a) * 0.02;
+    return f >= this.a - margin && f <= this.b + margin;
+  },
+
+  /** The window, clamped: inside the clip, no narrower than `MIN_VIEW_SEC`, at most all. */
+  set(a, b) {
+    const min = Math.min(1, MIN_VIEW_SEC / this.duration);
+    const span = Math.min(1, Math.max(min, b - a));
+    const start = Math.min(1 - span, Math.max(0, a));
+    const moved = start !== this.a || start + span !== this.b;
+    this.a = start;
+    this.b = start + span;
+    return moved;
+  },
+
+  /** Zooms by `factor` (>1 closer) holding the fraction `at` where it is on screen. */
+  zoomAbout(at, factor) {
+    const span = (this.b - this.a) / factor;
+    const start = at - (at - this.a) / factor;
+    return this.set(start, start + span);
+  },
+
+  /** Pans by a share of the visible window, positive to the right. */
+  panBy(shareOfWindow) {
+    const d = (this.b - this.a) * shareOfWindow;
+    return this.set(this.a + d, this.b + d);
+  },
+
+  fit() { return this.set(0, 1); },
+
+  /** Frames a range with a margin, so the two markers are not on the very edges. */
+  frame(fromSec, toSec) {
+    const pad = Math.max(MIN_VIEW_SEC, (toSec - fromSec) * 0.05);
+    return this.set((fromSec - pad) / this.duration, (toSec + pad) / this.duration);
+  },
 };
 
 function paintUndoCount() {
@@ -4761,9 +4869,44 @@ function paintDeliverable() {
     ui.deliverableReadout.textContent = 'none';
     return;
   }
-  const out = activeDeliverable.out ?? rulerDuration();
+  const out = activeDeliverable.out ?? view.duration;
   const outStr = activeDeliverable.out === null ? 'end' : timecode(out);
   ui.deliverableReadout.textContent = `${activeDeliverable.outputSize} @ ${activeDeliverable.outputFps}fps ${activeDeliverable.codec} [${timecode(activeDeliverable.in)} - ${outStr}]`;
+}
+
+/**
+ * The furniture that says *where* on the ruler something is: the playhead, the two
+ * cuts and the shading outside them.
+ *
+ * Split out of `paintTimeline` because a zoom gesture needs exactly this and nothing
+ * else. The rest of that function recomputes the pre-roll plan and redraws the chrome
+ * canvas, which is the right cost for a seek and the wrong cost per wheel notch.
+ */
+function paintStripPositions() {
+  const dur = view.duration;
+  const inPct = view.pct(Math.min(clipIn, dur));
+  const outPct = view.pct(Math.min(clipOut ?? dur, dur));
+  ui.playhead.style.left = `${view.pct(timeline ? timeline.programSec : 0)}%`;
+  ui.in.style.left = `${inPct}%`;
+  ui.out.style.left = `${outPct}%`;
+  // What the export will leave out, shown rather than left to be worked out from
+  // the position of two thin lines. Nothing here decides anything - `exportClip`
+  // reads `clipIn`/`clipOut` directly - so this is the range made visible and not a
+  // second copy of it.
+  //
+  // Clamped to the bed rather than drawn from the marker, because under a window that
+  // starts after the in point the shading runs off the left edge and a negative width
+  // draws nothing at all - which reads as "everything is included" on precisely the
+  // view where the cut is out of sight and the shading is the only evidence left.
+  const lo = Math.max(0, Math.min(100, inPct));
+  const hi = Math.max(0, Math.min(100, outPct));
+  ui.shadeIn.style.left = '0%';
+  ui.shadeIn.style.width = `${lo}%`;
+  ui.shadeOut.style.left = `${hi}%`;
+  ui.shadeOut.style.width = `${Math.max(0, 100 - hi)}%`;
+  // The overview carries the same three things, so it is repainted from here rather
+  // than from a second list of callers that could fall out of step with this one.
+  paintMinimap();
 }
 
 function paintTimeline(t) {
@@ -4775,28 +4918,19 @@ function paintTimeline(t) {
   // The name an empty field will use, said on the field rather than only in the
   // filename that turns up afterwards. Once, because it is a default and not a value.
   if (!ui.exportName.placeholder) ui.exportName.placeholder = t.source.id;
-  ui.playhead.style.left = `${(program / Math.max(1e-6, rulerDuration())) * 100}%`;
-  const rangeDur = Math.max(1e-6, rulerDuration());
-  const inPct = (Math.min(clipIn, rangeDur) / rangeDur) * 100;
-  const outPct = (Math.min(clipOut ?? rangeDur, rangeDur) / rangeDur) * 100;
-  ui.in.style.left = `${inPct}%`;
-  ui.out.style.left = `${outPct}%`;
-  // What the export will leave out, shown rather than left to be worked out from
-  // the position of two thin lines. Nothing here decides anything - `exportClip`
-  // reads `clipIn`/`clipOut` directly - so this is the range made visible and not a
-  // second copy of it.
-  ui.shadeIn.style.left = '0%';
-  ui.shadeIn.style.width = `${inPct}%`;
-  ui.shadeOut.style.left = `${outPct}%`;
-  ui.shadeOut.style.width = `${Math.max(0, 100 - outPct)}%`;
+  paintStripPositions();
   // The same range as numbers. Two markers on a ruler say where the boundaries are
   // and cannot say where they are to the millisecond, which is what an export needs
   // - and "out" says `end` rather than a time when nothing has been set, because
   // `clipOut === null` means the whole clip and following the duration around would
   // read as a value somebody chose.
+  //
+  // `view.duration` here and `view.pct` in the positions above, and the split is the
+  // distinction the rename was for: this is a *length*, which the window cannot change,
+  // where a marker is a *place*, which is all the window changes.
   ui.inOut.textContent = timecode(clipIn);
   ui.outOut.textContent = clipOut === null ? 'end' : timecode(clipOut);
-  ui.clipLen.textContent = `${Math.max(0, (clipOut ?? rangeDur) - clipIn).toFixed(2)}s`;
+  ui.clipLen.textContent = `${Math.max(0, (clipOut ?? view.duration) - clipIn).toFixed(2)}s`;
   const plan = t.preroll(program);
   // Both halves, because which one wins is the whole point of computing it: the
   // surface half moves with fade, wake, speed and output rate, the trails half
@@ -4826,20 +4960,88 @@ function paintTimeline(t) {
   drawChrome();
 }
 
+// The ladder a ruler picks its spacing from, in seconds. Every rung divides the one
+// above it or is half of it, so zooming walks the labels through the ladder instead of
+// re-labelling everything on each notch, and the sub-second rungs are the frame-ish
+// intervals somebody placing a key actually wants.
+const TICK_STEPS = [
+  1 / 30, 1 / 10, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600,
+];
+
+/** A tick's label. Bare seconds under a minute, `m:ss` over it, so it reads as a clock. */
+function tickLabel(sec, step) {
+  const decimals = step < 0.1 ? 2 : step < 1 ? 1 : 0;
+  if (sec < 60) return `${sec.toFixed(decimals)}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec - m * 60;
+  return `${m}:${s.toFixed(decimals).padStart(decimals ? decimals + 3 : 2, '0')}`;
+}
+
+/**
+ * The ruler, drawn across the visible window rather than across the clip.
+ *
+ * The step comes from the *window*, which is the whole reason a long take became
+ * usable: at 800s the old ladder gave 20-second ticks and no way to look closer, so a
+ * key was placed against gradations forty times coarser than the thing being placed.
+ * The count is what is held roughly constant now - about one label per 90px - and the
+ * spacing falls out of it.
+ */
 function buildRuler() {
-  const total = Math.max(1e-6, rulerDuration());
-  const step = total > 120 ? 20 : total > 60 ? 10 : total > 20 ? 5 : 1;
+  const span = Math.max(1e-6, view.spanSec);
+  const width = Math.max(1, ui.bed.clientWidth);
+  const wanted = span / Math.max(2, width / 90);
+  const step = TICK_STEPS.find((s) => s >= wanted) ?? TICK_STEPS[TICK_STEPS.length - 1];
   const ticks = [];
-  for (let s = 0; s <= total; s += step) {
+  // Only the ticks the window holds are built, so a two-second window on an hour-long
+  // take costs the same as a two-second window on a short one. The old loop walked the
+  // whole clip and made every tick outside the view as well.
+  const first = Math.ceil(view.startSec / step - 1e-9) * step;
+  for (let s = first; s <= view.endSec + 1e-9; s += step) {
     const tick = document.createElement('div');
     tick.className = 'ttick';
-    tick.style.left = `${(s / total) * 100}%`;
+    tick.style.left = `${view.pct(s)}%`;
     const label = document.createElement('label');
-    label.textContent = `${s}s`;
+    label.textContent = tickLabel(s, step);
     tick.appendChild(label);
     ticks.push(tick);
   }
   ui.ruler.replaceChildren(...ticks);
+}
+
+/**
+ * The overview strip: the whole clip, with the visible window drawn on it.
+ *
+ * Nothing here goes through `view.pct`, and that is the point of it rather than an
+ * oversight - it is the one surface that has to be in whole-clip coordinates, because
+ * it exists to say where the window is, and a window cannot say that about itself.
+ */
+function paintMinimap() {
+  if (!ui.mini) return;
+  const dur = view.duration;
+  const pct = (t) => `${Math.max(0, Math.min(100, (t / dur) * 100))}%`;
+  ui.miniWin.style.left = `${view.a * 100}%`;
+  ui.miniWin.style.width = `${(view.b - view.a) * 100}%`;
+  ui.miniHead.style.left = pct(timeline ? timeline.programSec : 0);
+  const from = Math.min(clipIn, dur);
+  const to = Math.min(clipOut ?? dur, dur);
+  ui.miniRange.style.left = pct(from);
+  ui.miniRange.style.width = `${Math.max(0, ((to - from) / dur) * 100)}%`;
+}
+
+/**
+ * The window moved. Everything drawn against it is redrawn and nothing else is.
+ *
+ * It goes down `lanesMoved` rather than `lanesChanged`, and that is the same rule a
+ * key drag follows for the same measured reason: the structural path calls `resize()`,
+ * which resizes the drawing buffer, and a wheel gesture is dozens of events. See the
+ * note on `repositionLanes`, which counted 24 `renderer.setSize` calls in a ten-move
+ * drag before the two were split.
+ */
+function viewChanged() {
+  buildRuler();
+  paintMarks();
+  paintStripPositions();
+  lanesMoved();
 }
 
 // A drag resolves at whatever rate the drafts come back, and never queues more
@@ -4923,10 +5125,7 @@ paramWritten = (name, tag) => {
   requestRepaint();
 };
 
-const programAtPointer = (e) => {
-  const r = ui.bed.getBoundingClientRect();
-  return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * rulerDuration();
-};
+const programAtPointer = (e) => view.timeAt(e.clientX);
 
 let scrubbing = false;
 
@@ -4962,6 +5161,113 @@ for (const type of ['pointerup', 'pointercancel']) {
     // well-understood convention rather than a surprise.
     timeline.seek(programAtPointer(e)).catch(showTimelineError);
   });
+}
+
+// ------------------------------------------------------------------ zoom and pan
+
+// How much one wheel notch zooms. Chosen so a notch is a visible step and a flick is
+// not a jump to the bottom of the range: about eight notches per factor of ten.
+const ZOOM_PER_NOTCH = 1.33;
+
+/**
+ * The wheel over the strip. Vertical zooms about the pointer, horizontal pans.
+ *
+ * **Zooming about the pointer rather than the centre is the whole usability of it.**
+ * The gesture people run is "put the cursor on the thing, zoom in" - anchoring the
+ * centre instead means the thing you were pointing at walks off the edge, and the way
+ * you find it again is to zoom back out, which is the gesture you were trying to
+ * avoid.
+ *
+ * `preventDefault` is safe here rather than rude: `html, body` are `overflow: hidden`,
+ * so there is no page scroll to suppress, and the trackpad's horizontal axis would
+ * otherwise do nothing at all.
+ */
+/**
+ * Where the pointer is as a fraction of the *clip*, which is the coordinate both the
+ * zoom and the pan are expressed in.
+ *
+ * The two surfaces answer it differently because they show different things, and that
+ * is the whole of what "over the overview" means: an x on the ruler is a position in
+ * the window, an x on the overview is a position in the clip. Reading both through one
+ * of the two mappings is how a wheel over the overview ends up zooming somewhere the
+ * cursor is not.
+ */
+function clipFractionAt(surface, clientX) {
+  const r = (surface === ui.mini ? ui.mini : ui.bed).getBoundingClientRect();
+  const f = r.width > 0 ? Math.min(1, Math.max(0, (clientX - r.left) / r.width)) : 0.5;
+  return surface === ui.mini ? f : view.a + f * (view.b - view.a);
+}
+
+const onStripWheel = (surface) => (e) => {
+  if (!timeline) return;
+  e.preventDefault();
+  // A trackpad reports both axes at once and a mouse reports one, so the dominant
+  // axis decides which gesture this is - reading both would zoom and pan on every
+  // diagonal twitch.
+  if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+    const width = Math.max(1, (surface === ui.mini ? ui.mini : ui.bed).clientWidth);
+    const d = (e.deltaX / width) * (surface === ui.mini ? 1 : view.b - view.a);
+    if (!view.set(view.a + d, view.b + d)) return;
+  } else {
+    const factor = ZOOM_PER_NOTCH ** (-e.deltaY / 100);
+    if (!view.zoomAbout(clipFractionAt(surface, e.clientX), factor)) return;
+  }
+  viewChanged();
+};
+
+// Both surfaces, because the overview is where somebody who has just found the window
+// box will try the wheel next, and a strip that zooms on one half and does nothing on
+// the other reads as broken rather than as scoped.
+for (const surface of [ui.beds, ui.mini]) {
+  surface.addEventListener('wheel', onStripWheel(surface), { passive: false });
+}
+
+/**
+ * The overview's own gestures: drag the window to pan, drag an edge to zoom, click
+ * anywhere else to bring the window there.
+ *
+ * One handler deciding by what was hit rather than three listeners, because the edges
+ * are children of the box and a listener on each would have to stop the box's own
+ * handler from also running - which is a thing to get right on every path instead of
+ * a question asked once.
+ */
+let miniDrag = null;
+
+ui.mini.addEventListener('pointerdown', (e) => {
+  if (!timeline) return;
+  const rect = ui.mini.getBoundingClientRect();
+  if (rect.width <= 0) return;
+  const at = (e.clientX - rect.left) / rect.width;
+  const edge = e.target.classList.contains('w') ? 'w' : e.target.classList.contains('e') ? 'e' : null;
+  const inside = e.target === ui.miniWin || edge !== null;
+  ui.mini.setPointerCapture(e.pointerId);
+  if (!inside) {
+    // A click on open track centres the window there rather than jumping its left
+    // edge to the pointer, which is what "take me there" means and what leaves the
+    // thing you clicked on in the middle of the ruler.
+    const half = (view.b - view.a) / 2;
+    view.set(at - half, at + half);
+    viewChanged();
+  }
+  miniDrag = { edge, at, a: view.a, b: view.b };
+});
+
+ui.mini.addEventListener('pointermove', (e) => {
+  if (!miniDrag) return;
+  const rect = ui.mini.getBoundingClientRect();
+  const at = (e.clientX - rect.left) / Math.max(1, rect.width);
+  const d = at - miniDrag.at;
+  // Both edges read from the position the drag *started* at rather than from the last
+  // event, so a drag that runs into the clamp at one end and comes back lands where
+  // the pointer says instead of where the clamping left it.
+  const moved = miniDrag.edge === 'w' ? view.set(miniDrag.a + d, miniDrag.b)
+    : miniDrag.edge === 'e' ? view.set(miniDrag.a, miniDrag.b + d)
+      : view.set(miniDrag.a + d, miniDrag.b + d);
+  if (moved) viewChanged();
+});
+
+for (const type of ['pointerup', 'pointercancel']) {
+  ui.mini.addEventListener(type, () => { miniDrag = null; });
 }
 
 let handleDrag = null;
@@ -5046,7 +5352,8 @@ const isTyping = (el) => el instanceof HTMLElement && (TYPING_TAGS.has(el.tagNam
 
 const SHORTCUTS = 'space play/pause · arrows step a frame, with shift a second · '
   + 'home/end · i/o set in/out, with shift jump to them · del removes the selected key · '
-  + 'm marks · cmd-z undoes · h hides the panel';
+  + 'm marks · +/- zoom the ruler, f fits the clip, z frames in..out · '
+  + 'cmd-z undoes · h hides the panel';
 
 /**
  * The editor's keyboard, and the guard that has to come with it.
@@ -5114,6 +5421,22 @@ addEventListener('keydown', (e) => {
       return;
     case 'Delete': case 'Backspace': e.preventDefault(); deleteSelectedKey(); return;
     case 'm': case 'M': e.preventDefault(); markHere().catch(showTimelineError); return;
+    // Zoom about the playhead rather than about the centre of the window, for the same
+    // reason the wheel zooms about the pointer: the playhead is what the keyboard is
+    // pointing at, and zooming away from it is zooming away from the edit.
+    case '+': case '=':
+      e.preventDefault();
+      if (view.zoomAbout(timeline.programSec / view.duration, ZOOM_PER_NOTCH)) viewChanged();
+      return;
+    case '-': case '_':
+      e.preventDefault();
+      if (view.zoomAbout(timeline.programSec / view.duration, 1 / ZOOM_PER_NOTCH)) viewChanged();
+      return;
+    case 'f': case 'F': e.preventDefault(); if (view.fit()) viewChanged(); return;
+    case 'z': case 'Z':
+      e.preventDefault();
+      if (view.frame(clipIn, clipOut ?? view.duration)) viewChanged();
+      return;
     case '?': e.preventDefault(); ui.note.textContent = SHORTCUTS; return;
     default:
   }
@@ -5376,7 +5699,6 @@ function rebuildLanes() {
   ui.railLanes.replaceChildren();
   ui.lanes.replaceChildren();
   const rows = laneRows();
-  const duration = Math.max(1e-6, rulerDuration());
 
   for (const row of rows) {
     const rail = document.createElement('div');
@@ -5401,7 +5723,7 @@ function rebuildLanes() {
     lane.__row = row;
     bed.appendChild(lane);
     ui.lanes.appendChild(bed);
-    drawLane(lane, row, duration);
+    drawLane(lane, row);
   }
 
   ui.root.style.setProperty('--tlanes-h', `${rows.reduce((n, r) => n + r.height + 1, 0)}px`);
@@ -5429,7 +5751,6 @@ function rebuildLanes() {
  * underneath it changes nothing about where the events go.
  */
 function repositionLanes() {
-  const duration = Math.max(1e-6, rulerDuration());
   for (const lane of ui.lanes.querySelectorAll('.tlane')) {
     const row = lane.__row;
     if (!row) return false;
@@ -5438,8 +5759,13 @@ function repositionLanes() {
     if (nodes.length !== keys.length) return false;
     for (const node of nodes) {
       if (!keys.includes(node.__key)) return false;
-      node.style.left = `${(node.__key.t / duration) * 100}%`;
+      node.style.left = `${view.pct(node.__key.t)}%`;
       node.style.top = `${keyY(row, node.__key)}%`;
+      // Hidden rather than removed. `repositionLanes` refuses to run when the node
+      // count and the key count disagree - that identity is what lets a drag take the
+      // cheap path - so culling by removal would send every zoomed drag down the
+      // rebuild, which resizes the drawing buffer.
+      node.hidden = !view.holds(node.__key.t);
     }
     for (const handle of lane.querySelectorAll('.thandle')) {
       // The segment is recomputed rather than trusted. `__seg` was correct when the
@@ -5454,11 +5780,12 @@ function repositionLanes() {
       if (!segmentHasShape(keys, seg)) return false;
       const point = handlePoint(row, keys, seg, handle.__side);
       handle.__seg = seg;
-      handle.style.left = `${(point.t / duration) * 100}%`;
+      handle.style.left = `${view.pct(point.t)}%`;
       handle.style.top = `${point.y}%`;
+      handle.hidden = !view.holds(point.t);
     }
     const curve = lane.querySelector('polyline');
-    if (curve) curve.setAttribute('points', lanePoints(row.owner, duration));
+    if (curve) curve.setAttribute('points', lanePoints(row.owner));
   }
   return true;
 }
@@ -5476,15 +5803,20 @@ function repositionLanes() {
  * cannot hold. The fix is to draw through `params.normalise` the way the keys
  * already are.
  */
-function lanePoints(owner, duration) {
+function lanePoints(owner) {
   const { min, max } = laneRange(owner);
   const span = Math.max(1e-9, max - min);
   const at = owner === 'retime'
     ? (t) => retime.sourceSecAt(t)
     : (t) => tracks.get(owner).valueAt(t);
   const points = [];
+  // Sampled across the *visible* window rather than the clip, which does two things at
+  // once: nothing is drawn outside the lane, so there is no horizontal overflow to clip
+  // and `.tlane svg` can stay `overflow: visible` for the vertical excursions it is
+  // there for - and the same 120 samples buy proportionally more detail the further in
+  // you zoom, instead of a curve that gets coarser exactly where you are looking at it.
   for (let i = 0; i <= CURVE_SAMPLES; i++) {
-    const t = (i / CURVE_SAMPLES) * duration;
+    const t = view.startSec + (i / CURVE_SAMPLES) * view.spanSec;
     const y = 100 - ((at(t) - min) / span) * 100;
     points.push(`${(i / CURVE_SAMPLES) * 1000},${Math.max(-20, Math.min(120, y)).toFixed(2)}`);
   }
@@ -5504,9 +5836,9 @@ function lanePoints(owner, duration) {
  */
 const segmentHasShape = (keys, seg) => Math.abs(keys[seg + 1].value - keys[seg].value) > 1e-9;
 
-function drawLane(lane, row, duration) {
+function drawLane(lane, row) {
   const keys = keysOf(row.owner);
-  const x = (t) => (t / duration) * 100;
+  const x = (t) => view.pct(t);
 
   if (row.kind === 'scalar') {
     // The curve itself, because a row of diamonds says where the keys are and
@@ -5515,7 +5847,7 @@ function drawLane(lane, row, duration) {
     // lane, so it costs nothing to redraw at a different width.
     const box = svg('svg', { viewBox: '0 0 1000 100', preserveAspectRatio: 'none' });
     box.appendChild(svg('polyline', {
-      points: lanePoints(row.owner, duration), fill: 'none', stroke: 'var(--accent)',
+      points: lanePoints(row.owner), fill: 'none', stroke: 'var(--accent)',
       'stroke-width': 1.4, 'vector-effect': 'non-scaling-stroke',
     }));
     lane.appendChild(box);
@@ -5527,6 +5859,7 @@ function drawLane(lane, row, duration) {
     if (selection && selection.key === key) node.classList.add('sel');
     node.style.left = `${x(key.t)}%`;
     node.style.top = `${keyY(row, key)}%`;
+    node.hidden = !view.holds(key.t);
     node.dataset.role = 'key';
     lane.appendChild(node);
     node.__key = key;
@@ -5547,6 +5880,7 @@ function drawLane(lane, row, duration) {
     const point = handlePoint(row, keys, seg, side);
     handle.style.left = `${x(point.t)}%`;
     handle.style.top = `${point.y}%`;
+    handle.hidden = !view.holds(point.t);
     handle.dataset.role = 'handle';
     handle.__key = selection.key;
     handle.__row = row;
@@ -5671,6 +6005,11 @@ function timingChanged({ moved = false } = {}) {
   ui.fps.value = String(timeline.outputFps);
   buildRuler();
   paintMarks();
+  // The window is fractions of a duration this may just have changed, so everything
+  // positioned against it moves even though nothing in the document did. Not left to
+  // the caller's seek: most of them do repaint afterwards, but "most" is how the
+  // overview ends up showing the previous rate's window on the one path that does not.
+  paintStripPositions();
   if (moved) lanesMoved();
   else lanesChanged();
 }
@@ -5690,7 +6029,9 @@ function paintMarks() {
   host.replaceChildren();
   ui.markCount.textContent = String(takeMarks.length);
   if (!timeline) return;
-  const total = Math.max(1e-6, rulerDuration());
+  // The clip's length, not the window's: whether a mark is past the end of the edit is
+  // a fact about the edit, and it must not change because somebody scrolled.
+  const total = view.duration;
   for (const mark of takeMarks) {
     // Marks are stamped in source milliseconds and the ruler is program seconds,
     // so every tick goes through the curve. The two coincide only at rate 1 with
@@ -5706,9 +6047,23 @@ function paintMarks() {
     // somebody shortened the clip would be worse than one that needs explaining.
     const beyond = program >= total - 1e-9 && mark.sourceMs / 1000 > retime.sourceSecAt(total) + 1e-9;
     el.className = beyond ? 'tmk beyond' : 'tmk';
-    el.style.left = `${Math.max(0, Math.min(1, program / total)) * 100}%`;
+    const at = Math.max(0, Math.min(total, program));
+    el.style.left = `${view.pct(at)}%`;
+    el.hidden = !view.holds(at);
     el.title = `${mark.label ?? mark.id} · source ${(mark.sourceMs / 1000).toFixed(2)}s`;
     host.appendChild(el);
+  }
+  // The same marks on the overview, in whole-clip coordinates. Built here rather than
+  // in `paintMinimap` because that runs on every repaint and this list only changes
+  // when the marks or the timing do - rebuilding N nodes per played frame would be a
+  // cost with nothing to show for it.
+  if (ui.miniMarks) {
+    ui.miniMarks.replaceChildren(...takeMarks.map((mark) => {
+      const el = document.createElement('span');
+      const program = retime.programSecAt(mark.sourceMs / 1000);
+      el.style.left = `${Math.max(0, Math.min(100, (program / total) * 100))}%`;
+      return el;
+    }));
   }
 }
 
@@ -5860,10 +6215,7 @@ async function saveDeliverable(name, deliverable) {
 // longer in the document.
 let laneDrag = null;
 
-function laneProgramAt(clientX) {
-  const r = ui.bed.getBoundingClientRect();
-  return Math.min(1, Math.max(0, (clientX - r.left) / r.width)) * rulerDuration();
-}
+const laneProgramAt = (clientX) => view.timeAt(clientX);
 
 // **Known gap, carried deliberately.** An undo landing between this pointerdown
 // and its pointerup rebuilds every track from the snapshot, so `laneDrag.key` is
@@ -5896,7 +6248,7 @@ ui.beds.addEventListener('pointerdown', (e) => {
   laneDrag = {
     el, row: el.__row, key: el.__key, side: el.__side, seg: el.__seg,
     role: el.dataset.role, rect: lane.getBoundingClientRect(),
-    // Read before anything in the drag can change it - see `rulerDuration`.
+    // Read before anything in the drag can change it - see `view.duration`.
     duration: timeline.duration,
   };
   selection = { owner: el.__row.owner, key: el.__key };
@@ -5931,7 +6283,7 @@ ui.beds.addEventListener('pointermove', (e) => {
     // The one thing a retime key drag moves that the lanes below do not cover. A
     // mark is a source position and the curve carrying it onto the ruler is exactly
     // what this drag bends, so the ticks walk while the ruler itself stays pinned to
-    // `laneDrag.duration` - see `rulerDuration`.
+    // `laneDrag.duration` - see `view.duration`.
     if (row.owner === 'retime') paintMarks();
   } else {
     const a = keys[laneDrag.seg];
@@ -7241,6 +7593,10 @@ async function openTake(id) {
 
   pairSource = source;
   timeline = new TimelineTransport(source);
+  // A new take gets the whole clip. The window is not saved anywhere on purpose: where
+  // you were looking is not what the clip is, and a project that reopened zoomed into
+  // four seconds of a fifteen-minute take would read as having lost the rest of it.
+  view.fit();
   document.body.classList.add('editing');
   ui.root.hidden = false;
   ui.cameraGroup.hidden = false;
@@ -7477,6 +7833,24 @@ globalThis.__kinect = {
     // where 2.35x is, and the alternative - writing the rate into `value` - would set
     // some other rate and go on asserting happily about it.
     rateSlider: { toValue: sliderFromRate, toRate: rateFromSlider },
+    /**
+     * The window the strip is drawn against, and the mapping both ways through it.
+     *
+     * `pct` and `secAtPct` are exposed as a pair on purpose: the claim worth checking
+     * is that they invert each other at an arbitrary window, and a check that could
+     * only read one of them would have to reimplement the other to say anything -
+     * which is a second copy of the arithmetic under test.
+     */
+    view: {
+      window: () => ({
+        a: view.a, b: view.b, startSec: view.startSec, endSec: view.endSec,
+        spanSec: view.spanSec, duration: view.duration, whole: view.whole,
+      }),
+      pct: (t) => view.pct(t),
+      secAtPct: (p) => view.secAtPct(p),
+      set(a, b) { if (view.set(a, b)) viewChanged(); return { a: view.a, b: view.b }; },
+      fit() { if (view.fit()) viewChanged(); },
+    },
     // The take's marks as the strip draws them, planted without writing a sidecar. A
     // mark is the one thing on the ruler that must hold still across a speed change
     // *without* being rescaled - it is stored in source milliseconds and drawn through

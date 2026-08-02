@@ -341,6 +341,23 @@ absolute level. The gate is baseline spread now. Note the trap in the fix as wel
 threshold was set from two earlier runs' spreads and the run carrying the only correct packet
 data cleared it by 0.04, so that column is recorded as measured once rather than replicated.
 
+**A tool holding its own copy of a layout constant is a copy that goes stale, and it
+fails looking exactly like a regression in the product.** Adding one 22px row to the
+timeline took `--timeline-h` from 148 to 170, and `export-check` carried
+`TIMELINE_H_GUESS = 148` as the height it added to the viewport. So its stage came out
+22px short, the editor arm rendered at the fitted size while the export beside it wrote
+640x400, and the row that went red was "every frame that crossed the wire is
+byte-identical to the editor's own image" - nine of nine mismatched, on a build whose
+export was perfect. The same row had caught the same *shape* once before, when the
+letterbox arrived, and the comment beside it says so.
+
+Bumping the constant would close the instance and leave the class: the next row added
+to the strip breaks it again, identically. `keyframe-check` had the answer already -
+its `CHROME_H_GUESS` is documented as a first guess and the real height is measured
+after load and the viewport corrected - so `openPage` now goes through `setStage`,
+which measures. **When a tool needs a number the page owns, have it ask the page once
+rather than agree with it in a comment.**
+
 **Letterboxing the editor stage moved every pointer coordinate and every buffer-size
 expectation, and four proof tools found out one at a time.** `export-check` needed two
 separate fixes, `registry-check` failed its render-scale row, and `keyframe-check` failed
@@ -382,6 +399,10 @@ node tools/editor-check.mjs --mutate plant-unswept-control --no-render # ... and
 node tools/editor-check.mjs --mutate rate-holds-cuts --no-render       # ... and must FAIL
 node tools/editor-check.mjs --mutate rate-holds-keys --no-render       # ... and must FAIL
 node tools/editor-check.mjs --mutate undo-skips-cuts --no-render       # ... and must FAIL
+node tools/editor-check.mjs --mutate zoom-about-centre --no-render     # ... and must FAIL
+node tools/editor-check.mjs --mutate pointer-ignores-view --no-render  # ... and must FAIL
+node tools/editor-check.mjs --mutate marks-ignore-view --no-render     # ... and must FAIL
+node tools/editor-check.mjs --mutate mini-ignores-edges --no-render    # ... and must FAIL
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated
