@@ -302,6 +302,15 @@ function createSkim({ take, divisor, canvas, surface, bar, onDraw }) {
   let wanted = 0;
   let showing = -1;
   let busy = false;
+  // **Set by `release`, and checked on the far side of every await in the pump.** The
+  // viewer draws every take into one `vCanvas`, and it changes takes by releasing the
+  // old skim and building a new one on that same canvas - which `paint` also does on
+  // its own, for every refresh that happens while the viewer is open. A pump suspended
+  // in `frameAt` when that happens wakes up holding the previous take's frame and, with
+  // nothing to stop it, draws it under the new take's name and counts it on the new
+  // take's counter. Disconnecting the ResizeObserver was all `release` did, which
+  // stops the redraws it owns and none of the ones already in flight.
+  let released = false;
   // Kept so a resize can redraw the frame that is on screen. Without it every
   // resize blanks the poster until somebody scrubs it, and a window drag is a
   // continuous stream of resizes.
@@ -320,6 +329,7 @@ function createSkim({ take, divisor, canvas, surface, bar, onDraw }) {
   };
 
   const pump = async () => {
+    if (released) return;
     if (frames === 0) {
       // Drawn and counted, so a reader waiting on the counter gets the answer "this
       // take has no picture" rather than waiting out its timeout on a take that was
@@ -337,6 +347,10 @@ function createSkim({ take, divisor, canvas, surface, bar, onDraw }) {
         try {
           got = await frameAt(n);
         } catch { /* a take deleted mid-skim draws nothing rather than throwing */ }
+        // Checked here rather than only at the top: the await above is exactly where
+        // the viewer changes takes, and this frame belongs to the take that was open
+        // before it did.
+        if (released) return;
         payload = got;
         showing = n;
         drawFrame(canvas, take, got, divisor);
@@ -392,7 +406,10 @@ function createSkim({ take, divisor, canvas, surface, bar, onDraw }) {
   const ro = new ResizeObserver(fit);
   ro.observe(surface);
   fit();
-  api.release = () => ro.disconnect();
+  api.release = () => {
+    released = true;
+    ro.disconnect();
+  };
   return api;
 }
 
@@ -429,14 +446,25 @@ function menuItemsFor(take) {
   const nodeName = library.node?.name ?? 'the node';
   const reveal = library.reveal ?? { available: false, label: null, why: null };
   const label = reveal.label ?? 'the file manager';
+  // **A name the server cannot form a path from is a name it will not rename either,
+  // and the listing is wider than the rule on purpose.** `scanTakes` admits any file
+  // ending `.knct`, so a take copied onto the card by hand under `my take.knct` gets a
+  // tile and should - it is footage, it is here, and the gallery is where an operator
+  // finds out. But `renameTake` holds the *source* id to `VALID_ID` before it moves
+  // anything, so offering the box on one of those is offering a round trip whose only
+  // possible answer is a 409. Off with the reason said, which is what every other item
+  // here does, rather than a control that always fails.
+  const nameable = VALID_ID.test(take.id);
   return [
     {
       item: 'rename',
       label: 'Rename…',
-      enabled: !shooting && !onlyThere,
+      enabled: !shooting && !onlyThere && nameable,
       why: shooting
         ? 'this take is still being recorded: renaming it while the recorder holds it would make the manifest re-scan a growing file'
-        : onlyThere ? `${take.id} is only on ${nodeName}, and this button does not rename files over there` : '',
+        : onlyThere ? `${take.id} is only on ${nodeName}, and this button does not rename files over there`
+          : nameable ? ''
+            : `${take.id} did not come from the recorder and its name is outside the rule this program forms paths from, so it is listed and played but not renamed here`,
       run: (tile) => askRename(tile, take),
     },
     {
@@ -494,7 +522,7 @@ document.addEventListener('pointerdown', (e) => {
  * the document whether or not anybody has clicked - see `library.html` for why that
  * matters to the sweep.
  */
-function buildMenu(host, toggle, take, tileFor) {
+function buildMenu(host, toggle, take, hostFor) {
   const menu = document.createElement('div');
   menu.className = 'menu';
   menu.role = 'menu';
@@ -505,7 +533,7 @@ function buildMenu(host, toggle, take, tileFor) {
   for (const entry of entries) {
     const b = addButton(menu, entry.label, 'mi', () => {
       closeMenus();
-      entry.run(tileFor());
+      entry.run(hostFor());
     }, { disabled: !entry.enabled, why: entry.why, item: entry.item });
     b.dataset.item = entry.item;
     b.role = 'menuitem';
@@ -781,7 +809,8 @@ function buildTile(take) {
 }
 
 /**
- * Runs a tile's action with its buttons held down, and reports on it while it runs.
+ * Runs one surface's action with its controls held down, and reports on it while it
+ * runs.
  *
  * `watch` is a function returning the sentence to show right now, or null for
  * nothing new to say. It exists for the download, which is gigabytes over a room's
@@ -791,9 +820,30 @@ function buildTile(take) {
  * `refresh` is false for the one action that changes nothing here: revealing a take
  * opens a window on this machine and moves not a byte, and repainting the grid
  * underneath it would only throw away the viewer the operator had open.
+ *
+ * **`host` is whichever surface the press came from, and that is the whole of what
+ * gets held down.** It was the grid tile for both surfaces, which read as harmless
+ * because the viewer is modal and the tile behind it cannot be pressed - but the
+ * controls being disabled were then the ones nobody could reach, while the viewer's
+ * own stayed live. A second tap on the viewer's Download starts a second transfer of
+ * the same take: `downloadTake` has no duplicate guard, so both write one `.part`
+ * file and overwrite one progress entry, and the two verifications race over bytes
+ * neither of them wrote alone.
+ *
+ * Close is excluded rather than swept up with the rest, because it is not an action
+ * on the take: a viewer that could not be dismissed for the four minutes a download
+ * takes would hold the operator on a surface with nothing else to offer.
  */
-async function run(tile, message, action, watch = null, { refresh: doRefresh = true } = {}) {
-  const buttons = tile ? [...tile.querySelectorAll('.act, .mi')] : [];
+async function run(host, message, action, watch = null, { refresh: doRefresh = true } = {}) {
+  const buttons = host ? [...host.querySelectorAll('.act:not(.vclose), .mi')] : [];
+  // **What each control was before this ran, because finishing means putting the
+  // surface back rather than lighting up everything on it.** Reveal is the one action
+  // that does not repaint, so its controls are the same nodes afterwards - and a
+  // blanket enable there offered Reclaim on a take that is in one place and Open on a
+  // take that cannot be opened, both of which the server then refuses. The failure
+  // path did it for every action, not only for Reveal.
+  const was = buttons.map((b) => b.disabled);
+  const restore = () => { buttons.forEach((b, i) => { b.disabled = was[i]; }); };
   for (const b of buttons) b.disabled = true;
   say(message);
   // Polled rather than streamed: the progress is a number that changes slowly and a
@@ -808,12 +858,17 @@ async function run(tile, message, action, watch = null, { refresh: doRefresh = t
   try {
     const answer = await action();
     say('');
+    // The repaint replaces the grid's tiles outright, so restoring them is writing to
+    // nodes already discarded - harmless, and not worth a branch that would have to
+    // know which surface it was called from. The viewer is the case that needs it:
+    // `paint` rebuilds it only while the take is still listed, and never at all on the
+    // path that does not repaint.
     if (doRefresh) await refresh();
-    else for (const b of buttons) b.disabled = false;
+    restore();
     return answer;
   } catch (err) {
     say(err.message);
-    for (const b of buttons) b.disabled = false;
+    restore();
     throw err;
   } finally {
     if (ticking) clearInterval(ticking);
@@ -944,7 +999,17 @@ function askRename(tile, take) {
 function validateRename() {
   if (!renaming) return false;
   const typed = renameInput.value.trim().replace(/\.knct$/i, '');
-  const clash = library.takes.some((t) => t.id === typed && t.hash !== renaming.take.hash);
+  // **Only the takes with a copy on this machine, because the name being claimed is a
+  // filename in one captures directory.** The listing is reconciled across two
+  // machines and a name is not an identity in it - `downloadTake` says so where it
+  // costs something, keeping both copies when the node offers a take whose name is
+  // already here and whose hash is not, by putting the hash into the name. So a
+  // node-only take called `foo` leaves `foo` free in this directory, which is the
+  // only place this rename lands and the only thing the server's own collision check
+  // looks at. Counting it here refused a rename the server would have performed.
+  const clash = library.takes.some(
+    (t) => t.id === typed && t.hash !== renaming.take.hash && t.state !== 'remote',
+  );
   let why = '';
   if (!typed) why = 'a take needs a name';
   else if (!VALID_ID.test(typed)) {
@@ -1050,10 +1115,17 @@ function openViewer(key) {
   // different set of things to do from the other.
   const acts = document.getElementById('vActs');
   acts.replaceChildren();
-  const tileFor = () => grid.querySelector(`.tile[data-hash="${CSS.escape(take.hash ?? '')}"]`);
+  // **The surface an action is running on is this one, so this is what `run` holds
+  // down.** It used to hand over the grid tile behind the modal, which disabled
+  // controls nobody could press and left every control here live. The tile was also
+  // not always there to hand over: it is absent whenever the current filter does not
+  // show this take, and `take.hash` is null for a take that has not been scanned, so
+  // the selector became `[data-hash=""]` and matched nothing - and a null host
+  // disables nothing at all rather than disabling the wrong thing.
+  const hostOf = () => viewer;
   if (take.state === 'remote') {
     addButton(acts, 'Download', 'act primary', () => run(
-      tileFor(),
+      hostOf(),
       `downloading ${take.id} — asking ${library.node?.name ?? 'the node'} for ${gb(take.bytes)}`,
       () => post(`/library/download/${encodeURIComponent(take.id)}`),
       () => downloadProgress(take.id),
@@ -1063,7 +1135,7 @@ function openViewer(key) {
       location.href = `/edit?take=${encodeURIComponent(take.id)}`;
     }, { disabled: !take.openable, why: cannotOpen(take) });
   }
-  addButton(acts, 'Delete', 'act danger', () => askDelete(tileFor(), take));
+  addButton(acts, 'Delete', 'act danger', () => askDelete(hostOf(), take));
   const vMore = document.getElementById('vMore');
   // Replaced rather than re-wired: the ⋯ in the header belongs to whichever take is
   // open, and a listener left on the old node would act on the take before this one.
@@ -1072,7 +1144,7 @@ function openViewer(key) {
   vMore.replaceWith(freshMore);
   for (const old of viewer.querySelectorAll('.vhead .menu')) old.remove();
   viewer.querySelector('.vhead').style.position = 'relative';
-  buildMenu(viewer.querySelector('.vhead'), freshMore, take, tileFor);
+  buildMenu(viewer.querySelector('.vhead'), freshMore, take, hostOf);
 
   skim.setIndex(0);
   if (!viewer.open) viewer.showModal();
