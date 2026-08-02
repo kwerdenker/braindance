@@ -945,7 +945,14 @@ async function onFreshPage(what, work, attempts = 3) {
       return { ok: true, value };
     } catch (err) {
       const message = String(err.message ?? err);
-      if (!/Execution context was destroyed|Target (page|closed)|crashed/i.test(message)) {
+      // `Resulting promise was garbage collected` is the same failure wearing a
+      // different message: a pending `page.evaluate` whose execution context went away.
+      // Seen twice in about ten runs of this file, both times in section 4 and both
+      // times passing on the very next run with nothing changed - which is the shape
+      // that teaches people to re-run a gating check until it goes green. Retried on
+      // the same terms as its sibling, with the count printed, so a genuine hang still
+      // fails rather than being absorbed.
+      if (!/Execution context was destroyed|Resulting promise was garbage collected|Target (page|closed)|crashed/i.test(message)) {
         return { ok: false, error: message };
       }
       if (attempt >= attempts) return { ok: false, error: `${message} (${attempts} attempts)` };

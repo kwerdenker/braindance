@@ -203,6 +203,15 @@ error up to three times, printing the retry count; anything else propagates on t
 first attempt, because a check that retried real failures would report whichever
 attempt it liked.
 
+**It arrives under a second message, which is why the retry missed it for a while.**
+`Resulting promise was garbage collected` is the same thing - a pending `page.evaluate`
+whose context went away - and it was seen twice in about ten runs, both times in section
+4 and both times green on the very next run with the tree unchanged. That is the shape
+that teaches people to re-run a gating check until it passes, so it is retried on the
+same terms rather than left as folklore. The tell for "flake rather than regression" is
+not the message either: it is that nothing the failing section tests had changed between
+the red run and the green one, which is a `git diff` rather than a judgement.
+
 **`page.evaluate(fnSourceString, arg)` does not call the function.** Playwright
 evaluates the string as an expression, so the arrow function is created, never
 invoked, and `undefined` comes back - which surfaced three helpers later as a
