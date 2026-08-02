@@ -1788,6 +1788,31 @@ try {
     '  and eight wheel notches take the cheap path every time, never the one that resizes the buffer',
     `${zoomCounters.laneRepositions} repositions, ${zoomCounters.laneRebuilds} rebuilds`);
 
+  // The keys. `SHORTCUTS` is what `?` prints and it now names four of them, so each is
+  // pressed rather than trusted - a string telling the user about a feature is the
+  // cheap version of the bug this whole file exists for.
+  await page.evaluate('__kinect.editor.view.set(0.2, 0.8)');
+  await page.evaluate('__kinect.timeline.transport().seek(15)');
+  await settle();
+  const beforeKeyZoom = await page.evaluate('__kinect.editor.view.window()');
+  await focusStage();
+  await page.keyboard.press('=');
+  await settle();
+  const afterIn = await page.evaluate('__kinect.editor.view.window()');
+  await page.keyboard.press('-');
+  await settle();
+  const afterOut = await page.evaluate('__kinect.editor.view.window()');
+  check(afterIn.spanSec < beforeKeyZoom.spanSec * 0.95 && near(afterOut.spanSec, beforeKeyZoom.spanSec, 1e-6),
+    '+ zooms the ruler in and - takes it back, both about the playhead',
+    `${beforeKeyZoom.spanSec.toFixed(3)}s -> ${afterIn.spanSec.toFixed(3)}s -> ${afterOut.spanSec.toFixed(3)}s`);
+  const held = await page.evaluate('__kinect.timeline.transport().programSec');
+  check(afterIn.startSec < held && afterIn.endSec > held,
+    '  and the playhead is still inside the window after zooming in, which is what "about" means',
+    `playhead ${held.toFixed(2)}s in ${afterIn.startSec.toFixed(2)}s..${afterIn.endSec.toFixed(2)}s`);
+  check((await page.evaluate('__kinect.editor.shortcuts()')).includes('f fits the clip'),
+    '  and the shortcut list says so, which is where anybody would look for it',
+    await page.evaluate('__kinect.editor.shortcuts()'));
+
   // The way back, and the way to the edit. Both are keys because a window you can only
   // leave with a wheel is a window somebody gets stuck in.
   await focusStage();

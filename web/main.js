@@ -5038,6 +5038,12 @@ function paintMinimap() {
  * drag before the two were split.
  */
 function viewChanged() {
+  // Nothing on the strip means anything without a clip, and `view.duration` floors at
+  // 1e-6 to keep its arithmetic finite - so a caller that arrived before a take opened
+  // would write positions computed against that floor. Every gesture already checks;
+  // the test hooks are the path that does not, which is exactly the sort of caller that
+  // turns up first.
+  if (!timeline) return;
   buildRuler();
   paintMarks();
   paintStripPositions();
