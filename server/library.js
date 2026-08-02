@@ -645,9 +645,36 @@ async function downloadToPath(node, take, dir, targetIn) {
   // Marks come with the take. They are outside the hash by design - mutable, and
   // editable from either machine - so they are merged rather than compared, and
   // the merge is the same union the sync below performs.
+  //
+  // **The path is checked again before it is written to, because fetching the log is a
+  // network round trip and `target` is a name rather than a file.** The capture is
+  // installed and visible by the time this runs, so another tab can rename it - and a
+  // rename that happens now finds no sidecar to move, completes cleanly, and leaves this
+  // append creating `<old>.marks.jsonl` beside a take that no longer answers to that
+  // name. The download would report success with every downloaded mark orphaned.
+  //
+  // The inode rather than the name, for the reason `serveMarkWrite` gives: a rename
+  // frees the old id and a later take can be renamed into it, so a path that still
+  // exists is not a path that still holds this take, and marks landing on the wrong
+  // footage resolve cleanly onto frames that exist.
+  //
+  // Skipped rather than chased, because the marks are not lost by skipping: they are
+  // still on the node, and `/library/sync-marks/:id` is the operation that brings them
+  // across. Following the take to its new name would mean guessing which rename
+  // happened, and guessing which file to write somebody's annotations into is the one
+  // thing this path must not do.
+  const installed = await stat(target).catch(() => null);
   try {
     const log = await node.fetchJson(`/capture/${encodeURIComponent(take.id)}/marks/log`);
-    await appendMarks(target, log.log ?? []);
+    const stillThere = await stat(target).catch(() => null);
+    const same = installed !== null && stillThere !== null
+      && stillThere.dev === installed.dev && stillThere.ino === installed.ino;
+    if (!same) {
+      console.warn(`[library] ${take.id} was renamed or replaced while its marks were arriving, `
+        + 'so they were not written here - sync marks on the take under its new name to bring them across');
+    } else {
+      await appendMarks(target, log.log ?? []);
+    }
   } catch { /* a node that went away mid-download still leaves a verified take */ }
   return target;
 }
