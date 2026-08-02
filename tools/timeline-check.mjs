@@ -131,6 +131,15 @@ const MUTATIONS = {
     '    params.apply(BYPASS_ZERO);',
     '    /* mutation: the bypass is skipped */',
   ]],
+  // A draft rebuilds the pair it is already holding, so every frame of an orbit
+  // pays two depth expansions, two binds and two state advances to arrive back
+  // where it started. Nothing about the image changes, which is the point: this
+  // is a cost claim, and section 3c is the only thing that reads the counters
+  // that can see it.
+  'draft-always-resets': [[
+    'if (target !== this.frame || this.source.applied !== i + 1) {',
+    'if (true) {',
+  ]],
   // The accumulators are not cleared before a pre-roll.
   'no-reset': [[
     'const feedback = [statePrev, stateNext, afterimage._textureComp, afterimage._textureOld];',
@@ -994,6 +1003,70 @@ console.log('\n== 3b. a draft is independent of how the playhead got there ==');
     'and the registry is exactly where the draft found it afterwards',
     JSON.stringify(result.restored));
   console.log(`  (the accurate image there costs ${result.plan.frames} pre-roll frames)`);
+}
+
+// ------------------- 3c. and a draft that stayed put does no work to stay there
+
+// The orbit case, which is the one a hand spends the most frames in: the camera
+// moves and the playhead does not. The pair such a draft would rebuild is the pair
+// it is already holding, so it rebuilds nothing - and both halves of that have to be
+// stated, because "cheaper" and "the same image" fail in opposite directions and a
+// section that checked only one of them would bless either failure.
+//
+// The counters are the only witness to the first half. Timing it instead would pass
+// on a machine fast enough not to notice two texture uploads, which is every machine
+// this is likely to run on. `draft-always-resets` is the control.
+
+console.log('\n== 3c. a draft that did not move the playhead rebuilds nothing ==');
+{
+  const HERE = 8.0;
+  const result = await page.evaluate(`(async () => {
+    const k = globalThis.__kinect;
+    const tl = globalThis.__tl;
+    const t = k.timeline.transport();
+    await tl.configure(${JSON.stringify({ mode: 4, look: { fade: 400, wake: 900, trails: 0.85 }, rate: 1, fps: 30 })});
+
+    // An accurate seek leaves the accumulators loaded, which is the state this is
+    // about: the first draft of an orbit lands on top of one. A draft over a
+    // freshly cleared set of buffers could not tell the two paths apart at all.
+    await t.seek(${HERE});
+    const parked = tl.counters();
+    await t.draft(${HERE});
+    const still = tl.since(parked);
+    tl.grab('draft-stayed');
+
+    // The same position again, this time arrived at, so the walk is genuinely
+    // rebuilt. This is the control for the row above - without it, a build whose
+    // counters never moved would read as the saving working perfectly.
+    await t.draft(${HERE} - 0.5);
+    const away = tl.counters();
+    await t.draft(${HERE});
+    const moved = tl.since(away);
+    tl.grab('draft-arrived');
+
+    return { still, moved, applied: t.source.applied };
+  })()`);
+
+  console.log(`  a draft where the playhead already was: ${result.still.drafts} draft, `
+    + `${result.still.stateAdvances} state advances, ${result.still.resets} resets`);
+  console.log(`  a draft that arrived from 0.5s away:    ${result.moved.drafts} draft, `
+    + `${result.moved.stateAdvances} state advances, ${result.moved.resets} resets`);
+  check(result.still.drafts === 1 && result.still.stateAdvances === 0 && result.still.resets === 0,
+    'a draft at the position the playhead is parked at walks nothing and clears nothing',
+    `${result.still.stateAdvances} advances, ${result.still.resets} resets`);
+  check(result.moved.stateAdvances === 2 && result.moved.resets === 1,
+    'and one that moved still rebuilds the pair, so the row above is a saving not a hole',
+    `${result.moved.stateAdvances} advances, ${result.moved.resets} resets`);
+
+  // The other half, and the reason the saving is allowed to exist. Skipping the
+  // rebuild leaves the surface memory holding the seek's own history rather than
+  // zeroes, and the claim is that this cannot reach the image: a draft holds fade
+  // and wake at zero, which takes the ghost half out of the draw range and pins the
+  // live half's ramp at 1. That is an argument, and this is the measurement.
+  const same = await diff('draft-stayed', 'draft-arrived');
+  console.log(`  the two drafts of ${HERE}s, one that rebuilt the walk and one that skipped it: `
+    + `${show(same)}`);
+  check(same.max === 0, 'and it is the same image as one that did rebuild it', show(same));
 }
 
 // ================================ 4. program time maps to source time correctly

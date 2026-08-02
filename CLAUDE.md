@@ -101,6 +101,7 @@ node tools/index-check.mjs --url http://localhost:8123   # step 2: index, hash, 
 node tools/registry-check.mjs --url http://localhost:8080 # step 3: one registry, sliders as views
 node tools/timeline-check.mjs --url http://localhost:8080 # step 4: seek equals playback
 node tools/timeline-check.mjs --mutate preroll-constant   # ... and must FAIL mutated
+node tools/timeline-check.mjs --mutate draft-always-resets # ... and must FAIL mutated
 node tools/keyframe-check.mjs --url http://localhost:8080 # step 5: tracks, retime curve, undo
 node tools/keyframe-check.mjs --mutate pose-linear        # ... and must FAIL mutated
 node tools/export-check.mjs --url http://localhost:8080   # step 6: resolution, export, the file
@@ -111,6 +112,8 @@ node tools/editor-check.mjs --url http://localhost:8080   # the editor's control
 node tools/editor-check.mjs --mutate lanes-clear-siblings --no-render  # ... and must FAIL
 node tools/editor-check.mjs --mutate plant-unswept-control --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate nav-at-the-foot --no-render       # ... and must FAIL
+node tools/editor-check.mjs --mutate orbit-pumps-on-change --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate orbit-arms-into-playback --no-render # ... and must FAIL
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated
@@ -176,7 +179,17 @@ tools/pi-registration-ab.sh        # the threading A/B runbook for a capture nod
 loops was shot on a degraded link at about 9.3fps**, so size fixtures by frame count rather
 than by duration. See `docs/proof-tools.md`.
 
-## Two things that are easy to get backwards
+## Three things that are easy to get backwards
+
+**A render moves the camera, so rendering in answer to a camera event is a loop.**
+`renderProgramFrame` runs `advanceNavigation`, which calls `controls.update()`, which fires
+`change` on a damped control that moved — so a handler that renders on `change` has asked for
+the next render, and with the playhead parked there is no frame clock to pace it. That shipped:
+one pointer move on a paused orbit cost 34 rebuilds and the drag ran at 12fps while rendering
+190. Arm `draftWanted` and let the animation loop pump it; **nothing may start a redraw except
+the loop**. `editor-check` section 9 counts drafts against animation frames, with
+`--mutate orbit-pumps-on-change` as its control.
+
 
 **`nearClip`/`farClip` versus `--min-depth`/`--max-depth`.** The first pair are viewer
 uniforms that hide points which already arrived. The second pair are grabber flags that clip

@@ -20,6 +20,30 @@ just created. `captures/` and `vendor/` now carry `.metadata_never_index`. Re-ru
 machine and the same comparison was flat: all six arms 30.03-30.04fps, all three paired deltas
 the same sign.
 
+## A driver paced off the page measures the driver
+
+The browser half of this rig has its own version of the health-number rule, and it bites in
+the opposite direction: the instrument is not thrown off by the machine, it is *carried along*
+by the thing it is measuring.
+
+Chasing the paused orbit drag, the first probe drove 60 pointer moves through Playwright with
+`await page.evaluate('new Promise(requestAnimationFrame)')` between them, and divided the moves
+by the elapsed 15.1 seconds to report 4 frames a second. That number is the driver's pacing,
+not the page's rate: `page.mouse.move` does not return until the page has processed the event,
+so a saturated main thread slows the driver by exactly as much as it slows itself, and the
+quotient says more about the round trip than about the browser. Counting the page's own
+animation frames over the same drag gave 12.4/s, with a 10.0-18.1 spread across five rounds.
+
+**So install the counter in the page** — `globalThis.__raf` incremented from a
+`requestAnimationFrame` chain — and read a delta around the gesture. That is what the editor's
+new section 9 does and why it does it. The rule generalises past rAF: any figure derived from
+how long the driver's own loop took is a measurement of the driver.
+
+And prefer a counter the page already keeps to a rate you compute. Across three runs of the
+same A/B the frame rate moved with whatever else the machine was doing, while the draft count
+for a 40-move drag came back 1818, 1818 and 1869 — the amplification is deterministic and the
+rate is not, so the count is what carries an argument and the rate is what makes it legible.
+
 ## A tight loop cannot measure an allocation
 
 Two arms that both hit the allocator back to back are not an A/B of allocation cost.

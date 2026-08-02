@@ -149,6 +149,35 @@ const MUTATIONS = {
     ],
   },
 
+  // The control for section 9, and it is one line because the bug was one line: a
+  // finishing draft starts whatever was armed while it ran. For a scrub that is
+  // harmless, since the pointer cannot outrun the display; for an orbit it is the
+  // whole failure, because the draft's own render arms the next position through
+  // `advanceNavigation`. The mutated build renders correct images at forty-five
+  // times the rate anything can show them, which is why the row it must redden is
+  // the count and not the picture.
+  'orbit-pumps-on-change': {
+    file: 'web/main.js',
+    edits: [[
+      '    draftBusy = false;\n  }\n}',
+      '    draftBusy = false;\n    if (draftWanted !== null) pumpDraft();\n  }\n}',
+    ]],
+  },
+
+  // The second control for section 9, and the one that costs the most if it is
+  // missed: an armed position is left standing in a state that will never pump it,
+  // so `settled()` runs out its iterations and throws. Nothing about the picture is
+  // wrong in that build - the orbit is fast, the release is accurate, and every tool
+  // in this suite hangs on the call it uses to know when to look.
+  'orbit-arms-into-playback': {
+    file: 'web/main.js',
+    edits: [[
+      '  if (!timeline || timeline.playing || exporting) {\n'
+      + '    draftWanted = null;\n    orbitSettling = false;\n    return;\n  }',
+      '  if (!timeline || timeline.playing || exporting) return;',
+    ]],
+  },
+
   // Speed goes back to holding program time, which is what moved the frame you were
   // looking at by ten source seconds on a 1x to 2x change.
   'rate-holds-program': {
@@ -1445,6 +1474,106 @@ try {
     '"open the box" puts all four planes back and the whole cloud with them',
     `planes ${planes.join(', ')}; lit ${litClosed.all} -> ${litReopened.all} against `
     + `${litDefault.all} open, ${(backWithin * 100).toFixed(3)}% apart`);
+
+  // ================ 9. orbiting the parked viewport costs frames, not settles
+
+  console.log('\n[9] orbiting while paused redraws once per frame, not once per rebuild');
+
+  // The control the editor gives you for looking at the cloud is the drag itself, and
+  // it is the one control in this file whose failure is a *rate* rather than a wrong
+  // answer. Every image it produced was correct; there were just forty-five of them
+  // per pointer move, because `renderProgramFrame` runs `advanceNavigation`, which
+  // calls `controls.update()`, which fires `change` on a damped control that moved -
+  // so the render asked for the next render and the damping settle ran at whatever
+  // rate the machine could rebuild a frame. Measured before the fix: one pointer move
+  // raised 35 `change` events, 34 of them from inside a render, and cost 34 drafts.
+  //
+  // So this is a counted claim rather than a timed one. A threshold in milliseconds
+  // would pass on a fast enough machine while the amplification was still there, and
+  // the amplification is the bug. `orbit-pumps-on-change` is the control.
+  {
+    await page.evaluate('__kinect.timeline.transport().pause()');
+    await page.evaluate('__kinect.timeline.transport().seek(4.0)');
+    await settle();
+    // The page counts its own animation frames. A driver-side clock cannot see this:
+    // a saturated main thread starves rAF, which is exactly the symptom, and a
+    // stopwatch out here would report the wall time either build takes rather than
+    // how many turns the compositor was given.
+    await page.evaluate(`(() => {
+      globalThis.__orbitFrames = 0;
+      const tick = () => { globalThis.__orbitFrames++; requestAnimationFrame(tick); };
+      requestAnimationFrame(tick);
+    })()`);
+
+    const stage = await page.evaluate(`(() => {
+      const r = document.getElementById('stage').getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    })()`);
+    const poseOf = () => page.evaluate('(() => { const p = __kinect.freeCamera.position;'
+      + ' return [p.x, p.y, p.z]; })()');
+
+    const poseBefore = await poseOf();
+    const before = await page.evaluate(
+      '({ drafts: __kinect.timeline.counters.drafts, frames: globalThis.__orbitFrames })');
+    await page.mouse.move(stage.x, stage.y);
+    await page.mouse.down();
+    const MOVES = 24;
+    for (let i = 0; i < MOVES; i++) {
+      await page.mouse.move(stage.x + Math.sin(i / 5) * 110, stage.y + Math.cos(i / 7) * 55);
+      await page.evaluate('new Promise(requestAnimationFrame)');
+    }
+    await page.mouse.up();
+    await settle();
+    const after = await page.evaluate(
+      '({ drafts: __kinect.timeline.counters.drafts, frames: globalThis.__orbitFrames })');
+    const poseAfter = await poseOf();
+
+    const drafts = after.drafts - before.drafts;
+    const frames = after.frames - before.frames;
+    const travelled = Math.hypot(...poseAfter.map((v, i) => v - poseBefore[i]));
+    note(`${MOVES} pointer moves across the stage`,
+      `${drafts} drafts over ${frames} animation frames, camera moved ${travelled.toFixed(3)} m`);
+
+    // The control for the row below, and it has to come first: a drag that rendered
+    // nothing would satisfy any ceiling at all, and so would one that never moved
+    // the camera.
+    check(drafts > 0 && travelled > 0.05, 'the drag renders, and it moves the camera',
+      `${drafts} drafts, ${travelled.toFixed(3)} m`);
+    // The invariant rather than a threshold: the animation loop is the only thing
+    // that starts a draft while the playhead is parked, so it cannot start more than
+    // one per frame. The slack is one frame, for the turn this counter was installed
+    // on relative to the loop's.
+    check(drafts <= frames + 1, 'and never more than one redraw per frame the display was given',
+      `${drafts} drafts against ${frames} frames`);
+    check((await read()).drafted === false,
+      'and the release still lands the accurate image rather than leaving a draft up');
+
+    // An armed position means something only while something will consume it, and
+    // hitting play mid-drag is a state where nothing will - the loop's first act is
+    // to hand the frame to `tick`. That was harmless while nothing read the flag. It
+    // stopped being harmless when `settled()` started to, and `settled()` is what
+    // every tool in this suite waits on, so the failure would not have been a slow
+    // orbit but a hang everywhere. Driven through the real controls because the
+    // sequence is a real one: a hand lets go of the cloud and reaches for play.
+    await page.evaluate('__kinect.timeline.transport().seek(4.0)');
+    await settle();
+    await page.mouse.move(stage.x, stage.y);
+    await page.mouse.down();
+    await page.mouse.move(stage.x + 60, stage.y + 30);
+    await page.mouse.up();
+    await page.evaluate('__kinect.timeline.transport().play()');
+    let settledAfterPlay = true;
+    let why = '';
+    try {
+      await settle();
+    } catch (err) {
+      settledAfterPlay = false;
+      why = err.message.split('\n')[0];
+    }
+    check(settledAfterPlay, 'and a drag interrupted by playback leaves nothing armed behind it', why);
+    await page.evaluate('__kinect.timeline.transport().pause()');
+    await settle();
+  }
 
   check(errors.length === 0, 'the page reported no errors while any of this happened',
     errors.length ? errors.slice(0, 3).join(' | ') : '');
