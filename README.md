@@ -280,7 +280,7 @@ conversion is total and lossless, so it is a one-shot over files rather than a s
 reader inside the program:
 
 ```
-node tools/convert-presets.mjs presets projects
+node tools/convert-presets.mjs presets projects jobs
 ```
 
 Two controls decide how much white ends up on the geometry, which is the first

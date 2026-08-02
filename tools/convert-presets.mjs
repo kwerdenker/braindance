@@ -60,6 +60,33 @@ function readingsFrom(mode, what) {
   return readingValues(mode);
 }
 
+/**
+ * A version 3 document may not already name a reading, and this is a refusal rather
+ * than a precedence rule.
+ *
+ * The five names did not exist in version 3, so a document carrying one was hand-edited
+ * and the version 3 loader would have refused it as an unknown parameter. Here they
+ * land on the wrong side of a spread: `{ ...readingsFrom(mode), ...values }` lets the
+ * document's own `readRgb` win over the one derived from `mode`, so `mode: 4` beside a
+ * stray `readRgb: 1` converts to a *valid* version 4 preset naming two readings at 1 -
+ * a 50/50 blend of Blackwall and the camera image that nobody authored, in a file that
+ * now opens cleanly.
+ *
+ * Ordering the spread the other way would be worse, not better: it would silently drop
+ * a value somebody wrote instead of silently keeping it. And the rewrite is one-way -
+ * once the file says 4 this tool skips it - so there is no later pass that could catch
+ * it. The only honest answer is to stop.
+ */
+function refuseReserved(names, what, where) {
+  const clash = READING_FOR.filter((n) => names.includes(n));
+  if (clash.length) {
+    throw new Error(
+      `${what}: ${where} already names ${clash.join(', ')}, which version 3 had no such parameter for `
+      + '- a hand-edited file, and converting it would let that value override the reading its mode names',
+    );
+  }
+}
+
 function convert(body, what) {
   // **A queued render job carries a whole project and is versioned separately**, so it
   // has to be recognised before the version gate rather than refused by it. A job
@@ -86,6 +113,7 @@ function convert(body, what) {
   // of the look, so a converted file reads the way a freshly saved one does.
   if (body.values && !body.look) {
     const { mode, values, ...rest } = body;
+    refuseReserved(Object.keys(values ?? {}), what, 'values');
     return { ...rest, version: PROJECT_VERSION, values: { ...readingsFrom(mode, what), ...values } };
   }
   // A project: the same move one level down, inside `look`.
@@ -100,6 +128,13 @@ function convert(body, what) {
     // cannot be found later by running the conversion again.
     if (!params || typeof params !== 'object' || Array.isArray(params)) {
       throw new Error(`${what}: look.params is ${JSON.stringify(params)}, so there is no authored look here to convert`);
+    }
+    refuseReserved(Object.keys(params), what, 'look.params');
+    // The tracks as well, because a keyed reading is the same file saying the same
+    // thing in the other place a look lives - and a track survives the spread above
+    // untouched, so nothing downstream would ever look at it again.
+    if (look.tracks && typeof look.tracks === 'object') {
+      refuseReserved(Object.keys(look.tracks), what, 'look.tracks');
     }
     const next = {
       ...body,

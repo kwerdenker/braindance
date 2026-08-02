@@ -156,9 +156,20 @@ const MUTATIONS = {
   // Anchored on the block that follows it, because `requestRepaint()` on its own
   // appears twice and a replacement that hit the registry's call instead would be
   // mutating a different claim.
-  'no-mode-repaint': [[
-    '  requestRepaint();\n}\n\ndocument.querySelectorAll(\'#modes button\')',
-    '}\n\ndocument.querySelectorAll(\'#modes button\')',
+  // The control for "writing one reading rebuilds the image". It replaces
+  // `no-mode-repaint`, which anchored on the `#modes button` handler and went stale the
+  // moment the readings dissolved that block - `main.js` has not contained the string
+  // since, so the mutation matched nothing, the tool refused it, and `sweep-all` could
+  // not get past this file. A declared falsification control that cannot run is the
+  // shape this repo keeps writing down as a bug found.
+  //
+  // Aimed at the mechanism the row actually rests on rather than at a click: a reading
+  // is an ordinary registry parameter now, so what would break it is the registry
+  // declining to announce that one changed. Everything else still announces, so the
+  // whole-look rows below stay green - they write non-reading values too.
+  'reading-write-skips-repaint': [[
+    '    paramWritten(name, spec.tag);',
+    '    if (!PARAMS[name].reading) paramWritten(name, spec.tag);',
   ]],
 };
 

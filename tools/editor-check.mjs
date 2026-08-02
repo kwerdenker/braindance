@@ -1625,47 +1625,47 @@ try {
   // which is the half that decides whether a hand-edited preset can put a wrong image
   // on screen. So it is driven here, where there is a browser.
   console.log('\n[9] a look leaves as a file and comes back as one');
-  // **This section writes to the real preset library, so it puts it back.** The import
-  // goes through the actual `/presets` route under fixed names, which on somebody's own
-  // server means a document called `edited-outside` appearing in their picker for good -
-  // and if they already had one, their look silently replaced by this fixture. A check
-  // that damages the thing it is checking is not a check anybody should be told to run,
-  // and this file's invocation line in CLAUDE.md points at an ordinary server.
+  // **This section writes to the real preset library, so it writes only names nobody
+  // else could own.** The import goes through the actual `/presets` route and takes the
+  // document's name from the file's name, and this file's invocation line points at an
+  // ordinary server - so fixed names meant a document called `edited-outside` appearing
+  // in somebody's picker for good, and replacing a look of theirs if they had one.
   //
-  // Snapshotted by name rather than by listing the library, because a built-in is
-  // served from a directory this cannot write to, and restoring one would be inventing
-  // a fork nobody made. Absent before means deleted after; present means put back
-  // byte for byte.
-  const TOUCHED = ['edited-outside', 'not-a-look', 'proto'];
-  const beforeDocs = new Map();
-  for (const n of TOUCHED) {
+  // The first attempt at fixing that snapshotted the three names, deleted them, and put
+  // them back afterwards. That is worse than what it replaced, and only in the case that
+  // matters: the store refuses a write whose version is not current, so a user holding a
+  // *version 3* preset under one of these names would have it deleted, the restoring PUT
+  // rejected, and the run report PASS over the loss. Restoring is a promise that can
+  // fail; not touching anything cannot.
+  //
+  // So the names carry the pid and a timestamp, they cannot collide with a document a
+  // person made, and the run asserts they were absent to begin with rather than assuming
+  // it - which is also what makes "a refused file never reaches the library" below a
+  // statement about this run. Cleanup deletes only what this run created, and a delete
+  // that does not answer ok is a failed row rather than a silent leak.
+  const nonce = `ec${process.pid}-${Date.now().toString(36)}`;
+  const NAME_EDITED = `${nonce}-edited-outside`;
+  const NAME_BAD = `${nonce}-not-a-look`;
+  const NAME_PROTO = `${nonce}-proto`;
+  const MADE = [NAME_EDITED, NAME_BAD, NAME_PROTO];
+  for (const n of MADE) {
     const r = await fetch(`${URL_BASE}/presets/${n}`);
-    beforeDocs.set(n, r.ok ? await r.json() : null);
-    // **Cleared after snapshotting, so "absent" below is a statement about this run.**
-    // Not hypothetical: this repo's own `presets/` held a `not-a-look.json` containing
-    // exactly `{"bloom": "loud"}` - left by a build that PUT before it validated, which
-    // is the bug the row below exists to catch. Comparing against the snapshot instead
-    // would have been blind to it by construction, because the control writes the same
-    // bytes that were already there and nothing would appear to change.
-    // The content type is required even here: `/presets/:name` is a mutating route
-    // and the step 7 guard refuses a write that does not declare JSON, DELETE
-    // included. A bare DELETE comes back 415 and leaves the document where it was,
-    // which reads as a delete that worked until the row below disagrees.
-    await fetch(`${URL_BASE}/presets/${n}`, {
-      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
-    }).catch(() => {});
+    check(!r.ok, `the fixture name ${n} is free before the run, or nothing below is about this run`,
+      r.ok ? 'a document already exists under it' : 'absent');
   }
-  const restorePresets = async () => {
-    for (const [n, doc] of beforeDocs) {
-      if (doc?.body) {
-        await fetch(`${URL_BASE}/presets/${n}`, {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(doc.body),
-        }).catch(() => {});
-      } else {
-        await fetch(`${URL_BASE}/presets/${n}`, {
-          method: 'DELETE', headers: { 'Content-Type': 'application/json' },
-        }).catch(() => {});
-      }
+  const cleanupPresets = async () => {
+    for (const n of MADE) {
+      const probe = await fetch(`${URL_BASE}/presets/${n}`);
+      if (!probe.ok) continue;
+      // The content type is required even here: `/presets/:name` is a mutating route and
+      // the step 7 write guard refuses a request that does not declare JSON, DELETE
+      // included. A bare one comes back 415 and leaves the document exactly where it was,
+      // which reads as a delete that worked.
+      const res = await fetch(`${URL_BASE}/presets/${n}`, {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      }).catch((err) => ({ ok: false, status: err.message }));
+      check(res.ok, `and the fixture ${n} this run created was removed again`,
+        res.ok ? 'deleted' : `DELETE answered ${res.status}`);
     }
   };
   try {
@@ -1700,7 +1700,7 @@ try {
 
     // Edited outside the program, which is the whole point of a file: a look you can
     // put in a repository, mail to somebody, or change in a text editor.
-    const edited = join(TMP, 'edited-outside.braindance-preset.json');
+    const edited = join(TMP, `${NAME_EDITED}.braindance-preset.json`);
     const nextBody = { ...exported, values: { ...exported.values, bloom: 4.4, grain: 0.13 } };
     writeFileSync(edited, `${JSON.stringify(nextBody, null, 2)}\n`);
     await page.evaluate("globalThis.__kinect.params.reset(globalThis.__kinect.params.names('look'))");
@@ -1712,14 +1712,14 @@ try {
     const landed = JSON.parse(back);
     check(landed.bloom === 4.4 && landed.grain === 0.13 && landed.readBlackwall === 1,
       'and importing it puts the edited look on screen', `bloom ${landed.bloom} grain ${landed.grain}`);
-    check(landed.stamp?.name === 'edited-outside',
+    check(landed.stamp?.name === NAME_EDITED,
       'and stamps the clip with where it came from', JSON.stringify(landed.stamp?.name));
 
     // The refusal, and it is the row that matters most: a file is the one door into
     // this program that nothing else validates. `params.apply` meets every value, so a
     // scalar carrying a string throws at that key rather than writing a plausible look
     // - and the image must not have moved on the way to finding out.
-    const bad = join(TMP, 'not-a-look.braindance-preset.json');
+    const bad = join(TMP, `${NAME_BAD}.braindance-preset.json`);
     writeFileSync(bad, `${JSON.stringify({ version: PROJECT_VERSION, values: { bloom: 'loud' } }, null, 2)}\n`);
     await page.setInputFiles('#tPresetFile', bad);
     await page.waitForFunction("document.getElementById('tNote').textContent.includes('bloom')", null, { timeout: 15000 })
@@ -1738,17 +1738,17 @@ try {
     // the control: it moves the refusal after the PUT and must fail this row and only
     // this row, because the error still arrives and the look still does not move.
     const storeAfterBad = await (await fetch(`${URL_BASE}/presets`)).json();
-    const landedBad = storeAfterBad.presets.find((d) => d.name === 'not-a-look' && !d.builtin);
+    const landedBad = storeAfterBad.presets.find((d) => d.name === NAME_BAD && !d.builtin);
     check(!landedBad,
       'and a refused file never reaches the library, which the note and the look cannot tell you',
-      landedBad ? 'not-a-look is in /presets' : 'not-a-look is absent from /presets');
+      landedBad ? `${NAME_BAD} is in /presets` : `${NAME_BAD} is absent from /presets`);
 
     // And the prototype question, which a file can ask and an assignment cannot.
     // `JSON.parse` creates `__proto__` as an own enumerable property where
     // `p.x.__proto__ = v` invokes the setter and creates nothing - so this is the one
     // shape that has to be sent as source rather than built in JS, and it is the exact
     // inverse of the JSON.stringify trap this repo already records.
-    const proto = join(TMP, 'proto.braindance-preset.json');
+    const proto = join(TMP, `${NAME_PROTO}.braindance-preset.json`);
     writeFileSync(proto, `{ "version": ${PROJECT_VERSION}, "values": { "__proto__": { "polluted": true }, "bloom": 1 } }\n`);
     const parsedHasOwn = Object.keys(JSON.parse(readFileSync(proto, 'utf8')).values).includes('__proto__');
     check(parsedHasOwn, 'the probe really contains __proto__ as an own key, or the row below tests nothing');
@@ -1762,7 +1762,7 @@ try {
   } finally {
     // In a `finally` rather than after the last row, because a section that threw is
     // exactly when the library is most likely to be left with a fixture in it.
-    await restorePresets();
+    await cleanupPresets();
   }
 } catch (err) {
   crashed = err;

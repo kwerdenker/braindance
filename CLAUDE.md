@@ -103,6 +103,7 @@ node tools/registry-check.mjs --mutate mix-ignores-normalisation  # ... and must
 node tools/registry-check.mjs --mutate rgb-contributes-no-alpha   # ... and must FAIL mutated
 node tools/timeline-check.mjs --url http://localhost:8080 # step 4: seek equals playback
 node tools/timeline-check.mjs --mutate preroll-constant   # ... and must FAIL mutated
+node tools/timeline-check.mjs --mutate reading-write-skips-repaint # ... and must FAIL mutated
 node tools/keyframe-check.mjs --url http://localhost:8080 # step 5: tracks, retime curve, undo
 node tools/keyframe-check.mjs --mutate pose-linear        # ... and must FAIL mutated
 node tools/export-check.mjs --url http://localhost:8080   # step 6: resolution, export, the file
