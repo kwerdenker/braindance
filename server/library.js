@@ -616,21 +616,38 @@ export class DocumentStore {
   }
 
   async list() {
-    const filesIn = async (dir) => {
+    /**
+     * **The two roots fail differently, and collapsing them into one empty list is how
+     * the five shipped looks can go missing without anybody being told.**
+     *
+     * The user's own directory not existing is the ordinary state of a fresh node: it
+     * is made on the first write and an empty shelf is the honest report until then.
+     * The built-in root is the opposite - it is only ever consulted because somebody
+     * configured it, it is the sole source of the looks that ship, and the picker has
+     * no fallback behind it. A deployment that omitted `presets-builtin/`, or a
+     * `--builtin-presets` pointing one directory too high, used to answer 200 with an
+     * empty library, which reads as "this node has no presets" rather than as "this
+     * node is broken". Required where it is configured, optional where it is the
+     * user's.
+     */
+    const filesIn = async (dir, required) => {
       try {
         return (await readdir(dir)).filter((f) => f.endsWith('.json')).sort();
-      } catch {
+      } catch (err) {
+        if (required) {
+          throw new Error(`the shipped ${this.kind} directory ${dir} cannot be read: ${err.message}`);
+        }
         return [];
       }
     };
-    const own = await filesIn(this.dir);
+    const own = await filesIn(this.dir, false);
     // The user's own names win, so a fork shadows the look it was forked from rather
     // than appearing beside it under the same name. Built-ins that have not been forked
     // come first, because they are the starting points and a library that opened with
     // somebody's twelve experiments buries them.
     const owned = new Set(own);
     const shipped = this.builtinDir
-      ? (await filesIn(this.builtinDir)).filter((f) => !owned.has(f)).map((f) => [this.builtinDir, f, true])
+      ? (await filesIn(this.builtinDir, true)).filter((f) => !owned.has(f)).map((f) => [this.builtinDir, f, true])
       : [];
     const files = [...shipped, ...own.map((f) => [this.dir, f, false])];
     const out = [];

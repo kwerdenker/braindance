@@ -2988,7 +2988,6 @@ function restoreProject(project) {
   if (project.outputSize !== undefined && !/^[1-9][0-9]*x[1-9][0-9]*$/.test(String(project.outputSize))) {
     throw new Error(`outputSize is ${JSON.stringify(project.outputSize)}: it reads as WIDTHxHEIGHT`);
   }
-  setTargetSize(project.outputSize ?? DEFAULT_EXPORT_SIZE, { fromDocument: true });
   if (!project.look.params || typeof project.look.params !== 'object') {
     throw new Error('a project look carries a params object');
   }
@@ -3043,11 +3042,11 @@ function restoreProject(project) {
   // standing between a bad name and a half-applied registry, because `params.apply`
   // wrote as it walked and threw on the first name it did not know. `apply` checks the
   // whole object before writing any of it now, so that particular hole is closed at
-  // the door instead. What is left is the wider window: this line runs before
-  // `outputSize` is written and before the tracks are rebuilt, and `apply` cannot,
-  // because by the time it is reached the output size has already moved. A project
-  // carrying a parameter this build has since removed still has to be refused with
-  // nothing touched at all, and that is earlier than the registry can see.
+  // the door instead. What is left is the wider window: this runs in the build-whole
+  // phase, before the tracks are rebuilt and before anything at all has been written,
+  // and `apply` cannot, because it is itself one of the writes. A project carrying a
+  // parameter this build has since removed has to be refused with nothing touched, and
+  // that is earlier than the registry can see.
   for (const name of Object.keys(project.look.params)) params.spec(name);
 
   const restoredCamera = project.composition.camera.map((k) => {
@@ -3095,13 +3094,25 @@ function restoreProject(project) {
   // walks the document's own keys, so absent is invisible to it - which was harmless
   // only while every document carried every key. It stops being harmless the moment
   // a parameter is added, and the second project opened in one session is where it
-  // would have shown up. `outputSize` already takes this position explicitly a few
-  // lines above; this is the same rule for the other half of the document.
+  // would have shown up. `outputSize` takes this position too, on the line above, for
+  // the same reason read the other way round.
   //
   // **The look tag, not every parameter.** `params.reset()` defaults view state too,
   // and view state is not in the document - so a bare reset made undo snap render
   // scale back to 100, which is the one thing the stack is supposed to leave alone.
   // The set reset here is exactly the set `serialiseProjectBody` writes.
+  // **The first thing here that changes anything, and it used to be the first thing in
+  // the function.** `setTargetSize` resized the stage and the export target before the
+  // shape of the document had been checked at all, so a project that named a new size
+  // and was then refused - for a missing reading, a track the registry does not know,
+  // a retime that descends - left the editor framing something the clip on screen was
+  // never composed for. `loadProjectNamed` exits on the throw without reapplying the
+  // active deliverable, so nothing put it back.
+  //
+  // The format of the string is still checked up in the validation phase, where a
+  // refusal costs nothing. Only the write waited.
+  setTargetSize(project.outputSize ?? DEFAULT_EXPORT_SIZE, { fromDocument: true });
+
   params.reset(params.names('look'));
   params.apply(project.look.params);
   appliedPreset = stamp;

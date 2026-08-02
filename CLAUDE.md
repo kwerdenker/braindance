@@ -114,6 +114,7 @@ node tools/editor-check.mjs --url http://localhost:8080   # the editor's control
 node tools/editor-check.mjs --mutate lanes-clear-siblings --no-render  # ... and must FAIL
 node tools/editor-check.mjs --mutate plant-unswept-control --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate import-skips-normalise --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate import-saves-before-validating --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate panel-row-skips-parameter --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate nav-at-the-foot --no-render       # ... and must FAIL
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows

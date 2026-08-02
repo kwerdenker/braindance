@@ -140,6 +140,35 @@ const MUTATIONS = {
     ],
   },
 
+  // The control for the row that asks the *store* rather than the page. It keeps the
+  // refusal and only moves it: the file is PUT first and validated afterwards, so the
+  // note still names the wrong key and the look still does not move - both of the
+  // observations that row used to be surrounded by - while the malformed preset is now
+  // a document in the library. That is what makes it the right control rather than a
+  // second copy of `import-skips-normalise`, which removes validation altogether and
+  // therefore reddens the note rows instead.
+  //
+  // Must redden: section 9's "a refused file never reaches the library", and that row
+  // alone.
+  // The second anchor is the whole three-line tail rather than the `res.json()` line it
+  // used to name: that line appears four times in `main.js` and the tool refused the
+  // mutation outright, which is the refusal doing its job and worth not weakening.
+  'import-saves-before-validating': {
+    file: 'web/main.js',
+    edits: [
+      ['  refusePresetBody(name, body);\n', ''],
+      [
+        '  const saved = await res.json();\n'
+        + '  if (saved.error) throw new Error(saved.error);\n'
+        + '  applyStoredPreset({ name: saved.name, rev: saved.rev, body });',
+        '  const saved = await res.json();\n'
+        + '  if (saved.error) throw new Error(saved.error);\n'
+        + '  refusePresetBody(name, body);\n'
+        + '  applyStoredPreset({ name: saved.name, rev: saved.rev, body });',
+      ],
+    ],
+  },
+
   'plant-unswept-control': {
     file: 'web/index.html',
     edits: [[
@@ -1596,7 +1625,50 @@ try {
   // which is the half that decides whether a hand-edited preset can put a wrong image
   // on screen. So it is driven here, where there is a browser.
   console.log('\n[9] a look leaves as a file and comes back as one');
-  {
+  // **This section writes to the real preset library, so it puts it back.** The import
+  // goes through the actual `/presets` route under fixed names, which on somebody's own
+  // server means a document called `edited-outside` appearing in their picker for good -
+  // and if they already had one, their look silently replaced by this fixture. A check
+  // that damages the thing it is checking is not a check anybody should be told to run,
+  // and this file's invocation line in CLAUDE.md points at an ordinary server.
+  //
+  // Snapshotted by name rather than by listing the library, because a built-in is
+  // served from a directory this cannot write to, and restoring one would be inventing
+  // a fork nobody made. Absent before means deleted after; present means put back
+  // byte for byte.
+  const TOUCHED = ['edited-outside', 'not-a-look', 'proto'];
+  const beforeDocs = new Map();
+  for (const n of TOUCHED) {
+    const r = await fetch(`${URL_BASE}/presets/${n}`);
+    beforeDocs.set(n, r.ok ? await r.json() : null);
+    // **Cleared after snapshotting, so "absent" below is a statement about this run.**
+    // Not hypothetical: this repo's own `presets/` held a `not-a-look.json` containing
+    // exactly `{"bloom": "loud"}` - left by a build that PUT before it validated, which
+    // is the bug the row below exists to catch. Comparing against the snapshot instead
+    // would have been blind to it by construction, because the control writes the same
+    // bytes that were already there and nothing would appear to change.
+    // The content type is required even here: `/presets/:name` is a mutating route
+    // and the step 7 guard refuses a write that does not declare JSON, DELETE
+    // included. A bare DELETE comes back 415 and leaves the document where it was,
+    // which reads as a delete that worked until the row below disagrees.
+    await fetch(`${URL_BASE}/presets/${n}`, {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+    }).catch(() => {});
+  }
+  const restorePresets = async () => {
+    for (const [n, doc] of beforeDocs) {
+      if (doc?.body) {
+        await fetch(`${URL_BASE}/presets/${n}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(doc.body),
+        }).catch(() => {});
+      } else {
+        await fetch(`${URL_BASE}/presets/${n}`, {
+          method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        }).catch(() => {});
+      }
+    }
+  };
+  try {
     const known = { bloom: 2.75, grain: 0.66, readBlackwall: 1, readRgb: 0 };
     await page.evaluate(`globalThis.__kinect.applyPreset(${JSON.stringify(known)})`);
     // Moved again *after* the apply and never saved, which is what makes the row below
@@ -1657,6 +1729,20 @@ try {
       'a malformed file is refused at the key that is wrong, and leaves the look alone',
       `"${afterBad.note}" with bloom still ${afterBad.bloom}`);
 
+    // **And it never became a document**, which the two observations above cannot see.
+    // They read the error text and the live look, and a build that PUT the file first
+    // and validated afterwards satisfies both while leaving the malformed preset in the
+    // library, sitting in the picker looking like a look until somebody chooses it. The
+    // whole claim of the import path is that the refusal happens before the store is
+    // touched, so the store is what has to be asked. `import-saves-before-validating` is
+    // the control: it moves the refusal after the PUT and must fail this row and only
+    // this row, because the error still arrives and the look still does not move.
+    const storeAfterBad = await (await fetch(`${URL_BASE}/presets`)).json();
+    const landedBad = storeAfterBad.presets.find((d) => d.name === 'not-a-look' && !d.builtin);
+    check(!landedBad,
+      'and a refused file never reaches the library, which the note and the look cannot tell you',
+      landedBad ? 'not-a-look is in /presets' : 'not-a-look is absent from /presets');
+
     // And the prototype question, which a file can ask and an assignment cannot.
     // `JSON.parse` creates `__proto__` as an own enumerable property where
     // `p.x.__proto__ = v` invokes the setter and creates nothing - so this is the one
@@ -1673,6 +1759,10 @@ try {
     check(/__proto__/.test(afterProto.note) && afterProto.polluted === null && afterProto.bloom === 4.4,
       'and a file carrying __proto__ is refused as an unknown parameter, polluting nothing',
       `"${afterProto.note}" polluted=${afterProto.polluted}`);
+  } finally {
+    // In a `finally` rather than after the last row, because a section that threw is
+    // exactly when the library is most likely to be left with a fixture in it.
+    await restorePresets();
   }
 } catch (err) {
   crashed = err;

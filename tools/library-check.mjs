@@ -772,6 +772,16 @@ function stageServer() {
   // server happened to resolve its default correctly, which is a different claim, and
   // it means those rows are driving the flag rather than the fallback.
   cpSync(join(REPO, 'presets-builtin'), join(WORK, 'builtin-presets'), { recursive: true });
+  // **And a second copy inside the staged tree, where the default resolves to.** The
+  // copy above is deliberately outside it so the fork rows drive the flag rather than
+  // the fallback, and that is still true - but it left every server spawned *without*
+  // the flag resolving `presets-builtin` to a path in the staged root that nothing had
+  // put there. That was invisible while a missing shipped-looks directory answered an
+  // empty list, and it stopped being invisible the moment the store started reporting
+  // it: the replay server, which names no preset flags at all, began answering 500 on
+  // `/presets` and the viewer logged a page error. A staged tree is supposed to be an
+  // install, and an install has the looks that ship in it.
+  cpSync(join(REPO, 'presets-builtin'), join(root, 'presets-builtin'), { recursive: true });
   for (const name of ['node_modules', 'vendor']) {
     const from = join(REPO, name);
     if (existsSync(from) && !existsSync(join(root, name))) symlinkSync(from, join(root, name));
