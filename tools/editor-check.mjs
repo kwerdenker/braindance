@@ -2979,15 +2979,71 @@ try {
     // on relative to the loop's.
     check(redraws <= frames + 1, 'and never more than one redraw per frame the display was given',
       `${redraws} navigation redraws against ${frames} frames`);
-    // Forty tile means across the stage rather than one lit count over it, and the
-    // reason is the same one `docs/measurement.md` records for the bloom rebase: a
-    // scalar over the whole frame can come out equal for two genuinely different
-    // pictures, because a cloud that has moved a second along mostly *redistributes*
-    // its brightness rather than changing how much of it there is. A spatial
-    // signature cannot be fooled that way, and the row below needs it to not be.
+    // The largest part of the renderer that nothing is drawn over, established by
+    // what is actually on top rather than by the stage's bounds. The panel is fixed
+    // over the stage and its cost readout changes between a draft and an accurate
+    // seek, so a stage screenshot can distinguish the UI while the renderer agrees.
+    // `elementFromPoint` closes that false-positive path, and the two rows below make
+    // the conditions of every following picture comparison assertions of the tool.
+    const picture = await page.evaluate(`(() => {
+      const canvas = __kinect.renderer.domElement;
+      const r = canvas.getBoundingClientRect();
+      const clean = (rect) => {
+        let covered = 0;
+        const over = new Set();
+        for (let i = 0; i <= 4; i++) {
+          for (let j = 0; j <= 4; j++) {
+            const at = document.elementFromPoint(
+              rect.x + (rect.width * i) / 4, rect.y + (rect.height * j) / 4,
+            );
+            if (at !== canvas) {
+              covered++;
+              over.add(at ? (at.id ? '#' + at.id : at.tagName.toLowerCase()) : 'nothing');
+            }
+          }
+        }
+        return { covered, over: [...over].join(' ') };
+      };
+      let rect = {
+        x: Math.ceil(r.x) + 1, y: Math.ceil(r.y) + 1,
+        width: Math.floor(r.width) - 2, height: Math.floor(r.height) - 2,
+      };
+      let hits = clean(rect);
+      for (let step = 0;
+        step < 40 && hits.covered > 0 && rect.width > 64 && rect.height > 64;
+        step++) {
+        const dx = Math.max(2, Math.round(rect.width * 0.05));
+        const dy = Math.max(2, Math.round(rect.height * 0.05));
+        rect = {
+          x: rect.x + dx, y: rect.y + dy,
+          width: rect.width - 2 * dx, height: rect.height - 2 * dy,
+        };
+        hits = clean(rect);
+      }
+      return {
+        ...rect, covered: hits.covered, over: hits.over,
+        chromeHidden: document.getElementById('chrome')?.hidden === true,
+      };
+    })()`);
+    check(picture.chromeHidden,
+      'the chrome overlay is off, so temporal signatures contain the renderer rather than annotations',
+      '#chrome hidden');
+    check(picture.covered === 0 && picture.width > 200 && picture.height > 200,
+      'and nothing is drawn over the temporal signature region, hit-tested rather than assumed',
+      `${picture.width}x${picture.height} at ${picture.x},${picture.y}, `
+      + `${picture.covered} of 25 probes covered${picture.over ? ` by ${picture.over}` : ''}`);
+
+    // Forty tile means across that renderer-only region rather than one lit count
+    // over it, and the reason is the same one `docs/measurement.md` records for the
+    // bloom rebase: a scalar over the whole frame can come out equal for two genuinely
+    // different pictures, because a cloud that has moved a second along mostly
+    // *redistributes* its brightness rather than changing how much of it there is. A
+    // spatial signature cannot be fooled that way, and the row below needs it to not
+    // be.
     const signature = async () => {
-      const box = await page.locator('#stage').boundingBox();
-      const shot = await page.screenshot({ clip: box });
+      const shot = await page.screenshot({
+        clip: { x: picture.x, y: picture.y, width: picture.width, height: picture.height },
+      });
       return page.evaluate(`(async (dataUrl) => {
         const img = new Image();
         img.src = dataUrl;
@@ -3015,6 +3071,22 @@ try {
     };
     /** The worst of the forty tiles, in 0-255 luma. */
     const apart = (a, b) => Math.max(...a.map((v, k) => Math.abs(v - b[k])));
+
+    // The falsification control for the region itself. The panel's composited pixels
+    // change conspicuously while the renderer does nothing. A screenshot that went
+    // back to the stage's bounds would redden this row even if it kept asserting a
+    // different hit-tested rectangle, which is the exact split that let the panel
+    // contaminate the first version of these signatures.
+    const panelControlBefore = await signature();
+    await page.evaluate("document.getElementById('panel').style.background = '#fff'");
+    await page.evaluate('new Promise(requestAnimationFrame)');
+    const panelControlAfter = await signature();
+    await page.evaluate("document.getElementById('panel').style.background = ''");
+    await page.evaluate('new Promise(requestAnimationFrame)');
+    const panelApart = apart(panelControlBefore, panelControlAfter);
+    check(panelApart < 0.01,
+      'control: changing only the panel changes no temporal signature pixels',
+      `worst tile ${panelApart.toFixed(2)}/255`);
 
     // The picture the release actually left on the stage, read before anything else
     // moves the transport. The rows below ask whether it is the picture an accurate
@@ -3048,7 +3120,7 @@ try {
     // drafts row's does: a signature that could not tell two moments apart would make
     // the comparison below pass on every build there is, including one that released
     // to the wrong second.
-    check(canSee > 2, 'the stage signature can tell this moment from one a second away',
+    check(canSee > 2, 'the renderer signature can tell this moment from one a second away',
       `worst tile ${canSee.toFixed(2)}/255 apart`);
     check(landed < canSee / 4,
       'and the release lands the picture an accurate seek to that moment gives, not merely an accurate seek',
