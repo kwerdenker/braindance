@@ -156,9 +156,20 @@ const MUTATIONS = {
   // Anchored on the block that follows it, because `requestRepaint()` on its own
   // appears twice and a replacement that hit the registry's call instead would be
   // mutating a different claim.
-  'no-mode-repaint': [[
-    '  requestRepaint();\n}\n\ndocument.querySelectorAll(\'#modes button\')',
-    '}\n\ndocument.querySelectorAll(\'#modes button\')',
+  // The control for "writing one reading rebuilds the image". It replaces
+  // `no-mode-repaint`, which anchored on the `#modes button` handler and went stale the
+  // moment the readings dissolved that block - `main.js` has not contained the string
+  // since, so the mutation matched nothing, the tool refused it, and `sweep-all` could
+  // not get past this file. A declared falsification control that cannot run is the
+  // shape this repo keeps writing down as a bug found.
+  //
+  // Aimed at the mechanism the row actually rests on rather than at a click: a reading
+  // is an ordinary registry parameter now, so what would break it is the registry
+  // declining to announce that one changed. Everything else still announces, so the
+  // whole-look rows below stay green - they write non-reading values too.
+  'reading-write-skips-repaint': [[
+    '    paramWritten(name, spec.tag);',
+    '    if (!PARAMS[name].reading) paramWritten(name, spec.tag);',
   ]],
 };
 
@@ -275,11 +286,15 @@ const INSTALL = `(() => {
         .map((v) => v.toFixed(9)).join(',');
     },
 
-    // Awaits the transport going idle, because selecting a mode or applying a
-    // look now schedules a repaint and a check that measured through one would be
-    // counting renders it did not ask for.
-    async configure({ mode, look, rate, fps }) {
-      k.setMode(mode);
+    // Awaits the transport going idle, because applying a look schedules a repaint
+    // and a check that measured through one would be counting renders it did not
+    // ask for.
+    //
+    // A mode used to be a second argument here, applied through setMode before the
+    // look. It is gone rather than translated: a reading is a look value now, so it
+    // arrives inside the look with everything else, and a separate door for it would
+    // be a second write path to the same thing.
+    async configure({ look, rate, fps }) {
       if (look) k.params.apply(look);
       k.timeline.retime.rate = rate;
       k.timeline.transport().outputFps = fps;
@@ -449,11 +464,22 @@ console.log(`[timeline] stage ${gpu.buffer.join('x')}, take ${TAKE}: ${TIMES.len
     return (g[g.length >> 1] * 1000).toFixed(0);
   })()}ms (${((TIMES.length - 1) / DURATION).toFixed(2)} fps mean)`);
 
-// Blackwall selected the way a user selects it, so no look value is invented
-// here. It is the one preset that switches both accumulators on at once, which is
-// what makes a pre-roll cost anything to begin with.
-await page.click('#modes button[data-mode="4"]');
-const BLACKWALL = { mode: 4, look: null };
+// Blackwall, read out of the document that ships it, so no look value is invented
+// here. It is the one look that switches both accumulators on at once, which is what
+// makes a pre-roll cost anything to begin with - and reaching for the crimson shading
+// alone would leave `trails`, `fade` and `wake` at their defaults, which is every term
+// that gives a pre-roll a cost to measure.
+const BLACKWALL_LOOK = JSON.parse(
+  readFileSync(new URL('../presets-builtin/blackwall.json', import.meta.url), 'utf8'),
+).values;
+await page.evaluate(`globalThis.__kinect.applyPreset(${JSON.stringify(BLACKWALL_LOOK)})`);
+const DEPTH_LOOK = JSON.parse(
+  readFileSync(new URL('../presets-builtin/depth.json', import.meta.url), 'utf8'),
+).values;
+const RGB_LOOK = JSON.parse(
+  readFileSync(new URL('../presets-builtin/rgb.json', import.meta.url), 'utf8'),
+).values;
+const BLACKWALL = { look: BLACKWALL_LOOK };
 
 const arm = (opts) => page.evaluate(`(${ARM})(${JSON.stringify(opts)})`);
 const diff = (a, b) => page.evaluate(`globalThis.__tl.diff(${JSON.stringify(a)}, ${JSON.stringify(b)})`);
@@ -524,7 +550,7 @@ console.log('\n== 1b. clearing the accumulators empties both of them ==');
     const k = globalThis.__kinect;
     const tl = globalThis.__tl;
     const t = k.timeline.transport();
-    await tl.configure(${JSON.stringify({ mode: 4, look: null, rate: 1, fps: 30 })});
+    await tl.configure(${JSON.stringify({ look: BLACKWALL_LOOK, rate: 1, fps: 30 })});
     await t.seek(${TARGET_SEC});
     const before = k.stateStats();
 
@@ -576,7 +602,13 @@ console.log('\n== 1c. the image at a program position is the frame the index nam
   // Depth mode with interpolation off, so the image is a function of the current
   // depth texture and nothing else - no colour, no blend against the previous
   // frame, no age term, no clock.
-  const FLAT = { fade: 0, wake: 0, trails: 0, bloom: 0, glitch: 0, scan: 0, noise: 0, rgbSplit: 0, scanlines: 0, grain: 0 };
+  // The depth reading is part of FLAT now, and it has to be. This arm used to pass
+  // `mode: 1` beside the look and the reading came in through its own door; with the
+  // readings in the registry, a look that named every grade term and no reading would
+  // leave whatever the previous section selected - and the section before this one runs
+  // in Blackwall, whose scan plane sweeps with program time. Every "nothing left that
+  // can move the image" claim below would then be measuring a moving image.
+  const FLAT = { ...DEPTH_LOOK, fade: 0, wake: 0, trails: 0, bloom: 0, glitch: 0, scan: 0, noise: 0, rgbSplit: 0, scanlines: 0, grain: 0 };
   const look = { ...FLAT, interpolate: false };
   // A source time sitting just inside a bracket, so which pair it names is not a
   // rounding question. Which *half* of that pair the image comes from is the part
@@ -603,7 +635,7 @@ console.log('\n== 1c. the image at a program position is the frame the index nam
     return tl.sha(tl.grab('golden-' + n));
   }`;
 
-  await page.evaluate(`globalThis.__tl.configure(${JSON.stringify({ mode: 1, look, rate: 1, fps: 30 })})`);
+  await page.evaluate(`globalThis.__tl.configure(${JSON.stringify({ look, rate: 1, fps: 30 })})`);
   const reached = await page.evaluate(`(async () => {
     const k = globalThis.__kinect;
     const t = k.timeline.transport();
@@ -633,7 +665,7 @@ console.log('\n== 1d. the timeline binds colour, not just depth ==');
 {
   const state = await page.evaluate(`(async () => {
     const k = globalThis.__kinect;
-    await globalThis.__tl.configure(${JSON.stringify({ mode: 0, look: null, rate: 1, fps: 30 })});
+    await globalThis.__tl.configure(${JSON.stringify({ look: RGB_LOOK, rate: 1, fps: 30 })});
     await k.timeline.transport().seek(${TARGET_SEC});
     return k.timeline.read();
   })()`);
@@ -665,7 +697,7 @@ const plans = [];
       const k = globalThis.__kinect;
       await globalThis.__tl.configure(o);
       return k.timeline.transport().preroll(${TARGET_SEC});
-    })(${JSON.stringify({ mode: 4, look: c.look, rate: c.rate, fps: c.fps })})`);
+    })(${JSON.stringify({ look: { ...BLACKWALL_LOOK, ...c.look }, rate: c.rate, fps: c.fps })})`);
     plans.push({ ...c, plan });
     console.log(`  ${c.label.padEnd(28)} ${String(plan.surface).padStart(6)}  `
       + `${String(plan.trails).padStart(6)}  ${String(plan.frames).padStart(8)}   ${plan.sec.toFixed(3)}`);
@@ -721,7 +753,7 @@ for (const c of [
   { label: 'Blackwall, 60 fps', look: {}, rate: 1, fps: 60 },
   { label: 'trails 0.95, 30 fps', look: { trails: 0.95 }, rate: 1, fps: 30 },
 ]) {
-  const config = { mode: 4, look: c.look, rate: c.rate, fps: c.fps, targetSec: TARGET_SEC };
+  const config = { look: { ...BLACKWALL_LOOK, ...c.look }, rate: c.rate, fps: c.fps, targetSec: TARGET_SEC };
   const played = await arm({ ...config, kind: 'playback', frames: null, label: `p-${c.label}` });
   const full = await arm({ ...config, kind: 'seek', frames: null, label: `f-${c.label}` });
   const same = await diff(`p-${c.label}`, `f-${c.label}`);
@@ -768,7 +800,7 @@ for (const c of [
 // lowering the clamp back under the maxima breaks it.
 console.log('\n== 2c. the same equality at the longest persistence the sliders allow ==');
 {
-  const config = { mode: 4, look: { fade: 1500, wake: 4000, trails: 0 }, rate: 1, fps: 30, targetSec: TARGET_SEC };
+  const config = { look: { ...BLACKWALL_LOOK, ...{ fade: 1500, wake: 4000, trails: 0 } }, rate: 1, fps: 30, targetSec: TARGET_SEC };
   const played = await arm({ ...config, kind: 'playback', frames: null, label: 'p-longest' });
   const seeked = await arm({ ...config, kind: 'seek', frames: null, label: 'f-longest' });
   const past = await diff('p-longest', 'f-longest');
@@ -798,7 +830,7 @@ console.log('\n== 2c. the same equality at the longest persistence the sliders a
 // reachable rather than theoretical.
 console.log('\n== 2d. a pre-roll wider than the frame cache ==');
 {
-  const config = { mode: 4, look: { trails: 0.97 }, rate: 4, fps: 24, targetSec: 7.0 };
+  const config = { look: { ...BLACKWALL_LOOK, ...{ trails: 0.97 } }, rate: 4, fps: 24, targetSec: 7.0 };
   const seeked = await arm({ ...config, kind: 'seek', frames: null, label: 'capped' });
   const state = seeked.state;
   console.log(`  trails 0.97 at 4.00x with 24 fps out: ${seeked.seek.plan.frames} frames computed, `
@@ -817,7 +849,7 @@ console.log('\n== 2d. a pre-roll wider than the frame cache ==');
 
 console.log('\n== 3. draft scrub against accurate seek ==');
 {
-  await page.evaluate(`globalThis.__tl.configure(${JSON.stringify({ mode: 4, look: null, rate: 1, fps: 30 })})`);
+  await page.evaluate(`globalThis.__tl.configure(${JSON.stringify({ look: BLACKWALL_LOOK, rate: 1, fps: 30 })})`);
 
   // A fixed pseudo-random walk rather than evenly spaced positions: a drag lands
   // wherever the hand is, and evenly spaced targets would let a prefetch that
@@ -936,7 +968,7 @@ console.log('\n== 3. draft scrub against accurate seek ==');
 console.log('\n== 3b. a draft is independent of how the playhead got there ==');
 {
   const HERE = 8.0;
-  const configure = JSON.stringify({ mode: 4, look: null, rate: 1, fps: 30 });
+  const configure = JSON.stringify({ look: BLACKWALL_LOOK, rate: 1, fps: 30 });
   const result = await page.evaluate(`(async () => {
     const k = globalThis.__kinect;
     const tl = globalThis.__tl;
@@ -967,11 +999,11 @@ console.log('\n== 3b. a draft is independent of how the playhead got there ==');
     // difference would be real but only a fraction of a percent of the frame.
     // At a 1500ms fade nothing has, so a draft that failed to bypass would come
     // back at a tenth of the brightness.
-    await tl.configure(${JSON.stringify({ mode: 4, look: { fade: 1500, wake: 4000, trails: 0.95 }, rate: 1, fps: 30 })});
+    await tl.configure(${JSON.stringify({ look: { ...BLACKWALL_LOOK, ...{ fade: 1500, wake: 4000, trails: 0.95 } }, rate: 1, fps: 30 })});
     await t.draft(${HERE});
     tl.grab('draft-loud');
     const restored = k.params.values(['fade', 'wake', 'trails']);
-    await tl.configure(${JSON.stringify({ mode: 4, look: { fade: 0, wake: 0, trails: 0 }, rate: 1, fps: 30 })});
+    await tl.configure(${JSON.stringify({ look: { ...BLACKWALL_LOOK, ...{ fade: 0, wake: 0, trails: 0 } }, rate: 1, fps: 30 })});
     await t.draft(${HERE});
     tl.grab('draft-zeroed');
     return { plan: seek.plan, restored };
@@ -1018,7 +1050,7 @@ for (const rate of [0.5, 1.0, 2.0]) {
       });
     }
     return out;
-  })(${JSON.stringify({ mode: 4, look: null, rate, fps, probes: [] })
+  })(${JSON.stringify({ look: BLACKWALL_LOOK, rate, fps, probes: [] })
     .replace('"probes":[]', `"probes":${JSON.stringify(probes)}`)})`);
 
   let worstT = 0;
@@ -1050,7 +1082,13 @@ console.log('\n== 4b. 60 fps out of a capture whose median gap is 64ms ==');
   // pair is the blend fraction. In Blackwall the scan sweep and the grain read
   // the time uniform, and two consecutive frames would differ whatever the
   // interpolation did - which would make this claim pass without testing it.
-  const FLAT = { fade: 0, wake: 0, trails: 0, bloom: 0, glitch: 0, scan: 0, noise: 0, rgbSplit: 0, scanlines: 0, grain: 0 };
+  // The depth reading is part of FLAT now, and it has to be. This arm used to pass
+  // `mode: 1` beside the look and the reading came in through its own door; with the
+  // readings in the registry, a look that named every grade term and no reading would
+  // leave whatever the previous section selected - and the section before this one runs
+  // in Blackwall, whose scan plane sweeps with program time. Every "nothing left that
+  // can move the image" claim below would then be measuring a moving image.
+  const FLAT = { ...DEPTH_LOOK, fade: 0, wake: 0, trails: 0, bloom: 0, glitch: 0, scan: 0, noise: 0, rgbSplit: 0, scanlines: 0, grain: 0 };
   const walk = `(async (o) => {
     const k = globalThis.__kinect;
     const tl = globalThis.__tl;
@@ -1071,7 +1109,7 @@ console.log('\n== 4b. 60 fps out of a capture whose median gap is 64ms ==');
     return out;
   })`;
 
-  const on = await page.evaluate(`${walk}(${JSON.stringify({ mode: 1, look: { ...FLAT, interpolate: true }, rate: 1, fps: 60 })})`);
+  const on = await page.evaluate(`${walk}(${JSON.stringify({ look: { ...FLAT, interpolate: true }, rate: 1, fps: 60 })})`);
   const pairs = [];
   for (let i = 1; i < on.length; i++) {
     if (on[i].applied === on[i - 1].applied) pairs.push([i - 1, i]);
@@ -1083,7 +1121,7 @@ console.log('\n== 4b. 60 fps out of a capture whose median gap is 64ms ==');
   console.log(`  same two source frames, ${distinct} of them producing a different image.`);
   console.log(`  mixT walks ${on.slice(0, 6).map((f) => f.mixT.toFixed(3)).join(' ')} ...`);
 
-  const off = await page.evaluate(`${walk}(${JSON.stringify({ mode: 1, look: { ...FLAT, interpolate: false }, rate: 1, fps: 60 })})`);
+  const off = await page.evaluate(`${walk}(${JSON.stringify({ look: { ...FLAT, interpolate: false }, rate: 1, fps: 60 })})`);
   const offPairs = [];
   for (let i = 1; i < off.length; i++) {
     if (off[i].applied === off[i - 1].applied) offPairs.push([i - 1, i]);
@@ -1167,45 +1205,57 @@ console.log('\n== 5. a look change while paused rebuilds the image and the estim
   };
 
   await page.evaluate(`(async () => {
-    await globalThis.__tl.configure(${JSON.stringify({ mode: 0, look: null, rate: 1, fps: 30 })});
+    await globalThis.__tl.configure(${JSON.stringify({ look: RGB_LOOK, rate: 1, fps: 30 })});
     await globalThis.__kinect.timeline.transport().seek(8.0);
   })()`);
   await settle();
   const neutralImage = await image();
   const neutralChip = await chip();
 
-  // (a) A mode that writes no parameter at all. Selecting Depth from RGB changes
-  // clip state and nothing the registry announces, so this is the half that only
-  // works if the mode asks for a repaint itself.
+  // (a) One registry write, and the image follows it.
+  //
+  // **This row is deliberately weaker than the one it replaces, and the strength it
+  // lost was the strength of a hazard that no longer exists.** It used to select Depth
+  // by clicking its button and assert that the image rebuilt anyway - because a mode
+  // changed clip state and *nothing the registry announced*, so the picture only
+  // followed if `setMode` remembered to ask for a repaint itself. It was the one write
+  // in the program that could change the image silently, and it needed watching.
+  //
+  // A reading is a registry parameter now, so it repaints through the same door as
+  // every slider and there is no separate thing to forget. What is left worth asserting
+  // is that the door works for a reading like it works for anything else, which is what
+  // this is. Re-pointing the old assertion at a click that no longer exists, or keeping
+  // its wording over a mechanism that cannot fail that way, would have been a green row
+  // about nothing.
   const beforeDepth = await renders();
-  await page.click('#modes button[data-mode="1"]');
+  await page.evaluate("globalThis.__kinect.params.set('readDepth', 1)");
   await settle();
   const depthRenders = (await renders()) - beforeDepth;
   const depthImage = await image();
   check(depthRenders > 0,
-    'selecting a mode that writes no parameter still rebuilds the image',
+    'writing one reading rebuilds the image, like any other registry write',
     `${depthRenders} renders`);
   check(depthImage !== neutralImage, 'and the rebuilt image is a different one');
 
-  // (b) A mode that is a preset, which is the reported reproduction exactly.
-  await page.click('#modes button[data-mode="0"]');
+  // (b) A whole look at once, which is the reported reproduction exactly.
+  await page.evaluate(`globalThis.__kinect.applyPreset(${JSON.stringify(RGB_LOOK)})`);
   await settle();
   const beforeBlackwall = await renders();
-  await page.click('#modes button[data-mode="4"]');
+  await page.evaluate(`globalThis.__kinect.applyPreset(${JSON.stringify(BLACKWALL_LOOK)})`);
   await settle();
   const blackwallRenders = (await renders()) - beforeBlackwall;
   const blackwallImage = await image();
   const blackwallChip = await chip();
   const blackwallPlan = await planned();
   console.log(`  neutral at 8.0s reads "${neutralChip}"`);
-  console.log(`  after clicking BLACKWALL and touching nothing else: "${blackwallChip}"`);
-  check(blackwallRenders > 0, 'applying a preset rebuilds the image',
+  console.log(`  after applying the Blackwall look and touching nothing else: "${blackwallChip}"`);
+  check(blackwallRenders > 0, 'applying a look rebuilds the image',
     `${blackwallRenders} renders`);
-  // One image, not one per parameter: selecting Blackwall is twelve registry
-  // writes plus the mode, and repainting on each would render eleven looks that
-  // never existed on the way to the one that does.
+  // One image, not one per parameter: the Blackwall look is seventeen registry writes,
+  // and repainting on each would render sixteen looks that never existed on the way to
+  // the one that does.
   check(blackwallRenders === blackwallPlan.frames + 1,
-    'and does it once for the whole preset rather than once per parameter',
+    'and does it once for the whole look rather than once per parameter',
     `${blackwallRenders} renders against a ${blackwallPlan.frames}-frame pre-roll`);
   check(blackwallImage !== neutralImage, 'and the rebuilt image is a different one');
   check(blackwallChip !== neutralChip, 'and recomputes the pre-roll estimate');
@@ -1249,7 +1299,7 @@ console.log('\n== 5. a look change while paused rebuilds the image and the estim
 if (SHOTS) {
   await page.evaluate(`(async () => {
     const k = globalThis.__kinect;
-    await globalThis.__tl.configure(${JSON.stringify({ mode: 4, look: null, rate: 1, fps: 30 })});
+    await globalThis.__tl.configure(${JSON.stringify({ look: BLACKWALL_LOOK, rate: 1, fps: 30 })});
     await k.timeline.transport().seek(${TARGET_SEC});
   })()`);
   await page.screenshot({ path: join(SHOTS, 'timeline-check.png') });

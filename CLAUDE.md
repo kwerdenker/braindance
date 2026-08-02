@@ -99,17 +99,27 @@ node tools/determinism-check.mjs                    # step 1: same program time,
 node tools/determinism-check.mjs --clock --before HEAD~1
 node tools/index-check.mjs --url http://localhost:8123   # step 2: index, hash, frame API
 node tools/registry-check.mjs --url http://localhost:8080 # step 3: one registry, sliders as views
+node tools/registry-check.mjs --mutate mix-ignores-normalisation  # ... and must FAIL mutated
+node tools/registry-check.mjs --mutate rgb-contributes-no-alpha   # ... and must FAIL mutated
 node tools/timeline-check.mjs --url http://localhost:8080 # step 4: seek equals playback
 node tools/timeline-check.mjs --mutate preroll-constant   # ... and must FAIL mutated
+node tools/timeline-check.mjs --mutate reading-write-skips-repaint # ... and must FAIL mutated
 node tools/keyframe-check.mjs --url http://localhost:8080 # step 5: tracks, retime curve, undo
 node tools/keyframe-check.mjs --mutate pose-linear        # ... and must FAIL mutated
 node tools/export-check.mjs --url http://localhost:8080   # step 6: resolution, export, the file
 node tools/export-check.mjs --mutate pointsize-absolute   # ... and must FAIL mutated
 node tools/library-check.mjs                              # step 7: library, recorder, routes
 node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL
+node tools/library-check.mjs --mutate write-overwrites-builtin # ... and must FAIL
+node tools/library-check.mjs --mutate list-swallows-unreadable # ... and must FAIL
+node tools/library-check.mjs --mutate open-take-swallows-library # ... and must FAIL
+node tools/library-check.mjs --mutate one-refusal-for-older-versions # ... and must FAIL
 node tools/editor-check.mjs --url http://localhost:8080   # the editor's controls: that they exist, that pressing them changes something
 node tools/editor-check.mjs --mutate lanes-clear-siblings --no-render  # ... and must FAIL
 node tools/editor-check.mjs --mutate plant-unswept-control --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate import-skips-normalise --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate import-saves-before-validating --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate panel-row-skips-parameter --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate nav-at-the-foot --no-render       # ... and must FAIL
 node tools/editor-check.mjs --mutate rate-holds-cuts --no-render       # ... and must FAIL
 node tools/editor-check.mjs --mutate rate-holds-keys --no-render       # ... and must FAIL
@@ -185,9 +195,10 @@ And the ones that are not proof tools, listed because a tool nobody documented i
 nobody runs. **`syntax-check` enforces that list**: anything in `tools/` this file does not
 mention fails it, so a tool added next year is asked by existing. The arithmetic, written
 down because a count nobody adds up is how this list rotted the first time: `tools/` holds
-**25** files, of which **16** are `*-check` proof tools and **9** are the block below.
+**26** files, of which **16** are `*-check` proof tools and **10** are the block below.
 
 ```
+node tools/convert-presets.mjs presets projects jobs # version 3 documents -> version 4, in place
 node tools/build-native.mjs        # builds libfreenect2 into vendor/prefix, then the grabber
 node tools/fake-grabber.mjs        # a grabber that needs no sensor, for driving the server
 node tools/make-fixture.js         # loops one short capture into an arbitrarily long one

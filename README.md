@@ -213,30 +213,93 @@ Drag to orbit, scroll to zoom, right-drag to pan, `H` hides the panel.
 The timeline's ruler shows a *window* of the clip rather than all of it, because a
 fifteen-minute take drawn across one screen puts a keyframe against gradations forty
 times coarser than the thing being placed. Scroll over the strip to zoom about the
-pointer, `+`/`-` to zoom about the playhead, `F` to fit the whole clip and `Z` to frame
-the trimmed range. The overview underneath is always the whole clip: drag its box to
-pan, drag an edge to zoom, click anywhere to go there.
+pointer, `+`/`-` to zoom about the playhead, `,`/`.` to pan it, `F` to fit the whole clip
+and `Z` to frame the trimmed range. The overview underneath is always the whole clip:
+drag its box to pan, drag an edge to zoom, click anywhere to go there.
 
-| Mode | What it does |
+Five readings of the take, split on the panel into what colours a point and what is then
+made of it. Each is a weight from 0 to 1 rather than a choice, so they mix.
+
+| Reading | What it does |
 | --- | --- |
-| RGB | registered colour mapped onto the depth points |
-| Depth | cool-to-warm ramp across the clip range |
-| Ghost | luminance shell that glows along depth discontinuities |
-| Contour | topographic bands sweeping through depth |
-| Blackwall | crimson containment volume, cyan scan sweep, torn datastream bands |
+| colour (source) | registered colour mapped onto the depth points |
+| depth (source) | cool-to-warm ramp across the clip range |
+| ghost (treatment) | luminance shell that glows along depth discontinuities |
+| contour (treatment) | topographic bands sweeping through depth |
+| blackwall (treatment) | crimson containment volume, cyan scan sweep, torn datastream bands |
 
-![The five shading modes on one frame of one take: RGB, Depth, Ghost and Contour in a
+![The five readings on one frame of one take: colour, depth, ghost and contour in a
 grid, and Blackwall full width beneath them.](media/shading-modes.png)
 
-All five are the same frame from the same pose, and each is at its own brightness
-rather than a shared one — the room was shot unlit, so RGB and Contour are reading a
-colour signal the sensor barely produced, while Blackwall blends additively into bloom
-and rim and blows out long before the others have lifted.
+All five are the same frame from the same pose, and each is at its own brightness rather
+than a shared one - the room was shot unlit, so colour and contour are reading a colour
+signal the sensor barely produced, while Blackwall blends additively into bloom and rim
+and blows out long before the others have lifted.
 
-Blackwall is a pipeline preset rather than just a shader branch: selecting it switches
-the points to additive blending and drives the whole post chain (scan, rim, bloom,
-trails, RGB split, scanlines, grain, glitch). Leaving it restores a neutral view. Every
-value stays on its own slider afterwards, so the preset is a starting point.
+**They are weights and not a mode, and that buys two things a mode could not.** The
+shader sums whichever are non-zero and divides by the sum of the weights, so colour at
+0.6 against depth at 0.4 is a 60/40 blend of the camera image and the range ramp — and
+because each one is an ordinary registry parameter it takes keyframes, so a clip can
+dissolve from depth into Blackwall under the playhead. A single reading at 1.0 is
+arithmetically the identity, which is what lets every look authored before this render
+the pixels it always did; `registry-check` proves that by hashing the framebuffer of
+each reading against the mode it replaced.
+
+**And each reading is adjustable rather than only selectable.** Seven of its constants
+were literals inside the shader branch it used to be — the colour's saturation, the depth
+ramp's gamma, the ghost shell's rim exponent and fill, the contour's bands per metre and
+line thickness, and the speed the Blackwall scan plane sweeps at. They are ordinary
+registry parameters, so they keyframe: a wall can stop scanning and start again, and a
+contour can tighten under the playhead. Every one defaults to exactly the literal it
+replaced, which is what keeps the equality above true — the framebuffer hash against the
+pre-reading build is what would catch a default that drifted.
+
+The panel itself is generated from the registry at boot rather than written beside it. A
+parameter is one entry naming its group and its label, and the row, its bounds, its
+readout and its keyframe control are all built from that — so adding an effect cannot
+produce a control the registry does not own or a parameter with no way to reach it. The
+generator refuses to boot if the rows it emitted are not the parameters that were
+declared, and `editor-check` recomputes that count from the registry rather than believing
+the page.
+
+The shading and the look used to be one gesture: selecting Blackwall applied twelve
+post-chain values with it, so you could not have the crimson volume without the grade or
+the grade without the volume. They are separate now. What ships instead is a preset
+library — five documents under `presets-builtin/`, one per reading, with `blackwall.json`
+carrying the twelve values the old mode wrote — and a preset is look values and nothing
+else, so applying one never moves your camera.
+
+### Presets
+
+A preset is a document: `{ version, values }`, one number per look parameter. The five
+that ship are served read-only from `presets-builtin/` beside your own library in
+`presets/`, and they are marked with a `·` in the picker.
+
+**Saving over a shipped name forks it rather than overwriting it.** The write lands in
+your library and shadows the built-in; delete the fork and the shipped look comes back.
+So the five are starting points you cannot damage, and re-grading one in a later release
+reaches everybody rather than only people who had not run the program yet.
+
+`export` writes the look on screen — not the document the picker happens to name, which
+are the same thing only until you move a slider — as `<name>.braindance-preset.json`.
+`import` reads one back. The bytes are the document, so a look is something you can keep
+in a repository, mail to somebody, or edit in a text editor.
+
+An imported file is checked against the registry before it is saved and applied only
+after, which is what makes that safe: a scalar carrying a string fails at the key that is
+wrong instead of writing a plausible-looking look, and a file carrying `__proto__` is
+refused as an unknown parameter — and neither ever reaches the library, because the
+refusal happens before the write rather than after it. A file is the one door into the program that nothing upstream validates, so
+nothing about it is taken on trust — `editor-check` section 9 drives the whole round trip
+in a browser, and `import-skips-normalise` is the mutation that must break it.
+
+Documents from before the readings landed are version 3 and will not open. The
+conversion is total and lossless, so it is a one-shot over files rather than a second
+reader inside the program:
+
+```
+node tools/convert-presets.mjs presets projects jobs
+```
 
 Two controls decide how much white ends up on the geometry, which is the first
 thing to reach for if the look feels blown out:

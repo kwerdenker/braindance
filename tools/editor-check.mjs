@@ -33,9 +33,20 @@
 //      adds a button and must redden section 1 - without it, "every control was
 //      tested" is an assertion this file makes about itself.
 //
+//   3. **And enumerate from both ends, because the panel is generated now.** The rule
+//      above catches a control nothing drives. It cannot catch a control that is
+//      *missing*: the sweep is over what the page renders, so a parameter whose row
+//      never got built is not an uncovered control, it is an absence, and every row
+//      here would go on passing while a look value had no way to be reached. `main.js`
+//      refuses to boot when the generator's row count comes out short - but a build's
+//      own tripwire cannot be the only evidence its own generator is right, so the
+//      count is recomputed here from the registry and diffed against the sweep by name.
+//      `panel-row-skips-parameter` is that claim's control.
+//
 //   node server/index.js &
 //   node tools/editor-check.mjs --url http://localhost:8080 --take sample
 //   node tools/editor-check.mjs --mutate plant-unswept-control --no-render  # must FAIL
+//   node tools/editor-check.mjs --mutate panel-row-skips-parameter --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate lanes-clear-siblings  --no-render  # must FAIL
 //   node tools/editor-check.mjs --mutate rate-holds-program    --no-render  # must FAIL
 //   node tools/editor-check.mjs --mutate space-unbound         --no-render  # must FAIL
@@ -57,10 +68,12 @@
 
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, statSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
+import { PROJECT_VERSION } from '../web/format.js';
 
 const argv = process.argv.slice(2);
 const flag = (name, fallback = null) => {
@@ -69,6 +82,10 @@ const flag = (name, fallback = null) => {
 };
 
 const REPO = fileURLToPath(new URL('..', import.meta.url));
+// Section 9 writes preset files and catches a download. Outside the repo, because a
+// proof tool that writes into its own subject makes every later run untrustworthy -
+// the same reason the staged tree exists in `library-check`.
+const TMP = mkdtempSync(join(tmpdir(), 'editor-check-'));
 const URL_BASE = flag('--url', 'http://localhost:8080');
 const EDITOR_PATH = '/edit';
 // `sample` rather than a dated take id, because the default has to name something
@@ -96,6 +113,62 @@ const MUTATIONS = {
   // put back. A button nobody has taught this file to drive must be a failure rather
   // than a control that quietly went unswept, or "every control was tested" is a
   // sentence this tool writes about itself with nothing enforcing it.
+  // Import writes the file's values straight at the uniforms instead of through the
+  // registry. The control for section 9's two refusal rows: a file is the one door
+  // into this program that nothing upstream validates, so "a hand-edited preset cannot
+  // put a wrong image on screen" rests entirely on `params.apply` meeting every value.
+  // The mutated build accepts a string where a scalar belongs and accepts a key called
+  // `__proto__`, and both rows have to go red - a build that only caught one of them
+  // would mean the other row was being carried by the first.
+  // Both anchors moved when the import path was split into a refusal taken before the
+  // PUT and an apply taken after it, and the mutation has to remove *both* halves to
+  // still be the bypass it names: dropping only the apply leaves `refusePresetBody`
+  // normalising every value ahead of the store, which is the check under test wearing
+  // a different name. So the guard goes and the apply becomes a raw walk onto the
+  // uniforms, which is the shape a build that never learned about the registry has.
+  'import-skips-normalise': {
+    file: 'web/main.js',
+    edits: [
+      ['  refusePresetBody(name, body);\n', ''],
+      [
+        '  applyStoredPreset({ name: saved.name, rev: saved.rev, body });',
+        '  for (const [k, v] of Object.entries(body.values ?? {})) {\n'
+        + '    if (globalThis.__kinect?.uniforms?.[k]) globalThis.__kinect.uniforms[k].value = v;\n'
+        + '  }\n'
+        + '  appliedPreset = { name: saved.name, rev: saved.rev };',
+      ],
+    ],
+  },
+
+  // The control for the row that asks the *store* rather than the page. It keeps the
+  // refusal and only moves it: the file is PUT first and validated afterwards, so the
+  // note still names the wrong key and the look still does not move - both of the
+  // observations that row used to be surrounded by - while the malformed preset is now
+  // a document in the library. That is what makes it the right control rather than a
+  // second copy of `import-skips-normalise`, which removes validation altogether and
+  // therefore reddens the note rows instead.
+  //
+  // Must redden: section 9's "a refused file never reaches the library", and that row
+  // alone.
+  // The second anchor is the whole three-line tail rather than the `res.json()` line it
+  // used to name: that line appears four times in `main.js` and the tool refused the
+  // mutation outright, which is the refusal doing its job and worth not weakening.
+  'import-saves-before-validating': {
+    file: 'web/main.js',
+    edits: [
+      ['  refusePresetBody(name, body);\n', ''],
+      [
+        '  const saved = await res.json();\n'
+        + '  if (saved.error) throw new Error(saved.error);\n'
+        + '  applyStoredPreset({ name: saved.name, rev: saved.rev, body });',
+        '  const saved = await res.json();\n'
+        + '  if (saved.error) throw new Error(saved.error);\n'
+        + '  refusePresetBody(name, body);\n'
+        + '  applyStoredPreset({ name: saved.name, rev: saved.rev, body });',
+      ],
+    ],
+  },
+
   'plant-unswept-control': {
     file: 'web/index.html',
     edits: [[
@@ -105,12 +178,45 @@ const MUTATIONS = {
     ]],
   },
 
+  // The mirror of the one above: a panel that is *missing* a control rather than
+  // carrying one nobody drives. The generator skips one registry entry, and the build's
+  // own count assertion is moved out of the way in the same breath - deliberately, and
+  // it is the whole point of the mutation. A plain omission is caught by `main.js`
+  // refusing to boot, which is the right behaviour for a user and useless as evidence
+  // here: the page never publishes anything, every tool reports DID NOT RUN, and an
+  // exit code with no assertions behind it is what this repo has twice written down as a
+  // bug found. So the mutation asks the sharper question - if the generator filtered
+  // wrongly *and* the build's own tripwire agreed with it, would anything notice? The
+  // answer has to be a failed assertion, and it has to come from a count this file
+  // recomputes rather than one the page reports.
+  //
+  // `ghostFill` rather than the first parameter of its group, because a group left with
+  // no rows at all trips a different refusal and the run would end as a crash again.
+  //
+  // Must redden: section 1's row "every parameter the registry declares has a control on
+  // the panel" - and that row alone, naming ghostFill. Nothing else here touches the
+  // panel's contents, so a run that reddens anything more is measuring something else.
+  'panel-row-skips-parameter': {
+    file: 'web/main.js',
+    edits: [
+      ['    if (spec.group !== group.key) continue;',
+        "    if (spec.group !== group.key || name === 'ghostFill') continue;"],
+      ['  if (panelRowsEmitted !== owned.length) {', '  if (panelRowsEmitted !== owned.length - 1) {'],
+    ],
+  },
+
   // The control for the placement rows in section 1, and it is the bug being put back
   // rather than an invention: the nav spent its whole life at the foot of the panel,
   // under every slider, on the one surface where the column is long enough to scroll.
   // It stays a working nav that goes to the right places - the failure being restored
   // is that you cannot see it, which is why the rows it must redden are the geometric
   // ones and not the sweep.
+  //
+  // The second anchor had to move when the panel started generating its grade: it used
+  // to be the Viewer lookgroup's closing tag, and there is no static lookgroup left to
+  // close. The end of `#panelBody` is the position that survives that, and it is still
+  // the foot the bug had - the generated groups are placed against `#extendedRow` and
+  // walk down from there, so a nav written in last still ends up under every slider.
   'nav-at-the-foot': {
     file: 'web/index.html',
     edits: [
@@ -122,8 +228,8 @@ const MUTATIONS = {
         '',
       ],
       [
-        '    </div>\n  </div><!-- #panelBody -->',
-        '    </div>\n\n    <nav class="surfacenav" id="navRow" aria-label="Surfaces">\n'
+        '  </div><!-- #panelBody -->',
+        '    <nav class="surfacenav" id="navRow" aria-label="Surfaces">\n'
         + '      <a id="toMenu" href="/">menu</a>\n'
         + '      <a id="toLibrary" href="/gallery">gallery</a>\n'
         + '    </nav>\n  </div><!-- #panelBody -->',
@@ -692,35 +798,41 @@ let untested = null;
 // means "this file, or a named file, drives it and watches something change". The
 // rules come before the names because most of the panel is one rule - but a rule is
 // still an entry, so nothing is covered by silence.
-
+//
+// **Keyed rather than indexed, and that is a repair.** `covered()` below used to reach
+// for `DRIVER_RULES[2]`, `[3]`, `[4]` by position, so removing a rule from the middle of
+// this array silently re-pointed every attribution after it: the sweep would still pass,
+// with each remaining group credited to the wrong driver. Deleting the `#modes` rule
+// when the shading modes became registry parameters is exactly that edit, and nothing
+// would have failed. A key cannot slide.
 const DRIVER_RULES = [
   {
+    key: 'look',
     what: 'a look parameter slider or checkbox',
     by: "registry-check's drop-one sweep proves each one reaches the pixels",
     match: (el) => el.closest('#panel') && (el.type === 'range' || el.type === 'checkbox')
       && !el.closest('#sensorGroup, #monitorGroup, #recordGroup, #recLookGroup'),
   },
   {
+    key: 'keyframe',
     what: 'a keyframe toggle',
     by: 'keyframe-check, and section 5 here deletes what it creates',
     match: (el) => el.classList.contains('kf') && el.id !== 'tRateKey',
   },
   {
-    what: 'a shading mode',
-    by: 'registry-check and timeline-check both select modes and compare the image',
-    match: (el) => el.closest('#modes'),
-  },
-  {
+    key: 'recorder',
     what: 'a recorder-surface control',
     by: 'sensor-view-check section 6 and library-check',
     match: (el) => el.closest('#recordGroup, #recLookGroup, #sensorGroup, #monitorGroup, #extendedRow'),
   },
   {
+    key: 'camera',
     what: 'a camera-composition control',
     by: 'keyframe-check drives the path; sensor-view-check drives `sensor view`',
     match: (el) => el.closest('#cameraGroup') || el.id === 'camSensor',
   },
   {
+    key: 'nav',
     what: 'navigation out of the editor',
     by: 'sensor-view-check and library-check follow both links, and the rows below '
       + 'assert where the nav sits and where its two anchors go',
@@ -742,6 +854,9 @@ const DRIVER_IDS = {
   tPreset: 'library-check applies a preset and compares the look',
   tPresetApply: 'library-check',
   tPresetSave: 'library-check',
+  tPresetExport: 'section 9 - exports the look and reads the file the browser wrote',
+  tPresetImport: 'section 9 - opens the picker the file input is the other half of',
+  tPresetFile: 'section 9 - a file is set on it and the look it names arrives',
   tProject: 'library-check opens a project and compares the document',
   tProjectOpen: 'library-check',
   tProjectSave: 'library-check',
@@ -811,7 +926,10 @@ async function openEditor() {
     headless: !HEADED,
     args: ['--disable-features=LocalNetworkAccessChecks'],
   });
-  const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1 });
+  // Downloads accepted, because section 9 catches one: a look leaves this program as a
+  // file the browser writes, and a context that discards downloads would fail that row
+  // for a reason that is about Playwright rather than about the export.
+  const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1, acceptDownloads: true });
   await context.addInitScript(PICKER_STUB);
   const page = await context.newPage();
   const errors = [];
@@ -912,7 +1030,7 @@ try {
       type: el.type || null,
       ease: el.dataset ? el.dataset.ease ?? null : null,
       inTbar: Boolean(el.closest('.tbar')),
-      groups: ['#panel', '#modes', '#cameraGroup', '#navRow', '#recordGroup', '#recLookGroup',
+      groups: ['#panel', '#cameraGroup', '#navRow', '#recordGroup', '#recLookGroup',
         '#sensorGroup', '#monitorGroup', '#extendedRow']
         .filter((g) => el.closest(g)),
       kf: el.classList.contains('kf'),
@@ -920,16 +1038,16 @@ try {
     }));
   }).toString()})()`);
 
+  const RULE = Object.fromEntries(DRIVER_RULES.map((r) => [r.key, r.by]));
   const inGroup = (row, ...groups) => groups.some((g) => row.groups.includes(g));
   const covered = (row) => {
     if (row.id && DRIVER_IDS[row.id]) return `named: ${DRIVER_IDS[row.id]}`;
     if (row.ease) return 'rule: an ease preset, section 5 presses all five';
-    if (row.kf && row.id !== 'tRateKey') return DRIVER_RULES[1].by;
-    if (inGroup(row, '#recordGroup', '#recLookGroup', '#sensorGroup', '#monitorGroup', '#extendedRow')) return DRIVER_RULES[3].by;
-    if (inGroup(row, '#modes')) return DRIVER_RULES[2].by;
-    if (inGroup(row, '#cameraGroup') || row.id === 'camSensor') return DRIVER_RULES[4].by;
-    if (inGroup(row, '#navRow')) return DRIVER_RULES[5].by;
-    if (inGroup(row, '#panel') && (row.type === 'range' || row.type === 'checkbox')) return DRIVER_RULES[0].by;
+    if (row.kf && row.id !== 'tRateKey') return RULE.keyframe;
+    if (inGroup(row, '#recordGroup', '#recLookGroup', '#sensorGroup', '#monitorGroup', '#extendedRow')) return RULE.recorder;
+    if (inGroup(row, '#cameraGroup') || row.id === 'camSensor') return RULE.camera;
+    if (inGroup(row, '#navRow')) return RULE.nav;
+    if (inGroup(row, '#panel') && (row.type === 'range' || row.type === 'checkbox')) return RULE.look;
     return null;
   };
 
@@ -945,6 +1063,36 @@ try {
   // The rule half of the claim, so a build that removed every panel control could not
   // satisfy the row above by having nothing left to cover.
   check(sweep.length > 60, 'and the sweep found the panel, not an empty page', `${sweep.length} controls`);
+
+  // The other direction, and the panel being generated is what makes it necessary. Every
+  // row above asks whether the controls the page renders are driven; none of them can ask
+  // whether the controls the page *should* render are there. A generator that filtered one
+  // parameter out builds a smaller panel that works perfectly, and the look value it
+  // dropped simply has no way to be reached - which is the same class of hole as the
+  // in/out markers this file was written for, arriving through a different door.
+  //
+  // The expectation is recomputed here from the registry rather than read back from
+  // anything the page says about itself, because the failure being guarded against is a
+  // build whose own arithmetic is what went wrong. `main.js` throws at boot on this too,
+  // and that refusal is for whoever is looking at a blank panel; this row is the evidence.
+  const owned = await page.evaluate(`(() => {
+    const k = globalThis.__kinect;
+    return k.params.names().filter((n) => k.params.spec(n).tag !== 'composition');
+  })()`);
+  const swept = new Set(sweep.map((row) => row.id).filter(Boolean));
+  const absent = owned.filter((name) => !swept.has(name));
+  check(absent.length === 0,
+    `every parameter the registry declares has a control on the panel (${owned.length})`,
+    absent.length ? `no control for ${absent.join(', ')}` : `${owned.length} of ${owned.length}`);
+
+  // And the composition half, which is the same claim from the other side: a camera path
+  // is edited in the world, so a slider named after it means the look/composition split
+  // has been crossed. The registry refuses it at boot; this asks the rendered page.
+  const composition = await page.evaluate("globalThis.__kinect.params.names('composition')");
+  const withControls = composition.filter((name) => swept.has(name));
+  check(composition.length > 0 && withControls.length === 0,
+    'and no composition parameter has one, because composition is edited in the world',
+    withControls.length ? `${withControls.join(', ')} has a control` : `${composition.length} checked: ${composition.join(', ')}`);
   check(sweep.some((r) => r.id === 'tExport') && sweep.some((r) => r.id === 'tIn' || true),
     'the strip is among what was swept', `${sweep.filter((r) => r.inTbar).map((r) => r.id).filter(Boolean).slice(0, 6).join(', ')}...`);
 
@@ -2377,7 +2525,6 @@ try {
   await page.evaluate('__kinect.keyframes.setTracks({})');
   await page.evaluate('__kinect.keyframes.setRetime({ rate: 1, keys: [] })');
   await page.evaluate("__kinect.params.reset(__kinect.params.names('look'))");
-  await page.evaluate('__kinect.setMode(0)');
   await page.evaluate('__kinect.sensorView()');
   await page.evaluate('__kinect.keyframes.chrome.set(false)');
   await page.evaluate('__kinect.timeline.transport().seek(12)');
@@ -2389,9 +2536,29 @@ try {
     await settle();
     await new Promise((r) => setTimeout(r, 120));
   };
+  // The panel is hidden for the length of the screenshot, and that is a repair rather
+  // than tidiness.
+  //
+  // `#panel` is `position: fixed` at z-index 10 with `overflow-y: auto`, so it sits on
+  // top of the stage and a screenshot clipped to the stage's box has always contained
+  // it. That was invisible while the panel never moved - and it moved the moment the
+  // shading modes became five sliders, because `#cropReset` then sat below the fold and
+  // Playwright scrolls a control into view before clicking it. So the "open the box"
+  // row below compared a frame against the same frame with the panel scrolled a few
+  // pixels, reported 386 differing pixels in 202 thousand, and read exactly like the
+  // cloud failing to come back. Measured against the commit before the readings landed,
+  // the same row is 28 pixels - so what changed was the height of the panel and nothing
+  // about the crop at all.
+  //
+  // `visibility` rather than `display`, deliberately: it takes the panel out of the
+  // picture without reflowing anything, so every coordinate this file has calibrated
+  // stays exactly where it was. What is left in the clip is the frame, which is what
+  // the row always claimed to be counting.
   const lit = async () => {
     const box = await page.locator('#stage').boundingBox();
+    await page.evaluate("document.getElementById('panel').style.visibility = 'hidden'");
     const shot = await page.screenshot({ clip: box });
+    await page.evaluate("document.getElementById('panel').style.visibility = ''");
     return page.evaluate(`(async (dataUrl) => {
       const img = new Image();
       img.src = dataUrl;
@@ -3197,6 +3364,158 @@ try {
 
   check(errors.length === 0, 'the page reported no errors while any of this happened',
     errors.length ? errors.slice(0, 3).join(' | ') : '');
+
+  // =========================================== 9. a look leaves and arrives as a file
+  //
+  // The one part of the preset library that is not HTTP: a look goes out through a
+  // browser download and comes back through a file input. Neither can be reached from
+  // `library-check`, which drives the routes - the download is a Blob the page makes
+  // and never sends anywhere, and the import checks the file against the registry
+  // *before* the PUT and applies it only after, so both the refusal and the ordering
+  // are page-side. That ordering is the half that decides whether a hand-edited preset
+  // can put a wrong image on screen or leave a document in the library it was refused
+  // from, which is what `import-saves-before-validating` moves. So it is driven here,
+  // where there is a browser.
+  console.log('\n[9] a look leaves as a file and comes back as one');
+  // **This section writes to the real preset library, so it writes only names nobody
+  // else could own.** The import goes through the actual `/presets` route and takes the
+  // document's name from the file's name, and this file's invocation line points at an
+  // ordinary server - so fixed names meant a document called `edited-outside` appearing
+  // in somebody's picker for good, and replacing a look of theirs if they had one.
+  //
+  // The first attempt at fixing that snapshotted the three names, deleted them, and put
+  // them back afterwards. That is worse than what it replaced, and only in the case that
+  // matters: the store refuses a write whose version is not current, so a user holding a
+  // *version 3* preset under one of these names would have it deleted, the restoring PUT
+  // rejected, and the run report PASS over the loss. Restoring is a promise that can
+  // fail; not touching anything cannot.
+  //
+  // So the names carry the pid and a timestamp, they cannot collide with a document a
+  // person made, and the run asserts they were absent to begin with rather than assuming
+  // it - which is also what makes "a refused file never reaches the library" below a
+  // statement about this run. Cleanup deletes only what this run created, and a delete
+  // that does not answer ok is a failed row rather than a silent leak.
+  const nonce = `ec${process.pid}-${Date.now().toString(36)}`;
+  const NAME_EDITED = `${nonce}-edited-outside`;
+  const NAME_BAD = `${nonce}-not-a-look`;
+  const NAME_PROTO = `${nonce}-proto`;
+  const MADE = [NAME_EDITED, NAME_BAD, NAME_PROTO];
+  for (const n of MADE) {
+    const r = await fetch(`${URL_BASE}/presets/${n}`);
+    check(!r.ok, `the fixture name ${n} is free before the run, or nothing below is about this run`,
+      r.ok ? 'a document already exists under it' : 'absent');
+  }
+  const cleanupPresets = async () => {
+    for (const n of MADE) {
+      const probe = await fetch(`${URL_BASE}/presets/${n}`);
+      if (!probe.ok) continue;
+      // The content type is required even here: `/presets/:name` is a mutating route and
+      // the step 7 write guard refuses a request that does not declare JSON, DELETE
+      // included. A bare one comes back 415 and leaves the document exactly where it was,
+      // which reads as a delete that worked.
+      const res = await fetch(`${URL_BASE}/presets/${n}`, {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      }).catch((err) => ({ ok: false, status: err.message }));
+      check(res.ok, `and the fixture ${n} this run created was removed again`,
+        res.ok ? 'deleted' : `DELETE answered ${res.status}`);
+    }
+  };
+  try {
+    const known = { bloom: 2.75, grain: 0.66, readBlackwall: 1, readRgb: 0 };
+    await page.evaluate(`globalThis.__kinect.applyPreset(${JSON.stringify(known)})`);
+    // Moved again *after* the apply and never saved, which is what makes the row below
+    // able to fail. `exportPresetFile` takes its name from the picker and its values
+    // from the live look, and the whole of that distinction is invisible to a probe
+    // whose look and whose stored document agree - a build exporting the picker's
+    // document instead of the screen would write a file containing `known` and pass.
+    // 3.9 exists in neither the picker's document nor any shipped look.
+    const onlyOnScreen = 3.9;
+    await page.evaluate(`globalThis.__kinect.params.set('bloom', ${onlyOnScreen})`);
+    await settle();
+
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.evaluate("document.getElementById('tPresetExport').click()"),
+    ]);
+    const saved = join(TMP, download.suggestedFilename());
+    await download.saveAs(saved);
+    const exported = JSON.parse(readFileSync(saved, 'utf8'));
+    check(/\.braindance-preset\.json$/.test(download.suggestedFilename()),
+      'export writes a named file the browser actually downloaded', download.suggestedFilename());
+    // The bytes are the document, so the assertion is on the values rather than on a
+    // shape this file invents: what came out has to be the look that was on screen.
+    const expected = { ...known, bloom: onlyOnScreen };
+    const wrong = Object.entries(expected).filter(([n, v]) => exported.values?.[n] !== v);
+    check(exported.version === PROJECT_VERSION && wrong.length === 0,
+      'and what it wrote is the look on screen rather than the document the picker names',
+      wrong.length ? wrong.map(([n, v]) => `${n} ${exported.values?.[n]} not ${v}`).join(' ') : `version ${exported.version}, bloom ${exported.values.bloom}`);
+
+    // Edited outside the program, which is the whole point of a file: a look you can
+    // put in a repository, mail to somebody, or change in a text editor.
+    const edited = join(TMP, `${NAME_EDITED}.braindance-preset.json`);
+    const nextBody = { ...exported, values: { ...exported.values, bloom: 4.4, grain: 0.13 } };
+    writeFileSync(edited, `${JSON.stringify(nextBody, null, 2)}\n`);
+    await page.evaluate("globalThis.__kinect.params.reset(globalThis.__kinect.params.names('look'))");
+    await settle();
+    await page.setInputFiles('#tPresetFile', edited);
+    await page.waitForFunction("document.getElementById('tNote').textContent.startsWith('imported')", null, { timeout: 15000 });
+    await settle();
+    const back = await page.evaluate("(() => { const k = globalThis.__kinect; return JSON.stringify({ bloom: k.params.get('bloom'), grain: k.params.get('grain'), readBlackwall: k.params.get('readBlackwall'), stamp: k.library.appliedPreset() }); })()");
+    const landed = JSON.parse(back);
+    check(landed.bloom === 4.4 && landed.grain === 0.13 && landed.readBlackwall === 1,
+      'and importing it puts the edited look on screen', `bloom ${landed.bloom} grain ${landed.grain}`);
+    check(landed.stamp?.name === NAME_EDITED,
+      'and stamps the clip with where it came from', JSON.stringify(landed.stamp?.name));
+
+    // The refusal, and it is the row that matters most: a file is the one door into
+    // this program that nothing else validates. `params.apply` meets every value, so a
+    // scalar carrying a string throws at that key rather than writing a plausible look
+    // - and the image must not have moved on the way to finding out.
+    const bad = join(TMP, `${NAME_BAD}.braindance-preset.json`);
+    writeFileSync(bad, `${JSON.stringify({ version: PROJECT_VERSION, values: { bloom: 'loud' } }, null, 2)}\n`);
+    await page.setInputFiles('#tPresetFile', bad);
+    await page.waitForFunction("document.getElementById('tNote').textContent.includes('bloom')", null, { timeout: 15000 })
+      .catch(() => {});
+    const afterBad = await page.evaluate("(() => ({ note: document.getElementById('tNote').textContent, bloom: globalThis.__kinect.params.get('bloom') }))()");
+    check(/bloom/.test(afterBad.note) && afterBad.bloom === 4.4,
+      'a malformed file is refused at the key that is wrong, and leaves the look alone',
+      `"${afterBad.note}" with bloom still ${afterBad.bloom}`);
+
+    // **And it never became a document**, which the two observations above cannot see.
+    // They read the error text and the live look, and a build that PUT the file first
+    // and validated afterwards satisfies both while leaving the malformed preset in the
+    // library, sitting in the picker looking like a look until somebody chooses it. The
+    // whole claim of the import path is that the refusal happens before the store is
+    // touched, so the store is what has to be asked. `import-saves-before-validating` is
+    // the control: it moves the refusal after the PUT and must fail this row and only
+    // this row, because the error still arrives and the look still does not move.
+    const storeAfterBad = await (await fetch(`${URL_BASE}/presets`)).json();
+    const landedBad = storeAfterBad.presets.find((d) => d.name === NAME_BAD && !d.builtin);
+    check(!landedBad,
+      'and a refused file never reaches the library, which the note and the look cannot tell you',
+      landedBad ? `${NAME_BAD} is in /presets` : `${NAME_BAD} is absent from /presets`);
+
+    // And the prototype question, which a file can ask and an assignment cannot.
+    // `JSON.parse` creates `__proto__` as an own enumerable property where
+    // `p.x.__proto__ = v` invokes the setter and creates nothing - so this is the one
+    // shape that has to be sent as source rather than built in JS, and it is the exact
+    // inverse of the JSON.stringify trap this repo already records.
+    const proto = join(TMP, `${NAME_PROTO}.braindance-preset.json`);
+    writeFileSync(proto, `{ "version": ${PROJECT_VERSION}, "values": { "__proto__": { "polluted": true }, "bloom": 1 } }\n`);
+    const parsedHasOwn = Object.keys(JSON.parse(readFileSync(proto, 'utf8')).values).includes('__proto__');
+    check(parsedHasOwn, 'the probe really contains __proto__ as an own key, or the row below tests nothing');
+    await page.setInputFiles('#tPresetFile', proto);
+    await page.waitForFunction("document.getElementById('tNote').textContent.includes('__proto__')", null, { timeout: 15000 })
+      .catch(() => {});
+    const afterProto = await page.evaluate("(() => ({ note: document.getElementById('tNote').textContent, polluted: ({}).polluted ?? null, bloom: globalThis.__kinect.params.get('bloom') }))()");
+    check(/__proto__/.test(afterProto.note) && afterProto.polluted === null && afterProto.bloom === 4.4,
+      'and a file carrying __proto__ is refused as an unknown parameter, polluting nothing',
+      `"${afterProto.note}" polluted=${afterProto.polluted}`);
+  } finally {
+    // In a `finally` rather than after the last row, because a section that threw is
+    // exactly when the library is most likely to be left with a fixture in it.
+    await cleanupPresets();
+  }
 } catch (err) {
   crashed = err;
 } finally {

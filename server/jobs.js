@@ -14,9 +14,10 @@
 // a different class of machine would break the property the model rests on. So a
 // mismatch is refused and *recorded*, never quietly re-dispatched.
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { validateExport } from './export.js';
+import { listJsonNames } from './library.js';
 
 export const JOB_VERSION = 1;
 
@@ -121,12 +122,12 @@ export class JobStore {
   }
 
   async list() {
-    let files;
-    try {
-      files = (await readdir(this.dir)).filter((f) => f.endsWith('.json')).sort();
-    } catch {
-      return [];
-    }
+    // The queue's directory is made on the first enqueue, so absent really is empty -
+    // but only absent. This used to swallow every failure, and the two callers that
+    // matter make that dangerous rather than merely quiet: `claim` reads an unreadable
+    // directory as "nothing queued" and parks the worker, and `enqueue` reads it as
+    // "no job like this one" and writes a duplicate. Both look like a queue working.
+    const files = await listJsonNames(this.dir, { what: 'job queue directory' });
     const out = [];
     for (const file of files) {
       try {
