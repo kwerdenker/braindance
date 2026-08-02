@@ -276,6 +276,16 @@ const MUTATIONS = {
     '  return 1.0 - smoothstep(0.0, max(1e-4, regionSoft), sd);',
     '  return 1.0 - smoothstep(0.0, max(1e-4, regionSoft * bufferHeight / 1080.0), sd);',
   ]] },
+  // The lateral crop planes stop being metres in the room and become a fraction of
+  // the frame - the same mistake `region-in-metres` plants one term over. Four numbers
+  // that named a box a subject stood in now name a different box at every output size,
+  // so the `crop` row must say so while `noise` and the two region rows stay clean.
+  'crop-in-pixels': { file: 'web/main.js', edits: [[
+    '  if (pos.x < cropL || pos.x > cropR || pos.y < cropB || pos.y > cropT) {',
+    '  float cropScale = bufferHeight / 1080.0;\n'
+    + '  if (pos.x < cropL * cropScale || pos.x > cropR * cropScale\n'
+    + '   || pos.y < cropB * cropScale || pos.y > cropT * cropScale) {',
+  ]] },
   'grain-continuous': { file: 'web/main.js', edits: [[
     'float n = hash(floor(vUv * ref) + fract(time) * 137.0);',
     'float n = hash(vUv * ref + fract(time) * 137.0);',
@@ -1040,7 +1050,37 @@ const NEAR_CAMERA = { position: [0, 0.1, -0.2], quaternion: [0, 0, 0, 1], fov: 5
 // was entirely the tool's own state. Zeroing them here costs nothing, because zero is
 // what they already default to.
 const REGION_OFF = { noise: 0, regionPush: 0, regionNoise: 0, regionMask: 0 };
-const OFF = { bloom: 0, trails: 0, rgbSplit: 0, scanlines: 0, grain: 0, ...REGION_OFF };
+// The crop planes wide open, and they are in `OFF` for the reason the region's
+// effects are: **an arm applies its look over whatever the previous one left.** The
+// sweep runs every pipeline at the small size and then every pipeline at the big one,
+// so the last row of the small pass is the state the first row of the big pass starts
+// from - and the crop row is last. Measured with these four absent from `OFF`: the
+// `crop` row itself passed at ratio 0.9999 while all eight rows above it failed, with
+// coarse means of 3.9 to 10.7, because their big arms were rendering a cropped cloud
+// against an uncropped small one. Asserted against the registry's own defaults below,
+// so "wide open" cannot drift from what the sliders mean by it.
+const CROP_OPEN = { left: -7, right: 7, bottom: -7, top: 7 };
+const OFF = { bloom: 0, trails: 0, rgbSplit: 0, scanlines: 0, grain: 0, ...REGION_OFF, ...CROP_OPEN };
+
+/**
+ * The same look with the crop planes taken out, for the arms that run against the
+ * pinned older build.
+ *
+ * That build predates these four parameters and `specOf` throws on a name it has
+ * never heard of, so `params.apply` aborts **partway through the object** - and what
+ * survives depends on key order. `HD_LOOK` spreads `OFF` first and sets `pointSize`
+ * last, so the old arm was rendering at the wrong point size and the cross-build
+ * rebase rows failed at luminance ratios of 0.9548 and 0.9528 against a 0.02 band.
+ * The rows were right and the look handed to them was not.
+ *
+ * `registry-check` has the same idea as `GOLDEN_ABSENT`: a build is only answerable
+ * for parameters it declares.
+ */
+const asOldBuild = (look) => {
+  const out = { ...look };
+  for (const name of Object.keys(CROP_OPEN)) delete out[name];
+  return out;
+};
 
 // The region itself, on the subject. Everything here is metres in the sensor frame, and
 // that is the claim the two rows using it exist to enforce: not one of these is a
@@ -1107,6 +1147,17 @@ const PIPELINES = [
   ['noise', { look: { ...OFF, ...REGION_OFF, noise: 0.06, noiseScale: 4, noiseSpeed: 0 } }],
   ['regionpush', { look: { ...OFF, ...REGION_AT_SUBJECT, regionPush: 0.35 } }],
   ['regionmask', { look: { ...OFF, ...REGION_AT_SUBJECT, regionMask: 0.5 } }],
+  // The four lateral crop faces, and they belong in this family for the same reason
+  // the region does: they are metres in the sensor frame, so the same four numbers
+  // have to cut the same box out of the room at 600 and at 1200. `crop-in-pixels` is
+  // the control.
+  //
+  // The box is placed around the subject rather than at a convenient number - the
+  // cloud runs x [-2.31, 2.97] and y [-2.26, 1.63] with its median at (0.021, 0.019),
+  // so +/-0.8 sits inside the extent on all four sides and each face has something to
+  // cull. A box enclosing the whole cloud would leave this row measuring an uncropped
+  // image at two sizes, which is the `points` row again under a different name.
+  ['crop', { look: { ...OFF, ...REGION_OFF, left: -0.8, right: 0.8, bottom: -0.8, top: 0.8 } }],
 ];
 
 // Which measurement each row is judged on, and it is per row because the terms live
@@ -1199,6 +1250,12 @@ const RES_TOLERANCE = {
   noise: { on: 'coarse', mean: 0.8, ratio: 0.005 },
   regionpush: { on: 'coarse', mean: 1.0, ratio: 0.005 },
   regionmask: { on: 'coarse', mean: 0.9, ratio: 0.005 },
+  // The crop is a cull rather than a shade, so the two sizes either keep the same
+  // points or they do not - there is no partial term to average away and no soft edge
+  // to alias. It gets the same band as its neighbours rather than a looser one,
+  // because a row whose signal is a hard yes or no should not be the row with room in
+  // it, and `crop-in-pixels` has to clear that band by a wide margin to count.
+  crop: { on: 'coarse', mean: 0.9, ratio: 0.005 },
 };
 
 // One arm at whatever size the page is currently at, with the intrinsics pinned so
@@ -1245,7 +1302,35 @@ async function resolutionSweep(page, pipelines) {
   return measured;
 }
 
+// `CROP_OPEN` says what "no crop" is, and the registry is what decides it. Held
+// against each other rather than trusted, because the two only agree today: raise
+// `CROP_LIMIT` in `web/main.js` and this table would go on resetting the planes to
+// seven while the sliders opened to more, which would leave every row here rendering
+// a quietly cropped cloud and calling it the baseline.
+{
+  const defs = await main.page.evaluate(`(() => {
+    const k = globalThis.__kinect;
+    return Object.fromEntries(['left', 'right', 'bottom', 'top'].map((n) => [n, k.params.spec(n).default]));
+  })()`);
+  const drift = Object.entries(CROP_OPEN).filter(([n, v]) => defs[n] !== v);
+  check(drift.length === 0, 'this file\'s idea of an open crop box is the registry\'s',
+    drift.length ? drift.map(([n, v]) => `${n}: table ${v}, registry ${defs[n]}`).join('; ')
+      : `all four at +/-${CROP_OPEN.right}m`);
+}
+
 const after = await resolutionSweep(main.page, PIPELINES);
+
+// The sweep ends on the crop row, and an arm applies its look over whatever the
+// previous one left - so every arm below this that passes `look: {}` would go on
+// rendering a cloud cropped to +/-0.8m. Measured with this line absent: the two
+// cross-build rebase rows failed at luminance ratios of 0.9548 and 0.9528 against a
+// 0.02 band, with the numbers unchanged whichever old-build arm was corrected, which
+// is what said the leak was on this side rather than that one.
+//
+// Put back here rather than named in each arm below, because "the sweep leaves the
+// page as it found it" is one statement where the alternative is a list that has to
+// stay complete as arms are added.
+await main.page.evaluate(`globalThis.__kinect.params.apply(${JSON.stringify(CROP_OPEN)})`);
 
 // The other half of the drop-unknown rule in `RES_ARM`. Filtering a look to what the
 // page declares is only safe on the cross-build arm; on this build every name in every
@@ -1362,7 +1447,7 @@ let rebaseNon169Old = null;
   // would be asking the re-tune to answer for something else.
   await setStage(before.page, SMALL);
   rebaseOld = await armAt(before.page, {
-    label: 'rebase-old', look: { ...OFF, pointSize: RES_LOOK.pointSize },
+    label: 'rebase-old', look: asOldBuild({ ...OFF, pointSize: RES_LOOK.pointSize }),
   });
   // And the same question asked of the whole look rather than of the point pass.
   // The points-only arm above cannot see the grade or the bloom - deliberately,
@@ -1380,7 +1465,7 @@ let rebaseNon169Old = null;
   // dimension of it.
   await setStage(before.page, HD);
   rebaseHdOld = await armAt(before.page, {
-    label: 'rebase-hd-old', look: HD_LOOK,
+    label: 'rebase-hd-old', look: asOldBuild(HD_LOOK),
   });
   // And the same cross-build at a non-16:9 aspect, so the 16:9 arm is not the only
   // aspect the product ships in. The old build is still the no-reference control;
@@ -1388,7 +1473,7 @@ let rebaseNon169Old = null;
   // width-referenced one has k = 1440/1728 = 0.8333.
   await setStage(before.page, NON_169);
   rebaseNon169Old = await armAt(before.page, {
-    label: 'rebase-non169-old', look: HD_LOOK,
+    label: 'rebase-non169-old', look: asOldBuild(HD_LOOK),
   });
   await before.close();
   for (const name of ['points', 'nobloom']) {

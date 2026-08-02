@@ -80,7 +80,7 @@
      underneath the last control on any window tall enough to fill it. */
   #hint { position: fixed; bottom: 14px; left: 300px; color: var(--dim); z-index: 10; }
 
-  #camNote, #recNote, #recSpace, #monNote, #sensorNote, #recLookNote, #recRange, #viewNote {
+  #camNote, #recNote, #recSpace, #monNote, #sensorNote, #recLookNote, #recRange, #viewNote, #cropNote {
     color: var(--dim); font-size: 10px; line-height: 1.45; opacity: 0.75; margin-top: 2px;
   }
   #monNote.warn { color: var(--warn); opacity: 1; }
@@ -447,6 +447,18 @@
       </div>
       <div class="row"><span>near</span><input id="near" type="range"><output></output></div>
       <div class="row"><span>far</span><input id="far" type="range"><output></output></div>
+      <!-- The other four faces of the box near and far already close in depth. Metres
+           in the sensor frame, so the six together are a cuboid you can shrink onto a
+           subject rather than a rectangle drawn on the picture: a wedge cropped in
+           image space would take the wall behind the subject along with the subject's
+           elbow, because it widens with distance and a room does not. -->
+      <div class="row"><span>left</span><input id="left" type="range"><output></output></div>
+      <div class="row"><span>right</span><input id="right" type="range"><output></output></div>
+      <div class="row"><span>bottom</span><input id="bottom" type="range"><output></output></div>
+      <div class="row"><span>top</span><input id="top" type="range"><output></output></div>
+      <div class="btnrow"><button id="cropReset" type="button">open the box</button></div>
+      <div id="cropNote">The top-down draws this box in x and z. It has no y, so the
+        bottom and top faces do not show there — judge those in the picture.</div>
       <div id="recRange">preview only</div>
     </div>
 

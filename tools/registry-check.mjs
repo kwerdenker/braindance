@@ -145,6 +145,10 @@ const LANDING = {
   additive: '[k.material.blending, k.material.depthWrite, k.uniforms.softEdge.value]',
   near: 'k.uniforms.nearClip.value',
   far: 'k.uniforms.farClip.value',
+  left: 'k.uniforms.cropL.value',
+  right: 'k.uniforms.cropR.value',
+  bottom: 'k.uniforms.cropB.value',
+  top: 'k.uniforms.cropT.value',
   interpolate: 'k.uniforms.interpolate.value',
   snapDelta: 'k.uniforms.snapDelta.value',
   fade: '[k.uniforms.fadeTime.value, k.geometry.drawRange.count]',
@@ -192,6 +196,10 @@ const EXPECT = {
   additive: (v) => [v ? ADDITIVE_BLENDING : NORMAL_BLENDING, !v, v ? 1 : 0],
   near: (v) => v,
   far: (v) => v,
+  left: (v) => v,
+  right: (v) => v,
+  bottom: (v) => v,
+  top: (v) => v,
   interpolate: (v) => (v ? 1 : 0),
   snapDelta: (v) => v,
   fade: (v, all) => [v / 1000, v > 0 || all.wake > 0 ? POINTS * 2 : POINTS],
@@ -237,6 +245,16 @@ const SCRAMBLE = {
   additive: true,
   near: 0.35,
   far: 4.2,
+  // The four lateral faces, placed against the same fixture the region is placed
+  // against rather than picked: the cloud runs x [-2.31, 2.97] and y [-2.26, 1.63],
+  // so each of these sits inside the extent on its own side and has something to cull,
+  // while the box they make still contains the subject at the median (0.021, 0.019).
+  // A plane outside the cloud would be a parameter the drop-one sweep below could not
+  // see, which is the same trap the region's placement comment describes.
+  left: -1.5,
+  right: 1.5,
+  bottom: -1.5,
+  top: 1,
   interpolate: false,
   snapDelta: 410,
   fade: 260,
@@ -572,6 +590,13 @@ const GOLDEN_ABSENT = new Set([
   'regionX', 'regionY', 'regionZ', 'regionW', 'regionH', 'regionD',
   'regionRound', 'regionSoft', 'regionPush', 'regionNoise', 'regionMask',
   'thermal', 'edges',
+  // The four lateral crop faces. They are excused here on the same terms as the rest -
+  // the pinned revision has no such control, so there is nothing on that side to hold
+  // them to - and the excuse costs nothing, because the defaults are the bounds: a
+  // build with these planes wide open renders exactly what a build without them
+  // renders. That equality is the row above, and it is the reason this arm still means
+  // something with four more parameters in it.
+  'left', 'right', 'bottom', 'top',
   // Not registry parameters at all - the monitor's stream controls, which arrived with
   // step 9 and carry their own bounds in the markup. They are in this set for the same
   // reason as the rest: the earlier revision has no such control, so there is nothing
@@ -681,6 +706,26 @@ const declared = await page.evaluate(`(() => {
   const k = globalThis.__kinect;
   return Object.fromEntries(k.params.names().map((n) => [n, k.params.spec(n)]));
 })()`);
+
+// `LANDING` gets a coverage row of its own below; `SCRAMBLE` had none, and a
+// parameter the registry declares but this table has never heard of arrives as
+// `Error: left is a scalar: it takes a finite number, got undefined` from three
+// frames inside `params.set`. That names the parameter and nothing about the reason,
+// and it is a crash rather than a finding - so the tool exits 2 having tested
+// nothing while looking like it failed. Refused here instead, in a sentence.
+//
+// Exit 2 rather than a failed assertion because a scrambled set missing a parameter
+// cannot sweep the registry it claims to sweep: the run did not happen.
+{
+  const missing = Object.keys(declared).filter((n) => !(n in SCRAMBLE));
+  if (missing.length) {
+    console.log(`[registry] DID NOT RUN - the registry declares ${missing.join(', ')} and SCRAMBLE has no `
+      + 'value for them, so the scrambled set is not the whole registry. Add one on its own step grid, '
+      + 'in the order PARAMS declares it - the serialised comparison below is a JSON.stringify equality '
+      + 'and is sensitive to key order.');
+    process.exit(2);
+  }
+}
 
 // =========================================================== 2. the declaration
 

@@ -313,6 +313,19 @@ const uniforms = {
   exposure: { value: 1.15 },
   nearClip: { value: 0.5 },
   farClip: { value: 4.5 },
+  // The four lateral faces of the box `nearClip`/`farClip` already close in depth.
+  // Metres in the sensor frame, and absolute plane positions rather than insets from
+  // an edge, because the sensor's frame widens with depth and an inset would have to
+  // name a depth to mean anything. A cuboid names none.
+  //
+  // Wide open by default: `farClip` reaches 9.5m and the sensor sees 256/fx and 212/fy
+  // of that laterally, so +/-6.65m across and +/-5.50m up at the far end of what any
+  // slider can ask for. Seven clears both, which is what keeps a project saved before
+  // these existed from loading with its subject clipped.
+  cropL: { value: -7 },
+  cropR: { value: 7 },
+  cropB: { value: -7 },
+  cropT: { value: 7 },
   // The turbulence field. Amplitude is metres, scale is cycles per metre and speed is
   // how fast the field drifts through the scene in program seconds - all three world
   // units, so none of them owes the 1080p reference every screen-space term here does.
@@ -357,6 +370,7 @@ uniform sampler2D stateTex;
 uniform vec2 focal, center, resolution;
 uniform float bufferHeight;
 uniform float pointSize, nearClip, farClip, time, edgeTol;
+uniform float cropL, cropR, cropB, cropT;
 uniform float noise, noiseScale, noiseSpeed;
 uniform vec3 regionCentre, regionHalf;
 uniform float regionRound, regionSoft, regionPush, regionNoise, regionMask;
@@ -517,6 +531,22 @@ void main() {
   }
 
   vec3 pos = unproject(position.xy, z);
+
+  // The other four faces of the same box, and they have to come after the
+  // unprojection because a lateral plane is a position in the room where the depth
+  // clip is a property of the sample. Metres, so a face stays where it was put
+  // whatever the output size is - the crop is a place a subject stood, not a
+  // fraction of a frame, and a wedge that widened with depth would take the wall
+  // behind the subject along with the subject's elbow.
+  //
+  // Tested on the undisplaced position, for the reason the region gives below: a
+  // boundary read after turbulence lets points wander across it, and the edge
+  // crawls along itself as the noise rises rather than holding still.
+  if (pos.x < cropL || pos.x > cropR || pos.y < cropB || pos.y > cropT) {
+    gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+    gl_PointSize = 0.0;
+    return;
+  }
 
   // The region is read at the *undisplaced* position, and both things below use this
   // rather than the running pos. A region is a place in the room where the subject
@@ -1249,6 +1279,33 @@ function gradeNeeded() {
     || grade.uniforms.grain.value > 0;
 }
 
+/**
+ * How far out the four lateral crop planes reach, in metres.
+ *
+ * It has to clear everything the sensor can see at the furthest depth the near/far
+ * sliders allow, or the defaults would crop a project that never asked to be cropped.
+ * The widest sample is the frame corner furthest from the principal point, so the
+ * half-extent at depth z is `max(c, N - c) / f * z` per axis rather than `c / f * z`
+ * - an off-centre principal point makes one side reach further than the other, and
+ * this rig's is off centre by 1.8px horizontally and 5.2px vertically.
+ *
+ * At 9.5m with this Kinect that is 6.69m across and 5.64m up. Seven clears both, and
+ * `cropReach()` is exposed so a check can hold the number against the intrinsics of
+ * the take actually open rather than against the ones in this comment.
+ */
+const CROP_LIMIT = 7;
+const DEPTH_W = 512;
+const DEPTH_H = 424;
+const cropReach = (maxDepth = 9.5) => {
+  const { x: fx, y: fy } = uniforms.focal.value;
+  const { x: cx, y: cy } = uniforms.center.value;
+  return {
+    x: (Math.max(cx, DEPTH_W - cx) / fx) * maxDepth,
+    y: (Math.max(cy, DEPTH_H - cy) / fy) * maxDepth,
+    limit: CROP_LIMIT,
+  };
+};
+
 const PARAMS = {
   // Pixels at 1080p, not pixels. The unit changed exactly once, when the screen-
   // space terms went resolution-relative, and every value here changed with it:
@@ -1269,6 +1326,20 @@ const PARAMS = {
     apply: (v) => { uniforms.nearClip.value = v; } },
   far: { def: 6, min: 0.05, max: 9.5, step: 0.05, kind: 'scalar', tag: 'look',
     apply: (v) => { uniforms.farClip.value = v; } },
+
+  // The other four faces. Same units and the same step as the two above, because they
+  // are the same box - and the defaults sit at the bounds so a clip that was authored
+  // before these existed loads with nothing cropped. `CROP_LIMIT` is checked against
+  // the sensor's own reach at boot rather than left as a number somebody once worked
+  // out; see the assertion below the registry.
+  left: { def: -CROP_LIMIT, min: -CROP_LIMIT, max: CROP_LIMIT, step: 0.05, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.cropL.value = v; } },
+  right: { def: CROP_LIMIT, min: -CROP_LIMIT, max: CROP_LIMIT, step: 0.05, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.cropR.value = v; } },
+  bottom: { def: -CROP_LIMIT, min: -CROP_LIMIT, max: CROP_LIMIT, step: 0.05, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.cropB.value = v; } },
+  top: { def: CROP_LIMIT, min: -CROP_LIMIT, max: CROP_LIMIT, step: 0.05, kind: 'scalar', tag: 'look',
+    apply: (v) => { uniforms.cropT.value = v; } },
 
   interpolate: { def: true, kind: 'step', tag: 'look',
     apply: (on) => { uniforms.interpolate.value = on ? 1 : 0; } },
@@ -4518,6 +4589,7 @@ const ui = {
   camClear: document.getElementById('camClear'),
   camView: document.getElementById('camView'),
   camSensor: document.getElementById('camSensor'),
+  cropReset: document.getElementById('cropReset'),
   exportSize: buildExportMenu(document.getElementById('tExportSize')),
   exportGo: document.getElementById('tExport'),
   exportNote: document.getElementById('tExportNote'),
@@ -6209,6 +6281,13 @@ function drawPlanCloud(rect) {
       // with, and reading the same two uniforms so there is one set of intrinsics
       // rather than two that can drift.
       const wx = ((col + 0.5 - cx) / fx) * z;
+      // The lateral crop, applied here for the same reason `near`/`far` are: a plan
+      // that drew points the renderer discards would be a second view disagreeing
+      // with the first, and the crop is exactly the setting somebody is looking at
+      // this plan to judge. **Only x, because a top-down has no y** - a point culled
+      // by `bottom`/`top` is still drawn here, which the panel says on its face
+      // rather than leaving to be discovered.
+      if (wx < uniforms.cropL.value || wx > uniforms.cropR.value) continue;
       const px = rect.x + rect.w / 2 + (wx - TOP_CENTRE.x) * s;
       const py = rect.y + rect.h / 2 + (-z - TOP_CENTRE.z) * s;
       if (px < rect.x || px > rect.x + rect.w || py < rect.y || py > rect.y + rect.h) continue;
@@ -6271,6 +6350,31 @@ function drawChrome() {
   }
 
   drawPlanCloud(rect);
+
+  // The crop box, in the one view that can show where it sits in the room. Drawn only
+  // when it is actually cropping something, so a clip nobody has trimmed does not get
+  // a rectangle around the whole plan implying it has been.
+  //
+  // Three of its four sides are the faces this view has: left, right, and the near and
+  // far planes. The fourth pair, bottom and top, is in y and a plan has no y - the note
+  // under the sliders says so rather than letting this rectangle read as the whole box.
+  {
+    const l = uniforms.cropL.value;
+    const r = uniforms.cropR.value;
+    const n = uniforms.nearClip.value;
+    const f = uniforms.farClip.value;
+    const reach = cropReach(f);
+    if (l > -reach.x || r < reach.x) {
+      const a = planPoint(rect, l, -n);
+      const b = planPoint(rect, r, -f);
+      chromeCtx.save();
+      chromeCtx.strokeStyle = 'rgba(240, 176, 74, 0.85)';
+      chromeCtx.setLineDash([4, 3]);
+      chromeCtx.lineWidth = 1;
+      chromeCtx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+      chromeCtx.restore();
+    }
+  }
 
   chromeCtx.strokeStyle = 'rgba(90, 209, 196, 0.9)';
   chromeCtx.lineWidth = 1.4;
@@ -6488,6 +6592,18 @@ function sensorView() {
 }
 
 ui.camSensor.addEventListener('click', () => { sensorView(); });
+
+// Four planes back to their defaults, which are their bounds. Cropping is easy to do
+// by accident and hard to undo by hand once all four have moved - and a box closed
+// past its own subject looks exactly like a take that failed to load, so getting back
+// to "no crop" has to be one press rather than four remembered numbers. `near`/`far`
+// deliberately stay where they are: they are a depth range somebody usually chose on
+// purpose, and this button is about the four that were opened together.
+ui.cropReset.addEventListener('click', () => {
+  params.reset(['left', 'right', 'bottom', 'top']);
+  requestRepaint();
+  history.commit();
+});
 
 // ------------------------------------------------------------- the export controls
 
@@ -7109,6 +7225,12 @@ globalThis.__kinect = {
   // and `fov` alone cannot say which axis bound it.
   sensorView,
   surface: () => (EDITING ? 'edit' : 'record'),
+
+  // What the crop planes have to clear, from the intrinsics the page is actually
+  // unprojecting with. Exposed because "the defaults crop nothing" is a claim about
+  // this sensor rather than about the constant, and a check should be able to hold
+  // the two against each other for the take that is open.
+  cropReach,
 
   // The sizes the export menu offers, and the way to adopt one.
   //

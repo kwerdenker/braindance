@@ -214,6 +214,33 @@ const MUTATIONS = {
     ]],
   },
 
+  // The lateral crop reads the wrong axis: `left`/`right` become the vertical pair and
+  // `bottom`/`top` the horizontal one. Every plane still culls, the same number of
+  // points still disappear, and the four sliders are wired to the wrong sides - which
+  // is invisible to any row that only counts what was removed.
+  'crop-axes-swapped': {
+    file: 'web/main.js',
+    edits: [[
+      '  if (pos.x < cropL || pos.x > cropR || pos.y < cropB || pos.y > cropT) {',
+      '  if (pos.y < cropL || pos.y > cropR || pos.x < cropB || pos.x > cropT) {',
+    ]],
+  },
+
+  // The box becomes a wedge - the crop is read as an angle rather than a position, so
+  // it widens with depth the way the sensor's own frame does. Rigged to agree with the
+  // box exactly at 2m, because a mutation that disagreed everywhere would also be
+  // caught by rows that are not about this, and the claim under test is specifically
+  // that a plane stays where it was put as the subject walks away from the sensor.
+  'crop-in-image-space': {
+    file: 'web/main.js',
+    edits: [[
+      '  if (pos.x < cropL || pos.x > cropR || pos.y < cropB || pos.y > cropT) {',
+      '  float wedge = 2.0 / max(0.001, z);\n'
+      + '  if (pos.x * wedge < cropL || pos.x * wedge > cropR\n'
+      + '   || pos.y * wedge < cropB || pos.y * wedge > cropT) {',
+    ]],
+  },
+
   // The name field stops reaching the export, which is where it was before there was
   // a field: every render was named after the take and overwrote the last one.
   'export-ignores-name': {
@@ -355,6 +382,7 @@ const DRIVER_IDS = {
   tExportSize: 'export-check sweeps every size the menu offers',
   tExport: 'section 6 asserts it is reachable, section 7 renders with it',
   tExportSave: 'section 7 - the saved copy, against a stubbed picker',
+  cropReset: 'section 8 - opens the crop box again and the planes are read back',
 };
 
 // ------------------------------------------------------------------- the page
@@ -1123,6 +1151,192 @@ try {
       '  and what went through it is byte-identical to the file on the server',
       `${saved.length} bytes, ${saved.sha256.slice(0, 16)}… against ${bytes.length} bytes, ${serverHash.slice(0, 16)}…`);
   }
+
+  // =====================================================================
+  console.log('\n[8] the crop box crops what it says, where it says');
+  // =====================================================================
+  //
+  // Driven from the sensor's own view, so world +x is screen right and world +y is
+  // screen up and "did the left face cull the left" is a question a picture can
+  // answer. `registry-check` already proves each of these four reaches the pixels;
+  // what it cannot say is which side each one takes, or whether the thing they make
+  // is a box at all.
+  //
+  // **The bounding box of what survives is the wrong observable and this file used it
+  // first.** A metre crop leaves near-field points at extreme image positions - a
+  // point 0.29m left of the axis at 0.5m depth is still near the left edge of the
+  // frame - so cropping `left` hard removed 40% of the cloud and moved the leftmost
+  // lit pixel by nothing at all. Counts split by half-frame are what carry the
+  // direction; the bounding box was a probe standing where the answer is the same
+  // either way.
+  // **The scene is put back to a plain one first, and that is not tidiness.** The
+  // sections above leave an animated `bloom` track behind, and bloom lifts most of the
+  // frame over any sensible threshold - so the first run of these rows measured 903477
+  // lit pixels against the 194911 the same shot gives with a default look, and the
+  // four directional rows came back at losses of 0.0% to 18.3% where the signal is
+  // 58% to 81%. Nothing was wrong with the crop; the haze was being counted as cloud.
+  // The clip range and the stage shape go back too, and those two are not cosmetic.
+  // Section 7's real export sets a 0.2s range and the smallest size the menu offers,
+  // and `frameAt` clamps a seek into the clip range - so this section's `seek(12)`
+  // landed on frame 6 of a 16:9 stage instead. Measured: the near slab's cut came back
+  // at 0.366 against the 0.585 the same arm gives with the range open, and the row went
+  // red on a build with nothing wrong with it. `--no-render` skipped section 7 and hid
+  // it, which is the worst version of this - a row that passes in the fast mode and
+  // fails in the full one.
+  await page.locator('#tClearRange').click();
+  await page.evaluate('__kinect.setTargetSize("1920x1080")');
+  await page.evaluate('__kinect.keyframes.setTracks({})');
+  await page.evaluate('__kinect.keyframes.setRetime({ rate: 1, keys: [] })');
+  await page.evaluate("__kinect.params.reset(__kinect.params.names('look'))");
+  await page.evaluate('__kinect.setMode(0)');
+  await page.evaluate('__kinect.sensorView()');
+  await page.evaluate('__kinect.keyframes.chrome.set(false)');
+  await page.evaluate('__kinect.timeline.transport().seek(12)');
+  await settle();
+
+  const CROP_OPEN = { left: -7, right: 7, bottom: -7, top: 7 };
+  const setCrop = async (o) => {
+    await page.evaluate(`__kinect.params.apply(${JSON.stringify(o)})`);
+    await settle();
+    await new Promise((r) => setTimeout(r, 120));
+  };
+  const lit = async () => {
+    const box = await page.locator('#stage').boundingBox();
+    const shot = await page.screenshot({ clip: box });
+    return page.evaluate(`(async (dataUrl) => {
+      const img = new Image();
+      img.src = dataUrl;
+      await img.decode();
+      const c = document.createElement('canvas');
+      c.width = img.width; c.height = img.height;
+      const g = c.getContext('2d');
+      g.drawImage(img, 0, 0);
+      const px = g.getImageData(0, 0, img.width, img.height).data;
+      const n = { all: 0, l: 0, r: 0, t: 0, b: 0 };
+      for (let y = 0; y < img.height; y++) {
+        for (let x = 0; x < img.width; x++) {
+          const i = (y * img.width + x) * 4;
+          if (0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2] < 18) continue;
+          n.all++;
+          if (x < img.width / 2) n.l++; else n.r++;
+          // Image y grows downward and world +y is up, so the image's top half is
+          // the world's positive y and belongs to the "top" face.
+          if (y < img.height / 2) n.t++; else n.b++;
+        }
+      }
+      return n;
+    })(${JSON.stringify(`data:image/png;base64,${shot.toString('base64')}`)})`);
+  };
+
+  /** The rightmost lit column, as a fraction of the stage. */
+  const litEdge = async () => {
+    const box = await page.locator('#stage').boundingBox();
+    const shot = await page.screenshot({ clip: box });
+    return page.evaluate(`(async (dataUrl) => {
+      const img = new Image();
+      img.src = dataUrl;
+      await img.decode();
+      const c = document.createElement('canvas');
+      c.width = img.width; c.height = img.height;
+      const g = c.getContext('2d');
+      g.drawImage(img, 0, 0);
+      const px = g.getImageData(0, 0, img.width, img.height).data;
+      // Scanned right to left and stopped at the first column carrying more than a
+      // handful of lit pixels, because a single stray splat at the far right would
+      // otherwise be the answer to every arm.
+      for (let x = img.width - 1; x >= 0; x--) {
+        let n = 0;
+        for (let y = 0; y < img.height; y++) {
+          const i = (y * img.width + x) * 4;
+          if (0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2] >= 18) n++;
+        }
+        if (n > 4) return x / img.width;
+      }
+      return 0;
+    })(${JSON.stringify(`data:image/png;base64,${shot.toString('base64')}`)})`);
+  };
+
+  const reachAt = await page.evaluate('__kinect.cropReach(9.5)');
+  check(reachAt.limit > reachAt.x && reachAt.limit > reachAt.y,
+    'the planes open wider than the sensor can see at the furthest depth a slider allows',
+    `sensor x +/-${reachAt.x.toFixed(2)}m y +/-${reachAt.y.toFixed(2)}m, planes +/-${reachAt.limit}m`);
+
+  await setCrop(CROP_OPEN);
+  const litDefault = await lit();
+  await page.evaluate(`(() => { const u = __kinect.uniforms;
+    u.cropL.value = -100; u.cropB.value = -100; u.cropR.value = 100; u.cropT.value = 100; })()`);
+  await settle();
+  await new Promise((r) => setTimeout(r, 150));
+  const litWide = await lit();
+  check(litDefault.all === litWide.all && litDefault.all > 1000,
+    'and the defaults therefore cull nothing, which is what keeps an older clip loading uncropped',
+    `${litDefault.all} lit with the defaults, ${litWide.all} with the planes at 100m`);
+
+  for (const [name, val, own, opposite] of [['right', 0.3, 'r', 'l'], ['left', -0.3, 'l', 'r'],
+    ['top', 0.3, 't', 'b'], ['bottom', -0.3, 'b', 't']]) {
+    await setCrop(CROP_OPEN);
+    const before = await lit();
+    await setCrop({ [name]: val });
+    const after = await lit();
+    const lostOwn = 1 - after[own] / Math.max(1, before[own]);
+    const lostOther = 1 - after[opposite] / Math.max(1, before[opposite]);
+    check(lostOwn > 0.15 && lostOwn > lostOther * 2,
+      `${name} culls from its own side of the frame and not the other`,
+      `its half lost ${(lostOwn * 100).toFixed(1)}%, the opposite half ${(lostOther * 100).toFixed(1)}% `
+      + `(lit ${before.all} -> ${after.all})`);
+  }
+
+  // A box, not a wedge, and **the observable here is where the cut lands rather than
+  // how much it took.** The fraction removed cannot tell the two apart: a wedge rigged
+  // to agree with the box at 2m removed 1.2% of a near slab and 66.2% of a far one
+  // against the box's 1.2% and 71.6%, and `crop-in-image-space` passed every row.
+  //
+  // What separates them is the boundary's *position*. A plane at a fixed R metres is
+  // crossed at image column `cx + R*fx/z`, which walks left as the subject moves away;
+  // a crop read as an angle cuts the same column at every depth. So the right edge of
+  // what survives is measured in two slabs, and R is 0.3 rather than 0.6 because at
+  // 0.6 the near slab's content ends before the boundary and neither build cuts it -
+  // a probe standing where the answer is the same either way.
+  const edge = [];
+  for (const [n, f] of [[1.0, 1.6], [3.0, 3.6]]) {
+    await setCrop({ ...CROP_OPEN, near: n, far: f });
+    await setCrop({ right: 0.3 });
+    const cut = await litEdge();
+    edge.push(cut);
+    note(`slab ${n}-${f}m with right at 0.3m`, `the surviving right edge sits at ${cut.toFixed(3)} of the stage`);
+  }
+  // The band is measured from both sides rather than picked: this build separates the
+  // two slabs by 0.038 of the stage and `crop-in-image-space` separates them by 0.001,
+  // so 0.015 sits fifteen times clear of the wedge and at 40% of the box's margin.
+  check(edge[0] - edge[1] > 0.015,
+    'and the cut sits further right in a near slab than a far one, which is what a plane in metres does and an angle does not',
+    `${edge[0].toFixed(3)} against ${edge[1].toFixed(3)}, ${(edge[0] - edge[1]).toFixed(3)} of the stage apart`);
+  await setCrop({ near: 0.05, far: 6 });
+
+  // The way back. Four planes closed by hand are four numbers to remember, and a box
+  // shut past its own subject looks exactly like a take that failed to load - so the
+  // button is the difference between a reversible experiment and a scare.
+  await setCrop({ left: -0.4, right: 0.4, bottom: -0.4, top: 0.4 });
+  const litClosed = await lit();
+  await page.locator('#cropReset').click();
+  await settle();
+  await new Promise((r) => setTimeout(r, 150));
+  const litReopened = await lit();
+  const planes = await page.evaluate(`(() => {
+    const u = __kinect.uniforms;
+    return [u.cropL.value, u.cropR.value, u.cropB.value, u.cropT.value];
+  })()`);
+  // The planes are checked exactly and the cloud within a tenth of a percent. Two
+  // screenshots of the same clip taken minutes apart are not bit-identical - the
+  // transport re-fetches and re-interpolates, and point splatting aliases - so this
+  // row measured 288614 against 288586, a difference of 28 pixels in 288 thousand. An
+  // exact equality there would be asserting determinism, which is `determinism-check`'s
+  // claim and not this one's; the claim here is that the cloud came back.
+  const backWithin = Math.abs(litReopened.all - litDefault.all) / litDefault.all;
+  check(planes.join() === [-7, 7, -7, 7].join() && backWithin < 0.001,
+    '"open the box" puts all four planes back and the whole cloud with them',
+    `planes ${planes.join(', ')}; lit ${litClosed.all} -> ${litReopened.all} against `
+    + `${litDefault.all} open, ${(backWithin * 100).toFixed(3)}% apart`);
 
   check(errors.length === 0, 'the page reported no errors while any of this happened',
     errors.length ? errors.slice(0, 3).join(' | ') : '');
