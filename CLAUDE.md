@@ -127,6 +127,7 @@ node tools/editor-check.mjs --mutate orbit-arms-into-playback --no-render # ... 
 node tools/editor-check.mjs --mutate orbit-arms-stale-position --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate release-seeks-past-target --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate pin-keeps-orbit-armed --no-render  # ... and must FAIL
+node tools/editor-check.mjs --mutate camkey-takes-the-passing-pose --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate rate-holds-cuts --no-render       # ... and must FAIL
 node tools/editor-check.mjs --mutate rate-holds-keys --no-render       # ... and must FAIL
 node tools/editor-check.mjs --mutate undo-skips-cuts --no-render       # ... and must FAIL
