@@ -317,6 +317,17 @@ const MUTATIONS = {
     ]],
   },
 
+  // The control for the drift row. Takes the finish back out of the camera key, so
+  // the pose recorded is whatever the camera happened to be passing through - which
+  // is what a hand reaching from the release to the button got before the fix.
+  'camkey-takes-the-passing-pose': {
+    file: 'web/main.js',
+    edits: [[
+      '  finishOrbitDrift();\n  freeCamera.updateMatrixWorld(true);',
+      '  freeCamera.updateMatrixWorld(true);',
+    ]],
+  },
+
   // The control for the pinned-drive row. Takes the loop away with orbit state still
   // standing, which is the one stranding this file cannot catch from inside
   // `pumpParkedDraft` - the mutated build never calls it again.
@@ -2804,6 +2815,88 @@ try {
     })()`);
     const poseOf = () => page.evaluate('(() => { const p = __kinect.freeCamera.position;'
       + ' return [p.x, p.y, p.z]; })()');
+
+    // ---- the drift a released orbit still owes, and the actions that read through it
+    //
+    // `finishOrbitDrift` exists because three things read the camera's pose and one
+    // of them is reached for straight out of a release: the camera key copies the
+    // pose, `sensorView` assigns one, and the node drag projects through it. Keyed
+    // mid-drain, the pose recorded is one the viewport then glides away from, so the
+    // shot that was keyed is not the shot that was framed.
+    //
+    // **First in this section, and the position is a precondition rather than a
+    // preference.** `controls.enabled` is restored as `viewCamera === freeCamera`, so
+    // a section that leaves the view on the program camera leaves the orbit inert for
+    // every row after it - written later in the file, this row's drag moved the camera
+    // 0.000 m and the whole thing passed on a build with the fix deleted. The travel
+    // assertion below is what caught that, and it stays whatever else moves.
+    {
+      const dampingShipped = await page.evaluate('__kinect.controls.dampingFactor');
+      const poseAtStart = await poseOf();
+      // The whole view, saved to be put back. This block orbits nearly three metres,
+      // and the rows below compare two moments of the clip against each other through
+      // whatever camera they inherit - at the pose this leaves behind, a second of
+      // footage separates by 1.29/255 where it separates by 4.48 at the pose section 8
+      // ends on, and their own control says so by failing. Restoring is what keeps
+      // this row from deciding what the next ones can see.
+      const viewSaved = await page.evaluate(`(() => {
+        const c = __kinect.freeCamera;
+        const t = __kinect.controls.target;
+        return { p: c.position.toArray(), q: c.quaternion.toArray(), t: [t.x, t.y, t.z] };
+      })()`);
+      // Slow enough that the drain is still owed when the button is pressed, and no
+      // slower: `OrbitControls` stops dispatching `change` once a step falls under a
+      // millimetre, and a window with no events in it is not a window.
+      await page.evaluate('__kinect.controls.dampingFactor = 0.02');
+      await page.mouse.move(stage.x - 60, stage.y - 30);
+      await page.mouse.down();
+      await page.mouse.move(stage.x + 40, stage.y + 20);
+      await page.mouse.move(stage.x + 95, stage.y + 48);
+      await page.mouse.up();
+      // Read before the click, not after. On a build with the fix in, the click
+      // *finishes* the drift - so a pose sampled afterwards has nothing left owed and
+      // the control below would report that the window was shut when it was open. The
+      // first version of this row did exactly that and failed its own control, which
+      // is the control working.
+      const posePressed = await poseOf();
+      await page.locator('#camKey').click();
+      const keyedAt = (await read()).programSec;
+      const keyed = await page.evaluate(
+        `__kinect.keyframes.valueAt('camera', ${keyedAt}).position`);
+      // Closed the instant the click is in. Left open it outlasts `settled()`'s two
+      // hundred turns and every row below fails as a timeout.
+      await page.evaluate(`__kinect.controls.dampingFactor = ${dampingShipped}`);
+      await settle();
+      const poseRested = await poseOf();
+
+      const dragged = Math.hypot(...posePressed.map((v, i) => v - poseAtStart[i]));
+      const owed = Math.hypot(...poseRested.map((v, i) => v - posePressed[i]));
+      const keyError = Math.hypot(...poseRested.map((v, i) => v - keyed[i]));
+      note('the camera key pressed while the release still owed the camera movement',
+        `dragged ${dragged.toFixed(3)} m, still owed ${owed.toFixed(3)} m at the press, `
+        + `key ${keyError.toFixed(4)} m from where it came to rest`);
+      // Two controls before the claim, and each closes a different way of passing
+      // without testing anything: a drag that never moved the camera, and a press that
+      // arrived after the drain had already finished.
+      check(dragged > 0.05, 'the drag before the camera key moved the camera',
+        `${dragged.toFixed(3)} m`);
+      check(owed > 0.02, 'and the release still owed it movement when the key went in',
+        `${owed.toFixed(3)} m still to travel`);
+      check(keyError < 0.01,
+        'so the camera key records the shot that was framed rather than one the glide leaves behind',
+        `${keyError.toFixed(4)} m between the keyed pose and the resting pose`);
+      await page.evaluate("__kinect.keyframes.setTracks({})");
+      await page.evaluate(`(() => {
+        const v = ${JSON.stringify(viewSaved)};
+        const c = __kinect.freeCamera;
+        c.position.fromArray(v.p);
+        c.quaternion.fromArray(v.q);
+        __kinect.controls.target.set(v.t[0], v.t[1], v.t[2]);
+        __kinect.controls.update(0);
+        c.updateMatrixWorld(true);
+      })()`);
+      await settle();
+    }
 
     const poseBefore = await poseOf();
     const before = await page.evaluate(
