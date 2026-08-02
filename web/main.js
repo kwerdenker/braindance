@@ -4863,6 +4863,10 @@ const view = {
   // The visible window, as fractions of `duration`. `0..1` is the whole clip.
   a: 0,
   b: 1,
+  // And the window that was *asked* for, which is what the limits are re-derived from -
+  // see `set`. These two are equal except while a clamp is binding.
+  wantA: 0,
+  wantB: 1,
 
   /**
    * The program length the ruler is drawn against.
@@ -4922,10 +4926,40 @@ const view = {
    */
   minSpan() { return Math.min(1, MIN_VIEW_SEC / this.duration); },
 
-  /** The window, clamped: inside the clip, no narrower than `MIN_VIEW_SEC`, at most all. */
+  /**
+   * The window, clamped: inside the clip, no narrower than `MIN_VIEW_SEC`, at most all.
+   *
+   * **What was asked for is kept beside what the clamp allowed, and the clamp is
+   * re-derived rather than accumulated.** `minSpan` is a number of seconds expressed as
+   * a fraction, so it moves whenever the clip's length does - and a clamp applied to its
+   * own previous output only ever ratchets outward. Measured: at 0.1x the whole clip is
+   * 480s and the minimum window is a fraction of 0.00052; going to 4x makes that 0.00625s
+   * of a 12s clip, the clamp widens it to 0.0208, and coming back to 0.1x that fraction
+   * is 10s. The document returns exactly, no undo step is committed, and the ruler is
+   * forty times wider than it started - which is the one thing the speed control claims
+   * not to do.
+   *
+   * `userLaneHeight` already had the answer, and its comment says why in the same words:
+   * store the request, apply the limits on the way out, so a window narrowed by a clip
+   * that got shorter opens back up when the clip gets longer again.
+   */
   set(a, b) {
-    const span = Math.min(1, Math.max(this.minSpan(), b - a));
-    const start = Math.min(1 - span, Math.max(0, a));
+    this.wantA = a;
+    this.wantB = b;
+    return this.reclamp();
+  },
+
+  /**
+   * Re-applies the limits to the window that was last asked for.
+   *
+   * Called whenever the duration moves under the window rather than only after a rate
+   * gesture, because a rate gesture is not the only thing that moves it - undo across a
+   * speed change, a project load and an output-rate change all do, and a fix that lived
+   * on the slider would have left three doors open.
+   */
+  reclamp() {
+    const span = Math.min(1, Math.max(this.minSpan(), this.wantB - this.wantA));
+    const start = Math.min(1 - span, Math.max(0, this.wantA));
     const moved = start !== this.a || start + span !== this.b;
     this.a = start;
     this.b = start + span;
@@ -5831,9 +5865,32 @@ const RATE_MIN = 0.1;
 const RATE_MAX = 4;
 const RATE_DETENT = 0.03;
 
+const rawRateFromSlider = (v) => (
+  RATE_MIN * (RATE_MAX / RATE_MIN) ** Math.min(1, Math.max(0, Number(v) || 0))
+);
+const insideDetent = (rate) => Math.abs(rate - 1) <= RATE_DETENT;
+
+/**
+ * The rate a slider position means, with the detent applied - but only to a gesture that
+ * came into the band from outside it.
+ *
+ * **A detent is for a value you are aiming at, and it was also eating one you already
+ * had.** `restoreProject` accepts any positive finite rate, so a project can carry 1.02x;
+ * the thumb is positioned there correctly, and then the first small pointer input - a
+ * touch, a nudge, anything landing back in the same neighbourhood - came through here and
+ * returned exactly 1.00. Two percent off every cut and every key and a different rendered
+ * file, before the pointer had meaningfully moved. The band exists so 1.00x is *reachable*
+ * exactly, not so it is the only thing reachable near it.
+ *
+ * Read here and armed in the `input` handler rather than armed here, because this is also
+ * called by `timingChanged` to ask whether the thumb already shows the current rate -
+ * arming from inside would make a comparison change the thing it is comparing, which is
+ * the observer effect this repo keeps finding in its own instruments.
+ */
 const rateFromSlider = (v) => {
-  const rate = RATE_MIN * (RATE_MAX / RATE_MIN) ** Math.min(1, Math.max(0, Number(v) || 0));
-  return Math.abs(rate - 1) <= RATE_DETENT ? 1 : Number(rate.toFixed(3));
+  const rate = rawRateFromSlider(v);
+  const holding = rateGesture ? rateGesture.detentArmed === false : false;
+  return !holding && insideDetent(rate) ? 1 : Number(rate.toFixed(3));
 };
 
 const sliderFromRate = (rate) => (
@@ -5893,6 +5950,11 @@ function beginRateGesture({ fromKey = false } = {}) {
     // pre-roll, long enough for a second taker to arrive after the release has already
     // decided the take should be running.
     gen,
+    // Whether the detent may act yet. Disarmed only for a gesture that *begins* inside
+    // the band at something other than 1.00x, which is a rate no slider could have
+    // produced - it came out of a project file. The `input` handler arms it the moment
+    // the thumb leaves the band, so aiming at 1.00x from outside still snaps.
+    detentArmed: retime.rate === 1 || !insideDetent(retime.rate),
     source: retime.sourceSecAt(timeline.programSec),
     wasPlaying: timeline.playing,
     // The parameterisation the gesture started in. Every program time in the document
@@ -6047,6 +6109,12 @@ ui.rate.addEventListener('change', () => { if (!rateGesture?.fromKey) endRateGes
 ui.rate.addEventListener('input', () => {
   if (!timeline) return;
   beginRateGesture();
+  // Once the thumb has been outside the band, the detent is live for the rest of the
+  // gesture. Armed from the raw position rather than from the snapped rate, because the
+  // snapped one cannot say whether it is inside the band or exactly on the value.
+  if (rateGesture && !rateGesture.detentArmed && !insideDetent(rawRateFromSlider(ui.rate.value))) {
+    rateGesture.detentArmed = true;
+  }
   const program = applyRate(rateFromSlider(ui.rate.value));
   // `moved` because a speed change rescales every lane and adds none: the set of
   // lanes is a property of which tracks carry keys, which a slope cannot touch.
@@ -6467,10 +6535,17 @@ function timingChanged({ moved = false } = {}) {
   // fraction of a clip that a change to 4x makes forty times shorter, so the same
   // fraction is now 0.00625 program seconds - a window narrower than a single output
   // frame, which is the state `MIN_VIEW_SEC` exists to make unreachable and which
-  // resolves most pointer positions on the ruler to the same frame. `set` re-applies
-  // the minimum against the current duration, so handing it the fractions it already
-  // holds is the whole re-clamp, and every timing change passes through here.
-  view.set(view.a, view.b);
+  // resolves most pointer positions on the ruler to the same frame.
+  //
+  // **`reclamp` rather than `set`, and the difference is a bug that lived here.** Handing
+  // `set` the fractions the window already holds writes the *clamped* window back as the
+  // one that was asked for, so the limit applies to its own previous output and the
+  // window only ever ratchets outward: a round trip from 0.1x to 4x and back left a
+  // 0.25s window at 10s, with the document returned exactly and no undo step committed.
+  // `reclamp` re-derives from the request instead, so the same round trip comes back to
+  // where it started. Every timing change passes through here, which is what makes undo,
+  // a project load and an output-rate change get it too.
+  view.reclamp();
   // The slider's coordinate, not the rate - see `rateFromSlider`. Written only when
   // the thumb is not already showing this rate, and the condition is the invariant
   // itself rather than a flag standing in for it: the rate is quantised and snapped on

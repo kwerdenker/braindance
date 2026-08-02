@@ -331,6 +331,28 @@ const MUTATIONS = {
     ],
   },
 
+  // The window's clamp goes back to being applied to its own previous output, so it
+  // ratchets outward and a round trip never comes back. Reddens only the last of the four
+  // round-trip rows - the three above it are about the trip happening at all, which this
+  // leaves alone.
+  'window-clamp-ratchets': {
+    file: 'web/main.js',
+    edits: [['  view.reclamp();', '  view.set(view.a, view.b);']],
+  },
+
+  // The detent goes back to acting on every position whatever the gesture began at, so a
+  // loaded 1.02x is eaten by the first nudge. Reddens the nudge row and leaves the load
+  // row and the two aiming rows green, which is what separates a detent that is too eager
+  // from one that has stopped working.
+  'detent-eats-loaded-rate': {
+    file: 'web/main.js',
+    edits: [[
+      '  const holding = rateGesture ? rateGesture.detentArmed === false : false;\n'
+      + '  return !holding && insideDetent(rate) ? 1 : Number(rate.toFixed(3));',
+      '  return insideDetent(rate) ? 1 : Number(rate.toFixed(3));',
+    ]],
+  },
+
   // The deliverable stops being a document replacement, so a gesture held across one
   // rescales the trim it began in and writes it back over the one just chosen. Reddens
   // only the last of the three deliverable rows - the two above it are about the menu
@@ -1409,6 +1431,54 @@ try {
   check(outOfBand !== 1 && outOfBand > 1,
     '  and a position clear of the detent is left alone, so the band is a detent and not a floor',
     `landed at ${outOfBand}`);
+
+  // **And a detent is for a value you are aiming at, not one you already had.** A project
+  // can carry 1.02x - `restoreProject` takes any positive finite rate - and the thumb is
+  // placed there correctly. The first small input in the same neighbourhood then came
+  // through the band and returned exactly 1.00: two percent off every cut and every key
+  // and a different rendered file, before the pointer had meaningfully moved.
+  //
+  // Driven as a gesture rather than through `driveRate`, because the rule is about a
+  // gesture that *begins* inside the band, and `driveRate`'s `change` ends one per event.
+  const nudged = await page.evaluate(`(async () => {
+    __kinect.keyframes.setRetime({ rate: 1.02, keys: [] });
+    await __kinect.timeline.settled();
+    const el = document.getElementById('tRate');
+    const loaded = { rate: __kinect.timeline.retime.rate, value: Number(el.value) };
+    el.focus();
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    el.value = String(loaded.value + 0.001);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    await __kinect.timeline.settled();
+    const nudge = __kinect.timeline.retime.rate;
+    // Out of the band and back in, which is a gesture that aimed at 1.00x rather than one
+    // that started next to it - the snap has to still happen there or the band is gone.
+    el.value = String(__kinect.editor.rateSlider.toValue(1.5));
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    await __kinect.timeline.settled();
+    const away = __kinect.timeline.retime.rate;
+    el.value = String(__kinect.editor.rateSlider.toValue(1.005));
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    await __kinect.timeline.settled();
+    const returned = __kinect.timeline.retime.rate;
+    el.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true }));
+    el.blur();
+    await __kinect.timeline.settled();
+    return { loaded: loaded.rate, nudge, away, returned };
+  })()`);
+  check(near(nudged.loaded, 1.02, 1e-9),
+    'a project carrying 1.02x loads at 1.02x, which is a rate no slider could have made',
+    `${nudged.loaded}x`);
+  check(nudged.nudge !== 1 && Math.abs(nudged.nudge - 1.02) < 0.02,
+    '  and a small nudge beside it moves it a little rather than snapping two percent to 1.00x',
+    `${nudged.loaded}x -> ${nudged.nudge}x`);
+  check(near(nudged.away, 1.5, 1e-3),
+    '  the same gesture can still leave the band', `${nudged.away}x`);
+  check(nudged.returned === 1,
+    '  and coming back into it from outside still snaps, which is what the band is for',
+    `landed at ${nudged.returned}x`);
+  await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
+  await settle();
 
   // The seek storm. A slider drag is dozens of `input` events and one `change`, and
   // each accurate seek renders a whole pre-roll before it can show anything. The sweep
@@ -2518,6 +2588,42 @@ try {
     '  and , brings it back', `${keyPanned.startSec.toFixed(3)}s -> ${panBack.startSec.toFixed(3)}s`);
   check((await page.evaluate('__kinect.editor.shortcuts()')).includes(',/. pan it'),
     '  and the shortcut list says so too', await page.evaluate('__kinect.editor.shortcuts()'));
+
+  // **A round trip has to come back.** The window is stored as fractions and its minimum
+  // is in seconds, so the two disagree the moment the duration moves - and a clamp applied
+  // to its own previous output only ratchets outward. At 0.1x the clip is 480s and the
+  // 0.25s minimum is a fraction of 0.00052; at 4x that fraction is 0.00625s of a 12s clip,
+  // the clamp widens it, and coming back to 0.1x the widened fraction is 10s. The document
+  // returns exactly and commits no undo step, so a ruler forty times wider than it started
+  // is the one thing the speed control claims not to do.
+  //
+  // The rate goes through the page's own mapping and the rate that came out is checked
+  // against the one that went in, because the slider's travel is logarithmic and its
+  // `value` is a position rather than a rate.
+  await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
+  await settle();
+  const slowRate = await driveRate(0.1);
+  await page.evaluate('__kinect.editor.view.set(0.5, 0.5)');
+  await settle();
+  const atMin = await page.evaluate('__kinect.editor.view.window()');
+  const fastRate = await driveRate(4);
+  const atFast = await page.evaluate('__kinect.editor.view.window()');
+  const backRate = await driveRate(0.1);
+  const atBack = await page.evaluate('__kinect.editor.view.window()');
+  check(near(slowRate, 0.1, 1e-6) && near(fastRate, 4, 1e-6) && near(backRate, 0.1, 1e-6),
+    'the round trip really went 0.1x -> 4x -> 0.1x, or the rows below mean nothing',
+    `${slowRate}x, ${fastRate}x, ${backRate}x`);
+  check(near(atMin.spanSec, 0.25, 1e-6),
+    '  and the window was at the 0.25s minimum before it', `${atMin.spanSec.toFixed(6)}s`);
+  check(atFast.spanSec >= 0.25 - 1e-9,
+    '  and never went below the minimum in the middle of it, which is what the clamp is for',
+    `${atFast.spanSec.toFixed(6)}s at 4x`);
+  check(near(atBack.spanSec, atMin.spanSec, 1e-6),
+    '  and comes back to exactly the window it started at, rather than to what the clamp left',
+    `${atMin.spanSec.toFixed(6)}s -> ${atBack.spanSec.toFixed(6)}s`);
+  await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
+  await page.evaluate('__kinect.editor.view.fit()');
+  await settle();
 
   // **A wheel notch is not three pixels, and on Firefox that is what it reports.**
   // `deltaMode` is `DOM_DELTA_LINE` there and on some Linux mice, so a rule dividing by
