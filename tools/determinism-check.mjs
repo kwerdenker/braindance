@@ -58,6 +58,15 @@ const STRIDE = Number(flag('--stride', '4'));
 // happened to fit between two arrivals.
 const SUBSTEPS = Number(flag('--substeps', '4'));
 
+// The shipped Blackwall document, read rather than restated. A copy of these values
+// typed into this file would be a second source of truth for a look, which is exactly
+// what having them as `const BLACKWALL` inside `web/main.js` was - and it is the reason
+// a tool sweeping constants the product does not ship is a hole this repo has already
+// recorded twice. If the shipped look is re-graded, this follows it.
+const BLACKWALL_LOOK = JSON.parse(
+  readFileSync(new URL('../presets-builtin/blackwall.json', import.meta.url), 'utf8'),
+).values;
+
 // Playwright is not a dependency of this project - it is a tool the proofs reach
 // for - so it is resolved from wherever it happens to be installed.
 async function loadPlaywright() {
@@ -321,9 +330,20 @@ async function openPage() {
   }
   if (!gpu.colorBufferFloat) throw new Error('no EXT_color_buffer_float: the surface memory is not running at float');
 
-  // Blackwall, selected the way a user selects it, so no look value is invented
-  // here. It is the one preset that switches on both accumulators at once.
-  await page.click('#modes button[data-mode="4"]');
+  // Blackwall, read out of the document that ships it rather than clicked or typed in
+  // here, so no look value is invented by this file. It is the one preset that switches
+  // on both accumulators at once, which is the only reason this section names a look at
+  // all - `trails` drives the afterimage buffer and `fade`/`wake` drive the surface
+  // memory, and a determinism claim that exercised neither would be about a simpler
+  // renderer than the one that ships.
+  //
+  // It used to be a click on `#modes button[data-mode="4"]`, and the button is gone: the
+  // reading is five weights in the registry now. Reaching for `readBlackwall` alone would
+  // have been the mechanical translation and the wrong one - it selects the crimson
+  // shading and leaves bloom, trails, rgbSplit, scanlines, grain and glitch at zero, so
+  // the two accumulators this section exists to drive would both be switched off while
+  // the line above still claimed they were on.
+  await page.evaluate(`globalThis.__kinect.applyPreset(${JSON.stringify(BLACKWALL_LOOK)})`);
 
   await page.evaluate(async () => {
     const buffer = await (await fetch('/__pinned.bin')).arrayBuffer();

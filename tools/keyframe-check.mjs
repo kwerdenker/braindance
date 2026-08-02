@@ -819,6 +819,25 @@ const setTracks = (spec) => page.evaluate(`globalThis.__kinect.keyframes.setTrac
 const setRetime = (curve) => page.evaluate(`globalThis.__kinect.keyframes.setRetime(${src(curve)})`);
 const specOf = (name) => page.evaluate(`globalThis.__kinect.params.spec(${src(name)})`);
 
+// Applying one of the shipped looks, which every section below that needs persistence
+// switched on used to do by clicking `#modes button[data-mode="4"]`.
+//
+// The mechanical translation would have been `params.set('readBlackwall', 1)` and it
+// would have been wrong everywhere it appears. What those clicks were reaching for is
+// stated in the comment above each of them - "the one preset that switches both
+// accumulators on at once" - and the accumulators are `trails`, `fade` and `wake`, none
+// of which is the reading. Selecting the crimson shading with the whole grade at zero
+// would leave every pre-roll cost in this file at nothing, and the sections measuring
+// what a pre-roll costs would have gone green measuring a renderer with no persistence
+// in it. The looks are read out of the documents that ship them for the same reason
+// they were clicked rather than typed: so no look value is invented here.
+const applyLook = (look) => page.evaluate(`globalThis.__kinect.applyPreset(${src(look)})`);
+const shippedLook = (name) => JSON.parse(
+  readFileSync(new URL(`../presets-builtin/${name}.json`, import.meta.url), 'utf8'),
+).values;
+const BLACKWALL_LOOK = shippedLook('blackwall');
+const RGB_LOOK = shippedLook('rgb');
+
 // ============================ 0. the evaluator asks for nothing, probed first
 //
 // Ahead of everything else, and deliberately so. `params.set` announces every
@@ -1152,7 +1171,7 @@ console.log('\n== 3. a keyframed look: the same program position, reached two wa
 // Blackwall selected the way a user selects it, so no look value is invented here.
 // It is the one preset that switches both accumulators on at once, which is what
 // makes a pre-roll cost anything at all.
-await page.click('#modes button[data-mode="4"]');
+await applyLook(BLACKWALL_LOOK);
 
 // Tracks that move the two things a pre-roll is sized by, plus the camera. `wake`
 // keyed means the pre-roll length itself changes with the playhead, which is the
@@ -1282,7 +1301,7 @@ console.log('\n== 3b. a seek that jumps from a cheap look to an expensive one ==
   };
   await setRetime(FLAT);
   await setTracks(COLD);
-  await page.click('#modes button[data-mode="4"]');
+  await applyLook(BLACKWALL_LOOK);
   await settle();
 
   const TARGET = 11.0;
@@ -1346,7 +1365,7 @@ console.log('\n== 3b. a seek that jumps from a cheap look to an expensive one ==
 console.log('\n== 3c. a pre-roll whose window is dearer than its target ==');
 {
   await setRetime(FLAT);
-  await page.click('#modes button[data-mode="4"]');
+  await applyLook(BLACKWALL_LOOK);
   // Fade and wake at zero and unkeyed, so the surface half computes 0 and cannot
   // mask the trails half by being the larger of the two.
   await page.evaluate(`globalThis.__kinect.params.apply(${src({ fade: 0, wake: 0 })})`);
@@ -1402,7 +1421,7 @@ console.log('\n== 3c. a pre-roll whose window is dearer than its target ==');
     'and landed somewhere else, which is what makes the equality above about something',
     show(apart));
   await setTracks({});
-  await page.evaluate('globalThis.__kinect.setMode(0)');
+  await applyLook(RGB_LOOK);
   await settle();
 }
 
@@ -1475,7 +1494,7 @@ console.log('\n== 4b. a hold freezes source time, and the image with it ==');
   // persistence stays on, so the surface memory is still in the picture and this
   // is not a claim about a renderer that had stopped working. The other side of
   // that - that the program-time terms *do* keep moving - is the second half below.
-  await page.click('#modes button[data-mode="4"]');
+  await applyLook(BLACKWALL_LOOK);
   const TIME_FREE = { scan: 0, grain: 0, scanlines: 0, rgbSplit: 0, glitch: 0, noise: 0, trails: 0 };
   await page.evaluate(`globalThis.__kinect.params.apply(${src(TIME_FREE)})`);
   await settle();
@@ -1576,7 +1595,7 @@ console.log('\n== 4c. the pre-roll asks how far back the curve covers a source s
   const rows = [];
   for (const c of CASES) {
     await setRetime(c.curve);
-    await page.click('#modes button[data-mode="4"]');
+    await applyLook(BLACKWALL_LOOK);
     await settle();
     const got = await page.evaluate(`(() => {
       const k = globalThis.__kinect;
@@ -1628,7 +1647,7 @@ console.log('\n== 4d. a seek across a ramp and across a hold reproduces its play
   for (const [label, curve, target] of [['ramp', RAMP, 6.1], ['hold', HOLD, 6.0]]) {
     await setRetime(curve);
     await setTracks(LOOK_TRACKS);
-    await page.click('#modes button[data-mode="4"]');
+    await applyLook(BLACKWALL_LOOK);
     await settle();
 
     const played = await arm(`${label}-played`, 'playback', target);
@@ -1681,7 +1700,7 @@ console.log('\n== 4d. a seek across a ramp and across a hold reproduces its play
 console.log('\n== 4e. the retime curve moving while a seek is fetching ==');
 {
   await setTracks({});
-  await page.click('#modes button[data-mode="4"]');
+  await applyLook(BLACKWALL_LOOK);
   // Drained before the curve is touched. Selecting a mode schedules an accurate
   // seek, and rewriting the curve while *that* one is fetching is the same
   // contention this section is about - manufactured by the check rather than by
@@ -1984,7 +2003,7 @@ console.log('\n== 5. undo restores the document and never the view ==');
 {
   await setRetime(FLAT);
   await setTracks({});
-  await page.click('#modes button[data-mode="0"]');
+  await applyLook(RGB_LOOK);
   await settle();
   await page.evaluate('globalThis.__kinect.keyframes.undo.begin()');
 
@@ -2113,26 +2132,52 @@ console.log('\n== 5. undo restores the document and never the view ==');
     `${undone.camBefore} -> ${undone.camAfter}`);
 
   // (f) the look really comes back, not just the key list.
-  const modeUndo = await page.evaluate(`(async () => {
+  //
+  // **Half of what this row used to assert has lost its subject rather than its
+  // anchor, and it is deleted rather than re-pointed.** It read the clip's mode either
+  // side of a click on the Blackwall button and asserted that selecting a mode was one
+  // undo level "not twelve" - because `setMode(4)` wrote the mode plus twelve look
+  // values, and the whole danger was that thirteen writes in one gesture might not come
+  // back together. There is no mode and no bundled write: picking a reading writes one
+  // registry parameter, which undoes exactly like the slider beside it. Re-anchoring
+  // this onto whatever is nearest would have kept a green row that tested nothing.
+  //
+  // What survives is the property that outlived the mode - a bulk write is one level,
+  // and undo restores every value in it - and its subject is a preset now.
+  //
+  // Driven through `applyStoredPreset`, which is the door the apply button uses, and
+  // **not** through the `applyPreset` underneath it. That distinction cost a red row
+  // to find and is worth the sentence: `applyPreset` writes the values and commits
+  // nothing, so a first draft of this measured 13 values moved in **0** undo levels
+  // and read exactly like a program that had lost its undo. The commit belongs to the
+  // gesture rather than to the write - which is right, because a track writing values
+  // every frame must not push a level - so a check that reaches past the gesture is
+  // asserting against a path no user takes.
+  const bulkUndo = await page.evaluate(`(async () => {
     const k = globalThis.__kinect;
+    const LOOK = ${JSON.stringify(BLACKWALL_LOOK)};
+    const watched = Object.keys(LOOK);
+    const read = () => Object.fromEntries(watched.map((n) => [n, k.params.get(n)]));
     k.keyframes.undo.begin();
-    const before = { mode: k.mode(), bloom: k.params.get('bloom'), trails: k.params.get('trails') };
-    document.querySelector('#modes button[data-mode="4"]').click();
+    const before = read();
+    k.library.applyStoredPreset({ name: 'keyframe-check', rev: 'sha256:0', body: { version: k.library.PROJECT_VERSION, values: LOOK } });
     await k.timeline.settled();
-    const after = { mode: k.mode(), bloom: k.params.get('bloom'), trails: k.params.get('trails') };
+    const after = read();
     const pushed = k.keyframes.undo.depth();
     k.keyframes.undo.pop();
     await k.timeline.settled();
-    const back = { mode: k.mode(), bloom: k.params.get('bloom'), trails: k.params.get('trails') };
-    return { before, after, back, pushed };
+    return { before, after, back: read(), pushed, watched: watched.length };
   })()`);
-  console.log(`  selecting Blackwall wrote bloom ${modeUndo.before.bloom} -> ${modeUndo.after.bloom} `
-    + `and trails ${modeUndo.before.trails} -> ${modeUndo.after.trails} in ${modeUndo.pushed} level; `
-    + `undo restored ${modeUndo.back.bloom} / ${modeUndo.back.trails} at mode ${modeUndo.back.mode}`);
-  check(modeUndo.pushed === 1, 'selecting a mode is one level, not twelve', `${modeUndo.pushed}`);
-  check(JSON.stringify(modeUndo.back) === JSON.stringify(modeUndo.before),
-    'and undo restores the mode and every value it wrote together',
-    `${JSON.stringify(modeUndo.back)} against ${JSON.stringify(modeUndo.before)}`);
+  const moved = Object.keys(bulkUndo.before).filter((n) => bulkUndo.before[n] !== bulkUndo.after[n]);
+  console.log(`  applying the Blackwall look moved ${moved.length} of ${bulkUndo.watched} values `
+    + `in ${bulkUndo.pushed} level: ${moved.map((n) => `${n} ${bulkUndo.before[n]}->${bulkUndo.after[n]}`).join(' ')}`);
+  // The control for the two rows below, and it is why `moved` is counted rather than
+  // assumed: a preset that wrote nothing would undo perfectly and pass both of them.
+  check(moved.length > 0, 'applying a look actually moves values', `${moved.length} moved`);
+  check(bulkUndo.pushed === 1, `and it is one undo level, not ${bulkUndo.watched}`, `${bulkUndo.pushed}`);
+  check(JSON.stringify(bulkUndo.back) === JSON.stringify(bulkUndo.before),
+    'and undo restores every value it wrote, together',
+    `${JSON.stringify(bulkUndo.back)} against ${JSON.stringify(bulkUndo.before)}`);
 }
 
 // ================================= 6. the two surfaces, and where the furniture is
@@ -2295,7 +2340,7 @@ console.log('\n== 6e. keying from the panel, and dragging a handle ==');
 {
   await setRetime(FLAT);
   await setTracks({});
-  await page.click('#modes button[data-mode="4"]');
+  await applyLook(BLACKWALL_LOOK);
   await settle();
 
   // (a) the keyframe button, clicked.
@@ -2446,7 +2491,7 @@ console.log('\n== 6e. keying from the panel, and dragging a handle ==');
 console.log('\n== 6c. the furniture draws outside the frame ==');
 {
   await setTracks({ camera: PATH });
-  await page.click('#modes button[data-mode="4"]');
+  await applyLook(BLACKWALL_LOOK);
   await settle();
   const shots = await page.evaluate(`(async () => {
     const k = globalThis.__kinect;

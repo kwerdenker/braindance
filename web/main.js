@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { PROJECT_VERSION } from './format.js';
+import { PROJECT_VERSION, versionRefusal } from './format.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -343,7 +343,39 @@ const uniforms = {
   regionMask: { value: 0 },
   glitch: { value: 0 },
   time: { value: 0 },
-  mode: { value: 0 },
+  // The five readings of the take, as weights rather than as a mode. Each one is a
+  // complete answer to "what colour is this point", and the fragment stage mixes
+  // whichever are non-zero - so colour and range compose instead of excluding one
+  // another, and a reading can move under the playhead like every other look value.
+  // RGB alone is the boot state, which is what the old `mode: 0` meant.
+  readRgb: { value: 1 },
+  readDepth: { value: 0 },
+  readGhost: { value: 0 },
+  readContour: { value: 0 },
+  readBlackwall: { value: 0 },
+  // What each reading is made of, which used to be literals inside its branch. The
+  // values here are the literals they replaced, so a build that somehow reached a
+  // frame before `params.reset()` would draw what the old one drew - and every one of
+  // them is what makes the equality `registry-check` hashes against the pre-reading
+  // revision hold. A default that drifted off its literal is that comparison's red
+  // row rather than something anybody has to eyeball.
+  rgbSaturation: { value: 1 },
+  depthGamma: { value: 1 },
+  ghostRim: { value: 0.7 },
+  ghostFill: { value: 0.35 },
+  contourBands: { value: 12 },
+  // One parameter, two uniforms, and it is a rounding measurement rather than a
+  // preference. The band edges are the width either side of the middle of the band,
+  // and computing `0.5 - contourWidth` in the shader does that arithmetic in float32:
+  // `f32(0.5) - f32(0.08)` is 0.42000001668930054, where the literal `0.42` this
+  // replaces is 0.41999998688697815. Those are different floats, so the shader form
+  // would move every contour frame by a hair and redden the readContour row of the
+  // comparison against the old build for a reason that has nothing to do with the
+  // feature. Done here in double and rounded once on the way to the GPU, both edges
+  // land on exactly the floats the literals did.
+  contourLo: { value: 0.42 },
+  contourHi: { value: 0.58 },
+  blackwallSweep: { value: 0.28 },
   denoise: { value: 1 },
   edgeTol: { value: 120 },
   hasColor: { value: 0 },
@@ -637,7 +669,10 @@ precision highp float;
 uniform sampler2D colorPrev, colorCurr;
 uniform float opacity, exposure, nearClip, farClip, mixT, time;
 uniform float scanAmount, rimAmount, thermal, edges;
-uniform int mode, hasColor, softEdge;
+uniform float readRgb, readDepth, readGhost, readContour, readBlackwall;
+uniform float rgbSaturation, depthGamma, ghostRim, ghostFill;
+uniform float contourBands, contourLo, contourHi, blackwallSweep;
+uniform int hasColor, softEdge;
 
 in vec2 vUv;
 in float vDepth;
@@ -692,58 +727,168 @@ void main() {
   vec3 rgb = hasColor == 1
     ? mix(texture(colorPrev, vUv).rgb, texture(colorCurr, vUv).rgb, mixT)
     : vec3(0.7);
-  vec3 col;
-  float alpha = opacity;
 
-  if (mode == 0) {
-    col = rgb;
-  } else if (mode == 1) {
-    col = depthRamp(1.0 - t);
-  } else if (mode == 2) {
+  // Saturation on the camera image, at the source rather than after the blend. It is
+  // the colour reading's own control - the one reading that had none - so it belongs
+  // where the colour is read, and the treatments that take a luminance off the colour
+  // are unaffected by construction: this rotates the colour about its own luminance,
+  // which is the quantity they read.
+  //
+  // Guarded rather than applied unconditionally, and the guard is what makes the
+  // default exact rather than nearly exact. A mix at 1.0 is x plus one times y minus x
+  // on hardware that contracts it into a multiply-add, and x plus y minus x is not
+  // always bit-identical to y - so an unguarded identity would move the pixels of every
+  // look ever authored by a hair, which is a whole preset library drifting to buy
+  // nothing. The branch is on a uniform, so it is coherent across the draw and a look
+  // that does not saturate pays for no saturation, the same way each reading's own
+  // block is guarded on its weight.
+  if (rgbSaturation != 1.0) {
+    float rgbLum = dot(rgb, vec3(0.299, 0.587, 0.114));
+    rgb = mix(vec3(rgbLum), rgb, rgbSaturation);
+  }
+  // The five readings, summed by weight rather than selected by an integer. Each
+  // block answers "what colour is this point and how solid is it", and the two
+  // answers are accumulated separately because they do not combine the same way:
+  // a colour is a value to average, and an alpha factor is a coefficient on
+  // opacity that the RGB and Depth readings do not write at all.
+  //
+  // Normalise-by-sum rather than a chain of mix(), and that is the whole reason
+  // this rewrite is safe. A single reading at 1.0 comes out of here as
+  // x * 1.0 / 1.0, which IEEE multiplication and division both leave exactly
+  // alone, so every look authored against the old five-way branch renders the
+  // pixels it always did - proven rather than argued, by hashing the framebuffer
+  // of each reading here against the same mode on the commit before this one.
+  // A chain of mix() would be a different arithmetic expression for the same
+  // intent and would drift in the last bits, which is a whole preset library
+  // quietly moving.
+  //
+  // Each block is guarded on its own weight. That is a cost decision and not a
+  // semantic one - adding anything times 0.0 adds nothing - but the branch is
+  // uniform, so it is coherent across the entire draw and a preset using one
+  // reading pays for one reading.
+  vec3 col = vec3(0.0);
+  float alphaFactor = 0.0;
+  float readSum = 0.0;
+
+  if (readRgb > 0.0) {
+    col += rgb * readRgb;
+    alphaFactor += readRgb;
+    readSum += readRgb;
+  }
+
+  if (readDepth > 0.0) {
+    // The gamma bends where the ramp's colours sit inside the clip range rather than
+    // moving its ends: at 1.0 it is the ramp this always drew, under 1 the far end of
+    // the range gets more of the ramp and over 1 the near end does. Which is the
+    // control the depth reading wanted, since where the subject stands inside near/far
+    // decides whether the interesting half of the ramp lands on them at all.
+    //
+    // Two statements for one sum, and the duplication is the measurement rather than an
+    // oversight. Three forms of this line were hashed against the build from before the
+    // readings existed, and they produced three different images of the same reading at
+    // a default that is exactly the literal it replaced:
+    //
+    //   depthRamp(pow(1.0 - t, depthGamma))            frame 0 2cf348152757
+    //   depthRamp(g == 1.0 ? 1.0 - t : pow(...))       frame 0 73d0479d20f9
+    //   depthRamp(1.0 - t), reached by the branch      frame 0 885c07e968a6, which is the
+    //                                                 old build's own hash
+    //
+    // The first is the ordinary trap: raising a number to the power of one is the
+    // mathematical identity and not the arithmetic one, because this GPU evaluates it as
+    // exp2 of the log2 and it comes back a few last-bit values away. The second is the
+    // one worth writing down - handing the ramp a value through a variable is not the
+    // same as handing it the expression, even when the value is bit-identical. The ramp
+    // inlines to a mix by the argument over 0.33, so with the subtraction inside the call
+    // the compiler can contract the two into one multiply-add and with a variable in its
+    // place it does not. So the default path here has to *be* the old line rather than
+    // compute what it computed. Ghost's exponent needed no guard at all, which is the
+    // other half of the measurement: substituting a uniform for a literal exponent is
+    // exact, and it is asking for the power of one that is not.
+    if (depthGamma == 1.0) {
+      col += depthRamp(1.0 - t) * readDepth;
+    } else {
+      col += depthRamp(pow(1.0 - t, depthGamma)) * readDepth;
+    }
+    alphaFactor += readDepth;
+    readSum += readDepth;
+  }
+
+  if (readGhost > 0.0) {
     float lum = dot(rgb, vec3(0.299, 0.587, 0.114));
-    float rim = pow(vEdge, 0.7);
-    col = mix(vec3(0.20, 0.45, 0.75) * (0.35 + lum), vec3(0.75, 0.95, 1.0), rim);
-    alpha *= 0.25 + 0.75 * rim + 0.25 * lum;
-  } else if (mode == 3) {
-    float bands = fract(vDepth * 12.0);
-    float line = smoothstep(0.42, 0.5, bands) * smoothstep(0.58, 0.5, bands);
-    col = mix(depthRamp(1.0 - t) * 0.18, vec3(1.0), line);
-    alpha *= 0.15 + 0.85 * line;
-  } else {
+    // Two controls over one shell: the exponent decides how tightly the glow hugs a
+    // depth discontinuity, and the fill is how much of the shell's blue is there before
+    // any luminance arrives - which is what a colourless surface facing the sensor
+    // draws, and at 0 the reading collapses to edges alone.
+    float rim = pow(vEdge, ghostRim);
+    col += mix(vec3(0.20, 0.45, 0.75) * (ghostFill + lum), vec3(0.75, 0.95, 1.0), rim) * readGhost;
+    alphaFactor += (0.25 + 0.75 * rim + 0.25 * lum) * readGhost;
+    readSum += readGhost;
+  }
+
+  if (readContour > 0.0) {
+    // Bands per metre, and how much of each band the line fills. The two edges arrive
+    // as separate uniforms because subtracting the width from a half here would round
+    // differently from the literal it replaces - see the note beside them - so the
+    // width is taken either side of the middle on the CPU.
+    float bands = fract(vDepth * contourBands);
+    float line = smoothstep(contourLo, 0.5, bands) * smoothstep(contourHi, 0.5, bands);
+    col += mix(depthRamp(1.0 - t) * 0.18, vec3(1.0), line) * readContour;
+    alphaFactor += (0.15 + 0.85 * line) * readContour;
+    readSum += readContour;
+  }
+
+  if (readBlackwall > 0.0) {
     // Blackwall: crimson volume, surfaces reading as containment rather than skin.
     // Depth discontinuities are where the wall "sees" you, so edges burn hottest.
     float lum = dot(rgb, vec3(0.299, 0.587, 0.114));
     vec3 deep = vec3(0.28, 0.010, 0.035);
     vec3 hot  = vec3(1.00, 0.115, 0.140);
-    col = mix(deep, hot, pow(1.0 - t, 1.6));
+    vec3 bw = mix(deep, hot, pow(1.0 - t, 1.6));
 
     float rim = pow(vEdge, 0.55);
-    col = mix(col, vec3(0.95, 0.34, 0.22), rim * rimAmount);
+    bw = mix(bw, vec3(0.95, 0.34, 0.22), rim * rimAmount);
 
     // A scan plane sweeping through depth, the ICE probing outward. Kept narrow
     // and tinted rather than white - a wide hot band reads as a light leak
     // dragging across the geometry instead of something scanning it.
-    float sweep = fract(vDepth * 0.55 - time * 0.28);
+    // The speed is a parameter and the spacing is not, deliberately: a scan plane is
+    // one plane moving through the room, and how fast it travels is the thing that
+    // reads as menace or as machinery. At 0 it stands still, which is a wall that has
+    // stopped looking - and because it keyframes, it can stop and start.
+    float sweep = fract(vDepth * 0.55 - time * blackwallSweep);
     float scan = smoothstep(0.988, 1.0, sweep);
-    col += vec3(0.10, 0.62, 0.78) * scan * scanAmount;
+    bw += vec3(0.10, 0.62, 0.78) * scan * scanAmount;
 
     // Torn bands flare cyan where the feed shears.
-    col += vec3(0.2, 0.9, 1.0) * vGlitch;
+    bw += vec3(0.2, 0.9, 1.0) * vGlitch;
 
-    col *= 0.55 + 0.75 * lum;
-    alpha *= 0.30 + 0.70 * rim * rimAmount + 0.45 * scan * scanAmount;
+    bw *= 0.55 + 0.75 * lum;
 
     // Shed points run hotter than the surface they left, so a wake reads as the
     // wall having noticed something rather than as leftover geometry.
-    col = mix(col, vec3(1.00, 0.42, 0.20), vGhost * 0.55);
+    bw = mix(bw, vec3(1.00, 0.42, 0.20), vGhost * 0.55);
+
+    col += bw * readBlackwall;
+    alphaFactor += (0.30 + 0.70 * rim * rimAmount + 0.45 * scan * scanAmount) * readBlackwall;
+    readSum += readBlackwall;
   }
 
-  // Both of these sit *after* the mode chain and modify whatever it produced, rather
-  // than living inside one of its branches. A term written into a branch is inert in
+  // Every weight at zero draws nothing, and that is the honest answer rather than
+  // a case to clamp away: the panel is showing five zeros and the frame agrees
+  // with it. The guard is on the division alone, so the alpha carries the emptiness
+  // out instead of a NaN doing it.
+  float norm = readSum > 0.0 ? 1.0 / readSum : 0.0;
+  col *= norm;
+  float alpha = opacity * alphaFactor * norm;
+
+  // Both of these sit *after* the blend and modify whatever it produced, rather than
+  // living inside one of the readings. A term written into a reading is inert in
   // every other one, which is both a worse feature - these are meant to compose with
-  // the reading you are working in - and a hole in the proof: registry-check runs
-  // its whole sweep in Blackwall, so a term reachable only from RGB would be recorded
-  // as a parameter that cannot touch a pixel.
+  // whatever you are working in - and a hole in the proof: a term reachable only from
+  // one reading is only exercised by a sweep arm that happens to select that reading,
+  // and would otherwise be recorded as a parameter that cannot touch a pixel. That
+  // argument is what the readings above have now been rebuilt around, so the rule it
+  // states applies to the readings themselves: registry-check sweeps each of them.
   if (thermal > 0.0) {
     // Luminance where there is a colour camera, depth where there is not. A thermal
     // picture is a reading of a signal, and with the colour stream off the only signal
@@ -1306,6 +1451,100 @@ const cropReach = (maxDepth = 9.5) => {
   };
 };
 
+// The panel's groups, in the order they appear down the panel, and nothing about
+// which parameters are in them - that is the `group` field on each registry entry
+// below, so a parameter joins a group by naming it rather than by being added to a
+// second list here that could disagree with the first.
+//
+// The headings and the notes moved here out of `index.html` along with the rows they
+// belong to. A group's design argument belongs beside the group, and the group is
+// now this entry.
+//
+// `lookgroup` is the class the CSS hides on the shooting surface until `extended
+// settings` is pressed, and it also decides where the group lands: everything
+// without it goes above that button, everything with it below. That is one property
+// rather than two, because it is one question - is this group part of the grade, or
+// is it something you need while shooting - and the two Reading groups answer it the
+// way the five mode buttons they replaced did. Which reading you are shooting
+// against is the whole reason the preset library is reachable from the recorder at
+// all, so those two stay on both surfaces.
+//
+// Which means the order below is read within each of those two runs rather than
+// straight down the panel: `Reading · detail` sits beside the two groups it belongs
+// with here and renders first among the grade's, because it is a look group and they
+// are not.
+const PANEL_GROUPS = [
+  // The five readings of the take, which were five buttons and one integer uniform
+  // until they became five look parameters. They mix rather than exclude, so this is
+  // sliders and not a segmented control: RGB at 0.6 against depth at 0.4 is a 60/40
+  // blend of the camera image and the range ramp, and each one keyframes, so a clip
+  // can dissolve from one reading into another under the playhead.
+  //
+  // Source is what the point is coloured *by* and treatment is what is then made of
+  // it, which is the axis worth seeing on the panel - picking a treatment used to
+  // mean picking its source with it and there was no way to say otherwise.
+  { key: 'source', label: 'Reading · source' },
+  { key: 'treatment', label: 'Reading · treatment' },
+  // What each reading is *made of*, rather than which reading you are in. Every one of
+  // these was a literal in the fragment shader, so a reading was a picture you could
+  // select and not adjust - and because they are ordinary registry parameters they
+  // keyframe, so the band spacing or the rim falloff can move under the playhead.
+  //
+  // Below the extended button rather than beside the two groups above, and the
+  // shooting surface is what decides that: seven more sliders where the recorder wants
+  // record, mark, remaining time and a preview range would push the crop controls off
+  // the bottom of a laptop panel to buy nothing anybody needs before a take. Which
+  // reading you are shooting against is a shooting decision; how wide its bands are is
+  // grading.
+  { key: 'detail', label: 'Reading · detail', lookgroup: true },
+  // Framing: what you can see, and where you are seeing it from. `sensor view` is
+  // navigation and writes nothing - distinct from `look through it` in the camera
+  // group, which adopts the program camera whose pose is document state.
+  {
+    key: 'framing',
+    label: 'Framing (metres)',
+    before: () => [panelButtonRow('camSensor', 'sensor view')],
+    after: () => [
+      panelButtonRow('cropReset', 'open the box'),
+      panelNote('cropNote', 'The top-down draws this box in x and z. It has no y, so the '
+        + 'bottom and top faces do not show there — judge those in the picture.'),
+      panelNote('recRange', 'preview only'),
+    ],
+  },
+  // Below here is the grade, and every group is one stage of the pipeline rather than
+  // one subject heading. The order is the order the image is built in: what the depth
+  // signal is conditioned into, where the points are moved to, how they are drawn,
+  // what colour they take, what persists between frames, and what the optics do to
+  // the result.
+  { key: 'conditioning', label: 'Depth conditioning', lookgroup: true },
+  { key: 'displacement', label: 'Displacement', lookgroup: true },
+  // One region in the room, read three ways: it displaces, it scrambles, and it
+  // masks. Everything here is metres in the sensor frame, so a look holds at any
+  // output size without being referred to 1080p the way the screen-space terms are.
+  // Half-extents at zero with a radius is a sphere; raise them and it becomes a
+  // rounded box; take two to zero and it is a capsule. No shape selector, because an
+  // enum could not keyframe and these sliders can.
+  { key: 'region', label: 'Region (metres)', lookgroup: true },
+  { key: 'points', label: 'Points', lookgroup: true },
+  { key: 'colour', label: 'Colour & tone', lookgroup: true },
+  // The three terms that accumulate across frames, together. Fade and wake are the
+  // surface memory and trails is the afterimage buffer; they were two groups apart
+  // while doing one thing, which is how a look gets tuned twice.
+  { key: 'time', label: 'Time (ms)', lookgroup: true },
+  { key: 'optical', label: 'Optical', lookgroup: true },
+  // The two parameters that are not part of the clip, in the one group that says so.
+  // They are tagged `view` in the registry, they get no keyframe control and no
+  // preset carries them - and while they sat inside look groups that read as an
+  // oversight rather than as the split it is.
+  {
+    key: 'viewer',
+    label: 'Viewer',
+    lookgroup: true,
+    after: () => [panelNote('viewNote', 'Not saved with the clip and not exported: these '
+      + 'change what you are looking at, not what the frame is.')],
+  },
+];
+
 const PARAMS = {
   // Pixels at 1080p, not pixels. The unit changed exactly once, when the screen-
   // space terms went resolution-relative, and every value here changed with it:
@@ -1315,16 +1554,22 @@ const PARAMS = {
   // preset that snapped to 8.0 would leave the rebase 1.2% out for no reason
   // anyone could later find.
   pointSize: { def: 9, min: 0.5, max: 64, step: 0.1, kind: 'scalar', tag: 'look',
+    group: 'points', label: 'size',
     apply: (v) => { uniforms.pointSize.value = v; } },
   opacity: { def: 1, min: 0.05, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'points', label: 'opacity',
     apply: (v) => { uniforms.opacity.value = v; } },
   exposure: { def: 1.15, min: 0.05, max: 6, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'colour', label: 'brightness',
     apply: (v) => { uniforms.exposure.value = v; } },
-  additive: { def: false, kind: 'step', tag: 'look', apply: setAdditive },
+  additive: { def: false, kind: 'step', tag: 'look',
+    group: 'points', label: 'additive glow', apply: setAdditive },
 
   near: { def: 0.05, min: 0.05, max: 9.5, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'framing', label: 'near',
     apply: (v) => { uniforms.nearClip.value = v; } },
   far: { def: 6, min: 0.05, max: 9.5, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'framing', label: 'far',
     apply: (v) => { uniforms.farClip.value = v; } },
 
   // The other four faces. Same units and the same step as the two above, because they
@@ -1333,17 +1578,23 @@ const PARAMS = {
   // the sensor's own reach at boot rather than left as a number somebody once worked
   // out; see the assertion below the registry.
   left: { def: -CROP_LIMIT, min: -CROP_LIMIT, max: CROP_LIMIT, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'framing', label: 'left',
     apply: (v) => { uniforms.cropL.value = v; } },
   right: { def: CROP_LIMIT, min: -CROP_LIMIT, max: CROP_LIMIT, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'framing', label: 'right',
     apply: (v) => { uniforms.cropR.value = v; } },
   bottom: { def: -CROP_LIMIT, min: -CROP_LIMIT, max: CROP_LIMIT, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'framing', label: 'bottom',
     apply: (v) => { uniforms.cropB.value = v; } },
   top: { def: CROP_LIMIT, min: -CROP_LIMIT, max: CROP_LIMIT, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'framing', label: 'top',
     apply: (v) => { uniforms.cropT.value = v; } },
 
   interpolate: { def: true, kind: 'step', tag: 'look',
+    group: 'conditioning', label: 'interpolate frames',
     apply: (on) => { uniforms.interpolate.value = on ? 1 : 0; } },
   snapDelta: { def: 250, min: 20, max: 1200, step: 10, kind: 'scalar', tag: 'look',
+    group: 'conditioning', label: 'snap mm',
     apply: (v) => { uniforms.snapDelta.value = v; } },
 
   // Both drive the same memory: fade is the honest cross-fade, wake is how much
@@ -1352,8 +1603,10 @@ const PARAMS = {
   // ghost half of the geometry is left out of the draw range entirely when neither
   // can shed, so a look with no persistence costs nothing to have the option.
   fade: { def: 120, min: 0, max: 1500, step: 10, kind: 'scalar', tag: 'look',
+    group: 'time', label: 'fade',
     apply: (v) => { uniforms.fadeTime.value = v / 1000; updateDrawRange(); } },
   wake: { def: 0, min: 0, max: 4000, step: 10, kind: 'scalar', tag: 'look',
+    group: 'time', label: 'wake',
     apply: (v) => { uniforms.wakeTime.value = v / 1000; updateDrawRange(); } },
 
   // The turbulence field, in world units throughout: amplitude in metres, scale in
@@ -1362,10 +1615,13 @@ const PARAMS = {
   // referred to 1080p - the same values draw the same displacement at every output
   // size because they describe the room rather than the frame.
   noise: { def: 0, min: 0, max: 1, step: 0.005, kind: 'scalar', tag: 'look',
+    group: 'displacement', label: 'turbulence',
     apply: (v) => { uniforms.noise.value = v; } },
   noiseScale: { def: 3, min: 0.2, max: 12, step: 0.1, kind: 'scalar', tag: 'look',
+    group: 'displacement', label: 'grain m',
     apply: (v) => { uniforms.noiseScale.value = v; } },
   noiseSpeed: { def: 0.7, min: 0, max: 3, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'displacement', label: 'speed',
     apply: (v) => { uniforms.noiseSpeed.value = v; } },
 
   // One region, authored once and read three ways. Three scalars rather than a new
@@ -1381,78 +1637,188 @@ const PARAMS = {
   // the preset path already handles by selecting parameters individually rather than
   // taking a whole tag.
   regionX: { def: 0, min: -3, max: 3, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'region', label: 'x',
     apply: (v) => { uniforms.regionCentre.value.x = v; } },
   regionY: { def: 0, min: -3, max: 3, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'region', label: 'y',
     apply: (v) => { uniforms.regionCentre.value.y = v; } },
   regionZ: { def: -2, min: -6, max: 0, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'region', label: 'z',
     apply: (v) => { uniforms.regionCentre.value.z = v; } },
   regionW: { def: 0, min: 0, max: 3, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'region', label: 'width',
     apply: (v) => { uniforms.regionHalf.value.x = v; } },
   regionH: { def: 0, min: 0, max: 3, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'region', label: 'height',
     apply: (v) => { uniforms.regionHalf.value.y = v; } },
   regionD: { def: 0, min: 0, max: 3, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'region', label: 'depth',
     apply: (v) => { uniforms.regionHalf.value.z = v; } },
   regionRound: { def: 0.5, min: 0, max: 2, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'region', label: 'radius',
     apply: (v) => { uniforms.regionRound.value = v; } },
   regionSoft: { def: 0.2, min: 0.01, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'region', label: 'falloff',
     apply: (v) => { uniforms.regionSoft.value = v; } },
 
   // The three effects. Push and mask are signed because both questions have two
   // answers - bulge or pinch, hide the inside or hide everything else - and a sign is
   // one slider where a direction toggle would be a second parameter that cannot lerp.
   regionPush: { def: 0, min: -1, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'region', label: 'push',
     apply: (v) => { uniforms.regionPush.value = v; } },
   regionNoise: { def: 0, min: 0, max: 1, step: 0.005, kind: 'scalar', tag: 'look',
+    group: 'region', label: 'scramble',
     apply: (v) => { uniforms.regionNoise.value = v; } },
   regionMask: { def: 0, min: -1, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'region', label: 'mask',
     apply: (v) => { uniforms.regionMask.value = v; } },
   glitch: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'displacement', label: 'glitch',
     apply: (v) => { uniforms.glitch.value = v; } },
   // Still what it always was - orbit the view you are looking at - and still view
   // state rather than an edit: the controls advance it on the program delta the
   // render loop hands them, so the same orbit renders the same way at any output
   // frame rate and holds still when the stream stalls.
   spin: { def: false, kind: 'step', tag: 'view',
+    group: 'viewer', label: 'auto-orbit',
     apply: (on) => { controls.autoRotate = on; } },
 
+  // The five readings of the take. These were a `mode` - an integer uniform with five
+  // hardcoded shader branches, held outside the registry on the argument that
+  // selecting one rewrote twelve other look values and so a mode key would stomp
+  // every other track at the instant it fired. That argument was about the bundling
+  // rather than about the reading: `setMode(4)` applied a hardcoded BLACKWALL preset
+  // on the way past, which is why picking a reading and picking a look were the same
+  // gesture and neither could be had without the other. Unbundled, the objection goes
+  // with it, and what is left is five ordinary scalars.
+  //
+  // Which is what `thermal` and `edges` below already argued for in this same file:
+  // continuous rather than another branch, because a shading idea expressed as a mode
+  // is refused during evaluation as a user action and can therefore never move under
+  // the playhead. A clip can now dissolve from Depth into Blackwall, which is the
+  // capability the mode's existence was costing.
+  //
+  // They mix rather than exclude - the shader normalises by their sum - so `readRgb`
+  // at 0.6 against `readDepth` at 0.4 is a 60/40 blend of the camera image and the
+  // range ramp, and there is no separate source selector because there is nothing
+  // left for one to do.
+  // `reading: true` marks them as a set the rest of the program can ask for, rather
+  // than leaving five names to be spelled out again wherever the set is needed. A
+  // sixth reading added below is in that set by existing, which is the difference
+  // between enumerating and listing - and this file has been bitten by the listing
+  // version often enough to be worth the one extra field.
+  readRgb: { def: 1, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look', reading: true,
+    group: 'source', label: 'colour',
+    apply: (v) => { uniforms.readRgb.value = v; } },
+  readDepth: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look', reading: true,
+    group: 'source', label: 'depth',
+    apply: (v) => { uniforms.readDepth.value = v; } },
+  readGhost: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look', reading: true,
+    group: 'treatment', label: 'ghost',
+    apply: (v) => { uniforms.readGhost.value = v; } },
+  readContour: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look', reading: true,
+    group: 'treatment', label: 'contour',
+    apply: (v) => { uniforms.readContour.value = v; } },
+  readBlackwall: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look', reading: true,
+    group: 'treatment', label: 'blackwall',
+    apply: (v) => { uniforms.readBlackwall.value = v; } },
+
+  // The seven constants each reading was built out of. Every default is exactly the
+  // literal it replaces, and that is not tidiness: `registry-check --against` is pinned
+  // to the commit before the readings existed and hashes each reading at 1.0 against
+  // the mode it replaced, forever. So a default that drifted off its literal fails as
+  // that reading's framebuffer no longer matching a build from before this feature -
+  // which is a far sharper signal than any threshold on a tile mean, and it is why
+  // these are declared as the numbers they were rather than as numbers somebody liked.
+  //
+  // They are per-reading on purpose, against the rule two paragraphs of the fragment
+  // shader make for `thermal` and `edges`: those two sit after the blend because they
+  // are ideas about a picture, and a term written into one reading is inert in every
+  // other. These seven are not that - a contour band spacing means nothing to the
+  // colour reading - so the reachability problem that rule exists to avoid is answered
+  // instead by the sweep running with all five readings live at once.
+  rgbSaturation: { def: 1, min: 0, max: 2, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'detail', label: 'saturation',
+    apply: (v) => { uniforms.rgbSaturation.value = v; } },
+  depthGamma: { def: 1, min: 0.25, max: 4, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'detail', label: 'gamma',
+    apply: (v) => { uniforms.depthGamma.value = v; } },
+  ghostRim: { def: 0.7, min: 0.2, max: 3, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'detail', label: 'ghost rim',
+    apply: (v) => { uniforms.ghostRim.value = v; } },
+  ghostFill: { def: 0.35, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'detail', label: 'ghost fill',
+    apply: (v) => { uniforms.ghostFill.value = v; } },
+  // Bands per metre of depth, so the spacing is a distance in the room rather than a
+  // number of stripes across whatever the clip range happens to be - the same reasoning
+  // the turbulence field is in cycles per metre for. Its step is 1 because a fraction of
+  // a band per metre is not a thing anybody is grading towards.
+  contourBands: { def: 12, min: 1, max: 60, step: 1, kind: 'scalar', tag: 'look',
+    group: 'detail', label: 'bands /m',
+    apply: (v) => { uniforms.contourBands.value = v; } },
+  // The one parameter here that is not a uniform: it is half the width of the drawn
+  // line, and the two band edges are computed from it in double precision on the way
+  // through, because doing that subtraction in the shader lands on a different float
+  // than the literal it replaces. The arithmetic is stated once, here, so a check can
+  // hold the pair against it rather than against a second copy of the sum.
+  contourWidth: { def: 0.08, min: 0.01, max: 0.4, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'detail', label: 'thickness',
+    apply: (v) => { uniforms.contourLo.value = 0.5 - v; uniforms.contourHi.value = 0.5 + v; } },
+  blackwallSweep: { def: 0.28, min: 0, max: 2, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'detail', label: 'wall sweep',
+    apply: (v) => { uniforms.blackwallSweep.value = v; } },
+
   scan: { def: 0, min: 0, max: 1.5, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'colour', label: 'scan',
     apply: (v) => { uniforms.scanAmount.value = v; } },
   rim: { def: 0.55, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'colour', label: 'rim',
     apply: (v) => { uniforms.rimAmount.value = v; } },
-  // Continuous rather than two more `mode` branches, which is what makes them
-  // keyframeable: a mode is refused during evaluation because it is a user action, so
-  // a shading idea expressed as a mode can never move under the playhead.
+  // The same argument the readings above were rebuilt on, made here first.
   thermal: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'colour', label: 'thermal',
     apply: (v) => { uniforms.thermal.value = v; } },
   edges: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'colour', label: 'edges',
     apply: (v) => { uniforms.edges.value = v; } },
   // Each post pass costs a full-screen read and write whether or not it changes
   // anything, so a zero value switches its pass off rather than running it as a
   // no-op. The three grade terms share one pass, so they gate it together.
   bloom: { def: 0, min: 0, max: 6, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'optical', label: 'bloom',
     apply: (v) => { bloom.strength = v; bloom.enabled = v > 0; } },
   trails: { def: 0, min: 0, max: 0.97, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'time', label: 'trails',
     apply: (v) => { afterimage.uniforms.damp.value = v; afterimage.enabled = v > 0; } },
   rgbSplit: { def: 0, min: 0, max: 6, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'optical', label: 'rgb split',
     apply: (v) => { grade.uniforms.rgbSplit.value = v; grade.enabled = gradeNeeded(); } },
   scanlines: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'optical', label: 'scanlines',
     apply: (v) => { grade.uniforms.scanlines.value = v; grade.enabled = gradeNeeded(); } },
   grain: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'optical', label: 'grain',
     apply: (v) => { grade.uniforms.grain.value = v; grade.enabled = gradeNeeded(); } },
 
   denoise: { def: true, kind: 'step', tag: 'look',
+    group: 'conditioning', label: 'cull speckle',
     apply: (on) => { uniforms.denoise.value = on ? 1 : 0; } },
   edgeTol: { def: 120, min: 10, max: 1200, step: 10, kind: 'scalar', tag: 'look',
+    group: 'conditioning', label: 'edge tol',
     apply: (v) => { uniforms.edgeTol.value = v; } },
   renderScale: { def: 100, min: 40, max: 200, step: 5, kind: 'scalar', tag: 'view',
+    group: 'viewer', label: 'render %',
     apply: (v) => { renderScale = v / 100; resize(); } },
 
   // The one composition parameter, and the only pose. The camera track reads its
   // kind off this entry rather than off a second table beside the path editor, and
   // the render path writes the evaluated pose through the same door every other
   // value goes through. Composition is edited in the world rather than on a
-  // slider, which is why it is the one parameter with no panel control - the
-  // buttons that key it are not named after it, so the check below still holds.
+  // slider, which is why it is the one parameter with no `group` and no `label`:
+  // the generator below builds a row for every parameter that names a group, so
+  // naming none is how this one stays off the panel. The buttons that key it live
+  // in a hand-written group and are not named after it.
   camera: { def: DEFAULT_POSE, kind: 'pose', tag: 'composition',
     apply: (p) => {
       programCamera.position.fromArray(p.position);
@@ -1463,6 +1829,46 @@ const PARAMS = {
       }
     } },
 };
+
+// The readings, read off the registry rather than written down a second time. Every
+// use of the set - the shader's uniforms, the panel group, the sweep arms a proof
+// tool builds - goes through this, so adding a sixth reading means adding one
+// registry entry and nothing else discovers it late.
+const READINGS = Object.keys(PARAMS).filter((n) => PARAMS[n].reading);
+
+/**
+ * Which of the five readings a document does not name, which is a refusal at both
+ * doors a document arrives through rather than at one of them.
+ *
+ * **The defaults are what make a partial document dangerous rather than incomplete.**
+ * Every loader resets to defaults first so that a key a file omits means the default
+ * instead of whatever the session left behind - and `readRgb` defaults to 1, so a
+ * project naming only `readBlackwall: 1` does not load as Blackwall. It loads as a
+ * 50/50 blend of Blackwall and the camera image, and one naming no reading at all
+ * loads as RGB. That is `format.js`'s whole argument for why version 3 is refused,
+ * reappearing inside a document that passes the version gate: a look rendering as
+ * something nobody authored, silently.
+ *
+ * Derived from the `reading` flag rather than listed, so a sixth reading is required
+ * here by existing. Everything that writes either kind of document writes all five -
+ * `serialiseProjectBody` and `presetFromCurrentLook` both go through the whole look
+ * tag, and the converter emits them - so a document missing them is hand-made or
+ * truncated, and neither is a thing to guess at.
+ */
+function missingReadings(values) {
+  return READINGS.filter((n) => !Object.hasOwn(values, n));
+}
+
+// Each reading needs a uniform of its own name, and the shader string was built
+// hundreds of lines above this, so a reading declared in the registry with no
+// uniform behind it would fail as a slider that moves nothing rather than as an
+// error. That is the shape this file keeps rejecting - a control that appears to
+// work - so it is an assertion, on the same reasoning as the age ceiling below.
+for (const name of READINGS) {
+  if (!Object.hasOwn(uniforms, name)) {
+    throw new Error(`the reading ${name} has no uniform: its slider would move nothing`);
+  }
+}
 
 // The surface memory's age ceiling has to cover the longest persistence the two
 // sliders can ask for, or a ray that stops swapping pins its age below its own
@@ -1651,7 +2057,33 @@ const params = {
    */
   apply(next) {
     refuseDuringEvaluation('a bulk write');
-    for (const [name, value] of Object.entries(next)) this.set(name, value);
+    // **Checked in full before anything is written**, because a bulk write that throws
+    // halfway leaves a look nobody authored. `set` writes as it walks, so a hand-edited
+    // `{ grain: 0.9, bloom: "loud" }` used to move grain, throw at bloom, and leave the
+    // page rendering a document that was reported as refused - and in no undo snapshot
+    // either, since the throw goes out past the `history.commit` that would have
+    // recorded it. Whatever caught the error then described a file that had already
+    // changed the image.
+    //
+    // `restoreProject` already knew this and pre-walked `params.spec` for it; the fix
+    // belongs here instead, because a name that exists is only half the question and
+    // every caller of the bulk door has the same problem. `normalise` is exactly "what
+    // `set` would store, without storing it", so this is the write's own rule asked
+    // early rather than a second opinion that could drift from it.
+    //
+    // The value is normalised twice on this path, once here and once inside `set`, and
+    // that is the price of keeping one write path rather than a bypass that skips the
+    // checks by construction. **Measured rather than assumed to be free**, because the
+    // repo has already been bitten by a last-bit difference in exactly this arithmetic:
+    // every scalar and step parameter swept at 41 points across its range, plus its
+    // bounds, its default, two off-grid values and two out-of-range ones - 2408 probes,
+    // and `normalise(normalise(x))` is `Object.is`-identical to `normalise(x)` on all of
+    // them. `contourWidth` was checked at full precision as well, since it is the one
+    // whose band edges are subtracted in double here to land on the float the shader
+    // literal had: 0.08 comes back 0.080000000000000001665 both times, and the derived
+    // edge 0.41999999999999998446 both times.
+    const checked = Object.entries(next).map(([name, value]) => [name, this.normalise(name, value)]);
+    for (const [name, value] of checked) this.set(name, value);
     return this;
   },
   /**
@@ -1673,37 +2105,213 @@ const params = {
   },
 };
 
-// The panel is a view on the registry and holds no parameter data of its own. The
-// range, the default and the readout are all stamped from here at boot, because
-// two copies of a slider's bounds is two things to keep in step and the HTML copy
-// is the one nothing headless can read.
-for (const [name, spec] of Object.entries(PARAMS)) {
-  const el = document.getElementById(name);
-  if (spec.tag === 'composition') {
-    // Composition is edited in the world - a camera path is the one thing you
-    // cannot judge from a graph - so it having grown a slider means the split has
-    // been crossed somewhere and is worth stopping over.
-    if (el) throw new Error(`composition parameter ${name} has a panel control`);
-    continue;
+// ------------------------------------------------------- the panel, generated
+//
+// One keyframe control per look parameter, built in the same pass as the row it sits
+// in. These two live here rather than beside the rest of the keyframe editor because
+// the generator below calls them, and a `const` read before its own declaration is a
+// TDZ error rather than a hoisted function - the painting half is still down with the
+// lanes, which is where the state it reads comes from.
+const keyButtons = new Map();
+
+function makeKeyButton(name) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'kf';
+  button.setAttribute('aria-label', `${name} keyframe`);
+  button.appendChild(document.createElement('i'));
+  button.addEventListener('click', () => toggleKey(name));
+  button.dataset.kf = 'none';
+  keyButtons.set(name, button);
+  return button;
+}
+
+// The panel is a view on the registry and holds no parameter data of its own, and it
+// is now built from the registry rather than written out beside it. A parameter used
+// to cost three edits that had to agree: an entry here, a hand-written row in
+// `index.html`, and - for a look parameter on the editor - a keyframe button patched
+// onto that row afterwards by a second loop, which lifted a checkbox out of its own
+// label to make room. Two places both building a row is the shape this file rejects
+// everywhere else, and the boot loop that used to sit here was the evidence: its job
+// was to throw when the registry and the markup disagreed. Generate the row and they
+// cannot.
+//
+// What is deliberately *not* generated is everything that is not a parameter. The
+// recorder's buttons, the camera group, the sensor and monitor controls and the
+// navigation stay in the markup, and the generated groups are inserted around them,
+// so the panel's order is the order this table declares rather than an accident of
+// two lists being appended.
+const panelNode = (tag, className, text) => {
+  const el = document.createElement(tag);
+  if (className) el.className = className;
+  if (text) el.textContent = text;
+  return el;
+};
+
+const panelButtonRow = (id, text) => {
+  const row = panelNode('div', 'btnrow');
+  const button = panelNode('button', null, text);
+  button.type = 'button';
+  button.id = id;
+  row.append(button);
+  return row;
+};
+
+const panelNote = (id, text) => {
+  const note = panelNode('div', null, text);
+  note.id = id;
+  return note;
+};
+
+/**
+ * One row, in the shape the CSS and every proof tool already expect.
+ *
+ * The ids, the `.row` wrapper and the `<output>` inside it are load-bearing rather
+ * than decorative. `registry-check` builds its view of the panel from `#panel input`
+ * keyed by id and from `#panel .row`, and `writeControl` finds a readout by asking
+ * the input's parent for one - so a generator that renamed an id, dropped the
+ * wrapper or moved the output would empty those maps instead of failing, which is a
+ * check that silently stopped looking at anything.
+ */
+function panelRow(name, spec) {
+  const input = document.createElement('input');
+  input.id = name;
+  if (spec.kind === 'step') {
+    input.type = 'checkbox';
+    const label = panelNode('label', 'check');
+    // The space is the gap the markup carried, and `.check` sets a flex gap on top
+    // of it. Kept so the generated row reads exactly as the written one did.
+    label.append(input, ` ${spec.label}`);
+    return { input, node: label };
   }
-  if (!el) throw new Error(`parameter ${name} has no panel control`);
-  panelControls.set(name, el);
-  if (el.type === 'checkbox') {
-    // A checkbox has no drag, so its `change` is both the write and the end of the
-    // interaction.
-    el.addEventListener('change', () => { writeFromControl(name, el.checked); history.commit(); });
-  } else {
-    el.min = String(spec.min);
-    el.max = String(spec.max);
-    el.step = String(spec.step);
-    // The string-to-number conversion belongs to the control rather than to the
-    // registry: a slider's value is text because the DOM says so, and letting that
-    // reach `normalise` would mean loosening it for every other caller too.
-    el.addEventListener('input', () => writeFromControl(name, Number(el.value)));
-    // The other half of the `input`/`change` split, and the whole of what makes
-    // undo coalesce: one snapshot when the drag ends rather than one per pointer
-    // move. Nothing is pushed if the drag put the value back where it started.
-    el.addEventListener('change', () => history.commit());
+  input.type = 'range';
+  // Stamped from the registry, because two copies of a slider's bounds is two things
+  // to keep in step and the markup copy is the one nothing headless can read.
+  input.min = String(spec.min);
+  input.max = String(spec.max);
+  input.step = String(spec.step);
+  const row = panelNode('div', 'row');
+  row.append(panelNode('span', null, spec.label), input, document.createElement('output'));
+  return { input, node: row };
+}
+
+// Where a generated group lands: the grade below the extended-settings button, and
+// everything a shooting surface needs above it. Asserted rather than assumed because
+// `insertBefore` with a missing anchor appends instead of throwing, so a renamed
+// anchor would quietly move every generated group to the bottom of the panel.
+//
+// The lookgroup anchor was `#navRow` until the nav was pinned into `#panelHead`, and
+// that move took it out of the scrolling column entirely - a group inserted before it
+// now lands in the head, above the status line, which is a placement no assertion here
+// would have objected to because the anchor still existed. `#extendedRow` is the last
+// static node in `#panelBody` and is the boundary the sentence above always meant, so
+// the grade is stated against it rather than appended to the column: an append says
+// only "at the end", and would go on saying it if a static group were ever added below.
+function panelAnchor(group) {
+  const id = group.lookgroup ? 'extendedRow' : 'sensorGroup';
+  const anchor = document.getElementById(id);
+  if (!anchor) throw new Error(`the panel group ${group.key} has no anchor: no #${id} in the markup`);
+  return anchor;
+}
+
+// Placing after a fixed anchor reverses what placing before it preserves: each `before`
+// against `#sensorGroup` lands under the last one, while each `after` against
+// `#extendedRow` would land above it and build the grade upside down. So the grade
+// walks a cursor - the first group goes after the anchor, every later one after its
+// predecessor - and `PANEL_GROUPS` order survives down the panel either way.
+const panelTail = new Map();
+function panelPlace(group, groupNode) {
+  const anchor = panelAnchor(group);
+  if (!group.lookgroup) { anchor.before(groupNode); return; }
+  (panelTail.get(anchor) || anchor).after(groupNode);
+  panelTail.set(anchor, groupNode);
+}
+
+let panelRowsEmitted = 0;
+for (const group of PANEL_GROUPS) {
+  const groupNode = panelNode('div', group.lookgroup ? 'group lookgroup' : 'group');
+  groupNode.append(panelNode('label', null, group.label));
+  if (group.before) groupNode.append(...group.before());
+
+  let rows = 0;
+  for (const [name, spec] of Object.entries(PARAMS)) {
+    if (spec.group !== group.key) continue;
+    const { input, node: row } = panelRow(name, spec);
+    panelControls.set(name, input);
+    if (input.type === 'checkbox') {
+      // A checkbox has no drag, so its `change` is both the write and the end of the
+      // interaction.
+      input.addEventListener('change', () => { writeFromControl(name, input.checked); history.commit(); });
+    } else {
+      // The string-to-number conversion belongs to the control rather than to the
+      // registry: a slider's value is text because the DOM says so, and letting that
+      // reach `normalise` would mean loosening it for every other caller too.
+      input.addEventListener('input', () => writeFromControl(name, Number(input.value)));
+      // The other half of the `input`/`change` split, and the whole of what makes
+      // undo coalesce: one snapshot when the drag ends rather than one per pointer
+      // move. Nothing is pushed if the drag put the value back where it started.
+      input.addEventListener('change', () => history.commit());
+    }
+
+    // The keyframe control, in the same pass that built the row it sits in. Only on
+    // the editor and only for look parameters: a keyframe is a position on a clip,
+    // the recorder has no clip, and view state is not part of one - so a control
+    // implying otherwise is the split leaking whichever of the two reasons applies.
+    if (EDITING && spec.tag === 'look') {
+      const button = makeKeyButton(name);
+      if (input.type === 'checkbox') {
+        // The control is the whole `<label class="check">` and a button inside a
+        // label would toggle the checkbox when clicked, so the two are siblings in a
+        // row of their own. The recorder gets the bare label, which is what keeps
+        // `.check`'s own layout rather than `.checkrow`'s.
+        const checkrow = panelNode('div', 'checkrow');
+        checkrow.append(row, button);
+        groupNode.append(checkrow);
+      } else {
+        row.append(button);
+        groupNode.append(row);
+      }
+    } else {
+      groupNode.append(row);
+    }
+    rows++;
+    panelRowsEmitted++;
+  }
+  // A heading with nothing under it is a group key that got misspelled on one side,
+  // which is the only way a group can end up empty and is worth a sentence rather
+  // than an empty box on the panel.
+  if (rows === 0) throw new Error(`the panel group ${group.key} holds no parameter`);
+
+  if (group.after) groupNode.append(...group.after());
+  panelPlace(group, groupNode);
+}
+
+// The count, asserted rather than inferred - and this is what the old boot loop's
+// throw turned into rather than a tidier spelling of it. That loop looked a control
+// up by id and threw when it found none, which stops being able to fail the moment
+// the same pass creates the control it then looks for: a generator that filtered one
+// parameter out would produce a smaller panel that worked perfectly and said nothing.
+//
+// Counted against the registry from the other side, so a row lost anywhere in the
+// loop above - a group key nobody declared, a filter that dropped one, a `continue`
+// that ran once too often - is a refusal to boot with both numbers in it. The stray
+// check above names the parameter where it can; this one catches the cases that have
+// no name to give.
+{
+  const owned = params.names().filter((n) => PARAMS[n].tag !== 'composition');
+  const stray = owned.filter((n) => !PANEL_GROUPS.some((g) => g.key === PARAMS[n].group));
+  if (stray.length) {
+    throw new Error(`${stray.join(', ')} name no panel group, so the panel would be missing `
+      + `${stray.length} of ${owned.length} controls`);
+  }
+  // Composition is edited in the world - a camera path is the one thing you cannot
+  // judge from a graph - so a composition parameter that grew a panel group means the
+  // split has been crossed somewhere and is worth stopping over.
+  const crossed = params.names('composition').filter((n) => PARAMS[n].group || PARAMS[n].label);
+  if (crossed.length) throw new Error(`composition parameter ${crossed.join(', ')} declares a panel group`);
+  if (panelRowsEmitted !== owned.length) {
+    throw new Error(`the panel generator emitted ${panelRowsEmitted} rows for ${owned.length} `
+      + 'parameters: a panel that is not the registry is a look nothing can reach');
   }
 }
 
@@ -1714,14 +2322,16 @@ params.reset();
 // Applying a preset is a user action and can never be an evaluation-time effect: a
 // look that re-applied itself while the playhead moved would make the timeline lie
 // about what it is showing. The render path raises this flag for the length of one
-// frame, and the two bulk writes a gesture performs refuse while it is up. Ordinary
+// frame, and the bulk writes a gesture performs refuse while it is up. Ordinary
 // parameter writes stay legal, because that is exactly what step 5's tracks do.
 //
 // What that actually covers, stated plainly so step 5 inherits the problem rather
-// than a false sense of having solved it. The flag catches the two doors a preset
-// goes through today - `applyPreset` and `setMode` - and nothing else. `params.apply`
-// is public and unguarded, so a caller that assembles the same bulk write by hand
-// gets no complaint, and the flag spans `renderProgramFrame` alone, so an evaluator
+// than a false sense of having solved it. The flag catches the doors a preset goes
+// through - `applyPreset` and `params.apply` - and nothing else. There used to be a
+// third, `setMode`, and dissolving the mode into five registry scalars removed it
+// rather than leaving it guarded: selecting a reading is now a single `params.set`,
+// which is an ordinary write and legal during evaluation precisely because a track
+// is allowed to make it. And the flag spans `renderProgramFrame` alone, so an evaluator
 // that writes its track values just before calling it is semantically inside
 // evaluation with the flag down. Widening it needs the shape of step 5's evaluator
 // to be known: the honest boundary is "the evaluator is running", and that object
@@ -1753,7 +2363,7 @@ function withoutRepaint(write) {
 
 function refuseDuringEvaluation(what) {
   if (evaluating) {
-    throw new Error(`${what} during evaluation: presets and modes are user actions, not tracks`);
+    throw new Error(`${what} during evaluation: a preset is a user action, not a track`);
   }
 }
 
@@ -1762,34 +2372,6 @@ function applyPreset(preset) {
   refuseDuringEvaluation('preset applied');
   params.apply(preset);
 }
-
-// The Blackwall look is a whole pipeline state rather than a shader branch, so
-// selecting it drives the post chain too, and leaving it restores a neutral view.
-// Both are ordinary look presets now: values the registry knows how to write.
-//
-// For step 7, which is where this bites: the mode is not one of those values, and
-// `params.values(params.names('look'))` will not capture or restore it. That is the
-// right call here - the mode is clip state rather than a keyframeable parameter -
-// but the spec's preset table does list mode as presettable look, so preset save
-// and preset apply have to carry the mode alongside the registry subset rather than
-// assuming the subset is the whole preset.
-//
-// Both point sizes are the ones these presets always had, times 1080/600. That is
-// the whole of the re-tune and it happens exactly once: `pointSize` is pixels at
-// 1080p now, the buffer these looks were graded against was 600 tall, and 4.5 and
-// 5 pixels there are 8.1 and 9 pixels at the reference. Nothing else in either
-// preset moves, because nothing else in either preset was in pixels - the grade's
-// frequencies are not parameters, and they simply become 1080p-referred with the
-// rest of the look.
-const BLACKWALL = { bloom: 0.5, trails: 0.5, rgbSplit: 1.6, scanlines: 0.35, grain: 0.22, glitch: 0.18, pointSize: 8.1, scan: 0.35, rim: 0.5, fade: 120, wake: 550, additive: true };
-const NEUTRAL = { bloom: 0, trails: 0, rgbSplit: 0, scanlines: 0, grain: 0, glitch: 0, pointSize: 9, scan: 0, rim: 0.55, fade: 120, wake: 0, additive: false };
-
-// The mode is a property of the clip rather than a track of any kind. Selecting it
-// rewrites twelve other look values, so a mode keyframe would silently stomp every
-// other track at the instant it fired - one mode per clip removes that problem
-// instead of leaving it to be managed. Multi-mode clips are not ruled out, only
-// deferred, and the stomping is what would have to be solved properly first.
-let clipMode = 0;
 
 // Clip in/out points are program seconds, not frames, so they survive an output-fps
 // change. `out` is null when the clip runs to the end of the program. The transport
@@ -1801,20 +2383,6 @@ let clipOut = null;
 // codec). It is separate from the project, so one edit can spawn several deliverables
 // without the deliverable state being undoable project state.
 let activeDeliverable = null;
-
-// The mode itself, without the look that comes with choosing it. Undo restores a
-// whole snapshot including the twelve values Blackwall wrote, so replaying the
-// preset on top of them would overwrite what was just restored with what the
-// preset happens to say today. This is the half both callers share rather than a
-// second path: `setMode` is this plus the preset a user asked for.
-function applyModeValue(mode) {
-  clipMode = mode;
-  uniforms.mode.value = mode;
-  if (mode === 4) scene.fog.color.setHex(0x05070a);
-  document.querySelectorAll('#modes button').forEach((b) => {
-    b.setAttribute('aria-pressed', String(Number(b.dataset.mode) === mode));
-  });
-}
 
 function ensureActiveDeliverable() {
   if (activeDeliverable) return;
@@ -1859,30 +2427,11 @@ function setClipInOut(values) {
   }
 }
 
-function setMode(mode) {
-  refuseDuringEvaluation('mode selected');
-  const wasBlackwall = clipMode === 4;
-  applyModeValue(mode);
-
-  if (mode === 4) applyPreset(BLACKWALL);
-  else if (wasBlackwall) applyPreset(NEUTRAL);
-
-  // Asked for explicitly, because the mode is clip state and deliberately not a
-  // registry parameter - so selecting Depth or Contour writes nothing the
-  // registry announces, and the image would sit on the previous reading of the
-  // footage until something else happened to move.
-  requestRepaint();
-}
-
-document.querySelectorAll('#modes button').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    setMode(Number(btn.dataset.mode));
-    // One click is one interaction, so the snapshot goes on at the end of it. The
-    // twelve look values Blackwall wrote are inside the same snapshot, which is
-    // the whole reason undo cannot be a command stack here.
-    history.commit();
-  });
-});
+// There is no `setMode` any more, and nothing replaced it. Selecting a reading is
+// writing `readDepth` - an ordinary registry write, through the one door every other
+// parameter goes through, which repaints and snapshots for undo the way a slider
+// does. The reason the old one existed at all was that a mode was the only thing
+// that could change the image without the registry announcing it.
 
 // ------------------------------------------------------------ keyframe tracks
 
@@ -2299,20 +2848,18 @@ function toggleKey(name) {
 // the registry. The playhead, the free camera's orbit and which panel is open are
 // absent for the same reason: none of them is what the clip is.
 //
-// The mode is in it, and that is worth stating because the spec's undo table puts
-// "which layer is displayed" in the not-undoable column. That row sits beside
-// panel visibility and render scale - both of which the registry tags `view` - and
-// it was written before the section that settled the mode as clip state whose
-// selection *applies a preset*, which the same table lists as undoable. Leaving it
-// out would restore the twelve values Blackwall wrote while leaving Blackwall
-// selected: a state that never existed, which is the exact failure a whole-project
-// snapshot exists to make impossible.
+// Which reading is on screen is in it, and it needs no special case to be there any
+// more. It used to: the mode was a sixth thing beside the registry, written into this
+// body by hand, because leaving it out would have restored the twelve values Blackwall
+// wrote while leaving Blackwall selected - a state that never existed, which is the
+// exact failure a whole-project snapshot exists to make impossible. The readings are
+// ordinary look parameters now, so `params.values(params.names('look'))` carries them
+// and there is no second list to forget.
 
 function serialiseProjectBody() {
   return {
     version: PROJECT_VERSION,
     look: {
-      mode: clipMode,
       // Look parameters only; the registry separates look from view and from the
       // camera, so an undo snapshot or a render job does not carry render scale or
       // the free camera's orbit.
@@ -2401,13 +2948,11 @@ function restoreProject(project) {
   // version. A document that is not this build's version is refused, because a
   // document whose units cannot be recovered is one that renders wrong with
   // nothing to say why.
+  // Which refusal it gets is `versionRefusal`'s, in `format.js` beside the history it
+  // reads from - because the two doors were writing that sentence separately and a
+  // version band added here would not have reached the preset one.
   if (project.version !== PROJECT_VERSION) {
-    throw new Error(
-      `this project is version ${JSON.stringify(project.version)} and this build reads `
-      + `version ${PROJECT_VERSION}: point size is pixels at 1080p in version ${PROJECT_VERSION} `
-      + 'and was pixels at the drawing buffer before it, so there is no faithful reading of '
-      + 'an unversioned file',
-    );
+    throw new Error(versionRefusal('this project', project.version));
   }
   if (!project.look || typeof project.look !== 'object') {
     throw new Error('a project carries a look object');
@@ -2415,9 +2960,14 @@ function restoreProject(project) {
   if (!project.composition || typeof project.composition !== 'object') {
     throw new Error('a project carries a composition object');
   }
-  if (!Number.isInteger(project.look.mode) || project.look.mode < 0 || project.look.mode > 4) {
-    throw new Error(`mode is ${JSON.stringify(project.look.mode)}: the clip's mode is a whole number from 0 to 4`);
-  }
+  // The reading used to need its own bounds check here - a whole number from 0 to 4,
+  // because nothing else in the loader would have caught a mode of 9 selecting an
+  // undefined shader branch. It has none now, and that is the removal working rather
+  // than an omission: the readings are registry scalars, so `params.apply` runs each
+  // through `normalise`, which refuses a non-number loudly and clamps to the declared
+  // 0..1. One validator for every look value beats a hand-written clause per special
+  // case, which is what the special case was.
+  //
   // Checked here rather than shrugged off, because a size that does not parse would
   // otherwise leave the editor framing at whatever the last clip was and quietly
   // export a different shape from the one on screen. Absent is allowed and means the
@@ -2426,9 +2976,20 @@ function restoreProject(project) {
   if (project.outputSize !== undefined && !/^[1-9][0-9]*x[1-9][0-9]*$/.test(String(project.outputSize))) {
     throw new Error(`outputSize is ${JSON.stringify(project.outputSize)}: it reads as WIDTHxHEIGHT`);
   }
-  setTargetSize(project.outputSize ?? DEFAULT_EXPORT_SIZE, { fromDocument: true });
   if (!project.look.params || typeof project.look.params !== 'object') {
     throw new Error('a project look carries a params object');
+  }
+  // The same demand the preset door makes, and it belongs on both for the reason the
+  // helper gives: the reset below hands an omitted reading its default, and `readRgb`
+  // defaults to 1. A project carrying only `readBlackwall: 1` would load as a 50/50
+  // blend with the camera image rather than as the wall it names.
+  const shortReadings = missingReadings(project.look.params);
+  if (shortReadings.length) {
+    throw new Error(
+      `this project names no ${shortReadings.join(', ')}: a version ${PROJECT_VERSION} look carries `
+      + 'all five reading weights, and the ones it leaves out would come back as defaults rather '
+      + 'than as the look it was saved with',
+    );
   }
   if (!project.look.tracks || typeof project.look.tracks !== 'object') {
     throw new Error('a project look carries a tracks object, empty if nothing is keyed');
@@ -2463,11 +3024,17 @@ function restoreProject(project) {
 
   // The same refusal for the parameter values, and for the same reason - but it has
   // to happen *here*, in the build-whole phase, rather than where they are applied.
-  // `params.apply` throws on the first name the registry does not know, and by then
-  // the output size and the mode have already been written and the tracks have not,
-  // so the editor is left in the half-applied state the comment above promises it
-  // never is. A project carrying a parameter this build has since removed is exactly
-  // the case: loud and named is right, mid-write is not.
+  //
+  // **What this buys has changed and it is still load-bearing**, so the reason is
+  // restated rather than left to read as the old one. It used to be the only thing
+  // standing between a bad name and a half-applied registry, because `params.apply`
+  // wrote as it walked and threw on the first name it did not know. `apply` checks the
+  // whole object before writing any of it now, so that particular hole is closed at
+  // the door instead. What is left is the wider window: this runs in the build-whole
+  // phase, before the tracks are rebuilt and before anything at all has been written,
+  // and `apply` cannot, because it is itself one of the writes. A project carrying a
+  // parameter this build has since removed has to be refused with nothing touched, and
+  // that is earlier than the registry can see.
   for (const name of Object.keys(project.look.params)) params.spec(name);
 
   const restoredCamera = project.composition.camera.map((k) => {
@@ -2510,19 +3077,30 @@ function restoreProject(project) {
     }
   }
 
-  applyModeValue(project.look.mode);
   // Defaults first, so a key the document does not carry means the default rather
   // than whatever the session happened to leave in the registry. `params.apply`
   // walks the document's own keys, so absent is invisible to it - which was harmless
   // only while every document carried every key. It stops being harmless the moment
   // a parameter is added, and the second project opened in one session is where it
-  // would have shown up. `outputSize` already takes this position explicitly a few
-  // lines above; this is the same rule for the other half of the document.
+  // would have shown up. `outputSize` takes this position too, on the line above, for
+  // the same reason read the other way round.
   //
   // **The look tag, not every parameter.** `params.reset()` defaults view state too,
   // and view state is not in the document - so a bare reset made undo snap render
   // scale back to 100, which is the one thing the stack is supposed to leave alone.
   // The set reset here is exactly the set `serialiseProjectBody` writes.
+  // **The first thing here that changes anything, and it used to be the first thing in
+  // the function.** `setTargetSize` resized the stage and the export target before the
+  // shape of the document had been checked at all, so a project that named a new size
+  // and was then refused - for a missing reading, a track the registry does not know,
+  // a retime that descends - left the editor framing something the clip on screen was
+  // never composed for. `loadProjectNamed` exits on the throw without reapplying the
+  // active deliverable, so nothing put it back.
+  //
+  // The format of the string is still checked up in the validation phase, where a
+  // refusal costs nothing. Only the write waited.
+  setTargetSize(project.outputSize ?? DEFAULT_EXPORT_SIZE, { fromDocument: true });
+
   params.reset(params.names('look'));
   params.apply(project.look.params);
   appliedPreset = stamp;
@@ -4613,6 +5191,9 @@ const ui = {
   preset: document.getElementById('tPreset'),
   presetApply: document.getElementById('tPresetApply'),
   presetSave: document.getElementById('tPresetSave'),
+  presetExport: document.getElementById('tPresetExport'),
+  presetImport: document.getElementById('tPresetImport'),
+  presetFile: document.getElementById('tPresetFile'),
   project: document.getElementById('tProject'),
   projectOpen: document.getElementById('tProjectOpen'),
   projectSave: document.getElementById('tProjectSave'),
@@ -5619,46 +6200,124 @@ async function markHere() {
 let appliedPreset = null;
 
 /**
- * A preset carries the look values *and* the mode, and the second half is a
- * special case rather than an oversight.
+ * A preset is look values, and that is the whole of it.
  *
- * The registry deliberately excludes the mode: it is clip state, not a
- * keyframeable parameter, so `params.values(params.names('look'))` will neither
- * capture nor restore it. The spec's preset table lists mode first among
- * presettable look, and both statements hold - a preset carries static values, and
- * applying one is a user action - so the preset format carries the mode alongside
- * the registry subset instead of assuming the subset is the whole preset.
+ * It used to be look values *plus* a mode, carried beside the registry subset
+ * because the registry excluded the mode on purpose and
+ * `params.values(params.names('look'))` would neither capture nor restore it. The
+ * cost of that second half was not the extra field, it was the trap under it:
+ * `setMode(4)` applied a hardcoded BLACKWALL look as part of selecting the mode, so
+ * a user's own preset routed through the obvious door came back with twelve of its
+ * values replaced by the built-in ones, and it would appear to load while not being
+ * the preset. `applyStoredPreset` avoided that by calling the half of `setMode`
+ * that did not apply anything - a split that existed only to work around the weld.
+ *
+ * With the readings in the registry there is no second half and no weld, so no
+ * door to pick between: one subset in, one subset out.
  */
 function presetFromCurrentLook(names) {
-  return { version: PROJECT_VERSION, mode: clipMode, values: params.values(names ?? params.names('look')) };
+  return { version: PROJECT_VERSION, values: params.values(names ?? params.names('look')) };
 }
 
 /**
- * Applies a saved preset and stamps where it came from.
+ * Everything about a preset that can be refused without writing anything.
  *
- * `applyModeValue` rather than `setMode`, and this is the trap the two functions
- * were split for. `setMode(4)` applies the hardcoded BLACKWALL look as part of
- * selecting the mode, so routing a user's own preset through it would overwrite
- * that user's twelve values with the built-in ones on the way past - the preset
- * would appear to load and would not be the preset.
+ * Split out of `applyStoredPreset` so the import path can ask the question before it
+ * PUTs rather than after: a file has to be checked before it enters a library where it
+ * will sit looking like a look, and it has to be *applied* only once the store has
+ * answered with the revision it was given. Those were one gesture and could not be,
+ * because the gesture stamped a revision the store had not issued yet.
  */
-function applyStoredPreset(doc) {
-  refuseDuringEvaluation('a stored preset applied');
-  if (doc.body.version !== PROJECT_VERSION) {
+function refusePresetBody(name, body) {
+  // The same refusal `restoreProject` gives, from the same helper, because a preset and
+  // a project carry the same version field and a holder of either needs the same three
+  // answers. Two copies of that sentence is how one of them came to be false.
+  if (body?.version !== PROJECT_VERSION) {
+    throw new Error(versionRefusal(`preset ${name}`, body?.version));
+  }
+  // A document with no values is not a look that happens to change nothing. `?? {}`
+  // used to make it one: the apply wrote nothing, the stamp went on anyway, and what
+  // came back was a clip claiming provenance from a file that had said nothing at all.
+  if (!body.values || typeof body.values !== 'object' || Array.isArray(body.values)) {
+    throw new Error(`preset ${name} carries no values object, so there is no look in it to apply`);
+  }
+
+  // The values, checked against the registry without reaching it. `params.apply` does
+  // this again on the way in and has to - this is the import path's early copy, taken
+  // before the PUT, so a file the registry would refuse never becomes a document.
+  //
+  // **Before the reading check below, deliberately.** A file gets told which of its
+  // keys is wrong ahead of being told which are missing, because the wrong one is the
+  // more specific answer and it is the one somebody editing a file by hand needs.
+  // **A preset is look values and nothing else**, and the registry knowing a name is
+  // not the same question as the name belonging in a preset. `camera` is a registry
+  // parameter with a `composition` tag, and a valid pose passes `normalise` cleanly -
+  // so a hand-edited file naming it used to reach `params.apply` and move the program
+  // camera, changing what the next export frames. Worse, that write is in neither the
+  // look values nor the camera track, so the commit that follows cannot undo it: the
+  // pose is simply somewhere else now. `presetFromCurrentLook` writes the look tag and
+  // only the look tag, so this is the reading side of a rule the writing side already
+  // keeps, and the note in the README that applying a preset never moves your camera
+  // is only true with it here.
+  for (const [key, value] of Object.entries(body.values)) {
+    const { tag } = params.spec(key);
+    if (tag !== 'look') {
+      throw new Error(
+        `preset ${name} names ${key}, which is a ${tag} parameter: a preset carries look values `
+        + 'and nothing else, so that it can be applied to any clip without moving anything else',
+      );
+    }
+    params.normalise(key, value);
+  }
+
+  // **And all five readings have to be there**, which is the whole reason there is a
+  // version 4. `format.js` puts it plainly about a version 3 file: every value it names
+  // is still a parameter, so the apply writes all of them without complaint and only
+  // the reading is missing, leaving whatever the previous document happened to select.
+  // A version 4 file that simply omits the five keys reaches that identical state while
+  // passing the version gate - the same look rendering as somebody else's shading,
+  // silently, only now with a stamp on it saying which file it came from. Everything
+  // that writes a preset writes all five: the converter emits them, and an export is
+  // `params.values` over the whole look tag. So a file missing them is hand-made, and
+  // this is the sentence it should get.
+  const missing = missingReadings(body.values);
+  if (missing.length) {
     throw new Error(
-      `preset ${doc.name} is version ${JSON.stringify(doc.body.version)} and this build reads `
-      + `${PROJECT_VERSION}: point size is pixels at 1080p here and was pixels at the drawing `
-      + 'buffer before, so its look cannot be reconstructed',
+      `preset ${name} names no ${missing.join(', ')}: a version ${PROJECT_VERSION} look carries all `
+      + 'five reading weights, and one that leaves them out would render as whatever was on '
+      + 'screen before it',
     );
   }
-  if (Number.isInteger(doc.body.mode)) applyModeValue(doc.body.mode);
+}
+
+/** Applies a saved preset and stamps where it came from. */
+function applyStoredPreset(doc) {
+  refuseDuringEvaluation('a stored preset applied');
+  refusePresetBody(doc.name, doc.body);
   params.apply(doc.body.values ?? {});
   appliedPreset = { name: doc.name, rev: doc.rev };
   requestRepaint();
   history.commit();
 }
 
-const documentsIn = async (kind) => (await (await fetch(`/${kind}`)).json())[kind];
+/**
+ * The documents of one kind, or the server's reason there are none.
+ *
+ * This used to reach straight through `res.json()` for `[kind]`, which reads a 500 as
+ * `undefined` and hands it to a `for...of` - so the refusal the server took trouble to
+ * write ("the shipped preset directory ... cannot be read: ENOTDIR") arrived on screen
+ * as "list is not iterable", and the one surface that does report a failed library
+ * reported the wrong thing. The error carries through now, because a message that
+ * names the directory is the difference between a five-second fix and a mystery.
+ */
+const documentsIn = async (kind) => {
+  const res = await fetch(`/${kind}`);
+  const body = await res.json().catch(() => null);
+  if (!res.ok || !Array.isArray(body?.[kind])) {
+    throw new Error(body?.error ?? `${kind} could not be listed: HTTP ${res.status}`);
+  }
+  return body[kind];
+};
 
 async function refreshPresets() {
   const list = await documentsIn('presets');
@@ -5669,10 +6328,78 @@ async function refreshPresets() {
   // views rather than two lists that could drift.
   for (const el of [ui.preset, ui.recPreset]) {
     el.replaceChildren(new Option('—', ''));
-    for (const doc of list) el.appendChild(new Option(doc.name, doc.name));
+    // A shipped look is marked rather than segregated into its own group, because it
+    // is the same kind of document and saving over one forks it: a separator implying
+    // two libraries would be describing the storage rather than what you can do. The
+    // value stays the bare name, so everything downstream is unchanged.
+    for (const doc of list) el.appendChild(new Option(doc.builtin ? `${doc.name} ·` : doc.name, doc.name));
     if (appliedPreset) el.value = appliedPreset.name;
   }
   return list;
+}
+
+/**
+ * A preset as a file, both ways.
+ *
+ * The document *is* the file format - `{ version, values }`, the same bytes the store
+ * writes - so there is nothing to convert in either direction and no second shape that
+ * could drift from the first. Export is those bytes with a name on them; import is
+ * `JSON.parse` and then the ordinary apply path.
+ *
+ * **Import goes through `params.apply` and not near a uniform**, which is the whole of
+ * what makes an arriving file safe. A hand-edited or truncated preset is exactly the
+ * caller `normalise` was hardened for: a scalar must be a number, a step must be a
+ * boolean, and anything else throws at the key that is wrong instead of writing a
+ * plausible-looking look. It also closes the prototype question by construction -
+ * `specOf` asks `Object.hasOwn(PARAMS, name)`, so a file carrying `__proto__` as an own
+ * enumerable property, which `JSON.parse` genuinely does produce where an assignment
+ * would not, is refused as an unknown parameter rather than reaching anything.
+ */
+function exportPresetFile(name, body) {
+  const url = URL.createObjectURL(new Blob([`${JSON.stringify(body, null, 2)}\n`], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${name}.braindance-preset.json`;
+  a.click();
+  // Revoked on the next turn rather than immediately: the click is dispatched
+  // synchronously but the fetch of the blob is not, and revoking in this task can
+  // land first and save a zero-byte file.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+async function importPresetFile(file) {
+  const text = await file.text();
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`${file.name} is not JSON: ${err.message}`);
+  }
+  // **Checked before it is saved and applied only after**, which used to be one step
+  // and could not be. The store checks the version and the name; only the registry can
+  // say whether the values are values, and a file that cannot be applied has no
+  // business entering a library where it will sit looking like a look until somebody
+  // picks it - so the refusal still happens first, ahead of the PUT.
+  //
+  // What moved is the *apply*. Applying first meant stamping `sha256:imported`, a
+  // revision no store ever issued, and `applyStoredPreset` commits an undo snapshot
+  // and fires the auto-save on its way out - so the placeholder was written into the
+  // snapshot and into the working project, and replacing `appliedPreset` afterwards
+  // reached neither. Crash recovery restored the placeholder, and one edit followed by
+  // an undo put it back on screen. The store's answer is the first thing that knows the
+  // real revision, so nothing is stamped until it has answered.
+  const name = file.name.replace(/\.braindance-preset\.json$|\.json$/i, '');
+  refuseDuringEvaluation('a preset imported');
+  refusePresetBody(name, body);
+  const res = await fetch(`/presets/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const saved = await res.json();
+  if (saved.error) throw new Error(saved.error);
+  applyStoredPreset({ name: saved.name, rev: saved.rev, body });
+  return saved;
 }
 
 async function refreshProjects() {
@@ -6010,53 +6737,17 @@ const DOUBLE_CLICK_MS = 400;
 
 // --------------------------------------------------- the keyframe controls
 
-// One per look parameter, stamped from the registry the same way the sliders are.
-// View parameters deliberately get none: render scale and auto-orbit are not part
-// of the clip, so there is nothing there to key and a control implying otherwise
-// would be the split leaking.
-const keyButtons = new Map();
-
-function makeKeyButton(name) {
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.className = 'kf';
-  btn.setAttribute('aria-label', `${name} keyframe`);
-  btn.appendChild(document.createElement('i'));
-  btn.addEventListener('click', () => toggleKey(name));
-  keyButtons.set(name, btn);
-  return btn;
-}
-
+// The buttons themselves are built with the panel rows they sit in - see
+// `makeKeyButton` up beside the generator - because a row and its keyframe control
+// are one thing to lay out, and building them in two passes is what made the second
+// pass lift a checkbox out of its own label to fit one in. What is left here is the
+// half that needs the tracks: what state each button is drawn in.
 function paintKeyButton(name, btn) {
   const track = tracks.get(name);
   const state = !track || track.keys.length === 0
     ? 'none'
     : (track.keyAt(playheadSec(), keyTolerance()) ? 'here' : 'some');
   btn.dataset.kf = state;
-}
-
-// Built only on the editor, and this is the same rule as the one above rather than
-// a second one. A keyframe is a position on a clip, and the recorder has no clip:
-// `toggleKey` would still create a track and `playheadSec()` would still answer 0,
-// so a click while shooting wrote a key at t=0 on a document that does not exist and
-// nothing drew it or refused it. A control that implies a clip is the split leaking
-// whether the parameter is the wrong kind or the surface is.
-for (const name of EDITING ? params.names('look') : []) {
-  const el = panelControls.get(name);
-  const btn = makeKeyButton(name);
-  if (el.type === 'checkbox') {
-    // The control is the whole `<label class="check">`, and a button inside a
-    // label would toggle the checkbox when clicked, so the two become siblings in
-    // a row rather than the button being appended into it.
-    const label = el.parentElement;
-    const row = document.createElement('div');
-    row.className = 'checkrow';
-    label.replaceWith(row);
-    row.append(label, btn);
-  } else {
-    el.parentElement.appendChild(btn);
-  }
-  btn.dataset.kf = 'none';
 }
 
 // The retime's own key control, beside the speed slider rather than in a lane,
@@ -6796,6 +7487,40 @@ ui.presetSave.addEventListener('click', async () => {
   }
 });
 
+// The look on screen, not the document the picker happens to be pointing at. Those are
+// the same thing only until you move a slider, and exporting what you can see is the
+// answer that is right in both cases - the picker's name is used for the filename
+// because it is the best guess at what to call it, which is a different question.
+ui.presetExport.addEventListener('click', () => {
+  try {
+    const name = ui.preset.value || appliedPreset?.name || 'look';
+    exportPresetFile(name, presetFromCurrentLook());
+    ui.note.textContent = `exported ${name}.braindance-preset.json`;
+  } catch (err) {
+    showTimelineError(err);
+  }
+});
+
+// The button and the input are two halves of one control: a file input cannot be
+// styled into the strip, and one that opens on its own is a control nobody can find.
+ui.presetImport.addEventListener('click', () => ui.presetFile.click());
+ui.presetFile.addEventListener('change', async () => {
+  const file = ui.presetFile.files?.[0];
+  // Cleared before the await rather than after, so choosing the same file twice in a
+  // row fires `change` the second time. An input that keeps its value is an import
+  // button that works once per file per session.
+  ui.presetFile.value = '';
+  if (!file) return;
+  try {
+    const saved = await importPresetFile(file);
+    await refreshPresets();
+    ui.preset.value = saved.name;
+    ui.note.textContent = `imported ${saved.name} · ${saved.rev.slice(7, 15)}`;
+  } catch (err) {
+    showTimelineError(err);
+  }
+});
+
 ui.projectSave.addEventListener('click', async () => {
   const name = prompt('save this edit as', ui.project.value || `${openTakeId ?? 'clip'}-edit`);
   if (!name) return;
@@ -7115,9 +7840,22 @@ async function openTake(id) {
   // whose marks arrived a frame later would show them appearing, which reads as
   // the page finding them rather than the take having them.
   await loadMarks(id);
-  await refreshPresets().catch(() => {});
-  await refreshProjects().catch(() => {});
-  await refreshDeliverables().catch(() => {});
+  // **Softly, but never silently.** All three of these are allowed to fail without
+  // stopping the take from opening - a node with an unreachable library is still a node
+  // you can watch footage on - and all three used to fail into an empty `catch`, so a
+  // `--builtin-presets` pointing one directory too high drew a picker holding nothing
+  // but the placeholder and said not one word about why. The server's refusal exists
+  // and reaches here; only the editor was throwing it away.
+  //
+  // Collected rather than reported one at a time, because three notes written in
+  // sequence leave only the last one on screen - and the recorder's own note, which
+  // already reported this, is on a surface the editor does not show.
+  const unavailable = [];
+  for (const [what, refresh] of [['presets', refreshPresets], ['projects', refreshProjects],
+    ['deliverables', refreshDeliverables]]) {
+    await refresh().catch((err) => unavailable.push(`${what} (${err.message})`));
+  }
+  if (unavailable.length) ui.note.textContent = `library unavailable: ${unavailable.join('; ')}`;
   ensureActiveDeliverable();
   applyDeliverable(activeDeliverable);
   timingChanged();
@@ -7250,11 +7988,18 @@ globalThis.__kinect = {
   setTargetSize: (text) => setTargetSize(text, { fromDocument: true }),
   targetSize: () => ({ ...targetSize }),
 
-  // The registry and the two bulk writes a user gesture performs. All three refuse
-  // while a frame is being evaluated, which now means exactly what it says: the
-  // evaluator runs inside `renderProgramFrame`, so the flag spans it.
-  params, applyPreset, setMode, presets: { BLACKWALL, NEUTRAL },
-  mode: () => clipMode,
+  // The registry and the one bulk write a user gesture performs. Both refuse while a
+  // frame is being evaluated, which means exactly what it says: the evaluator runs
+  // inside `renderProgramFrame`, so the flag spans it.
+  //
+  // `setMode`, `mode()` and the two hardcoded presets used to sit here beside them,
+  // and a tool wanting a reading now writes one - `params.set('readBlackwall', 1)`.
+  // The five names are published rather than left to be spelled out in each check,
+  // so a tool sweeping the readings sweeps the readings this build has rather than
+  // the ones its author remembered, which is the same rule `exportSizes` above is
+  // here for.
+  params, applyPreset,
+  readings: () => READINGS.slice(),
 
   /**
    * Keys, the curve and the undo stack. Every number a check reads comes from
@@ -7459,6 +8204,37 @@ globalThis.__kinect = {
       // racing it. Depth is what the accumulators read anyway.
       uniforms.hasColor.value = 0;
       return pinnedPairs.times.slice();
+    },
+    /**
+     * A colour image the caller supplies, for the one arm that cannot work without one.
+     *
+     * `pin` above switches colour off, and that is right for what it is for: a JPEG
+     * decode is asynchronous, so a pinned run that raced it would hash a frame whose
+     * colour had or had not landed. But a pinned run with no colour draws `vec3(0.7)`
+     * for every point, and saturation of a uniform grey is the identity at every value -
+     * so `rgbSaturation` sat in a dead zone where the sweep that proves each parameter
+     * reaches a pixel would have recorded it as a parameter that cannot. That is the
+     * failure this repo keeps finding, and the answer is to move the probe rather than
+     * to write down an exception for it.
+     *
+     * Bytes rather than a picture generated here, and both samplers pointed at the same
+     * texture, so nothing about what the arm renders depends on decode timing or on
+     * which side of the pair `mixT` happens to favour.
+     */
+    plantColor(rgba, width, height) {
+      const tex = new THREE.DataTexture(
+        new Uint8Array(rgba), width, height, THREE.RGBAFormat, THREE.UnsignedByteType,
+      );
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.generateMipmaps = false;
+      tex.needsUpdate = true;
+      colorPrev = tex;
+      colorCurr = tex;
+      uniforms.colorPrev.value = tex;
+      uniforms.colorCurr.value = tex;
+      uniforms.hasColor.value = 1;
     },
     times() { return pinnedPairs.times.slice(); },
     /**

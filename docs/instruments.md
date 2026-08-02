@@ -104,6 +104,25 @@ frames, so the foreign bytes survive to the scan. When a mutation is unexpectedl
 inspect the mutated artifact before weakening the assertion; the code change may have undone
 itself rather than escaped the observation.
 
+### A mutation whose only effect is that the page refuses to boot is not a usable mutation
+
+Step 2 replaced a boot invariant that had become a tautology — it looked a panel control up by
+id and threw when there was none, which stops being able to fail once the same pass creates the
+control it then looks for — with a count assertion: rows emitted against parameters declared.
+That refusal is right for whoever is looking at a blank panel and useless as evidence, because
+a page that throws during module evaluation publishes nothing, every tool reports DID NOT RUN,
+and an exit code with no assertions behind it is the thing this repo twice records being
+written down as a bug found.
+
+So `panel-row-skips-parameter` skips a parameter **and moves the build's own tripwire out of
+the way in the same breath**, which is the sharper question anyway: if the generator filtered
+wrongly and the build's own count agreed with it, would anything notice? It has to be answered
+by a count the *tool* recomputes from the registry — `editor-check` section 1 diffs
+`params.names()` against the ids its sweep found, and fails naming the parameter. Reading a
+count the page reports would be the mutation editing its way past the check. The one-edit form
+was measured separately and by hand: it refuses to boot with `emitted 53 rows for 54
+parameters` and never publishes `__kinect`.
+
 ## Where a probe stands
 
 ### A cumulative table hides which term is wrong
@@ -123,6 +142,24 @@ changed nothing at all - the probe needed a camera inside the cloud. Grain at th
 probe needed the slider at full. And an export at the editor's own buffer size cannot tell an
 output size that reached the renderer from one that did not - that probe needed a size the
 editor is not.
+
+### A fourth dead zone, and this one was written into a design decision as a fact
+
+Step 3 of the effects rework added `rgbSaturation`, and the spec said a probe for the
+colourless-take path would stand in a dead zone because `captures/sample.knct` carries real
+JPEGs, so `hasColor == 1` in every arm of every tool. The first half is right and the second is
+false of the one tool that matters here: `registry-check` builds its own fixture with the
+colour block dropped, because a JPEG decode is asynchronous and a pinned run that raced it
+would hash a frame whose colour had or had not landed — and `drive.pin` therefore sets
+`hasColor = 0` itself. Every point in every arm draws a flat `vec3(0.7)`, and **saturation of a
+uniform grey is the identity at every value**, so the drop-one sweep would have recorded a new
+look parameter as one that cannot touch a pixel.
+
+The answer was to move the probe rather than to write the name into `NO_PIXEL_EFFECT`:
+`drive.plantColor` takes four saturated pixels from the check, and the arm asserts `hasColor`
+came back 1, because a plant that silently failed leaves the grey behind and the sweep then
+reports a dead zone as a measurement. **A tool's own synthetic fixture is not the take the
+program ships with, and a claim about "every arm" has to be read off the arms.**
 
 ### Place a probe where its answer would be different, not where it is convenient
 
@@ -151,6 +188,17 @@ arrive, so both ends are read now and the mutated build answers 1958px.
 measures, and leaving the column scrolled put section 8's crop sliders under different pointer
 coordinates — the crop rows went from 0.005% apart to 0.446% and read as a rendering regression
 the change had caused. It restores the scroll position now.
+
+**And the mutation's own anchor moved when the panel started generating its grade**, which is
+the ordinary half of the story and worth recording beside the two flaws because it is the half
+that recurs. The second edit used to re-insert the nav after the Viewer lookgroup's closing
+tag, and there is no static lookgroup left to close — the panel's whole grade is built from the
+registry at boot now. It anchors on the end of `#panelBody` instead, which is the position that
+survives that change and is still the foot the bug had: the generated groups are placed against
+`#extendedRow` and walk down from there, so a nav written in last stays under every slider. The
+mutation was re-run rather than reasoned about and reddens both geometric rows, reporting `in
+the scrolling body: true` — which is what says it failed for its own reason rather than a
+neighbouring one.
 
 ### A probe that changes the state it samples proves whatever it did to it
 
@@ -288,6 +336,25 @@ take and a closed one, GET and HEAD, document names that exist and names that do
 asserts by name that every route got past the 409 — with any route it cannot build a concrete
 URL for named rather than silently driven at a URL still carrying a literal `:foo`.
 
+### The half measured by hand is the half the next round finds
+
+`readPathFor` used to treat every `stat` failure as "there is no fork" and fall back to the
+shipped look. That was fixed with the rule stated in its comment — only `ENOENT` is an
+absence — and the fix was **measured by hand**, two `curl`s against a server spawned for the
+purpose, and asserted nowhere. `DocumentStore.list` was the same rule at the other end of the
+same file, went on turning `EACCES`, `ENOTDIR` and an I/O error into an empty directory, and
+came back in the next review round: a user library the process cannot enumerate answered 200
+carrying exactly the five shipped looks, which is the page a fresh install draws.
+
+Two things to take from it. A rule with two call sites wants **one implementation** that both
+call — `listJsonNames` now, which the render queue's `list` also uses, so a third caller
+inherits the rule by calling it rather than by somebody remembering. And a hand measurement
+is not a row: it proves the instance on the day and leaves the class unwatched.
+`list-swallows-unreadable` is the control, and the directory it points at is a **file**, so
+`readdir` answers `ENOTDIR` deterministically without a `chmod` that a run as root would
+ignore. The row asserts both halves — that the route refuses, *and* that it does not serve
+the shipped looks in place of a library nobody could read.
+
 ## Assert against the resource, not against the bookkeeping that claims to track it
 
 `/library/descriptors` reported `openCaptures.size`, and the bug underneath it dropped the map
@@ -333,11 +400,44 @@ browser at a time and retries that specific error up to three times, printing th
 anything else propagates on the first attempt, because a check that retried real failures would
 report whichever attempt it liked.
 
+**A comment containing a backtick inside a template literal ends the literal.** The shader
+source, `timeline-check`'s page ARM and `export-check`'s `EDITOR_ARM` are all backtick strings,
+and prose written into them in this repo's house style reaches for backticks around identifiers
+by reflex. Three times in one step the file stopped parsing at a word in a comment —
+`SyntaxError: Unexpected identifier 'opacity'` — which reads as a code error at a line
+containing no code. Inside a template literal, name things in plain words. It happened a fourth
+time in step 3 of the effects rework, `Unexpected identifier 'rgb'`, at a comment explaining why
+a mix is guarded.
+
 **`page.evaluate(fnSourceString, arg)` does not call the function.** Playwright evaluates the
 string as an expression, so the arrow function is created, never invoked, and `undefined` comes
 back - which surfaced three helpers later as a missing shot rather than as a call that did not
 happen. The house pattern is `page.evaluate(\`(${FN})(${JSON.stringify(opts)})\`)`, and it is
 what the other tools already do.
+
+**Adding rows to the panel broke a check that never mentioned the panel.** `#panel` is
+`position: fixed` at z-index 10 over the stage with `overflow-y: auto`, so `editor-check`'s
+`lit()` — a screenshot clipped to `#stage` — had always been counting panel pixels alongside the
+cloud. That was invisible while the panel never moved. Five new sliders made it taller,
+`#cropReset` fell below the fold, Playwright scrolled it into view before clicking, and the
+"open the box" row compared a frame against the same frame with the panel shifted a few pixels:
+386 differing pixels in 202 thousand, reading exactly like the cloud failing to come back.
+Hiding the panel for the length of the screenshot takes that row to **0.000%**, where the
+pre-change build measured 0.014% — so the repair is better than the state it restored. This is
+the letterboxing rule below in its second form: **a change to the panel's height is a change to
+where every fixed overlay sits, and any tool screenshotting a region that overlay covers is
+measuring it.**
+
+**Feeding today's look into a historical build is a units error, and it reads as the feature
+under test having failed.** `export-check`'s cross-build arm plays a pre-rebase revision where
+`pointSize` is pixels at the drawing buffer rather than at 1080p. Merging today's Blackwall
+document into every arm — so that both builds "end up at the same twelve numbers" — wrote 8.1
+into a build for which 8.1 means something 1.8 times larger: the old arm drew 1.82..3.8px where
+it should draw 1.02..2.1px, and both rebase rows came back at luminance ratio 0.342 against an
+expected 1.0. That is the whole look appearing not to rebase, caused entirely by the instrument.
+**Each build applies its own graded values**; the one that still has `setMode` is left to.
+Caught by A/B against a worktree at the previous commit, which is the only thing that separates
+"my change broke this" from "this was already red".
 
 **Letterboxing the editor stage moved every pointer coordinate and every buffer-size
 expectation, and four proof tools found out one at a time.** `export-check` needed two separate

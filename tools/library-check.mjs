@@ -66,6 +66,11 @@ import { createConnection } from 'node:net';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { MessageParser, TYPE_HELLO, TYPE_FRAME, encodeMessage } from '../server/protocol.js';
+// The format version, imported rather than written down. Every document these tools
+// construct or assert on has to carry the one this build writes, and a literal here
+// is a second copy of it - which is exactly what had to be hand-swept when the
+// readings dissolved the mode and the version moved from 3 to 4.
+import { PROJECT_VERSION } from '../web/format.js';
 
 const argv = process.argv.slice(2);
 const flag = (name, fallback = null) => {
@@ -233,21 +238,44 @@ const MUTATIONS = {
     '      key.value = params.normalise(name, key.value);',
     '      /* mutation: the key value is taken as it arrived */',
   ]] },
-  // A user preset is applied through `setMode`, which applies the hardcoded
-  // BLACKWALL look as part of selecting mode 4 - so the user's own twelve values
-  // are overwritten on the way past and the preset appears to load.
-  // A user preset is applied by writing its values and *then* selecting its mode
-  // through `setMode`, which applies the hardcoded BLACKWALL look as part of
-  // selecting mode 4 - so the user's own twelve values are overwritten on the way
-  // past and the preset appears to load. Written as a reorder rather than as a bare
-  // swap of the call, because `setMode` before the values is harmless: the values
-  // land afterwards and win. The bug only exists in this order, so the mutation has
-  // to be in it or it moves nothing and reads as a check that found nothing.
-  'preset-through-setmode': { file: 'web/main.js', edits: [[
-    `  if (Number.isInteger(doc.body.mode)) applyModeValue(doc.body.mode);
-  params.apply(doc.body.values ?? {});`,
-    `  params.apply(doc.body.values ?? {});
-  if (Number.isInteger(doc.body.mode)) setMode(doc.body.mode);`,
+  // **`preset-through-setmode` was here and is deleted rather than re-anchored,
+  // because the bug it planted can no longer be written.**
+  //
+  // It applied a user's preset by writing its values and *then* selecting its mode
+  // through `setMode`, which applied the hardcoded BLACKWALL look as part of selecting
+  // mode 4 - so the user's own twelve values were overwritten on the way past and the
+  // preset appeared to load while not being the preset. That required two things which
+  // both stopped existing when the readings became registry parameters: a preset
+  // carrying a mode beside its values, and a door that applied a look as a side effect
+  // of selecting a reading. There is one door now and it writes what it is given.
+  //
+  // Re-anchoring it onto the nearest surviving line would have kept a red row that
+  // tested a different property under an old name, which is how a suite ends up with
+  // mutations nobody can map back to a hazard. The property it protected - that
+  // applying a stored preset lands the user's own values and not somebody else's - is
+  // still asserted, by the section that applies a preset and compares the look.
+  // A save over a shipped look overwrites it instead of forking it. The control for
+  // the built-in root: without it, "the shipped looks cannot be lost" is a claim the
+  // check makes about itself, and every row of it would pass just as well against a
+  // store with one directory. The write path is what is mutated rather than the read
+  // path, because a read that fell back correctly and a write that landed in the
+  // wrong place look identical from the listing.
+  //
+  // Narrow on purpose. A first pass routed *every* write through `readPathFor`, which
+  // sends a name that exists in neither root to the shipped directory - so saving a
+  // brand new preset landed somewhere nothing looked, the run died 135 assertions in
+  // with an ENOENT, and the fork rows it was written for never executed. A mutation
+  // that kills the harness before reaching its target is not a caught mutation. This
+  // one moves only names that already ship, which is exactly the fork it must break.
+  'write-overwrites-builtin': { file: 'server/library.js', edits: [[
+    `    const path = this.pathFor(name);
+    // Captured here, on the same tick as the increment.`,
+    `    let path = this.pathFor(name);
+    if (this.builtinDir) {
+      const shipped = join(this.builtinDir, \`\${name}.json\`);
+      try { await stat(shipped); path = shipped; } catch { /* not a shipped name */ }
+    }
+    // Captured here, on the same tick as the increment.`,
   ]] },
   // Marks are drawn at their source fraction rather than through the retime curve,
   // which is identical at rate 1 with no keys and wrong everywhere else.
@@ -325,7 +353,7 @@ const MUTATIONS = {
     "  { path: '/library/writes', pattern: /^\\/library\\/writes$/, read: serveWriteCounts },",
     "  { path: '/library/writes', pattern: /^\\/library\\/writes$/, read: serveWriteCounts },\n"
     + "  { path: '/library/sweep-probe', pattern: /^\\/library\\/sweep-probe$/, read: async (req, res) => {\n"
-    + "    await PROJECTS.write('planted-then-removed', { version: 3, look: { mode: 0, params: {}, tracks: {} }, composition: { retime: { rate: 1, keys: [] }, camera: [] }, outputSize: '1920x1080', appliedPreset: null });\n"
+    + "    await PROJECTS.write('planted-then-removed', { version: PROJECT_VERSION, look: { params: {}, tracks: {} }, composition: { retime: { rate: 1, keys: [] }, camera: [] }, outputSize: '1920x1080', appliedPreset: null });\n"
     + "    await PROJECTS.remove('planted-then-removed');\n"
     + '    sendJson(res, { restored: true });\n'
     + '  } },',
@@ -547,6 +575,23 @@ const MUTATIONS = {
   'confirm-promises-both-delete': { file: 'web/library.js', edits: [[
     "  const alsoOnNode = take.state === 'both';", '  const alsoOnNode = false;',
   ]] },
+  // The listing goes back to reading every failure as an absent directory, which is
+  // how a user library the process cannot enumerate answers 200 carrying only the
+  // looks that ship - the same page a fresh install draws.
+  'list-swallows-unreadable': { file: 'server/library.js', edits: [[
+    "    if (required || err?.code !== 'ENOENT') {", '    if (required) {',
+  ]] },
+  // The editor goes back to swallowing a library that will not load, which is the
+  // empty picker an operator gets told nothing about.
+  'open-take-swallows-library': { file: 'web/main.js', edits: [[
+    '    await refresh().catch((err) => unavailable.push(`${what} (${err.message})`));',
+    '    await refresh().catch(() => {});',
+  ]] },
+  // Every version older than this build gets one sentence again, so a document with no
+  // conversion path is told the thing that is true of a document from the future.
+  'one-refusal-for-older-versions': { file: 'web/format.js', edits: [[
+    '    : version === 1 || version === 2', '    : false',
+  ]] },
   'skim-ignores-state': { file: 'web/library.js', edits: [[
     'const DIVISOR = { local: 1, both: 1, remote: 4 };',
     'const DIVISOR = { local: 1, both: 1, remote: 1 };',
@@ -739,6 +784,21 @@ function stageServer() {
   // mutations run against a staged copy rather than an edit-and-restore. It is
   // 312K, so the isolation costs nothing worth counting.
   cpSync(join(REPO, 'web'), join(root, 'web'), { recursive: true });
+  // The looks that ship, copied where `--builtin-presets` points the mac server. Out
+  // of the staged tree on purpose: it makes the fork rows independent of whether the
+  // server happened to resolve its default correctly, which is a different claim, and
+  // it means those rows are driving the flag rather than the fallback.
+  cpSync(join(REPO, 'presets-builtin'), join(WORK, 'builtin-presets'), { recursive: true });
+  // **And a second copy inside the staged tree, where the default resolves to.** The
+  // copy above is deliberately outside it so the fork rows drive the flag rather than
+  // the fallback, and that is still true - but it left every server spawned *without*
+  // the flag resolving `presets-builtin` to a path in the staged root that nothing had
+  // put there. That was invisible while a missing shipped-looks directory answered an
+  // empty list, and it stopped being invisible the moment the store started reporting
+  // it: the replay server, which names no preset flags at all, began answering 500 on
+  // `/presets` and the viewer logged a page error. A staged tree is supposed to be an
+  // install, and an install has the looks that ship in it.
+  cpSync(join(REPO, 'presets-builtin'), join(root, 'presets-builtin'), { recursive: true });
   for (const name of ['node_modules', 'vendor']) {
     const from = join(REPO, name);
     if (existsSync(from) && !existsSync(join(root, name))) symlinkSync(from, join(root, name));
@@ -896,8 +956,12 @@ function checkLogPredicate() {
 }
 
 const getJson = async (url, init) => (await fetch(url, init)).json();
-const post = (url, body) => getJson(url, {
-  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}),
+// The method is a parameter because the document routes take three of them and the
+// difference is the behaviour under test: a PUT to a shipped preset's name has to fork
+// it and a DELETE of the fork has to bring the shipped one back, and neither claim can
+// be made through a helper that can only POST.
+const post = (url, body, method = 'POST') => getJson(url, {
+  method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}),
 });
 
 // ------------------------------------------------------------------- playwright
@@ -976,9 +1040,16 @@ const { nodeCaps, macCaps } = buildFixture();
 const root = stageServer();
 const nodeUrl = await startServer(root, ['--captures', nodeCaps, '--name', 'pi-01',
   '--presets', join(WORK, 'node-presets'), '--projects', join(WORK, 'node-projects')], NODE_PORT);
+// `--builtin-presets` named explicitly rather than left to resolve beside the staged
+// server, and for two reasons. It points the shipped-look rows at the repo's own
+// `presets-builtin/`, so they sweep the looks the product offers rather than a copy
+// that could have been staged wrong - the "compare what the tool tests against what
+// the product ships" rule. And it is the only caller of the flag: a flag whose sole
+// mention is the comment introducing it is a flag nothing proves does anything.
 const macUrl = await startServer(root, ['--captures', macCaps, '--name', 'mac',
   '--node', nodeUrl, '--node-name', 'pi-01',
-  '--presets', join(WORK, 'presets'), '--projects', join(WORK, 'projects')], MAC_PORT);
+  '--presets', join(WORK, 'presets'), '--projects', join(WORK, 'projects'),
+  '--builtin-presets', join(WORK, 'builtin-presets')], MAC_PORT);
 
 const { chromium } = await loadPlaywright();
 const browser = await chromium.launch({ headless: !HEADED, args: ['--use-gl=angle', '--use-angle=default'] });
@@ -1827,7 +1898,7 @@ async function runChecks() {
     // The saved file is a file on disk with a version on it, not a blob the page
     // interprets for itself.
     const saved = JSON.parse(readFileSync(join(WORK, 'projects/round-trip.json'), 'utf8'));
-    check(saved.version === 3, 'the file carries the format version', `version ${saved.version}`);
+    check(saved.version === PROJECT_VERSION, 'the file carries the format version', `version ${saved.version}`);
     check(JSON.parse(readFileSync(join(WORK, 'projects/own-footage.json'), 'utf8')).take?.hash?.startsWith('sha256:'),
       'and a project saved from the editor names its footage by content hash rather than by path');
 
@@ -1844,7 +1915,10 @@ async function runChecks() {
     const cases = [
       ['a project with no version', 'delete p.version;'],
       ['a project from an older version', 'p.version = 0;'],
-      ['a project from a newer version', 'p.version = 4;'],
+      // Derived from the version this build writes rather than written down. A literal
+      // here says "newer" only until the next bump makes it current, and this row went
+      // ACCEPTED the moment the readings moved the format from 3 to 4.
+      ['a project from a newer version', `p.version = ${PROJECT_VERSION + 1};`],
       ['a version that is not a number', 'p.version = "1";'],
       ['a retime curve that falls', 'p.composition.retime.keys = [{t:0,value:0},{t:1,value:2},{t:2,value:0.5}];'],
       ['a retime handle outside the unit box',
@@ -1886,7 +1960,16 @@ async function runChecks() {
       ['a parameter named constructor in the values', 'p.look.params.constructor = 1;'],
       ['a parameter named __proto__ in the values',
         "Object.defineProperty(p.look.params, '__proto__', { value: 1, enumerable: true, configurable: true, writable: true });"],
-      ['a mode outside the modes that exist', 'p.look.mode = 9;'],
+      // The reading, which used to be `p.look.mode = 9` - refused by a bounds check the
+      // loader wrote by hand for the one value the registry did not carry. There is no
+      // such clause now and there should not be: a reading is a registry scalar, so it
+      // meets `normalise` like every other look value. That changes what a corrupt file
+      // does rather than whether it is caught - 9 is *clamped* to the declared 1, which
+      // is what every slider does with an out-of-range number - so the row that means
+      // something is the one the registry genuinely refuses. A first pass at this
+      // asserted the clamp was a refusal and went ACCEPTED, which is the check being
+      // wrong about the program rather than the other way round.
+      ['a reading that is not a number', 'p.look.params.readBlackwall = "1";'],
       ['a retime rate of zero or less', 'p.composition.retime.rate = 0;'],
       ['a preset stamp that is not a name and a rev', 'p.appliedPreset = { name: 42 };'],
     ];
@@ -1951,14 +2034,15 @@ async function runChecks() {
     await page.waitForFunction('globalThis.__kinect?.timeline?.transport() !== null', null, { timeout: 40000 });
     await page.evaluate('globalThis.__kinect.timeline.settled()');
 
-    // A preset saved off a Blackwall clip whose values have then been moved away
-    // from Blackwall's. This is the shape that catches an apply routed through
-    // `setMode`: the mode says 4, so `setMode` would write the hardcoded look and
-    // the hand-tuned values would never survive.
+    // A preset saved off a Blackwall clip whose values have then been moved away from
+    // Blackwall's own. The hand-tuning is the point: a preset that happened to match the
+    // shipped look could not tell "your values came back" from "the built-in look for
+    // this reading was reapplied", which is the confusion a preset library exists to
+    // avoid. The reading goes in through the registry with everything else now.
     const TUNED = { bloom: 2.4, trails: 0.11, rgbSplit: 4.2, grain: 0.77, pointSize: 30.5 };
     await page.evaluate(`(async () => {
       const k = globalThis.__kinect;
-      k.setMode(4);
+      k.params.apply({ readRgb: 0, readBlackwall: 1 });
       k.params.apply(${JSON.stringify(TUNED)});
       const res = await fetch('/presets/hand-tuned', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -1969,12 +2053,15 @@ async function runChecks() {
 
     const onDisk = readFileSync(join(WORK, 'presets/hand-tuned.json'), 'utf8');
     const doc = JSON.parse(onDisk);
-    check(doc.version === 3, 'a preset carries the format version too');
-    // Step 3's carried note: the registry excludes the mode as clip state, so a
-    // preset saved as `values(names('look'))` alone would neither capture nor
-    // restore it - and the spec lists mode first among presettable look.
-    check(doc.mode === 4, 'a preset carries the clip\'s mode alongside the registry subset',
-      `mode ${doc.mode}`);
+    check(doc.version === 4, 'a preset carries the format version too');
+    // The mode used to be a second field beside `values`, because the registry excluded
+    // it and `values(names('look'))` would neither capture nor restore it. It is one of
+    // those values now, so what this row asserts is that the subset really is the whole
+    // preset - a build that still carried a separate field would fail the second half.
+    check(doc.values.readBlackwall === 1 && doc.values.readRgb === 0,
+      'the reading travels inside the values, like every other look parameter',
+      `readBlackwall ${doc.values.readBlackwall} readRgb ${doc.values.readRgb}`);
+    check(!('mode' in doc), 'and there is no mode field left beside them');
     check(doc.values.bloom === TUNED.bloom && doc.values.pointSize === TUNED.pointSize,
       'and the look values it was saved with');
     check(!('camera' in doc.values) && !('renderScale' in doc.values),
@@ -1985,7 +2072,7 @@ async function runChecks() {
     // one sweep, in two different mutation runs, always at this call.
     const applied = await retryOnContextLoss('applying the preset', () => page.evaluate(`(async () => {
       const k = globalThis.__kinect;
-      k.setMode(0);
+      k.params.apply({ readBlackwall: 0, readRgb: 1 });
       k.params.apply({ bloom: 0, trails: 0, rgbSplit: 0, grain: 0, pointSize: 9 });
       const before = { pose: k.params.get('camera'), values: k.params.values(k.params.names('look')) };
       const docRes = await fetch('/presets/hand-tuned');
@@ -1993,16 +2080,17 @@ async function runChecks() {
       return {
         before,
         after: k.params.values(k.params.names('look')),
-        mode: k.mode(),
         pose: k.params.get('camera'),
         stamp: k.library.appliedPreset(),
       };
     })()`));
     check(applied.after.bloom === TUNED.bloom && applied.after.rgbSplit === TUNED.rgbSplit
       && applied.after.grain === TUNED.grain && applied.after.pointSize === TUNED.pointSize,
-      'applying a preset restores the values it was saved with, not the built-in look for its mode',
+      'applying a preset restores the values it was saved with, not a built-in look',
       `bloom ${applied.after.bloom} rgbSplit ${applied.after.rgbSplit} pointSize ${applied.after.pointSize}`);
-    check(applied.mode === 4, 'and it restores the mode, which the registry does not carry');
+    check(applied.after.readBlackwall === 1 && applied.after.readRgb === 0,
+      'and it restores the reading, which needs no special case to travel',
+      `readBlackwall ${applied.after.readBlackwall}`);
     check(eq(applied.pose, applied.before.pose), 'and it does not move the camera');
 
     // The stamp, hashed over the bytes on disk. A re-serialisation would hash
@@ -2022,7 +2110,7 @@ async function runChecks() {
     await page.evaluate(`(async () => {
       await fetch('/presets/hand-tuned', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 0, values: { bloom: 0, pointSize: 9 } }),
+        body: JSON.stringify({ version: 4, values: { bloom: 0, pointSize: 9 } }),
       });
     })()`);
     const stillTuned = await page.evaluate("globalThis.__kinect.params.get('bloom')");
@@ -2030,15 +2118,160 @@ async function runChecks() {
       'editing the preset afterwards does not reach back into the clip - the values were copied in',
       `bloom ${stillTuned}`);
 
-    // A preset from a version this build does not read.
-    const refusedPreset = await page.evaluate(`(() => {
+    // ------------------------------------------------- the looks that ship
+    //
+    // Five documents served out of a second, read-only root beside the user's own
+    // library. The rows below are about the one behaviour that root has to get right:
+    // **a save over a shipped name forks it rather than overwriting it.** Without
+    // that, the first person to tweak Blackwall loses it for good, and "the shipped
+    // looks cannot be lost" is a sentence the design writes about itself.
+    //
+    // Driven against the real `presets-builtin/` rather than a directory invented
+    // here, so the check sweeps the looks the product actually offers. A tool holding
+    // its own five constants would keep passing after somebody re-graded them.
+    const shipped = JSON.parse(readFileSync(join(REPO, 'presets-builtin/blackwall.json'), 'utf8'));
+    const shippedNames = readdirSync(join(REPO, 'presets-builtin'))
+      .filter((f) => f.endsWith('.json')).map((f) => f.replace(/\.json$/, '')).sort();
+    const listed = await getJson(`${macUrl}/presets`);
+    const listedBuiltin = listed.presets.filter((d) => d.builtin).map((d) => d.name).sort();
+    check(shippedNames.length > 0 && eq(listedBuiltin, shippedNames),
+      'every look that ships is listed, and says it ships',
+      `${listedBuiltin.join(' ')} against ${shippedNames.join(' ')}`);
+
+    // The fork. Written through the same route a save uses, because the claim is about
+    // that route rather than about a helper.
+    // **The staged copy, not the repo's.** The server reads its built-in root out of
+    // the tree it was started from, so asserting the repo's file is unchanged asserts
+    // something the server could not have done under any implementation - a row that
+    // passes by construction and reads exactly like a fork-on-write that works. The
+    // file under test is the one the process can actually reach.
+    const builtinPath = join(WORK, 'builtin-presets/blackwall.json');
+    const bytesBefore = readFileSync(builtinPath, 'utf8');
+    const forkBody = { version: PROJECT_VERSION, values: { ...shipped.values, bloom: 5.5 } };
+    await post(`${macUrl}/presets/blackwall`, forkBody, 'PUT');
+    check(readFileSync(builtinPath, 'utf8') === bytesBefore,
+      'saving over a shipped look leaves the shipped file byte-identical',
+      `${bytesBefore.length} bytes`);
+    const forkPath = join(WORK, 'presets/blackwall.json');
+    check(existsSync(forkPath), 'and the save landed in the user\'s own library instead',
+      existsSync(forkPath) ? readdirSync(join(WORK, 'presets')).join(' ') : 'no fork on disk');
+    const afterFork = await getJson(`${macUrl}/presets/blackwall`);
+    check(afterFork.builtin === false && afterFork.body.values.bloom === 5.5,
+      'and reading the name now answers the fork, not the look it was forked from',
+      `builtin=${afterFork.builtin} bloom=${afterFork.body.values.bloom}`);
+
+    // And the other direction, which is the same fact read backwards: removing the
+    // fork brings the shipped look back rather than leaving a hole where a name was.
+    await post(`${macUrl}/presets/blackwall`, null, 'DELETE');
+    const afterRemove = await getJson(`${macUrl}/presets/blackwall`);
+    check(afterRemove.builtin === true && afterRemove.body.values.bloom === shipped.values.bloom,
+      'and removing the fork brings the shipped look back',
+      `builtin=${afterRemove.builtin} bloom=${afterRemove.body.values.bloom}`);
+
+    // ------------------------------------------- a library that cannot be read
+    //
+    // **An unreadable user directory is not an empty one, and the two answers are
+    // indistinguishable unless the route refuses.** With the shipped root behind it,
+    // a `/presets` that swallows the failure comes back 200 carrying exactly the five
+    // looks - which is precisely what a fresh install looks like, so the picker shows
+    // a healthy library with every fork and every grade the user ever saved missing
+    // from it. Nothing on the page could tell them apart.
+    //
+    // The directory is a *file*, so `readdir` answers ENOTDIR: deterministic, needs no
+    // `chmod`, and unlike a permission bit it behaves the same for a run as root. The
+    // control is the condition in `listJsonNames` - with `err?.code !== 'ENOENT'`
+    // removed it lists the five and answers 200, and both rows below go red.
+    const brokenRoot = join(WORK, 'presets-that-are-a-file');
+    writeFileSync(brokenRoot, 'a file where a directory should be\n');
+    const brokenUrl = await startServer(root, ['--captures', macCaps, '--name', 'broken-library',
+      '--presets', brokenRoot, '--builtin-presets', join(WORK, 'builtin-presets')], MAC_PORT + 14);
+    const brokenRes = await fetch(`${brokenUrl}/presets`);
+    const brokenText = await brokenRes.text();
+    check(!brokenRes.ok, 'a preset directory that cannot be read is reported rather than listed as empty',
+      `${brokenRes.status} ${brokenText.slice(0, 90)}`);
+    // And the second half, because a 500 whose body still carried the five would be a
+    // route that reported *and* served: the shipped looks must not stand in for a
+    // user library nobody could read.
+    let brokenListed = [];
+    try { brokenListed = (JSON.parse(brokenText).presets ?? []).map((d) => d.name); } catch { /* not JSON is fine */ }
+    check(brokenListed.length === 0,
+      'and the shipped looks are not served in its place, which would read as a library with no forks',
+      brokenListed.join(' ') || 'nothing listed');
+    // Still absent, though, stays empty: that is the ordinary state of a fresh node
+    // and the reason this rule is about ENOENT rather than about failing loudly.
+    const freshUrl = await startServer(root, ['--captures', macCaps, '--name', 'fresh-library',
+      '--presets', join(WORK, 'presets-never-made'), '--builtin-presets', join(WORK, 'builtin-presets')],
+    MAC_PORT + 15);
+    const fresh = await getJson(`${freshUrl}/presets`);
+    check(fresh.presets.length > 0 && fresh.presets.every((d) => d.builtin),
+      'while a user directory that was simply never made still lists the shipped looks and nothing else',
+      `${fresh.presets.length} presets, ${fresh.presets.filter((d) => d.builtin).length} shipped`);
+    // **And the same failure read where an operator would be standing.** The rows above
+    // are the route's answer; this one is the editor's, and it is a different question:
+    // the refusal reached the page and was thrown away by an empty `catch`, so a
+    // `--builtin-presets` one directory too high drew a picker holding the placeholder
+    // and nothing else, which is what a node with no presets legitimately looks like.
+    // Driven against the broken server rather than simulated, so the message on screen
+    // is the one the store wrote.
+    {
+      const { page: hurt, errors: hurtErrors } = await openPage(browser, editorPage(brokenUrl, 'local-clip'));
+      // **`#tNote`, which is what `ui.note` is.** Written against `#note` first, and
+      // that row read an element that does not exist: `?? ''` made every arm answer
+      // "the note is empty", so it was red against a build that was reporting perfectly
+      // and would have been red against one that reported nothing at all.
+      //
+      // The text is taken *at the moment it matches* rather than read again afterwards,
+      // because the note is one line that every later message overwrites - a read taken
+      // a beat too late measures whichever gesture came next.
+      const held = await hurt.waitForFunction(
+        '(() => { const t = document.getElementById("tNote")?.textContent ?? ""; return t.includes("library unavailable") ? t : null; })()',
+        null, { timeout: 30000 },
+      ).catch(() => null);
+      const note = held ? String(await held.jsonValue())
+        : await hurt.evaluate('document.getElementById("tNote")?.textContent ?? ""');
+      check(/library unavailable/.test(note) && /presets/.test(note),
+        'an editor whose preset library will not load says so instead of drawing an empty picker',
+        note.slice(0, 120) || 'the note is empty');
+      // The store's own sentence, not a paraphrase and not `list is not iterable`: the
+      // path from `listJsonNames` to the note is what makes the failure actionable.
+      check(/cannot be read/.test(note),
+        'and the note carries the server\'s reason rather than the shape of the crash',
+        note.slice(0, 120) || 'the note is empty');
+      // The 500 itself is the subject of this page, so the console line the browser
+      // writes for it is not a finding - asserting its absence would be asserting that
+      // the scenario did not happen. An uncaught exception still is one: reporting a
+      // failed library must not be a second way to break the editor.
+      const thrown = hurtErrors.filter((e) => !/Failed to load resource/.test(e));
+      check(thrown.length === 0, 'and reporting it raises no uncaught page errors',
+        thrown.slice(0, 2).join(' | ') || 'none beyond the 500 this page is about');
+      await hurt.close();
+    }
+    for (const p of servers.filter((sv) => sv.port === MAC_PORT + 14 || sv.port === MAC_PORT + 15)) {
+      p.child.kill('SIGKILL');
+    }
+
+    // A preset from a version this build does not read - and **which** refusal it gets,
+    // because the sentence is the whole value of the row. One version too old to have a
+    // path and one from a build that does not exist yet: they are incompatible for
+    // different reasons, and a single fallback sentence sent the first after a scale
+    // factor that was never its problem while telling the second about a format four
+    // versions behind it.
+    const refusalFor = async (version) => page.evaluate(`(() => {
       try {
-        globalThis.__kinect.library.applyStoredPreset({ name: 'old', rev: 'sha256:0', body: { version: 0, values: { bloom: 1 } } });
+        globalThis.__kinect.library.applyStoredPreset({ name: 'old', rev: 'sha256:0', body: { version: ${version}, values: { bloom: 1 } } });
         return 'ACCEPTED';
       } catch (e) { return e.message; }
     })()`);
-    check(refusedPreset !== 'ACCEPTED', 'a preset from another format version is refused',
-      refusedPreset.slice(0, 70));
+    const refusedOld = await refusalFor(2);
+    const refusedFuture = await refusalFor(PROJECT_VERSION + 1);
+    check(refusedOld !== 'ACCEPTED' && refusedFuture !== 'ACCEPTED',
+      'a preset from another format version is refused', `${refusedOld.slice(0, 40)} / ${refusedFuture.slice(0, 40)}`);
+    check(/no path from here/.test(refusedOld) && !/later build/.test(refusedOld),
+      'a version this build has no conversion for says so rather than blaming the units',
+      refusedOld.slice(0, 130));
+    check(/later build/.test(refusedFuture) && !/no path from here/.test(refusedFuture),
+      'and a version from a later build gets its own answer rather than the older one\'s',
+      refusedFuture.slice(0, 130));
 
     check(errors.length === 0, 'the preset path raises no page errors', errors.slice(0, 2).join(' | '));
     await page.close();
@@ -2504,14 +2737,14 @@ async function runChecks() {
     // path as well as their not-found one - a mutation in the branch that reads an
     // existing document is unreached by a name that does not exist.
     const SEEDED_PROJECT = {
-      version: 3,
-      look: { mode: 0, params: {}, tracks: {} },
+      version: PROJECT_VERSION,
+      look: { params: {}, tracks: {} },
       composition: { retime: { rate: 1, keys: [] }, camera: [] },
       outputSize: '1920x1080',
       appliedPreset: null,
     };
     writeFileSync(join(shootProjects, 'seeded-project.json'), `${JSON.stringify(SEEDED_PROJECT, null, 2)}\n`);
-    writeFileSync(join(shootPresets, 'seeded-preset.json'), `${JSON.stringify({ version: 3, mode: 0, values: {} }, null, 2)}\n`);
+    writeFileSync(join(shootPresets, 'seeded-preset.json'), `${JSON.stringify({ version: PROJECT_VERSION, values: {} }, null, 2)}\n`);
     const shootUrl = await startServer(root, [
       '--captures', shootDir, '--name', 'shooting', '--record', '--no-color',
       '--projects', shootProjects, '--presets', shootPresets,
@@ -2714,12 +2947,15 @@ async function runChecks() {
       'and nothing was written to the captures directory',
       readdirSync(guardDir).join(' '));
 
-    // A document from a build this one is not. It came back stamped as version 1
-    // with its version 2 fields underneath, which is exactly what the version field
-    // was chosen over an authored buffer height to prevent. Version 3 is this build,
-    // so the future is now version 4.
-    const future = await post(`${guardUrl}/projects/from-the-future`, { version: 4, tracks: {}, futureField: 'kept' });
-    check(/version 4/.test(future.error ?? ''),
+    // A document from a build this one is not. It came back stamped as version 1 with
+    // its version 2 fields underneath, which is exactly what the version field was
+    // chosen over an authored buffer height to prevent. The future is one past whatever
+    // this build writes, derived rather than written down - a literal 4 here was the
+    // future until the readings made 4 the present, at which point this row quietly
+    // started asserting that the current version is refused and passed by ACCEPTING it.
+    const FUTURE = PROJECT_VERSION + 1;
+    const future = await post(`${guardUrl}/projects/from-the-future`, { version: FUTURE, tracks: {}, futureField: 'kept' });
+    check(new RegExp(`version ${FUTURE}`).test(future.error ?? ''),
       'a document from a future format version is refused rather than restamped as this one',
       (future.error ?? 'ACCEPTED').slice(0, 80));
     const stored = await getJson(`${guardUrl}/projects/from-the-future`);
