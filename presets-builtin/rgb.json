@@ -1,0 +1,22 @@
+{
+  "version": 4,
+  "values": {
+    "readRgb": 1,
+    "readDepth": 0,
+    "readGhost": 0,
+    "readContour": 0,
+    "readBlackwall": 0,
+    "bloom": 0,
+    "trails": 0,
+    "rgbSplit": 0,
+    "scanlines": 0,
+    "grain": 0,
+    "glitch": 0,
+    "pointSize": 9,
+    "scan": 0,
+    "rim": 0.55,
+    "fade": 120,
+    "wake": 0,
+    "additive": false
+  }
+}

@@ -62,16 +62,6 @@
   .row output { flex: 0 0 42px; text-align: right; font-variant-numeric: tabular-nums; }
   input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); height: 3px; }
 
-  .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
-  .modes button {
-    padding: 5px 4px; border: 1px solid var(--line); border-radius: 5px; cursor: pointer;
-    background: transparent; color: var(--dim); font: inherit; font-size: 10px;
-  }
-  .modes button:hover { border-color: rgba(255,255,255,0.28); color: var(--ink); }
-  .modes button[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: #04231f; }
-  .modes button.wide { grid-column: 1 / -1; }
-  .modes button.wide[aria-pressed=true] { background: var(--red); border-color: var(--red); color: #17000a; }
-
   .check { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; cursor: pointer; }
   .check input { accent-color: var(--accent); margin: 0; }
 
@@ -425,15 +415,31 @@
         edited in the world, so there is no slider for it.</div>
     </div>
 
+    <!-- The five readings of the take, which were five buttons and one integer uniform
+         until they became five look parameters. They mix rather than exclude, so this
+         is sliders and not a segmented control: RGB at 0.6 against depth at 0.4 is a
+         60/40 blend of the camera image and the range ramp, and each one keyframes,
+         so a clip can dissolve from one reading into another under the playhead.
+
+         Source is what the point is coloured *by* and treatment is what is then made
+         of it, which is the axis worth seeing on the panel - picking a treatment used
+         to mean picking its source with it and there was no way to say otherwise.
+
+         Not `lookgroup`, which is what the mode buttons were not either: the rest of
+         the grade is one button away on the recorder, but which reading you are
+         shooting against is the whole reason the preset library is reachable from
+         there at all, so it stays on both surfaces. -->
     <div class="group">
-      <label>Shading</label>
-      <div class="modes" id="modes">
-        <button data-mode="0" aria-pressed="true">RGB</button>
-        <button data-mode="1" aria-pressed="false">Depth</button>
-        <button data-mode="2" aria-pressed="false">Ghost</button>
-        <button data-mode="3" aria-pressed="false">Contour</button>
-        <button data-mode="4" aria-pressed="false" class="wide">BLACKWALL</button>
-      </div>
+      <label>Reading &middot; source</label>
+      <div class="row"><span>colour</span><input id="readRgb" type="range"><output></output></div>
+      <div class="row"><span>depth</span><input id="readDepth" type="range"><output></output></div>
+    </div>
+
+    <div class="group">
+      <label>Reading &middot; treatment</label>
+      <div class="row"><span>ghost</span><input id="readGhost" type="range"><output></output></div>
+      <div class="row"><span>contour</span><input id="readContour" type="range"><output></output></div>
+      <div class="row"><span>blackwall</span><input id="readBlackwall" type="range"><output></output></div>
     </div>
 
     <!-- Framing: what you can see, and where you are seeing it from. `sensor view` is

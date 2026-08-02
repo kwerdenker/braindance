@@ -66,6 +66,11 @@ import { createConnection } from 'node:net';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { MessageParser, TYPE_HELLO, TYPE_FRAME, encodeMessage } from '../server/protocol.js';
+// The format version, imported rather than written down. Every document these tools
+// construct or assert on has to carry the one this build writes, and a literal here
+// is a second copy of it - which is exactly what had to be hand-swept when the
+// readings dissolved the mode and the version moved from 3 to 4.
+import { PROJECT_VERSION } from '../web/format.js';
 
 const argv = process.argv.slice(2);
 const flag = (name, fallback = null) => {
@@ -233,22 +238,22 @@ const MUTATIONS = {
     '      key.value = params.normalise(name, key.value);',
     '      /* mutation: the key value is taken as it arrived */',
   ]] },
-  // A user preset is applied through `setMode`, which applies the hardcoded
-  // BLACKWALL look as part of selecting mode 4 - so the user's own twelve values
-  // are overwritten on the way past and the preset appears to load.
-  // A user preset is applied by writing its values and *then* selecting its mode
-  // through `setMode`, which applies the hardcoded BLACKWALL look as part of
-  // selecting mode 4 - so the user's own twelve values are overwritten on the way
-  // past and the preset appears to load. Written as a reorder rather than as a bare
-  // swap of the call, because `setMode` before the values is harmless: the values
-  // land afterwards and win. The bug only exists in this order, so the mutation has
-  // to be in it or it moves nothing and reads as a check that found nothing.
-  'preset-through-setmode': { file: 'web/main.js', edits: [[
-    `  if (Number.isInteger(doc.body.mode)) applyModeValue(doc.body.mode);
-  params.apply(doc.body.values ?? {});`,
-    `  params.apply(doc.body.values ?? {});
-  if (Number.isInteger(doc.body.mode)) setMode(doc.body.mode);`,
-  ]] },
+  // **`preset-through-setmode` was here and is deleted rather than re-anchored,
+  // because the bug it planted can no longer be written.**
+  //
+  // It applied a user's preset by writing its values and *then* selecting its mode
+  // through `setMode`, which applied the hardcoded BLACKWALL look as part of selecting
+  // mode 4 - so the user's own twelve values were overwritten on the way past and the
+  // preset appeared to load while not being the preset. That required two things which
+  // both stopped existing when the readings became registry parameters: a preset
+  // carrying a mode beside its values, and a door that applied a look as a side effect
+  // of selecting a reading. There is one door now and it writes what it is given.
+  //
+  // Re-anchoring it onto the nearest surviving line would have kept a red row that
+  // tested a different property under an old name, which is how a suite ends up with
+  // mutations nobody can map back to a hazard. The property it protected - that
+  // applying a stored preset lands the user's own values and not somebody else's - is
+  // still asserted, by the section that applies a preset and compares the look.
   // Marks are drawn at their source fraction rather than through the retime curve,
   // which is identical at rate 1 with no keys and wrong everywhere else.
   'marks-ignore-retime': { file: 'web/main.js', edits: [[
@@ -325,7 +330,7 @@ const MUTATIONS = {
     "  { path: '/library/writes', pattern: /^\\/library\\/writes$/, read: serveWriteCounts },",
     "  { path: '/library/writes', pattern: /^\\/library\\/writes$/, read: serveWriteCounts },\n"
     + "  { path: '/library/sweep-probe', pattern: /^\\/library\\/sweep-probe$/, read: async (req, res) => {\n"
-    + "    await PROJECTS.write('planted-then-removed', { version: 3, look: { mode: 0, params: {}, tracks: {} }, composition: { retime: { rate: 1, keys: [] }, camera: [] }, outputSize: '1920x1080', appliedPreset: null });\n"
+    + "    await PROJECTS.write('planted-then-removed', { version: PROJECT_VERSION, look: { params: {}, tracks: {} }, composition: { retime: { rate: 1, keys: [] }, camera: [] }, outputSize: '1920x1080', appliedPreset: null });\n"
     + "    await PROJECTS.remove('planted-then-removed');\n"
     + '    sendJson(res, { restored: true });\n'
     + '  } },',
@@ -1827,7 +1832,7 @@ async function runChecks() {
     // The saved file is a file on disk with a version on it, not a blob the page
     // interprets for itself.
     const saved = JSON.parse(readFileSync(join(WORK, 'projects/round-trip.json'), 'utf8'));
-    check(saved.version === 3, 'the file carries the format version', `version ${saved.version}`);
+    check(saved.version === PROJECT_VERSION, 'the file carries the format version', `version ${saved.version}`);
     check(JSON.parse(readFileSync(join(WORK, 'projects/own-footage.json'), 'utf8')).take?.hash?.startsWith('sha256:'),
       'and a project saved from the editor names its footage by content hash rather than by path');
 
@@ -1844,7 +1849,10 @@ async function runChecks() {
     const cases = [
       ['a project with no version', 'delete p.version;'],
       ['a project from an older version', 'p.version = 0;'],
-      ['a project from a newer version', 'p.version = 4;'],
+      // Derived from the version this build writes rather than written down. A literal
+      // here says "newer" only until the next bump makes it current, and this row went
+      // ACCEPTED the moment the readings moved the format from 3 to 4.
+      ['a project from a newer version', `p.version = ${PROJECT_VERSION + 1};`],
       ['a version that is not a number', 'p.version = "1";'],
       ['a retime curve that falls', 'p.composition.retime.keys = [{t:0,value:0},{t:1,value:2},{t:2,value:0.5}];'],
       ['a retime handle outside the unit box',
@@ -1886,7 +1894,16 @@ async function runChecks() {
       ['a parameter named constructor in the values', 'p.look.params.constructor = 1;'],
       ['a parameter named __proto__ in the values',
         "Object.defineProperty(p.look.params, '__proto__', { value: 1, enumerable: true, configurable: true, writable: true });"],
-      ['a mode outside the modes that exist', 'p.look.mode = 9;'],
+      // The reading, which used to be `p.look.mode = 9` - refused by a bounds check the
+      // loader wrote by hand for the one value the registry did not carry. There is no
+      // such clause now and there should not be: a reading is a registry scalar, so it
+      // meets `normalise` like every other look value. That changes what a corrupt file
+      // does rather than whether it is caught - 9 is *clamped* to the declared 1, which
+      // is what every slider does with an out-of-range number - so the row that means
+      // something is the one the registry genuinely refuses. A first pass at this
+      // asserted the clamp was a refusal and went ACCEPTED, which is the check being
+      // wrong about the program rather than the other way round.
+      ['a reading that is not a number', 'p.look.params.readBlackwall = "1";'],
       ['a retime rate of zero or less', 'p.composition.retime.rate = 0;'],
       ['a preset stamp that is not a name and a rev', 'p.appliedPreset = { name: 42 };'],
     ];
@@ -1951,14 +1968,15 @@ async function runChecks() {
     await page.waitForFunction('globalThis.__kinect?.timeline?.transport() !== null', null, { timeout: 40000 });
     await page.evaluate('globalThis.__kinect.timeline.settled()');
 
-    // A preset saved off a Blackwall clip whose values have then been moved away
-    // from Blackwall's. This is the shape that catches an apply routed through
-    // `setMode`: the mode says 4, so `setMode` would write the hardcoded look and
-    // the hand-tuned values would never survive.
+    // A preset saved off a Blackwall clip whose values have then been moved away from
+    // Blackwall's own. The hand-tuning is the point: a preset that happened to match the
+    // shipped look could not tell "your values came back" from "the built-in look for
+    // this reading was reapplied", which is the confusion a preset library exists to
+    // avoid. The reading goes in through the registry with everything else now.
     const TUNED = { bloom: 2.4, trails: 0.11, rgbSplit: 4.2, grain: 0.77, pointSize: 30.5 };
     await page.evaluate(`(async () => {
       const k = globalThis.__kinect;
-      k.setMode(4);
+      k.params.apply({ readRgb: 0, readBlackwall: 1 });
       k.params.apply(${JSON.stringify(TUNED)});
       const res = await fetch('/presets/hand-tuned', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -1969,12 +1987,15 @@ async function runChecks() {
 
     const onDisk = readFileSync(join(WORK, 'presets/hand-tuned.json'), 'utf8');
     const doc = JSON.parse(onDisk);
-    check(doc.version === 3, 'a preset carries the format version too');
-    // Step 3's carried note: the registry excludes the mode as clip state, so a
-    // preset saved as `values(names('look'))` alone would neither capture nor
-    // restore it - and the spec lists mode first among presettable look.
-    check(doc.mode === 4, 'a preset carries the clip\'s mode alongside the registry subset',
-      `mode ${doc.mode}`);
+    check(doc.version === 4, 'a preset carries the format version too');
+    // The mode used to be a second field beside `values`, because the registry excluded
+    // it and `values(names('look'))` would neither capture nor restore it. It is one of
+    // those values now, so what this row asserts is that the subset really is the whole
+    // preset - a build that still carried a separate field would fail the second half.
+    check(doc.values.readBlackwall === 1 && doc.values.readRgb === 0,
+      'the reading travels inside the values, like every other look parameter',
+      `readBlackwall ${doc.values.readBlackwall} readRgb ${doc.values.readRgb}`);
+    check(!('mode' in doc), 'and there is no mode field left beside them');
     check(doc.values.bloom === TUNED.bloom && doc.values.pointSize === TUNED.pointSize,
       'and the look values it was saved with');
     check(!('camera' in doc.values) && !('renderScale' in doc.values),
@@ -1985,7 +2006,7 @@ async function runChecks() {
     // one sweep, in two different mutation runs, always at this call.
     const applied = await retryOnContextLoss('applying the preset', () => page.evaluate(`(async () => {
       const k = globalThis.__kinect;
-      k.setMode(0);
+      k.params.apply({ readBlackwall: 0, readRgb: 1 });
       k.params.apply({ bloom: 0, trails: 0, rgbSplit: 0, grain: 0, pointSize: 9 });
       const before = { pose: k.params.get('camera'), values: k.params.values(k.params.names('look')) };
       const docRes = await fetch('/presets/hand-tuned');
@@ -1993,16 +2014,17 @@ async function runChecks() {
       return {
         before,
         after: k.params.values(k.params.names('look')),
-        mode: k.mode(),
         pose: k.params.get('camera'),
         stamp: k.library.appliedPreset(),
       };
     })()`));
     check(applied.after.bloom === TUNED.bloom && applied.after.rgbSplit === TUNED.rgbSplit
       && applied.after.grain === TUNED.grain && applied.after.pointSize === TUNED.pointSize,
-      'applying a preset restores the values it was saved with, not the built-in look for its mode',
+      'applying a preset restores the values it was saved with, not a built-in look',
       `bloom ${applied.after.bloom} rgbSplit ${applied.after.rgbSplit} pointSize ${applied.after.pointSize}`);
-    check(applied.mode === 4, 'and it restores the mode, which the registry does not carry');
+    check(applied.after.readBlackwall === 1 && applied.after.readRgb === 0,
+      'and it restores the reading, which needs no special case to travel',
+      `readBlackwall ${applied.after.readBlackwall}`);
     check(eq(applied.pose, applied.before.pose), 'and it does not move the camera');
 
     // The stamp, hashed over the bytes on disk. A re-serialisation would hash
@@ -2022,7 +2044,7 @@ async function runChecks() {
     await page.evaluate(`(async () => {
       await fetch('/presets/hand-tuned', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 0, values: { bloom: 0, pointSize: 9 } }),
+        body: JSON.stringify({ version: 4, values: { bloom: 0, pointSize: 9 } }),
       });
     })()`);
     const stillTuned = await page.evaluate("globalThis.__kinect.params.get('bloom')");
@@ -2504,14 +2526,14 @@ async function runChecks() {
     // path as well as their not-found one - a mutation in the branch that reads an
     // existing document is unreached by a name that does not exist.
     const SEEDED_PROJECT = {
-      version: 3,
-      look: { mode: 0, params: {}, tracks: {} },
+      version: PROJECT_VERSION,
+      look: { params: {}, tracks: {} },
       composition: { retime: { rate: 1, keys: [] }, camera: [] },
       outputSize: '1920x1080',
       appliedPreset: null,
     };
     writeFileSync(join(shootProjects, 'seeded-project.json'), `${JSON.stringify(SEEDED_PROJECT, null, 2)}\n`);
-    writeFileSync(join(shootPresets, 'seeded-preset.json'), `${JSON.stringify({ version: 3, mode: 0, values: {} }, null, 2)}\n`);
+    writeFileSync(join(shootPresets, 'seeded-preset.json'), `${JSON.stringify({ version: PROJECT_VERSION, values: {} }, null, 2)}\n`);
     const shootUrl = await startServer(root, [
       '--captures', shootDir, '--name', 'shooting', '--record', '--no-color',
       '--projects', shootProjects, '--presets', shootPresets,
@@ -2714,12 +2736,15 @@ async function runChecks() {
       'and nothing was written to the captures directory',
       readdirSync(guardDir).join(' '));
 
-    // A document from a build this one is not. It came back stamped as version 1
-    // with its version 2 fields underneath, which is exactly what the version field
-    // was chosen over an authored buffer height to prevent. Version 3 is this build,
-    // so the future is now version 4.
-    const future = await post(`${guardUrl}/projects/from-the-future`, { version: 4, tracks: {}, futureField: 'kept' });
-    check(/version 4/.test(future.error ?? ''),
+    // A document from a build this one is not. It came back stamped as version 1 with
+    // its version 2 fields underneath, which is exactly what the version field was
+    // chosen over an authored buffer height to prevent. The future is one past whatever
+    // this build writes, derived rather than written down - a literal 4 here was the
+    // future until the readings made 4 the present, at which point this row quietly
+    // started asserting that the current version is refused and passed by ACCEPTING it.
+    const FUTURE = PROJECT_VERSION + 1;
+    const future = await post(`${guardUrl}/projects/from-the-future`, { version: FUTURE, tracks: {}, futureField: 'kept' });
+    check(new RegExp(`version ${FUTURE}`).test(future.error ?? ''),
       'a document from a future format version is refused rather than restamped as this one',
       (future.error ?? 'ACCEPTED').slice(0, 80));
     const stored = await getJson(`${guardUrl}/projects/from-the-future`);

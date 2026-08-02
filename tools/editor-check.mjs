@@ -331,35 +331,41 @@ let untested = null;
 // means "this file, or a named file, drives it and watches something change". The
 // rules come before the names because most of the panel is one rule - but a rule is
 // still an entry, so nothing is covered by silence.
-
+//
+// **Keyed rather than indexed, and that is a repair.** `covered()` below used to reach
+// for `DRIVER_RULES[2]`, `[3]`, `[4]` by position, so removing a rule from the middle of
+// this array silently re-pointed every attribution after it: the sweep would still pass,
+// with each remaining group credited to the wrong driver. Deleting the `#modes` rule
+// when the shading modes became registry parameters is exactly that edit, and nothing
+// would have failed. A key cannot slide.
 const DRIVER_RULES = [
   {
+    key: 'look',
     what: 'a look parameter slider or checkbox',
     by: "registry-check's drop-one sweep proves each one reaches the pixels",
     match: (el) => el.closest('#panel') && (el.type === 'range' || el.type === 'checkbox')
       && !el.closest('#sensorGroup, #monitorGroup, #recordGroup, #recLookGroup'),
   },
   {
+    key: 'keyframe',
     what: 'a keyframe toggle',
     by: 'keyframe-check, and section 5 here deletes what it creates',
     match: (el) => el.classList.contains('kf') && el.id !== 'tRateKey',
   },
   {
-    what: 'a shading mode',
-    by: 'registry-check and timeline-check both select modes and compare the image',
-    match: (el) => el.closest('#modes'),
-  },
-  {
+    key: 'recorder',
     what: 'a recorder-surface control',
     by: 'sensor-view-check section 6 and library-check',
     match: (el) => el.closest('#recordGroup, #recLookGroup, #sensorGroup, #monitorGroup, #extendedRow'),
   },
   {
+    key: 'camera',
     what: 'a camera-composition control',
     by: 'keyframe-check drives the path; sensor-view-check drives `sensor view`',
     match: (el) => el.closest('#cameraGroup') || el.id === 'camSensor',
   },
   {
+    key: 'nav',
     what: 'navigation out of the editor',
     by: 'sensor-view-check and library-check follow both links',
     match: (el) => el.closest('#navRow'),
@@ -532,7 +538,7 @@ try {
       type: el.type || null,
       ease: el.dataset ? el.dataset.ease ?? null : null,
       inTbar: Boolean(el.closest('.tbar')),
-      groups: ['#panel', '#modes', '#cameraGroup', '#navRow', '#recordGroup', '#recLookGroup',
+      groups: ['#panel', '#cameraGroup', '#navRow', '#recordGroup', '#recLookGroup',
         '#sensorGroup', '#monitorGroup', '#extendedRow']
         .filter((g) => el.closest(g)),
       kf: el.classList.contains('kf'),
@@ -540,16 +546,16 @@ try {
     }));
   }).toString()})()`);
 
+  const RULE = Object.fromEntries(DRIVER_RULES.map((r) => [r.key, r.by]));
   const inGroup = (row, ...groups) => groups.some((g) => row.groups.includes(g));
   const covered = (row) => {
     if (row.id && DRIVER_IDS[row.id]) return `named: ${DRIVER_IDS[row.id]}`;
     if (row.ease) return 'rule: an ease preset, section 5 presses all five';
-    if (row.kf && row.id !== 'tRateKey') return DRIVER_RULES[1].by;
-    if (inGroup(row, '#recordGroup', '#recLookGroup', '#sensorGroup', '#monitorGroup', '#extendedRow')) return DRIVER_RULES[3].by;
-    if (inGroup(row, '#modes')) return DRIVER_RULES[2].by;
-    if (inGroup(row, '#cameraGroup') || row.id === 'camSensor') return DRIVER_RULES[4].by;
-    if (inGroup(row, '#navRow')) return DRIVER_RULES[5].by;
-    if (inGroup(row, '#panel') && (row.type === 'range' || row.type === 'checkbox')) return DRIVER_RULES[0].by;
+    if (row.kf && row.id !== 'tRateKey') return RULE.keyframe;
+    if (inGroup(row, '#recordGroup', '#recLookGroup', '#sensorGroup', '#monitorGroup', '#extendedRow')) return RULE.recorder;
+    if (inGroup(row, '#cameraGroup') || row.id === 'camSensor') return RULE.camera;
+    if (inGroup(row, '#navRow')) return RULE.nav;
+    if (inGroup(row, '#panel') && (row.type === 'range' || row.type === 'checkbox')) return RULE.look;
     return null;
   };
 
@@ -1195,7 +1201,6 @@ try {
   await page.evaluate('__kinect.keyframes.setTracks({})');
   await page.evaluate('__kinect.keyframes.setRetime({ rate: 1, keys: [] })');
   await page.evaluate("__kinect.params.reset(__kinect.params.names('look'))");
-  await page.evaluate('__kinect.setMode(0)');
   await page.evaluate('__kinect.sensorView()');
   await page.evaluate('__kinect.keyframes.chrome.set(false)');
   await page.evaluate('__kinect.timeline.transport().seek(12)');
@@ -1207,9 +1212,29 @@ try {
     await settle();
     await new Promise((r) => setTimeout(r, 120));
   };
+  // The panel is hidden for the length of the screenshot, and that is a repair rather
+  // than tidiness.
+  //
+  // `#panel` is `position: fixed` at z-index 10 with `overflow-y: auto`, so it sits on
+  // top of the stage and a screenshot clipped to the stage's box has always contained
+  // it. That was invisible while the panel never moved - and it moved the moment the
+  // shading modes became five sliders, because `#cropReset` then sat below the fold and
+  // Playwright scrolls a control into view before clicking it. So the "open the box"
+  // row below compared a frame against the same frame with the panel scrolled a few
+  // pixels, reported 386 differing pixels in 202 thousand, and read exactly like the
+  // cloud failing to come back. Measured against the commit before the readings landed,
+  // the same row is 28 pixels - so what changed was the height of the panel and nothing
+  // about the crop at all.
+  //
+  // `visibility` rather than `display`, deliberately: it takes the panel out of the
+  // picture without reflowing anything, so every coordinate this file has calibrated
+  // stays exactly where it was. What is left in the clip is the frame, which is what
+  // the row always claimed to be counting.
   const lit = async () => {
     const box = await page.locator('#stage').boundingBox();
+    await page.evaluate("document.getElementById('panel').style.visibility = 'hidden'");
     const shot = await page.screenshot({ clip: box });
+    await page.evaluate("document.getElementById('panel').style.visibility = ''");
     return page.evaluate(`(async (dataUrl) => {
       const img = new Image();
       img.src = dataUrl;

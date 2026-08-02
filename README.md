@@ -165,18 +165,32 @@ is visibly variable motion through real time.
 
 Drag to orbit, scroll to zoom, right-drag to pan, `H` hides the panel.
 
-| Mode | What it does |
-| --- | --- |
-| RGB | registered colour mapped onto the depth points |
-| Depth | cool-to-warm ramp across the clip range |
-| Ghost | luminance shell that glows along depth discontinuities |
-| Contour | topographic bands sweeping through depth |
-| Blackwall | crimson containment volume, cyan scan sweep, torn datastream bands |
+Five readings of the take, split on the panel into what colours a point and what is then
+made of it. Each is a weight from 0 to 1 rather than a choice, so they mix.
 
-Blackwall is a pipeline preset rather than just a shader branch: selecting it switches
-the points to additive blending and drives the whole post chain (scan, rim, bloom,
-trails, RGB split, scanlines, grain, glitch). Leaving it restores a neutral view. Every
-value stays on its own slider afterwards, so the preset is a starting point.
+| Reading | What it does |
+| --- | --- |
+| colour (source) | registered colour mapped onto the depth points |
+| depth (source) | cool-to-warm ramp across the clip range |
+| ghost (treatment) | luminance shell that glows along depth discontinuities |
+| contour (treatment) | topographic bands sweeping through depth |
+| blackwall (treatment) | crimson containment volume, cyan scan sweep, torn datastream bands |
+
+**They are weights and not a mode, and that buys two things a mode could not.** The
+shader sums whichever are non-zero and divides by the sum of the weights, so colour at
+0.6 against depth at 0.4 is a 60/40 blend of the camera image and the range ramp — and
+because each one is an ordinary registry parameter it takes keyframes, so a clip can
+dissolve from depth into Blackwall under the playhead. A single reading at 1.0 is
+arithmetically the identity, which is what lets every look authored before this render
+the pixels it always did; `registry-check` proves that by hashing the framebuffer of
+each reading against the mode it replaced.
+
+The shading and the look used to be one gesture: selecting Blackwall applied twelve
+post-chain values with it, so you could not have the crimson volume without the grade or
+the grade without the volume. They are separate now. What ships instead is a preset
+library — five documents under `presets-builtin/`, one per reading, with `blackwall.json`
+carrying the twelve values the old mode wrote — and a preset is look values and nothing
+else, so applying one never moves your camera.
 
 Two controls decide how much white ends up on the geometry, which is the first
 thing to reach for if the look feels blown out:

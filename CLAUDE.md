@@ -320,6 +320,37 @@ absolute level. The gate is baseline spread now. Note the trap in the fix as wel
 threshold was set from two earlier runs' spreads and the run carrying the only correct packet
 data cleared it by 0.04, so that column is recorded as measured once rather than replicated.
 
+**A comment containing a backtick inside a template literal ends the literal.** The shader
+source, `timeline-check`'s page ARM and `export-check`'s `EDITOR_ARM` are all backtick
+strings, and prose written into them in this repo's house style reaches for backticks around
+identifiers by reflex. Three times in one step the file stopped parsing at a word in a
+comment — `SyntaxError: Unexpected identifier 'opacity'` — which reads as a code error at a
+line containing no code. Inside a template literal, name things in plain words.
+
+**Adding rows to the panel broke a check that never mentioned the panel.** `#panel` is
+`position: fixed` at z-index 10 over the stage with `overflow-y: auto`, so `editor-check`'s
+`lit()` — a screenshot clipped to `#stage` — had always been counting panel pixels alongside
+the cloud. That was invisible while the panel never moved. Five new sliders made it taller,
+`#cropReset` fell below the fold, Playwright scrolled it into view before clicking, and the
+"open the box" row compared a frame against the same frame with the panel shifted a few
+pixels: 386 differing pixels in 202 thousand, reading exactly like the cloud failing to come
+back. Hiding the panel for the length of the screenshot takes that row to **0.000%**, where
+the pre-change build measured 0.014% — so the repair is better than the state it restored.
+This is the letterboxing rule below in its second form: **a change to the panel's height is a
+change to where every fixed overlay sits, and any tool screenshotting a region that overlay
+covers is measuring it.**
+
+**Feeding today's look into a historical build is a units error, and it reads as the feature
+under test having failed.** `export-check`'s cross-build arm plays a pre-rebase revision where
+`pointSize` is pixels at the drawing buffer rather than at 1080p. Merging today's Blackwall
+document into every arm — so that both builds "end up at the same twelve numbers" — wrote 8.1
+into a build for which 8.1 means something 1.8 times larger: the old arm drew 1.82..3.8px
+where it should draw 1.02..2.1px, and both rebase rows came back at luminance ratio 0.342
+against an expected 1.0. That is the whole look appearing not to rebase, caused entirely by
+the instrument. **Each build applies its own graded values**; the one that still has
+`setMode` is left to. Caught by A/B against a worktree at the previous commit, which is the
+only thing that separates "my change broke this" from "this was already red".
+
 **Letterboxing the editor stage moved every pointer coordinate and every buffer-size
 expectation, and four proof tools found out one at a time.** `export-check` needed two
 separate fixes, `registry-check` failed its render-scale row, and `keyframe-check` failed
@@ -347,6 +378,8 @@ node tools/determinism-check.mjs                    # step 1: same program time,
 node tools/determinism-check.mjs --clock --before HEAD~1
 node tools/index-check.mjs --url http://localhost:8123   # step 2: index, hash, frame API
 node tools/registry-check.mjs --url http://localhost:8080 # step 3: one registry, sliders as views
+node tools/registry-check.mjs --mutate mix-ignores-normalisation  # ... and must FAIL mutated
+node tools/registry-check.mjs --mutate rgb-contributes-no-alpha   # ... and must FAIL mutated
 node tools/timeline-check.mjs --url http://localhost:8080 # step 4: seek equals playback
 node tools/timeline-check.mjs --mutate preroll-constant   # ... and must FAIL mutated
 node tools/keyframe-check.mjs --url http://localhost:8080 # step 5: tracks, retime curve, undo
@@ -542,9 +575,9 @@ found something" — so the convention was reached twice independently and the t
 are describing one rule rather than two.
 
 `--mutate <name>` serves a deliberately broken `main.js` into the running server, or for the
-two vendoring tools rebuilds a deliberately broken source tree. **Eleven tools carry
+two vendoring tools rebuilds a deliberately broken source tree. **Twelve tools carry
 mutations** — editor, export, guard, jobs, keyframe, library, monitor, registration,
-sensor-view, timeline and vendor — and all of them refuse a mutation whose text they cannot
+registry, sensor-view, timeline and vendor — and all of them refuse a mutation whose text they cannot
 find exactly once, because a replacement that silently matched nothing would run the unmutated
 page and be recorded as the check having missed a bug it was never shown. **A mutation is a
 piece of source text, so a mutation stops matching the moment the code it names is edited** —
@@ -559,9 +592,15 @@ happening to this file:
 
 - **Five exit non-zero on a catch and say `NOT CAUGHT` when they miss**: `guard-check`,
   `jobs-check`, `editor-check`, `monitor-check`, `sensor-view-check`.
-- **Two invert it**: `vendor-check` and `registration-check`, where caught is exit **0** with
-  `caught, as required (N assertions fired)` and exit **1** is `NOT CAUGHT`. Anything gating on
-  "non-zero means caught" reads a genuine miss by these two as a catch.
+- **Three invert it**: `vendor-check`, `registration-check` and `registry-check`, where caught
+  is exit **0** with `caught, as required (N assertions fired)` and exit **1** is `NOT CAUGHT`.
+  Anything gating on "non-zero means caught" reads a genuine miss by these three as a catch.
+  `registry-check` joined this group rather than the first deliberately, because it is the only
+  one of the twelve where all three outcomes have their own code: it exits **2** with `DID NOT
+  RUN` on a crash, on the same reading `registration-check` reserves 2 for. That is not
+  hypothetical — two of its four mutations reddened their intended row and *then* died on
+  Playwright's `Target page, context or browser has been closed`, and without the crash handler
+  each would have exited non-zero having asserted the right thing for the wrong reason.
 - **Four have no `NOT CAUGHT` branch at all** and simply exit on their failure count:
   `timeline-check`, `export-check`, `keyframe-check`, `library-check`. **A mutation these four
   fail to catch exits 0**, which reads as a clean pass rather than as the check being blind.

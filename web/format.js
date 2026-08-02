@@ -43,5 +43,20 @@
  * output size and codec) now live in their own store, not inside the project.
  * Saved projects also carry an undo history (`history.stack` and
  * `history.baseline`) so a reload can restore it.
+ *
+ * **Version 4 dissolves the mode into five reading weights.** `look.mode` is gone
+ * from the project and `mode` is gone from the preset; what replaces both is five
+ * ordinary look parameters - `readRgb`, `readDepth`, `readGhost`, `readContour`,
+ * `readBlackwall` - which travel with every other value and need no special case.
+ *
+ * This is the version that most needs to be a refusal rather than a best guess, and
+ * for a reason the earlier ones did not have. A version 3 document read by this build
+ * would parse: its `values` are all still parameters this registry knows, so
+ * `params.apply` would write every one of them without complaint, and the reading
+ * would simply be missing - leaving whatever the previous document happened to
+ * select. A file that renders as somebody else's shading, silently, is worse than one
+ * that fails to open. `tools/convert-presets.mjs` is the way across, and it is a
+ * one-shot over files on disk rather than a path inside the program, because a loader
+ * that could read both shapes is the second implementation this design keeps refusing.
  */
-export const PROJECT_VERSION = 3;
+export const PROJECT_VERSION = 4;

@@ -343,7 +343,16 @@ const uniforms = {
   regionMask: { value: 0 },
   glitch: { value: 0 },
   time: { value: 0 },
-  mode: { value: 0 },
+  // The five readings of the take, as weights rather than as a mode. Each one is a
+  // complete answer to "what colour is this point", and the fragment stage mixes
+  // whichever are non-zero - so colour and range compose instead of excluding one
+  // another, and a reading can move under the playhead like every other look value.
+  // RGB alone is the boot state, which is what the old `mode: 0` meant.
+  readRgb: { value: 1 },
+  readDepth: { value: 0 },
+  readGhost: { value: 0 },
+  readContour: { value: 0 },
+  readBlackwall: { value: 0 },
   denoise: { value: 1 },
   edgeTol: { value: 120 },
   hasColor: { value: 0 },
@@ -637,7 +646,8 @@ precision highp float;
 uniform sampler2D colorPrev, colorCurr;
 uniform float opacity, exposure, nearClip, farClip, mixT, time;
 uniform float scanAmount, rimAmount, thermal, edges;
-uniform int mode, hasColor, softEdge;
+uniform float readRgb, readDepth, readGhost, readContour, readBlackwall;
+uniform int hasColor, softEdge;
 
 in vec2 vUv;
 in float vDepth;
@@ -692,58 +702,106 @@ void main() {
   vec3 rgb = hasColor == 1
     ? mix(texture(colorPrev, vUv).rgb, texture(colorCurr, vUv).rgb, mixT)
     : vec3(0.7);
-  vec3 col;
-  float alpha = opacity;
+  // The five readings, summed by weight rather than selected by an integer. Each
+  // block answers "what colour is this point and how solid is it", and the two
+  // answers are accumulated separately because they do not combine the same way:
+  // a colour is a value to average, and an alpha factor is a coefficient on
+  // opacity that the RGB and Depth readings do not write at all.
+  //
+  // Normalise-by-sum rather than a chain of mix(), and that is the whole reason
+  // this rewrite is safe. A single reading at 1.0 comes out of here as
+  // x * 1.0 / 1.0, which IEEE multiplication and division both leave exactly
+  // alone, so every look authored against the old five-way branch renders the
+  // pixels it always did - proven rather than argued, by hashing the framebuffer
+  // of each reading here against the same mode on the commit before this one.
+  // A chain of mix() would be a different arithmetic expression for the same
+  // intent and would drift in the last bits, which is a whole preset library
+  // quietly moving.
+  //
+  // Each block is guarded on its own weight. That is a cost decision and not a
+  // semantic one - adding anything times 0.0 adds nothing - but the branch is
+  // uniform, so it is coherent across the entire draw and a preset using one
+  // reading pays for one reading.
+  vec3 col = vec3(0.0);
+  float alphaFactor = 0.0;
+  float readSum = 0.0;
 
-  if (mode == 0) {
-    col = rgb;
-  } else if (mode == 1) {
-    col = depthRamp(1.0 - t);
-  } else if (mode == 2) {
+  if (readRgb > 0.0) {
+    col += rgb * readRgb;
+    alphaFactor += readRgb;
+    readSum += readRgb;
+  }
+
+  if (readDepth > 0.0) {
+    col += depthRamp(1.0 - t) * readDepth;
+    alphaFactor += readDepth;
+    readSum += readDepth;
+  }
+
+  if (readGhost > 0.0) {
     float lum = dot(rgb, vec3(0.299, 0.587, 0.114));
     float rim = pow(vEdge, 0.7);
-    col = mix(vec3(0.20, 0.45, 0.75) * (0.35 + lum), vec3(0.75, 0.95, 1.0), rim);
-    alpha *= 0.25 + 0.75 * rim + 0.25 * lum;
-  } else if (mode == 3) {
+    col += mix(vec3(0.20, 0.45, 0.75) * (0.35 + lum), vec3(0.75, 0.95, 1.0), rim) * readGhost;
+    alphaFactor += (0.25 + 0.75 * rim + 0.25 * lum) * readGhost;
+    readSum += readGhost;
+  }
+
+  if (readContour > 0.0) {
     float bands = fract(vDepth * 12.0);
     float line = smoothstep(0.42, 0.5, bands) * smoothstep(0.58, 0.5, bands);
-    col = mix(depthRamp(1.0 - t) * 0.18, vec3(1.0), line);
-    alpha *= 0.15 + 0.85 * line;
-  } else {
+    col += mix(depthRamp(1.0 - t) * 0.18, vec3(1.0), line) * readContour;
+    alphaFactor += (0.15 + 0.85 * line) * readContour;
+    readSum += readContour;
+  }
+
+  if (readBlackwall > 0.0) {
     // Blackwall: crimson volume, surfaces reading as containment rather than skin.
     // Depth discontinuities are where the wall "sees" you, so edges burn hottest.
     float lum = dot(rgb, vec3(0.299, 0.587, 0.114));
     vec3 deep = vec3(0.28, 0.010, 0.035);
     vec3 hot  = vec3(1.00, 0.115, 0.140);
-    col = mix(deep, hot, pow(1.0 - t, 1.6));
+    vec3 bw = mix(deep, hot, pow(1.0 - t, 1.6));
 
     float rim = pow(vEdge, 0.55);
-    col = mix(col, vec3(0.95, 0.34, 0.22), rim * rimAmount);
+    bw = mix(bw, vec3(0.95, 0.34, 0.22), rim * rimAmount);
 
     // A scan plane sweeping through depth, the ICE probing outward. Kept narrow
     // and tinted rather than white - a wide hot band reads as a light leak
     // dragging across the geometry instead of something scanning it.
     float sweep = fract(vDepth * 0.55 - time * 0.28);
     float scan = smoothstep(0.988, 1.0, sweep);
-    col += vec3(0.10, 0.62, 0.78) * scan * scanAmount;
+    bw += vec3(0.10, 0.62, 0.78) * scan * scanAmount;
 
     // Torn bands flare cyan where the feed shears.
-    col += vec3(0.2, 0.9, 1.0) * vGlitch;
+    bw += vec3(0.2, 0.9, 1.0) * vGlitch;
 
-    col *= 0.55 + 0.75 * lum;
-    alpha *= 0.30 + 0.70 * rim * rimAmount + 0.45 * scan * scanAmount;
+    bw *= 0.55 + 0.75 * lum;
 
     // Shed points run hotter than the surface they left, so a wake reads as the
     // wall having noticed something rather than as leftover geometry.
-    col = mix(col, vec3(1.00, 0.42, 0.20), vGhost * 0.55);
+    bw = mix(bw, vec3(1.00, 0.42, 0.20), vGhost * 0.55);
+
+    col += bw * readBlackwall;
+    alphaFactor += (0.30 + 0.70 * rim * rimAmount + 0.45 * scan * scanAmount) * readBlackwall;
+    readSum += readBlackwall;
   }
 
-  // Both of these sit *after* the mode chain and modify whatever it produced, rather
-  // than living inside one of its branches. A term written into a branch is inert in
+  // Every weight at zero draws nothing, and that is the honest answer rather than
+  // a case to clamp away: the panel is showing five zeros and the frame agrees
+  // with it. The guard is on the division alone, so the alpha carries the emptiness
+  // out instead of a NaN doing it.
+  float norm = readSum > 0.0 ? 1.0 / readSum : 0.0;
+  col *= norm;
+  float alpha = opacity * alphaFactor * norm;
+
+  // Both of these sit *after* the blend and modify whatever it produced, rather than
+  // living inside one of the readings. A term written into a reading is inert in
   // every other one, which is both a worse feature - these are meant to compose with
-  // the reading you are working in - and a hole in the proof: registry-check runs
-  // its whole sweep in Blackwall, so a term reachable only from RGB would be recorded
-  // as a parameter that cannot touch a pixel.
+  // whatever you are working in - and a hole in the proof: a term reachable only from
+  // one reading is only exercised by a sweep arm that happens to select that reading,
+  // and would otherwise be recorded as a parameter that cannot touch a pixel. That
+  // argument is what the readings above have now been rebuilt around, so the rule it
+  // states applies to the readings themselves: registry-check sweeps each of them.
   if (thermal > 0.0) {
     // Luminance where there is a colour camera, depth where there is not. A thermal
     // picture is a reading of a signal, and with the colour stream off the only signal
@@ -1415,13 +1473,46 @@ const PARAMS = {
   spin: { def: false, kind: 'step', tag: 'view',
     apply: (on) => { controls.autoRotate = on; } },
 
+  // The five readings of the take. These were a `mode` - an integer uniform with five
+  // hardcoded shader branches, held outside the registry on the argument that
+  // selecting one rewrote twelve other look values and so a mode key would stomp
+  // every other track at the instant it fired. That argument was about the bundling
+  // rather than about the reading: `setMode(4)` applied a hardcoded BLACKWALL preset
+  // on the way past, which is why picking a reading and picking a look were the same
+  // gesture and neither could be had without the other. Unbundled, the objection goes
+  // with it, and what is left is five ordinary scalars.
+  //
+  // Which is what `thermal` and `edges` below already argued for in this same file:
+  // continuous rather than another branch, because a shading idea expressed as a mode
+  // is refused during evaluation as a user action and can therefore never move under
+  // the playhead. A clip can now dissolve from Depth into Blackwall, which is the
+  // capability the mode's existence was costing.
+  //
+  // They mix rather than exclude - the shader normalises by their sum - so `readRgb`
+  // at 0.6 against `readDepth` at 0.4 is a 60/40 blend of the camera image and the
+  // range ramp, and there is no separate source selector because there is nothing
+  // left for one to do.
+  // `reading: true` marks them as a set the rest of the program can ask for, rather
+  // than leaving five names to be spelled out again wherever the set is needed. A
+  // sixth reading added below is in that set by existing, which is the difference
+  // between enumerating and listing - and this file has been bitten by the listing
+  // version often enough to be worth the one extra field.
+  readRgb: { def: 1, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look', reading: true,
+    apply: (v) => { uniforms.readRgb.value = v; } },
+  readDepth: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look', reading: true,
+    apply: (v) => { uniforms.readDepth.value = v; } },
+  readGhost: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look', reading: true,
+    apply: (v) => { uniforms.readGhost.value = v; } },
+  readContour: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look', reading: true,
+    apply: (v) => { uniforms.readContour.value = v; } },
+  readBlackwall: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look', reading: true,
+    apply: (v) => { uniforms.readBlackwall.value = v; } },
+
   scan: { def: 0, min: 0, max: 1.5, step: 0.01, kind: 'scalar', tag: 'look',
     apply: (v) => { uniforms.scanAmount.value = v; } },
   rim: { def: 0.55, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
     apply: (v) => { uniforms.rimAmount.value = v; } },
-  // Continuous rather than two more `mode` branches, which is what makes them
-  // keyframeable: a mode is refused during evaluation because it is a user action, so
-  // a shading idea expressed as a mode can never move under the playhead.
+  // The same argument the readings above were rebuilt on, made here first.
   thermal: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
     apply: (v) => { uniforms.thermal.value = v; } },
   edges: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
@@ -1463,6 +1554,23 @@ const PARAMS = {
       }
     } },
 };
+
+// The readings, read off the registry rather than written down a second time. Every
+// use of the set - the shader's uniforms, the panel group, the sweep arms a proof
+// tool builds - goes through this, so adding a sixth reading means adding one
+// registry entry and nothing else discovers it late.
+const READINGS = Object.keys(PARAMS).filter((n) => PARAMS[n].reading);
+
+// Each reading needs a uniform of its own name, and the shader string was built
+// hundreds of lines above this, so a reading declared in the registry with no
+// uniform behind it would fail as a slider that moves nothing rather than as an
+// error. That is the shape this file keeps rejecting - a control that appears to
+// work - so it is an assertion, on the same reasoning as the age ceiling below.
+for (const name of READINGS) {
+  if (!Object.hasOwn(uniforms, name)) {
+    throw new Error(`the reading ${name} has no uniform: its slider would move nothing`);
+  }
+}
 
 // The surface memory's age ceiling has to cover the longest persistence the two
 // sliders can ask for, or a ray that stops swapping pins its age below its own
@@ -1714,14 +1822,16 @@ params.reset();
 // Applying a preset is a user action and can never be an evaluation-time effect: a
 // look that re-applied itself while the playhead moved would make the timeline lie
 // about what it is showing. The render path raises this flag for the length of one
-// frame, and the two bulk writes a gesture performs refuse while it is up. Ordinary
+// frame, and the bulk writes a gesture performs refuse while it is up. Ordinary
 // parameter writes stay legal, because that is exactly what step 5's tracks do.
 //
 // What that actually covers, stated plainly so step 5 inherits the problem rather
-// than a false sense of having solved it. The flag catches the two doors a preset
-// goes through today - `applyPreset` and `setMode` - and nothing else. `params.apply`
-// is public and unguarded, so a caller that assembles the same bulk write by hand
-// gets no complaint, and the flag spans `renderProgramFrame` alone, so an evaluator
+// than a false sense of having solved it. The flag catches the doors a preset goes
+// through - `applyPreset` and `params.apply` - and nothing else. There used to be a
+// third, `setMode`, and dissolving the mode into five registry scalars removed it
+// rather than leaving it guarded: selecting a reading is now a single `params.set`,
+// which is an ordinary write and legal during evaluation precisely because a track
+// is allowed to make it. And the flag spans `renderProgramFrame` alone, so an evaluator
 // that writes its track values just before calling it is semantically inside
 // evaluation with the flag down. Widening it needs the shape of step 5's evaluator
 // to be known: the honest boundary is "the evaluator is running", and that object
@@ -1753,7 +1863,7 @@ function withoutRepaint(write) {
 
 function refuseDuringEvaluation(what) {
   if (evaluating) {
-    throw new Error(`${what} during evaluation: presets and modes are user actions, not tracks`);
+    throw new Error(`${what} during evaluation: a preset is a user action, not a track`);
   }
 }
 
@@ -1762,34 +1872,6 @@ function applyPreset(preset) {
   refuseDuringEvaluation('preset applied');
   params.apply(preset);
 }
-
-// The Blackwall look is a whole pipeline state rather than a shader branch, so
-// selecting it drives the post chain too, and leaving it restores a neutral view.
-// Both are ordinary look presets now: values the registry knows how to write.
-//
-// For step 7, which is where this bites: the mode is not one of those values, and
-// `params.values(params.names('look'))` will not capture or restore it. That is the
-// right call here - the mode is clip state rather than a keyframeable parameter -
-// but the spec's preset table does list mode as presettable look, so preset save
-// and preset apply have to carry the mode alongside the registry subset rather than
-// assuming the subset is the whole preset.
-//
-// Both point sizes are the ones these presets always had, times 1080/600. That is
-// the whole of the re-tune and it happens exactly once: `pointSize` is pixels at
-// 1080p now, the buffer these looks were graded against was 600 tall, and 4.5 and
-// 5 pixels there are 8.1 and 9 pixels at the reference. Nothing else in either
-// preset moves, because nothing else in either preset was in pixels - the grade's
-// frequencies are not parameters, and they simply become 1080p-referred with the
-// rest of the look.
-const BLACKWALL = { bloom: 0.5, trails: 0.5, rgbSplit: 1.6, scanlines: 0.35, grain: 0.22, glitch: 0.18, pointSize: 8.1, scan: 0.35, rim: 0.5, fade: 120, wake: 550, additive: true };
-const NEUTRAL = { bloom: 0, trails: 0, rgbSplit: 0, scanlines: 0, grain: 0, glitch: 0, pointSize: 9, scan: 0, rim: 0.55, fade: 120, wake: 0, additive: false };
-
-// The mode is a property of the clip rather than a track of any kind. Selecting it
-// rewrites twelve other look values, so a mode keyframe would silently stomp every
-// other track at the instant it fired - one mode per clip removes that problem
-// instead of leaving it to be managed. Multi-mode clips are not ruled out, only
-// deferred, and the stomping is what would have to be solved properly first.
-let clipMode = 0;
 
 // Clip in/out points are program seconds, not frames, so they survive an output-fps
 // change. `out` is null when the clip runs to the end of the program. The transport
@@ -1801,20 +1883,6 @@ let clipOut = null;
 // codec). It is separate from the project, so one edit can spawn several deliverables
 // without the deliverable state being undoable project state.
 let activeDeliverable = null;
-
-// The mode itself, without the look that comes with choosing it. Undo restores a
-// whole snapshot including the twelve values Blackwall wrote, so replaying the
-// preset on top of them would overwrite what was just restored with what the
-// preset happens to say today. This is the half both callers share rather than a
-// second path: `setMode` is this plus the preset a user asked for.
-function applyModeValue(mode) {
-  clipMode = mode;
-  uniforms.mode.value = mode;
-  if (mode === 4) scene.fog.color.setHex(0x05070a);
-  document.querySelectorAll('#modes button').forEach((b) => {
-    b.setAttribute('aria-pressed', String(Number(b.dataset.mode) === mode));
-  });
-}
 
 function ensureActiveDeliverable() {
   if (activeDeliverable) return;
@@ -1859,30 +1927,11 @@ function setClipInOut(values) {
   }
 }
 
-function setMode(mode) {
-  refuseDuringEvaluation('mode selected');
-  const wasBlackwall = clipMode === 4;
-  applyModeValue(mode);
-
-  if (mode === 4) applyPreset(BLACKWALL);
-  else if (wasBlackwall) applyPreset(NEUTRAL);
-
-  // Asked for explicitly, because the mode is clip state and deliberately not a
-  // registry parameter - so selecting Depth or Contour writes nothing the
-  // registry announces, and the image would sit on the previous reading of the
-  // footage until something else happened to move.
-  requestRepaint();
-}
-
-document.querySelectorAll('#modes button').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    setMode(Number(btn.dataset.mode));
-    // One click is one interaction, so the snapshot goes on at the end of it. The
-    // twelve look values Blackwall wrote are inside the same snapshot, which is
-    // the whole reason undo cannot be a command stack here.
-    history.commit();
-  });
-});
+// There is no `setMode` any more, and nothing replaced it. Selecting a reading is
+// writing `readDepth` - an ordinary registry write, through the one door every other
+// parameter goes through, which repaints and snapshots for undo the way a slider
+// does. The reason the old one existed at all was that a mode was the only thing
+// that could change the image without the registry announcing it.
 
 // ------------------------------------------------------------ keyframe tracks
 
@@ -2299,20 +2348,18 @@ function toggleKey(name) {
 // the registry. The playhead, the free camera's orbit and which panel is open are
 // absent for the same reason: none of them is what the clip is.
 //
-// The mode is in it, and that is worth stating because the spec's undo table puts
-// "which layer is displayed" in the not-undoable column. That row sits beside
-// panel visibility and render scale - both of which the registry tags `view` - and
-// it was written before the section that settled the mode as clip state whose
-// selection *applies a preset*, which the same table lists as undoable. Leaving it
-// out would restore the twelve values Blackwall wrote while leaving Blackwall
-// selected: a state that never existed, which is the exact failure a whole-project
-// snapshot exists to make impossible.
+// Which reading is on screen is in it, and it needs no special case to be there any
+// more. It used to: the mode was a sixth thing beside the registry, written into this
+// body by hand, because leaving it out would have restored the twelve values Blackwall
+// wrote while leaving Blackwall selected - a state that never existed, which is the
+// exact failure a whole-project snapshot exists to make impossible. The readings are
+// ordinary look parameters now, so `params.values(params.names('look'))` carries them
+// and there is no second list to forget.
 
 function serialiseProjectBody() {
   return {
     version: PROJECT_VERSION,
     look: {
-      mode: clipMode,
       // Look parameters only; the registry separates look from view and from the
       // camera, so an undo snapshot or a render job does not carry render scale or
       // the free camera's orbit.
@@ -2415,9 +2462,14 @@ function restoreProject(project) {
   if (!project.composition || typeof project.composition !== 'object') {
     throw new Error('a project carries a composition object');
   }
-  if (!Number.isInteger(project.look.mode) || project.look.mode < 0 || project.look.mode > 4) {
-    throw new Error(`mode is ${JSON.stringify(project.look.mode)}: the clip's mode is a whole number from 0 to 4`);
-  }
+  // The reading used to need its own bounds check here - a whole number from 0 to 4,
+  // because nothing else in the loader would have caught a mode of 9 selecting an
+  // undefined shader branch. It has none now, and that is the removal working rather
+  // than an omission: the readings are registry scalars, so `params.apply` runs each
+  // through `normalise`, which refuses a non-number loudly and clamps to the declared
+  // 0..1. One validator for every look value beats a hand-written clause per special
+  // case, which is what the special case was.
+  //
   // Checked here rather than shrugged off, because a size that does not parse would
   // otherwise leave the editor framing at whatever the last clip was and quietly
   // export a different shape from the one on screen. Absent is allowed and means the
@@ -2510,7 +2562,6 @@ function restoreProject(project) {
     }
   }
 
-  applyModeValue(project.look.mode);
   // Defaults first, so a key the document does not carry means the default rather
   // than whatever the session happened to leave in the registry. `params.apply`
   // walks the document's own keys, so absent is invisible to it - which was harmless
@@ -5615,29 +5666,26 @@ async function markHere() {
 let appliedPreset = null;
 
 /**
- * A preset carries the look values *and* the mode, and the second half is a
- * special case rather than an oversight.
+ * A preset is look values, and that is the whole of it.
  *
- * The registry deliberately excludes the mode: it is clip state, not a
- * keyframeable parameter, so `params.values(params.names('look'))` will neither
- * capture nor restore it. The spec's preset table lists mode first among
- * presettable look, and both statements hold - a preset carries static values, and
- * applying one is a user action - so the preset format carries the mode alongside
- * the registry subset instead of assuming the subset is the whole preset.
+ * It used to be look values *plus* a mode, carried beside the registry subset
+ * because the registry excluded the mode on purpose and
+ * `params.values(params.names('look'))` would neither capture nor restore it. The
+ * cost of that second half was not the extra field, it was the trap under it:
+ * `setMode(4)` applied a hardcoded BLACKWALL look as part of selecting the mode, so
+ * a user's own preset routed through the obvious door came back with twelve of its
+ * values replaced by the built-in ones, and it would appear to load while not being
+ * the preset. `applyStoredPreset` avoided that by calling the half of `setMode`
+ * that did not apply anything - a split that existed only to work around the weld.
+ *
+ * With the readings in the registry there is no second half and no weld, so no
+ * door to pick between: one subset in, one subset out.
  */
 function presetFromCurrentLook(names) {
-  return { version: PROJECT_VERSION, mode: clipMode, values: params.values(names ?? params.names('look')) };
+  return { version: PROJECT_VERSION, values: params.values(names ?? params.names('look')) };
 }
 
-/**
- * Applies a saved preset and stamps where it came from.
- *
- * `applyModeValue` rather than `setMode`, and this is the trap the two functions
- * were split for. `setMode(4)` applies the hardcoded BLACKWALL look as part of
- * selecting the mode, so routing a user's own preset through it would overwrite
- * that user's twelve values with the built-in ones on the way past - the preset
- * would appear to load and would not be the preset.
- */
+/** Applies a saved preset and stamps where it came from. */
 function applyStoredPreset(doc) {
   refuseDuringEvaluation('a stored preset applied');
   if (doc.body.version !== PROJECT_VERSION) {
@@ -5647,7 +5695,6 @@ function applyStoredPreset(doc) {
       + 'buffer before, so its look cannot be reconstructed',
     );
   }
-  if (Number.isInteger(doc.body.mode)) applyModeValue(doc.body.mode);
   params.apply(doc.body.values ?? {});
   appliedPreset = { name: doc.name, rev: doc.rev };
   requestRepaint();
@@ -7248,11 +7295,18 @@ globalThis.__kinect = {
   setTargetSize: (text) => setTargetSize(text, { fromDocument: true }),
   targetSize: () => ({ ...targetSize }),
 
-  // The registry and the two bulk writes a user gesture performs. All three refuse
-  // while a frame is being evaluated, which now means exactly what it says: the
-  // evaluator runs inside `renderProgramFrame`, so the flag spans it.
-  params, applyPreset, setMode, presets: { BLACKWALL, NEUTRAL },
-  mode: () => clipMode,
+  // The registry and the one bulk write a user gesture performs. Both refuse while a
+  // frame is being evaluated, which means exactly what it says: the evaluator runs
+  // inside `renderProgramFrame`, so the flag spans it.
+  //
+  // `setMode`, `mode()` and the two hardcoded presets used to sit here beside them,
+  // and a tool wanting a reading now writes one - `params.set('readBlackwall', 1)`.
+  // The five names are published rather than left to be spelled out in each check,
+  // so a tool sweeping the readings sweeps the readings this build has rather than
+  // the ones its author remembered, which is the same rule `exportSizes` above is
+  // here for.
+  params, applyPreset,
+  readings: () => READINGS.slice(),
 
   /**
    * Keys, the curve and the undo stack. Every number a check reads comes from
