@@ -61,6 +61,7 @@ const DIVISOR = { local: 1, both: 1, remote: 4 };
 const grid = document.getElementById('grid');
 const dlg = document.getElementById('confirm');
 const noteEl = document.getElementById('note');
+const vSayEl = document.getElementById('vSay');
 
 const mmss = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.round(s % 60)).padStart(2, '0')}`;
 const gb = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : `${(b / 1e6).toFixed(0)} MB`);
@@ -80,7 +81,16 @@ const stamp = (ms) => {
 let library = { takes: [], node: null, here: '?', reveal: { available: false, label: null, why: null } };
 let filter = 'all';
 
-const say = (text) => { noteEl.textContent = text; };
+// **Written to both status lines, because a modal covers one of them.** `#note` sits
+// under the grid, which is exactly where an operator cannot see it while the viewer is
+// open - so a download started from the viewer put its progress, and its failure, on a
+// surface behind the one being looked at. The viewer runs for the minutes a transfer
+// takes, so this was the whole of what it had to say. Both rather than a branch: the
+// hidden one costs a `textContent` write and `:empty` keeps it out of the layout.
+const say = (text) => {
+  noteEl.textContent = text;
+  vSayEl.textContent = text;
+};
 
 async function jsonOf(url, init) {
   const res = await fetch(url, init);
@@ -461,7 +471,28 @@ function cannotDelete(take) {
   if (take.state === 'remote') {
     return `${take.id} is only on ${library.node?.name ?? 'the node'}, and delete removes a file on this machine`;
   }
-  return '';
+  return unnameable(take);
+}
+
+/**
+ * Why an action that forms a path from this take's id cannot run, or an empty string.
+ *
+ * **Three server functions hold the id to `VALID_ID` before they touch anything, and
+ * the gallery knew about one of them.** `removeTake`, `renameTake` and `revealTake` all
+ * refuse a source id outside the rule, because each one joins it to a path - so for a
+ * take copied onto the card by hand as `my take.knct`, which `scanTakes` lists on
+ * purpose, Delete, Rename and Show in the file manager are all round trips whose only
+ * answer is a 409.
+ *
+ * Rename was fixed on its own a round earlier and that was the instance rather than the
+ * class: the review came straight back with Reveal, and Delete had the same hole and
+ * was not reported at all. The rule is one sentence here and every action that forms a
+ * path reads it, so the next such action is asked by existing.
+ */
+function unnameable(take) {
+  if (VALID_ID.test(take.id)) return '';
+  return `${take.id} did not come from the recorder and its name is outside the rule this program forms paths from, `
+    + 'so it is listed and played but cannot be renamed, revealed or deleted here';
 }
 
 function menuItemsFor(take) {
@@ -470,25 +501,20 @@ function menuItemsFor(take) {
   const nodeName = library.node?.name ?? 'the node';
   const reveal = library.reveal ?? { available: false, label: null, why: null };
   const label = reveal.label ?? 'the file manager';
-  // **A name the server cannot form a path from is a name it will not rename either,
-  // and the listing is wider than the rule on purpose.** `scanTakes` admits any file
-  // ending `.knct`, so a take copied onto the card by hand under `my take.knct` gets a
-  // tile and should - it is footage, it is here, and the gallery is where an operator
-  // finds out. But `renameTake` holds the *source* id to `VALID_ID` before it moves
-  // anything, so offering the box on one of those is offering a round trip whose only
-  // possible answer is a 409. Off with the reason said, which is what every other item
-  // here does, rather than a control that always fails.
-  const nameable = VALID_ID.test(take.id);
+  // The listing is wider than the rule on purpose - `scanTakes` admits any file ending
+  // `.knct`, so a take copied onto the card by hand gets a tile and should, because it
+  // is footage and it is here. What that costs is `unnameable` above, read by every
+  // action that forms a path from the id rather than by rename alone.
+  const noName = unnameable(take);
   return [
     {
       item: 'rename',
       label: 'Rename…',
-      enabled: !shooting && !onlyThere && nameable,
+      enabled: !shooting && !onlyThere && !noName,
       why: shooting
         ? 'this take is still being recorded: renaming it while the recorder holds it would make the manifest re-scan a growing file'
         : onlyThere ? `${take.id} is only on ${nodeName}, and this button does not rename files over there`
-          : nameable ? ''
-            : `${take.id} did not come from the recorder and its name is outside the rule this program forms paths from, so it is listed and played but not renamed here`,
+          : noName,
       run: (tile) => askRename(tile, take),
     },
     {
@@ -502,12 +528,12 @@ function menuItemsFor(take) {
       // manifest refuses to cause by not scanning the open take, arriving through a
       // door the gallery would have opened. Found by a proof tool, which had this
       // item enabled mid-shoot on a tile whose every other control was off.
-      enabled: !shooting && !onlyThere && reveal.available,
+      enabled: !shooting && !onlyThere && reveal.available && !noName,
       why: shooting
         ? `${label} would stat, preview and index the file the recorder is writing to, which is disk the take needs`
         : onlyThere
           ? `${take.id} is only on ${nodeName}, so there is no file here to show`
-          : reveal.why ?? '',
+          : noName || (reveal.why ?? ''),
       run: (tile) => run(tile, `showing ${take.id} in ${label}`, () => post(`/library/reveal/${encodeURIComponent(take.id)}`), null, { refresh: false }),
     },
     {
@@ -856,6 +882,26 @@ function buildTile(take) {
     if (tap) openViewer(take.hash ?? take.id);
   });
   skimEl.addEventListener('pointerleave', () => { pressX = null; skim.setIndex(0); });
+  // **And a keyboard can reach it, which it could not.** Opening the viewer was a
+  // `pointerup` on a `div` and nothing else, so the whole surface was unreachable
+  // without a pointer - while the viewer, once open, implements arrows, home, end and
+  // escape. Keyboard support that begins one step after the step a keyboard cannot
+  // take is support nobody can use.
+  //
+  // A focusable element with a role and a name rather than a `<button>`, because the
+  // poster is also the scrub surface: a button here would announce itself as one
+  // action while a drag across it does something else entirely, and it would put a
+  // native activation on the pointer path that the four-pixel test above exists to
+  // keep off. Enter and Space are the two keys the role promises, and they are the two
+  // that are handled.
+  skimEl.tabIndex = 0;
+  skimEl.setAttribute('role', 'button');
+  skimEl.setAttribute('aria-label', `Open ${take.id}`);
+  skimEl.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    openViewer(take.hash ?? take.id);
+  });
   // The bar scrubs and never opens: it is the scrub affordance, so a press on it is
   // unambiguously a position.
   barEl.addEventListener('pointerdown', (e) => skim.fromX(e.clientX, barEl));

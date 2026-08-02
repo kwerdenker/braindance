@@ -315,6 +315,12 @@
   .vkeys { padding: 0 12px 12px; color: var(--faint); font-size: 9px; }
   .vnote { padding: 0 12px 10px; color: var(--warn); font-size: 10px; }
   .vnote:empty { display: none; }
+  /* The status line the viewer needs of its own. `say` writes what an action is doing
+     to the page's `#note`, which a modal covers completely - so a download started
+     from the viewer showed disabled controls and, for the minutes it ran, no progress
+     and no error. Same styling as `#note` because it is the same sentence. */
+  .vsay { padding: 0 12px 10px; color: var(--warn); font-size: 10px; }
+  .vsay:empty { display: none; }
 
   .empty { padding: 24px; color: var(--faint); grid-column: 1 / -1; }
   #note { padding: 0 12px 8px; color: var(--warn); font-size: 10px; }
@@ -397,6 +403,7 @@
     <div class="vacts" id="vActs"></div>
   </div>
   <div class="vnote" id="vNote"></div>
+  <div class="vsay" id="vSay"></div>
   <div class="vkeys">
     &larr; &rarr; step a frame · shift for ten · home / end · &uarr; &darr; another take · esc to close
   </div>

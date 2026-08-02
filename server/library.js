@@ -490,6 +490,23 @@ async function downloadClaimed(node, take, dir) {
         done(null, chunk);
       },
     });
+    // **The `.part` is unlinked before it is opened, and that is about an inode rather
+    // than about tidiness.** The install below claims its name with `link` and then
+    // drops `temp`, so a process killed between those two calls leaves `.part` and a
+    // perfectly good installed take as two names for one inode. `createWriteStream`
+    // truncates by default, so the next attempt at this download would open `.part`
+    // and take the installed take to zero with it - and then, if the transfer dropped,
+    // the cleanup below would remove only `.part` and leave the library holding a
+    // corrupted file it still lists at full size. Unlinking first breaks the shared
+    // inode instead of writing through it: the installed take keeps its own link and
+    // all of its bytes, and this download starts on a genuinely new file.
+    //
+    // `renameTake` admits the same two-step window on purpose, and its answer is right
+    // for it - a take under both names is two entries with one hash, which the
+    // reconciliation folds and an operator can see and remove. This one is not
+    // visible: `scanTakes` filters on `.knct`, so nothing lists a `.part` and nothing
+    // offers to remove it, which is why it needs closing here rather than reporting.
+    await unlink(temp).catch(() => {});
     await pipeline(Readable.fromWeb(res.body), counted, createWriteStream(temp));
 
     // The same streaming scan step 2 built, against the file that actually landed.
