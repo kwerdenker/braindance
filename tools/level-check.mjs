@@ -145,6 +145,25 @@ if (MUTATE && !MUTATIONS[MUTATE]) {
 rmSync(WORK, { recursive: true, force: true });
 mkdirSync(WORK, { recursive: true });
 for (const dir of ['server', 'tools', 'web']) cpSync(join(REPO, dir), join(WORK, dir), { recursive: true });
+// **`native/` is deliberately not among these, and that is load-bearing rather than an
+// omission.** Every frame this tool grades is one it planted, and a live socket wipes a
+// plant in well under a second - measured on a page with the sensor attached, a sentinel
+// written into all 217k samples was gone within 500ms, because an arriving frame swaps
+// the two depth textures and the plant is left in the one nothing reads. The staged tree
+// having no grabber binary is what makes the server it spawns quiet, so the plane the
+// fit is graded against is still the plane on screen.
+//
+// It held by accident until a Kinect was first attached to this machine, and nothing in
+// this file would have noticed the difference. So the assertion in section 1 checks the
+// plant is still there rather than trusting this list, and adding `native` to the line
+// below fails that row instead of quietly changing what this tool proves.
+//
+// Verified rather than reasoned about, by doing exactly that. With `native` staged the
+// checksum row fires - 1726596637 against an expected 95354338 - and nine rows fail
+// behind it, the fits reading tilt -3.5 roll -32 off surface A where the planted answer
+// is 73.5 and 0. Which is the point of the row rather than a bonus: without it those
+// nine are a check that has gone mysteriously wrong, and on a stiller scene some of them
+// would have passed.
 for (const name of ['node_modules', 'vendor', 'captures']) {
   const from = join(REPO, name);
   if (existsSync(from)) symlinkSync(from, join(WORK, name));
@@ -296,6 +315,37 @@ try {
     return n;
   }, [surface.n, surface.z]);
 
+  /**
+   * Whether the planted frame is still the one the page is drawing.
+   *
+   * A sparse fingerprint taken at plant time and compared later, rather than the whole
+   * grid shipped in and out of the page twice. The texture identity goes with it and is
+   * the cheaper half of the answer: an arriving frame *swaps* the two depth textures, so
+   * `depthCurr` stops being the object the plant was written into. Both are asserted,
+   * because a build that wrote arrivals in place rather than swapping would keep the
+   * identity and lose the samples.
+   */
+  const plantFingerprint = () => page.evaluate(() => {
+    const k = globalThis.__kinect;
+    const texture = k.uniforms.depthCurr.value;
+    const data = texture.image.data;
+    let sum = 0;
+    let n = 0;
+    for (let i = 0; i < data.length; i += 97) { sum = (sum + data[i] * (i + 1)) % 2147483647; n++; }
+    globalThis.__levelPlant = { sum, n, texture };
+    return { sum, n };
+  });
+
+  const plantHeld = () => page.evaluate(() => {
+    const k = globalThis.__kinect;
+    const texture = k.uniforms.depthCurr.value;
+    const data = texture.image.data;
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 97) sum = (sum + data[i] * (i + 1)) % 2147483647;
+    const was = globalThis.__levelPlant;
+    return { sameTexture: texture === was.texture, sum, expected: was.sum };
+  });
+
   const setTilt = (tilt, roll) => page.evaluate(([t, r]) => {
     const k = globalThis.__kinect;
     k.params.set('tilt', t);
@@ -323,9 +373,20 @@ try {
   // --- 1. the world turns ---------------------------------------------------
   console.log('1. the parameters reach the cloud');
   await plant(SURFACES[2]);
+  await plantFingerprint();
   await setTilt(0, 0);
   const flat = await picture();
   ok('a picture of a planted surface is stable enough to compare', flat.stable);
+  // **Everything below this row is graded against a surface this tool chose, so this
+  // row is what says the surface on screen is still that one.** With a sensor attached
+  // and a grabber in the staged tree, a live socket wipes a plant in under half a second
+  // and every later section would go on passing while measuring the room. Taken after a
+  // full `picture()` rather than immediately, because the window that matters is the one
+  // a comparison spans.
+  const held = await plantHeld();
+  ok('and it is still the planted surface after a settle, not a frame off the wire',
+    held.sameTexture && held.sum === held.expected,
+    held.sameTexture ? `checksum ${held.sum} vs ${held.expected}` : 'the depth texture was swapped under it');
   await setTilt(18, -24);
   const canted = await picture();
   ok('and cants when the two parameters move', flat.hash !== canted.hash,

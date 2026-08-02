@@ -139,6 +139,19 @@ own ray — straight into the depth texture, so it knows the normal of every sur
 and can mark the plane fit against the answer. A fixture take would have given it a surface
 nobody knows the normal of, and the fit would then only ever have been asserted against itself.
 
+**Its staged tree deliberately has no `native/`, and that is the reason it works.** A live
+socket wipes a planted frame in well under a second — an arriving frame swaps the two depth
+textures and the plant is left in the one nothing reads, measured at gone-within-500ms on a
+page with the sensor attached. The staged tree carrying no grabber binary is what keeps the
+server it spawns quiet. That held by accident for as long as this machine had no Kinect, and
+the day one was plugged in nothing in the file would have noticed: symlink `native` alongside
+`node_modules` and the run goes on being green while it grades live footage against a normal
+it thinks it planted. Section 1 now checksums the planted grid after a full settle and asserts
+the texture was not swapped under it; with `native` staged that row fires at 1726596637 against
+an expected 95354338 and nine rows fail behind it, the fits reading tilt -3.5 roll -32 off a
+surface planted at 73.5 and 0. **Ask of any tool that plants state what else writes to the same
+place**, and prefer a row that names the cause to nine that describe the symptom.
+
 Two of its rows are worth knowing about before editing it. **The bit-identity in section 2 is
 the whole crop claim**: rotating the world and the camera by the same quaternion is a no-op, so
 the two pictures must hash the same, which is only true while the crop and the region are
