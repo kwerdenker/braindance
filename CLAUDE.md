@@ -177,6 +177,15 @@ node tools/monitor-check.mjs --mutate expand-shifts-by-a-block   # ... and must 
 node tools/sensor-view-check.mjs                          # the intrinsics a take was shot with, against a build that assumes them
 node tools/sensor-view-check.mjs --mutate fov-hardcoded   # ... and must FAIL mutated
 node tools/sensor-view-check.mjs --mutate no-repaint      # ... and must FAIL mutated
+node tools/level-check.mjs                                # levelling: the room turns, and the crop, the top-down and the sensor view keep their meaning
+node tools/level-check.mjs --mutate tilt-ignored          # ... and must FAIL mutated
+node tools/level-check.mjs --mutate crop-follows-tilt     # ... and must FAIL mutated
+node tools/level-check.mjs --mutate plan-ignores-tilt     # ... and must FAIL mutated
+node tools/level-check.mjs --mutate plan-skips-vertical-crop # ... and must FAIL mutated
+node tools/level-check.mjs --mutate region-follows-tilt   # ... and must FAIL mutated
+node tools/level-check.mjs --mutate sensor-view-ignores-tilt # ... and must FAIL mutated
+node tools/level-check.mjs --mutate level-writes-zero     # ... and must FAIL mutated
+node tools/level-check.mjs --mutate level-order-swapped   # ... and must FAIL mutated
 node tools/vcam-check.mjs                                 # the output to OBS: the colour camera, the take it must not touch, and the source's picture
 node tools/vcam-check.mjs --mutate hd-upscales-registered # ... and must FAIL mutated
 node tools/vcam-check.mjs --mutate hd-reaches-recorder    # ... and must FAIL mutated
@@ -188,8 +197,10 @@ node tools/jobs-check.mjs --mutate claim-ignores-renderer # ... and must FAIL mu
 ```
 
 `jobs-check` needs a GPU browser and ffprobe and renders one real job through
-`tools/render-worker.mjs`; `--no-render` drops that row. `guard-check` and `library-check`
-spawn their own servers. `export-check` needs ffmpeg and ffprobe.
+`tools/render-worker.mjs`; `--no-render` drops that row. `guard-check`, `library-check`,
+`level-check` and `vcam-check` spawn their own servers. `export-check` needs ffmpeg and ffprobe.
+`level-check` needs neither a sensor nor a capture — it plants analytic planes straight into
+the depth texture, which is what lets it grade the plane fit against a normal it chose.
 
 **`library-check` binds a span of fixed ports** — `--node-port`, and `--mac-port` through
 `--mac-port + 16`, which default to 8210 and 8211..8227. It checks the whole span before it
@@ -223,7 +234,7 @@ And the ones that are not proof tools, listed because a tool nobody documented i
 nobody runs. **`syntax-check` enforces that list**: anything in `tools/` this file does not
 mention fails it, so a tool added next year is asked by existing. The arithmetic, written
 down because a count nobody adds up is how this list rotted the first time: `tools/` holds
-**27** files, of which **17** are `*-check` proof tools and **10** are the block below.
+**28** files, of which **18** are `*-check` proof tools and **10** are the block below.
 
 ```
 node tools/convert-presets.mjs presets projects jobs # version 3 documents -> version 4, in place

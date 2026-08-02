@@ -962,6 +962,9 @@ const DRIVER_IDS = {
   tExport: 'section 6 asserts it is reachable, section 7 renders with it',
   tExportSave: 'section 7 - the saved copy, against a stubbed picker',
   cropReset: 'section 8 - opens the crop box again and the planes are read back',
+  camLevel: 'level-check section 5 - clicks this element and reads the pair, the slider '
+    + 'and the note back; it drives the button rather than the function behind it, which '
+    + 'is the distinction this whole section exists to enforce',
 };
 
 // ------------------------------------------------------------------- the page
@@ -2683,7 +2686,13 @@ try {
   /** The rightmost lit column, as a fraction of the stage. */
   const litEdge = async () => {
     const box = await page.locator('#stage').boundingBox();
+    // The same reason as `lit` above, and it matters less here only by luck: this one
+    // scans right to left and the panel is on the left, so it would have been reached
+    // last. Left uncovered anyway is a probe waiting for the panel to grow one column
+    // wider than the letterbox.
+    await page.evaluate("document.getElementById('panel').style.visibility = 'hidden'");
     const shot = await page.screenshot({ clip: box });
+    await page.evaluate("document.getElementById('panel').style.visibility = ''");
     return page.evaluate(`(async (dataUrl) => {
       const img = new Image();
       img.src = dataUrl;
