@@ -124,6 +124,66 @@ again on a settled machine it fires eight, all of them the intended row. So a th
 the mutation verdict and before `untested`. **Read which assertions fired, not how many** — and
 a proof tool must never count its own crash as a finding in either direction.
 
+**And a run that stopped two thirds of the way through is the same lie told quietly.** One
+sweep of nine mutations against the gallery had five runs end at 95, 117, 140 and twice 198 of
+317 assertions, every one of them non-zero, every one with the mutation's own rows already
+correctly red — so read line by line each looked like a catch, and read as a whole a third of
+the suite's claims had not been measured against that build at all. Three causes, and none of
+them was the code under test. `retryOnContextLoss` named `Execution context was destroyed` when
+Playwright says `Resulting promise was garbage collected` for the same renderer going away
+under an outstanding async `evaluate`; a mutation that deletes a control left `page.click` on
+that control timing out for thirty seconds and then throwing; and a probe that renames a take
+was pointed at the take five later rows assert about, so one red row became five and then an
+undefined. **A mutation must redden the rows carrying its claim and leave the run able to
+finish** — give a probe that might succeed its own fixture, guard any drive of a control the
+mutation can remove, and print the assertion total beside the failure count so a run that
+ended early is visible rather than implied.
+
+**A race probe driven through the HTTP route measured the route's own latency and reported
+the rule holding.** `renameTake` checked its target with `stat` and then acted on it, and
+`rename(2)` replaces an existing file without a word — so two requests aiming at one name
+both pass the reading and the second destroys a take. Four simultaneous POSTs against a build
+with that hole came back one winner and three refusals, every loser intact, twice: each
+request scans the whole captures directory before it reaches the rename, dozens of awaits of
+differing durations, and that is enough that the requests are never inside the window
+together. The identical four calls made straight at the function — where the only thing
+between the reading and the act is three `stat`s — clobber immediately: **four fulfilled, no
+rejections, one file left where four takes were.** So the row is a direct call into the
+staged module, not a fetch. **When a probe is about an interval of a few microtasks, every
+await between the caller and it is a widening of the thing being measured**, and a green row
+means the harness could not get close rather than that the interval is closed. The fix under
+it is `link(2)` then `unlink`, which fails EEXIST atomically, with the `stat` kept only for
+the sentence it produces.
+
+**Two gates that agree cannot be tested apart, and one of them will be doing all the work.**
+The rename route refused the take being recorded and so did `renameTake` underneath it, in
+identical words. `library-check` ran all 317 assertions against a build with the route's guard
+deleted and reported the refusal working — 317 assertions, none failed, NOT CAUGHT — because
+the second guard refused instead. This is not defence in depth; it is a rule with nothing
+measuring it, since no mutation can reach one gate without the other covering. The duplicate
+is gone and the check is aimed at the one that decides. **Before writing a second check of the
+same condition, ask which mutation would tell the two apart** — if the answer is none, there
+is one gate and a comment saying where it lives.
+
+**A mutation that zeroes a quantity has not moved it.** `poster-height-in-js` was meant to
+restore the shipped bug where a poster's height was assigned once from a measured width and
+went stale on resize. Written without a `width > 0` guard it froze at the first fit, before
+the grid had laid the tile out, so every poster came back zero-height: the aspect rows failed
+with `Infinity`, the decimation row failed because a canvas of no pixels has no picture to be
+sparser than, and the viewer never drew, which ended the run. Rows saying "something broke"
+where the claim is about *which* quantity moved. This is the converse of the mutation that
+does nothing already recorded above, and it fails the same test — confirm the mutation moved
+the number the check prints, in the direction the bug moved it.
+
+**Check the ports before a measurement run, not the results afterwards.** An earlier attempt
+at the same sweep had eight of nine runs die in section 1 with an `ENOENT` on a
+download-collision filename. A server leaked from a crashed run still held 8210 and 8211, so
+`startServer` connected to *that* rather than to the one it had just spawned, and every run
+was measuring a stale process against a fixture directory it was rebuilding underneath it.
+Eight runs, one failed assertion each, all of them the harness crashing — which is `fails=1`
+wearing a crash again, at sweep scale. The sweep resolves listeners by port and kills them
+before each run now, and prints when it did.
+
 **A cumulative table hides which term is wrong.** Step 6 measured the look at two
 output sizes down one pipeline - points, then trails, then "grade" - and reverting
 any single grade term moved that row by less than the row's own sampling residual,
@@ -209,6 +269,71 @@ invoked, and `undefined` comes back - which surfaced three helpers later as a
 missing shot rather than as a call that did not happen. The house pattern is
 `page.evaluate(\`(${FN})(${JSON.stringify(opts)})\`)`, and it is what the other
 tools already do.
+
+**A fixture that has never held the shape under test cannot measure it, and the gallery's
+tile heights are the plainest case of that yet.** Every take in `library-check`'s fixture
+carried at most one warning — truncated, or no hello, or under two frames — so a
+uniform-height assertion measured across all of them would have agreed on a build where each
+warning still added a row: one row against one row is the same height. The shape that
+differed was the take that fires several, and it did not exist until it was written.
+Measured on a fixture that has one: 41.19px of spread at every viewport width before, 0.00px
+after. That same take, cut before its first whole frame, then surfaced a defect nothing else
+had: a take whose scan indexes no frames still asked the server for frame 0 and got a 404,
+swallowed by the skim's own catch and visible only as a failed request in the console.
+**Before asserting that a set of things agree, check the fixture contains the one that would
+not.**
+
+**A quantity assigned once in JavaScript from a measured box is right at first paint and
+wrong afterwards, and a check that never resizes cannot see it.** The gallery's poster height
+came from `canvas.parentElement.clientWidth` at the first draw, so a window dragged from 1512
+to 700 left a 332px-wide tile with a 133px poster — 2.496:1 against the 16:9 it draws.
+Measured, not read off the CSS: the rule that produced it also looked like it should hold.
+The box is one `aspect-ratio` declaration now with the canvas taken out of flow, its backing
+store follows through a `ResizeObserver`, and the geometry rows measure at two widths with a
+resize between them because the two ways a tile changed size showed up under different
+conditions — the warnings at every width, the poster only after something resized.
+
+**Arithmetic about where a thing should go is not a measurement of where it went, and a
+proof tool can hold the second where it cannot hold the first.** The gallery's ⋯ menu picks
+its side from the room above and below the button inside the scrolling grid, and the tile in
+the top row had its first item clipped away — the tallest menu, on the take whose three
+warnings most needed reading. Fixing the branch was not enough: a tile in a row below the
+fold has a button the grid is not showing at all, so "the room above it" is a number about a
+position nothing can see and the menu lands wholly outside, which came back as six pixels of
+a 98px menu on the one fixture tile whose menu carries no warnings under it — the shortest
+menu there is, and therefore the one whose overflow a height cap cannot explain. The box is
+measured after placement and shifted by whatever is left over now, and the row asserts
+`inside` rather than asserting the reasoning. **Every assertion about what a menu offers
+passes on a menu nobody can see**, because the items are in the document either way.
+
+**A thing that draws one pixel per sample is dense at one size and threadbare at another.**
+The gallery's viewer is the same projection as its tile at four times the area, and the
+scale follows the height — so the gap between neighbouring depth samples on screen follows
+it too, and a take that reads solid on its 228px tile came up a faint dot screen. The
+spacing is exactly `scale / fx` pixels and not a proxy for it, because the depth cancels out
+of the unprojection, so the sample size is derived rather than tuned. Taken from the
+sensor's own focal length and never the decimated one: dividing by the divisor as well would
+give a coarse remote frame four-times-larger samples and make it look identical to a local
+one, erasing a signal the gallery carries on purpose. Measured: local 76.4 against remote
+22.8, so a decimated skim is still visibly what it is, and the **tile's own poster is
+bit-identical** to what it always drew — same mean, same signature — because the size floors
+at one where the tile already covers.
+
+**And the row that proves it was NOT CAUGHT for a round, because its threshold came from the
+wrong conditions.** The ratio gate was set at 0.25 from a measurement taken at
+devicePixelRatio 2, where the broken build gives 0.07 — and `library-check` runs at 1, where
+the same build gives 0.28. One hundredth of a margin, and the mutation ran the full suite
+reporting nothing wrong while doing exactly what it claimed. This is the fps-floor paragraph
+above arriving in a different instrument: **calibrate a gate at the viewport, the pixel ratio
+and the fixture the check actually runs with**, and record the broken build's value beside
+the threshold so the margin is visible rather than implied.
+
+**`el.id ?? fallback` never reaches the fallback.** The DOM answers an absent id, dataset key
+or attribute with `''` rather than with undefined, so `??` keeps the empty string and `||` is
+the operator that means what was intended. In the gallery's control enumeration this gave
+every tab the key `''`: the sweep reported four controls it could not name and four drivers
+naming nothing, both rows red, neither of them about the page. It looks exactly like a real
+enumeration failure.
 
 **Place a probe where its answer would be different, not where it is convenient.** A third
 flaw came out of this on step 5: a mutation replacing the pre-roll's window query with the
@@ -355,6 +480,17 @@ node tools/export-check.mjs --url http://localhost:8080   # step 6: resolution, 
 node tools/export-check.mjs --mutate pointsize-absolute   # ... and must FAIL mutated
 node tools/library-check.mjs                              # step 7: library, recorder, routes
 node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL
+node tools/library-check.mjs --mutate tile-height-follows-content  # ... the gallery's geometry
+node tools/library-check.mjs --mutate poster-height-in-js          # ... and its poster's box
+node tools/library-check.mjs --mutate viewer-splat-one             # ... and the viewer's density
+node tools/library-check.mjs --mutate gallery-has-no-way-back      # ... the way out
+node tools/library-check.mjs --mutate plant-unswept-menu-item      # ... every control has a driver
+node tools/library-check.mjs --mutate rename-ignores-hash          # ... rename, one term per mutation
+node tools/library-check.mjs --mutate rename-orphans-marks         # ...
+node tools/library-check.mjs --mutate rename-during-a-shoot        # ...
+node tools/library-check.mjs --mutate rename-clobbers-under-a-race  # ... and two at once
+node tools/library-check.mjs --mutate reveal-drops-the-path        # ... what the file manager was told
+node tools/library-check.mjs --mutate reveal-answers-any-caller    # ... and who may start a process
 node tools/editor-check.mjs --url http://localhost:8080   # the editor's controls: that they exist, that pressing them changes something
 node tools/editor-check.mjs --mutate lanes-clear-siblings --no-render  # ... and must FAIL
 node tools/editor-check.mjs --mutate plant-unswept-control --no-render # ... and must FAIL
@@ -558,6 +694,15 @@ piece of source text, so a mutation stops matching the moment the code it names 
 three of `timeline-check`'s nine had to be re-anchored when step 5 rewrote the retime seam,
 and the refusal is what surfaced that rather than a silent pass.
 
+**`library-check` serves a mutated page at the URL the page is reached by, not at its
+filename.** `web/library.html` has no URL of its own — `server/index.js` 404s any `.html`
+under `web/` on purpose, so a page has exactly one address — and it is served at `/gallery`.
+A route interception written as `**/library.html` therefore matches nothing, the unmutated
+page loads, and the run is recorded as the check having missed a bug it was never shown.
+That is the match-exactly-once failure arriving through the *delivery* rather than through
+the anchor, where nothing refuses it, so the interception refuses a page file it has no URL
+for instead.
+
 **The tools disagree about what a caught mutation exits, the disagreement runs the dangerous
 way, and it is worse than this paragraph used to say — so read the assertion count and never
 the code.** Counted rather than recalled, because the previous count here said "six" and
@@ -592,6 +737,18 @@ turns that into a sentence.
 ```
 node tools/make-fixture.js captures/sample.knct captures/fixture-large.knct --loops 32
 ```
+
+**`captures/sample.knct` is not in the repository and a synthesised stand-in is not the
+same fixture.** It is gitignored like every other capture, so a fresh clone has none, and
+`library-check` needs one — every take it builds is cut out of it. A synthetic one is enough
+to run the whole suite and it is worth knowing exactly which rows it cannot answer: **a
+sample with no colour block fails the two decimation rows by construction** (`the colour
+block is carried through untouched` and `divisor 4 lands at the ~80KB`), because those
+measure a JPEG the stand-in does not contain, and a sample whose hello carries `startedAt`
+fails the file-date fallback row, because the fixture depends on some takes having no wall
+clock. Neither is a defect in the build. Say which sample a run used when reporting its
+verdict — a run against a stand-in is 317 of 319 by construction, and reporting it as a pass
+or as two failures without naming the fixture is wrong in both directions.
 
 **The sample was captured on a degraded link — median gap 64ms, mean 107ms, about 9.3fps
 rather than 30.** So size fixtures by *frame count*, not duration: five minutes of its source

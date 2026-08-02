@@ -145,8 +145,36 @@ genuinely different takes under one name, and writing one over the other to sati
 a naming convention would destroy footage. Takes can be pulled down, and a copy can
 be reclaimed on the node after the local one is re-hashed.
 
-![The gallery: three take cards with depth thumbnails, each carrying its size, frame
-count, content hash and whether it is local, on the node, or both.](media/gallery.png)
+![The gallery: three take cards of identical size with depth thumbnails, the first
+carrying three marks on its scrub bar, each showing its size, frame count and date
+above an Open, a Delete and a three-dot menu, with a way back to the menu in the
+header.](media/gallery.png)
+
+Its surface is a grid of same-sized tiles you can skim with a pointer or a finger, and
+a tap on a poster opens that take large — a scrubbable viewer with the take's marks on
+its bar, arrow keys that step a frame at a time, and up and down to move between takes
+without going back to the grid. Every tile carries the same three controls, and the
+third is a ⋯ menu holding the actions that do not belong on a 228px tile: **rename**,
+**show in the file manager**, and **reclaim on the node**. Warnings — truncated, no
+sensor hello, no whole frame, still recording — are badges over the poster with the
+sentence behind each one in that menu, because the node's panel has no hover and a
+warning in a tooltip there is a warning nobody reads.
+
+Two of those are worth stating plainly. **Renaming moves a label and never a
+reference**: a project records the take it was built on as `{id, hash}` and the loader
+compares only the hash — refusing to open an edit against footage it was not authored
+against — so a rename takes the capture, its marks and its index to a new name and
+every project built on it still opens. The same is true of the two-machine
+reconciliation and of the menu's resume, both of which match on hash and carry the id
+only to say what was written down. Two renames aimed at one name at the same moment
+are refused by the kernel rather than by a reading taken a moment earlier, so the
+loser keeps its footage. **Showing a
+take in the file manager is the only route in the program that starts a process**, so
+it is registered as a mutating route behind the same origin and content-type gate as
+everything else that has a consequence, it is refused unless the browser is on the
+machine running the server — the window would otherwise open where nobody is standing —
+and it is refused for the take being recorded, because a file manager pointed at a file
+stats, indexes and previews it, against the disk the recorder is writing to.
 
 **The editor** is where a take becomes a shot. The camera is keyframed through the
 recorded volume on its own track, the look is keyframed on others, and a retime

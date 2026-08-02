@@ -27,6 +27,7 @@
     --rec-low: rgba(255, 59, 78, 0.16);
     --on-rec: #17000a;
     --warn: #f0b04a;
+    --warn-low: rgba(240, 176, 74, 0.16);
     --scrim: rgba(0, 0, 0, 0.68);
   }
   * { box-sizing: border-box; }
@@ -39,6 +40,20 @@
   .head h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; }
   .head .sum { color: var(--dim); font-size: 9px; font-variant-numeric: tabular-nums; }
   .head .sum b { color: var(--ink); font-weight: 500; }
+
+  /* The way out, and it is an anchor rather than a button for the reason the menu's
+     own tiles are: a real URL is something a browser can show in its status bar,
+     open in a second tab and go back from, where a button that assigns
+     `location.href` is a destination only the page knows. The gallery had no way
+     back to the menu at all - the only exits were Open, which leaves for the
+     editor, and the browser's own back button, which does not exist on the node's
+     touch panel. */
+  .back { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px;
+    border: 1px solid var(--line-2); border-radius: 4px; background: var(--paper-2);
+    color: var(--dim); text-decoration: none; font-size: 9px; letter-spacing: 0.14em;
+    text-transform: uppercase; white-space: nowrap; }
+  .back:hover { color: var(--ink); border-color: var(--line-3); background: var(--paper-3); }
+
   /* Which machine you are on. The library spans both, so "here" has to be named or
      the local/node column is unreadable. */
   .where { margin-left: auto; display: flex; align-items: center; gap: 8px;
@@ -56,50 +71,96 @@
   .tabs .space { margin-left: auto; display: flex; align-items: center; color: var(--dim); font-size: 9px; }
   .tabs .space.low { color: var(--warn); }
 
+  /* `align-content: start` and `align-items: start`, so a tile is exactly as tall as
+     its content and no taller. That is deliberately NOT `stretch`: stretching makes
+     every tile in a row the height of the tallest one, which would hide a tile that
+     had grown behind a row that agrees anyway - and "every tile is the same height"
+     is a claim a proof tool measures here. Content-sized rows mean a tile that grows
+     is visible as a ragged row rather than absorbed. */
   .grid { flex: 1; min-height: 0; overflow-y: auto; display: grid;
     grid-template-columns: repeat(auto-fill, minmax(228px, 1fr)); gap: 12px; padding: 12px;
     align-content: start; align-items: start; }
 
-  /* No overflow:hidden on the tile, deliberately. It would make the tile a scroll
-     container, whose intrinsic height excludes overflowing content - the grid then
-     sizes its rows from the definite parts alone and the rows overlap. Only .skim
-     needs clipping and it has a definite height. */
+  /* No overflow:hidden on the tile, deliberately - it would make the tile a scroll
+     container, whose intrinsic height excludes overflowing content, and the grid
+     would then size its rows from the definite parts alone and the rows would
+     overlap. The ⋯ menu opens upward inside the tile's own footprint for the same
+     reason: nothing here escapes the tile. */
   .tile { border: 1px solid var(--line); border-radius: 6px; background: var(--paper-1);
     display: flex; flex-direction: column; }
   .tile:hover { border-color: var(--line-2); }
 
-  /* The skim surface. Pointer events, so moving across it with a mouse and dragging
-     across it with a finger are one code path. */
-  .skim { position: relative; flex: none; overflow: hidden; border-radius: 6px 6px 0 0;
-    background: var(--well); cursor: ew-resize; touch-action: pan-y; }
-  /* The canvas stays in flow and JS gives it a definite pixel height: deriving it
-     from aspect-ratio leaves the tile with no reliable intrinsic height and the
-     grid rows overlap. 16:9 rather than the sensor's 512x424, because the poster
-     should preview the frame the export actually produces. */
-  .skim canvas { display: block; width: 100%; }
+  /* The skim surface, and the poster's box is now CSS rather than JavaScript.
+     Pointer events, so moving across it with a mouse and dragging across it with a
+     finger are one code path.
+
+     **`aspect-ratio` failed here once and this is not the construction that failed.**
+     The first attempt left the canvas in flow with `width: 100%` and no height, where
+     a canvas carries its own 300x150 intrinsic ratio, the tile ended up with no
+     reliable intrinsic height and the grid rows overlapped - so the height was moved
+     into JavaScript, which set `canvas.style.height` from the parent's measured
+     width. That worked at first paint and nowhere else: nothing re-measured on a
+     resize, so a window dragged from 1512 to 700 left every poster at its old pixel
+     height against a wider tile, measured at 2.496:1 where the picture is 16:9.
+
+     What is here instead is the ratio on the *container* with the canvas taken out of
+     flow entirely - `position: absolute` contributes nothing to layout, so `.skim`'s
+     box comes from a definite width and this one declaration, and the canvas's
+     backing store follows the box through a ResizeObserver rather than deciding it.
+     Measured across three viewport widths and a resize: rows never overlap and the
+     poster is 16:9 at every width. */
+  .skim { position: relative; flex: none; aspect-ratio: 16 / 9; overflow: hidden;
+    border-radius: 6px 6px 0 0; background: var(--well); cursor: ew-resize; touch-action: pan-y; }
+  .skim canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
   .skim .t { position: absolute; top: 6px; right: 7px; font-size: 9px; color: var(--dim);
     font-variant-numeric: tabular-nums; pointer-events: none; background: var(--paper);
     padding: 1px 4px; border-radius: 3px; }
   .skim .coarse { position: absolute; top: 6px; left: 7px; font-size: 9px; color: var(--warn);
     pointer-events: none; background: var(--paper); padding: 1px 4px; border-radius: 3px; }
 
+  /* The warnings, over the picture rather than under it.
+
+     They cannot go in a hover tooltip: the library runs on the node's touch panel
+     where there is no hover at all, and `truncated`, `no hello` and `under two
+     frames` are the facts that decide whether a take is worth opening. They cannot
+     go in a row of their own either, because a row that grows with the number of
+     flags is precisely what made tiles range over 41px of height - `no-hello-take`
+     carried two of them and every take without one was two lines shorter.
+
+     Over the poster they cost no layout height at all, they are visible without a
+     pointer, and `.skim`'s `overflow: hidden` bounds them however many fire. The
+     sentence each one is short for is in the ⋯ menu and in the viewer, which are a
+     tap away rather than a hover away. */
+  .skim .flags { position: absolute; left: 7px; bottom: 7px; right: 7px; display: flex;
+    gap: 4px; flex-wrap: wrap-reverse; pointer-events: none; }
+  .skim .flag { font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase;
+    padding: 1px 5px; border-radius: 3px; background: var(--warn-low); color: var(--warn);
+    border: 1px solid var(--warn); white-space: nowrap; }
+  .skim .flag.rec { background: var(--rec-low); color: var(--rec); border-color: var(--rec); }
+
   /* The scrub bar, with the take's marks on it. Marks live on the take, so every
      project built on it shows the same ticks - and the gallery can draw them
      without loading anything that knows about edits. */
-  .bar { position: relative; height: 14px; background: var(--paper-2); }
+  .bar { position: relative; height: 14px; flex: none; background: var(--paper-2); }
   .bar .pos { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--ink); }
   .bar .mk { position: absolute; top: 3px; width: 5px; height: 5px; margin-left: -2.5px;
     background: var(--accent); transform: rotate(45deg); }
   .bar .done { position: absolute; top: 0; bottom: 0; left: 0; background: var(--accent-low); }
 
-  .meta { padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 5px; }
+  /* Every row below the poster is exactly one line tall, and that is what makes the
+     tiles agree. Two fact lines rather than one wrapping line: the same six facts in
+     a `flex-wrap: wrap` row took two lines on a wide tile and three on a narrow one,
+     which is a height that depends on the viewport as well as on the take. */
+  .meta { position: relative; padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 5px; }
   .meta .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
   .meta .name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .meta .dur { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 11px; }
-  .meta .sub { display: flex; align-items: center; gap: 8px; font-size: 9px; color: var(--faint); flex-wrap: wrap; }
-  .meta .flag { color: var(--warn); }
+  .meta .dur { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 11px; flex: none; }
+  .meta .facts { display: flex; align-items: center; gap: 8px; font-size: 9px; color: var(--faint);
+    white-space: nowrap; overflow: hidden; height: 13px; }
+  .meta .facts span { overflow: hidden; text-overflow: ellipsis; }
 
-  .state { display: inline-flex; align-items: center; gap: 5px; letter-spacing: 0.14em; text-transform: uppercase; }
+  .state { display: inline-flex; align-items: center; gap: 5px; letter-spacing: 0.14em;
+    text-transform: uppercase; flex: none; }
   .state i { width: 6px; height: 6px; border-radius: 50%; flex: none; }
   .state.local { color: var(--accent); } .state.local i { background: var(--accent); }
   .state.remote { color: var(--dim); } .state.remote i { border: 1px solid var(--dim); }
@@ -109,17 +170,69 @@
   /* Actions, always visible and never hover-gated. Skimming is a pointer
      affordance and the library also runs on the node's touch panel, where there is
      no hover at all - so skimming is how you find a take and never how you act on
-     one. */
-  .acts { display: flex; gap: 8px; margin-top: 3px; flex-wrap: wrap; }
-  .act { appearance: none; flex: 1; height: 34px; padding: 0 8px; border: 1px solid var(--line-2);
-    border-radius: 4px; background: var(--paper-2); color: var(--ink); font: inherit; font-size: 9px;
-    letter-spacing: 0.14em; text-transform: uppercase; cursor: pointer; white-space: nowrap; }
+     one.
+
+     **Exactly three controls, and `nowrap`.** Four buttons at a 228px column wrapped
+     to a second row on a `both` take and stayed on one row everywhere else, which is
+     20px of height that depended on which machines held the take. Reclaim is the one
+     that moved, into the ⋯ menu beside rename and reveal - it belongs there anyway,
+     since it acts on the copy over on the node rather than on the one this tile is
+     showing. */
+  .acts { display: flex; gap: 8px; margin-top: 3px; flex-wrap: nowrap; }
+  .act { appearance: none; flex: 1; min-width: 0; height: 34px; padding: 0 8px;
+    border: 1px solid var(--line-2); border-radius: 4px; background: var(--paper-2); color: var(--ink);
+    font: inherit; font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .act:hover { background: var(--paper-3); border-color: var(--line-3); }
   .act:disabled { color: var(--faint); background: var(--paper-1); border-color: var(--line); cursor: not-allowed; }
   .act.primary { border-color: var(--accent); color: var(--accent); background: var(--accent-low); }
-  .act.primary:hover { background: var(--accent); color: var(--on-accent); }
+  .act.primary:hover:not(:disabled) { background: var(--accent); color: var(--on-accent); }
+  .act.primary:disabled { border-color: var(--line); color: var(--faint); background: var(--paper-1); }
   .act.danger { flex: 0 0 auto; padding: 0 12px; border-color: var(--line-2); color: var(--dim); }
-  .act.danger:hover { border-color: var(--rec); color: var(--rec); background: var(--rec-low); }
+  .act.danger:hover:not(:disabled) { border-color: var(--rec); color: var(--rec); background: var(--rec-low); }
+  .act.more { flex: 0 0 auto; width: 34px; padding: 0; color: var(--dim); font-size: 14px; line-height: 1; }
+  .act.more[aria-expanded="true"] { border-color: var(--line-3); color: var(--ink); background: var(--paper-3); }
+
+  /* The contextual menu.
+
+     Rendered into every tile at build time and hidden, rather than constructed when
+     the ⋯ is pressed. A menu that only exists after a click is a menu a sweep cannot
+     enumerate without asking the page's own bookkeeping what it would have built,
+     which is the "assert against the resource" rule this repo already applies to
+     descriptor counts.
+
+     Opened by tap and never by hover, closed by a tap anywhere else, by Escape and
+     by anything that repaints the grid.
+
+     **Which way it opens is measured when it opens, not chosen here.** Anchoring it
+     above the action row is right for most of the grid and wrong for the top row,
+     where `.grid` is the scroll container and clips it: a menu carrying three warning
+     sentences is tall enough that its first item was cut off entirely, so the tile
+     whose warnings needed explaining was the one that could not show them. `openMenu`
+     compares the room above the ⋯ against the room below it inside the grid, picks
+     the larger, and caps the height at what is there - which is why the offsets below
+     are only a starting point and `max-height` is written by script. */
+  .menu { position: absolute; right: 12px; bottom: 54px; z-index: 3; min-width: 172px;
+    padding: 4px; border: 1px solid var(--line-3); border-radius: 5px; background: var(--paper-2);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55); display: flex; flex-direction: column; gap: 2px;
+    overflow-y: auto; overscroll-behavior: contain; }
+  .menu[hidden] { display: none; }
+  .mi { appearance: none; display: block; width: 100%; text-align: left; padding: 7px 9px;
+    border: 0; border-radius: 3px; background: transparent; color: var(--ink); font: inherit;
+    font-size: 10px; cursor: pointer; white-space: nowrap; }
+  .mi:hover:not(:disabled) { background: var(--paper-3); }
+  .mi:disabled { color: var(--faint); cursor: not-allowed; }
+  .mi.danger { color: var(--dim); }
+  .mi.danger:hover:not(:disabled) { color: var(--rec); background: var(--rec-low); }
+  /* The full sentence behind each short badge on the poster, and the reason a
+     disabled item is disabled. Text rather than a control, so the sweep that requires
+     a driver for every interactive item is not asked to press a paragraph. */
+  /* `pre-line`, because the sentences are joined with newlines and `normal` would
+     collapse them into one paragraph - three warnings running together read as one
+     long warning nobody finishes. */
+  .mnote { padding: 6px 9px 4px; border-top: 1px solid var(--line); margin-top: 2px;
+    color: var(--warn); font-size: 9px; line-height: 1.45; white-space: pre-line; max-width: 240px; }
+  .mnote:empty { display: none; }
 
   /* Deleting the last copy of a take is the one action in this tool that cannot be
      undone, and the tool's whole premise is keeping the raw footage - so it gets a
@@ -137,7 +250,66 @@
   dialog .row { display: flex; gap: 8px; margin-top: 16px; }
   dialog .row .act { height: 42px; font-size: 10px; }
   dialog .row .act.confirm { border-color: var(--rec); color: var(--rec); background: var(--rec-low); }
-  dialog .row .act.confirm:hover { background: var(--rec); color: var(--on-rec); }
+  dialog .row .act.confirm:hover:not(:disabled) { background: var(--rec); color: var(--on-rec); }
+  dialog .row .act.go { border-color: var(--accent); color: var(--accent); background: var(--accent-low); }
+  dialog .row .act.go:hover:not(:disabled) { background: var(--accent); color: var(--on-accent); }
+  /* **A button that is disabled has to look disabled, and these two did not.** The
+     `.act:disabled` rule above is one class and a pseudo-class; `dialog .row .act.go`
+     is three classes and an element, so the accent won on specificity and the rename
+     box showed a lit, pressable-looking Rename beside the sentence explaining why the
+     name would be refused. The delete confirm had carried the same defect since it
+     learned to refuse a take that exists in two places - functionally disabled the
+     whole time, which is why nothing caught it: every assertion was about `disabled`
+     being true, and it was. */
+  dialog .row .act.go:disabled, dialog .row .act.confirm:disabled {
+    border-color: var(--line); color: var(--faint); background: var(--paper-1); }
+
+  #rName { width: 100%; height: 38px; padding: 0 10px; border: 1px solid var(--line-2);
+    border-radius: 4px; background: var(--well); color: var(--ink); font: inherit; font-size: 12px; }
+  #rName:focus { outline: none; border-color: var(--accent); }
+  #rName.bad { border-color: var(--rec); }
+  #rWhy { margin: 8px 0 0; min-height: 30px; font-size: 10px; }
+  #rWhy.ok { color: var(--dim); }
+
+  /* The viewer: one take, large, with the scrub bar it deserves.
+
+     A tile is an index entry - 228px of poster is enough to recognise a take and not
+     enough to look at one - so the grid answers "which take" and this answers "what
+     is in it". A `<dialog>` rather than a div with a high z-index, because modality,
+     the backdrop, the focus trap and Escape are all behaviour a browser already has
+     and a hand-rolled overlay is four chances to get one of them wrong. */
+  #viewer { max-width: min(1100px, calc(100% - 32px)); width: 100%; padding: 0;
+    border-color: var(--line-3); background: var(--paper-1); }
+  .vhead { display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    border-bottom: 1px solid var(--line); }
+  .vhead .vname { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vhead .state { font-size: 9px; flex: none; }
+  .vhead .vclose { margin-left: auto; flex: none; width: 34px; }
+  .vstage { position: relative; aspect-ratio: 16 / 9; background: var(--well); cursor: ew-resize;
+    overflow: hidden; touch-action: pan-y; }
+  .vstage canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+  .vstage .flags { position: absolute; left: 10px; bottom: 10px; right: 10px; display: flex;
+    gap: 5px; flex-wrap: wrap-reverse; pointer-events: none; }
+  .vstage .flag { font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; padding: 2px 6px;
+    border-radius: 3px; background: var(--warn-low); color: var(--warn); border: 1px solid var(--warn); }
+  .vstage .coarse { position: absolute; top: 10px; left: 10px; font-size: 9px; color: var(--warn);
+    background: var(--paper); padding: 2px 6px; border-radius: 3px; pointer-events: none; }
+  /* Taller than the tile's, because this one is meant to be hit with a finger and
+     its marks are meant to be pressed. */
+  .vbar { position: relative; height: 26px; background: var(--paper-2); cursor: ew-resize; }
+  .vbar .pos { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ink); }
+  .vbar .done { position: absolute; top: 0; bottom: 0; left: 0; background: var(--accent-low); }
+  .vbar .mk { position: absolute; top: 8px; width: 9px; height: 9px; margin-left: -4.5px;
+    padding: 0; border: 0; background: var(--accent); transform: rotate(45deg); cursor: pointer; }
+  .vbar .mk:hover { background: var(--ink); }
+  .vfoot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 12px; }
+  .vfoot .vtime { font-size: 12px; font-variant-numeric: tabular-nums; flex: none; }
+  .vfoot .vfacts { font-size: 9px; color: var(--faint); display: flex; gap: 8px; flex-wrap: wrap; }
+  .vfoot .vacts { margin-left: auto; display: flex; gap: 8px; flex: none; }
+  .vfoot .vacts .act { flex: 0 0 auto; padding: 0 14px; }
+  .vkeys { padding: 0 12px 12px; color: var(--faint); font-size: 9px; }
+  .vnote { padding: 0 12px 10px; color: var(--warn); font-size: 10px; }
+  .vnote:empty { display: none; }
 
   .empty { padding: 24px; color: var(--faint); grid-column: 1 / -1; }
   #note { padding: 0 12px 8px; color: var(--warn); font-size: 10px; }
@@ -146,12 +318,14 @@
   @media (max-width: 560px) {
     .grid { grid-template-columns: minmax(0, 1fr); }
     .where { margin-left: 0; width: 100%; }
+    .vfoot .vacts { margin-left: 0; }
   }
 </style>
 </head>
 <body>
 
 <header class="head">
+  <a class="back" id="toMenu" href="/">&larr; Menu</a>
   <h1>Library</h1>
   <div class="sum" id="sum">reading…</div>
   <div class="where" id="where"></div>
@@ -175,6 +349,41 @@
   <div class="row">
     <button class="act" type="button" id="cCancel">Cancel</button>
     <button class="act confirm" type="button" id="cGo">Delete</button>
+  </div>
+</dialog>
+
+<dialog id="rename">
+  <h2>Rename take</h2>
+  <p id="nBody"></p>
+  <input id="rName" type="text" autocomplete="off" spellcheck="false" aria-label="New take name" />
+  <p class="warnline" id="rWhy"></p>
+  <div class="row">
+    <button class="act" type="button" id="rCancel">Cancel</button>
+    <button class="act go" type="button" id="rGo">Rename</button>
+  </div>
+</dialog>
+
+<dialog id="viewer">
+  <div class="vhead">
+    <span class="vname" id="vName"></span>
+    <span class="state" id="vState"><i></i></span>
+    <button class="act more" type="button" id="vMore" aria-haspopup="menu" aria-expanded="false">⋯</button>
+    <button class="act vclose" type="button" id="vClose" aria-label="Close">&times;</button>
+  </div>
+  <div class="vstage" id="vStage">
+    <canvas id="vCanvas"></canvas>
+    <span class="coarse" id="vCoarse"></span>
+    <div class="flags" id="vFlags"></div>
+  </div>
+  <div class="vbar" id="vBar"><span class="done"></span><span class="pos"></span></div>
+  <div class="vfoot">
+    <span class="vtime" id="vTime">00:00 / 00:00</span>
+    <span class="vfacts" id="vFacts"></span>
+    <div class="vacts" id="vActs"></div>
+  </div>
+  <div class="vnote" id="vNote"></div>
+  <div class="vkeys">
+    &larr; &rarr; step a frame · shift for ten · home / end · &uarr; &darr; another take · esc to close
   </div>
 </dialog>
 

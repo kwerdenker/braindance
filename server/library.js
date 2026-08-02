@@ -21,20 +21,23 @@
 // is routinely larger, so the manifest reads indexes, the download streams, and
 // the hash of a downloaded take comes from the same streaming scan step 2 built.
 
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { readdir, readFile, writeFile, appendFile, stat, unlink, rename, mkdir, statfs } from 'node:fs/promises';
+import { readdir, readFile, writeFile, appendFile, stat, unlink, rename, link, mkdir, statfs } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { cachedIndex, forgetCapture, indexPathFor, captureIdFor, readHelloOnce } from './capture.js';
 
 // A capture is addressed by id, and an id arrives off a URL or out of a node's
 // manifest, so it is checked against this before it is ever joined to a path. The
-// leading character rules out `..` on its own; the rest rules out a separator. An
-// underscore is allowed so the editor's reserved auto-save name `__working__` is
-// a valid document name.
-export const VALID_ID = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
+// rule itself lives in `web/format.js` beside the document version, because the
+// gallery's rename box has to hold a typed name to the same rule this file holds a
+// request to - see the comment there for why that is one constant rather than two.
+// Imported as well as re-exported: this file asserts it a dozen times itself, and
+// `export ... from` puts nothing in local scope.
+export { VALID_ID };
 
 // The shape a content hash has, and the reason it is checked at all: a node's
 // manifest is JSON from another machine, and `downloadTake` puts eight characters
@@ -46,10 +49,10 @@ export const VALID_ID = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 // function asserts.
 export const VALID_HASH = /^sha256:[0-9a-f]{64}$/;
 
-// One constant, shared with the page rather than restated here. See web/format.js
+// Two constants, shared with the page rather than restated here. See web/format.js
 // for what version 1 means and why it is a version rather than an authored buffer
 // height; re-exported so callers on this side have one import to reach for.
-import { PROJECT_VERSION } from '../web/format.js';
+import { PROJECT_VERSION, VALID_ID } from '../web/format.js';
 
 export { PROJECT_VERSION };
 
@@ -549,6 +552,214 @@ export async function removeTake(dir, id, { hash, verifiedElsewhere = null }) {
   await unlink(indexPathFor(path)).catch(() => {});
   forgetCapture(path);
   return { removed: `${id}.knct`, hash: actual };
+}
+
+/**
+ * Renames a take, and everything filed beside it.
+ *
+ * **A take's id is its filename, so renaming one is the only operation here that
+ * changes a take's identity to a reader that goes by name.** Nothing in this program
+ * does: projects reference their footage by content hash, the reconciliation joins on
+ * the hash, and the menu resumes on the hash - all of which is what makes this safe to
+ * offer at all. What moves is the label an operator reads on a tile, which is the one
+ * thing a hash cannot be.
+ *
+ * **The hash is checked against the sidecar rather than re-derived, and that is the
+ * opposite of what `removeTake` does one function up.** Delete pays for a full
+ * streaming sha256 because it is irreversible: a same-size, same-modification-time
+ * substitution is invisible to the sidecar, and a delete built on a listing that had
+ * gone stale removes a file whose bytes nobody looked at. A rename undone is a rename
+ * back. So this pays the cheap check that catches the case that actually happens - the
+ * library moved between the tile being drawn and the button being pressed, which
+ * changes size or modification time and therefore fails the sidecar's own staleness
+ * test - and does not read four gigabytes off a card to relabel a file.
+ *
+ * **The take being recorded is refused, and that refusal is load-bearing rather than
+ * tidy.** `scanTakes` decides which take is open by comparing paths against
+ * `recorder.openPath`, so a take renamed mid-shoot stops matching: `describeTake`
+ * drops out of the unscanned branch and starts a full read plus sha256 of a file the
+ * recorder is still writing to, on the disk it is writing to, on every `/library/*`
+ * request. That is exactly the contention section 11 of `library-check` exists to
+ * keep closed, reached by a door the caller cannot see from the rename's own answer -
+ * which is why the refusal is asserted here as well as at the route.
+ *
+ * The three files move in an order chosen for what a failure partway leaves behind.
+ * Marks first and the capture second, with the marks put back if the capture will not
+ * move, because marks are the one artifact here that cannot be regenerated - they are
+ * what somebody pressed in the room. The index last and its failure swallowed, because
+ * a `.idx` is a cache of a scan and the next reader rebuilds it; the stale one at the
+ * old name is unlinked rather than left to be found beside some later take.
+ */
+export async function renameTake(dir, id, requested, { hash, recordingPath = null }) {
+  if (!VALID_ID.test(id)) throw new Error(`unusable take id ${id}`);
+  // Somebody who typed the extension meant the take rather than a file called
+  // `x.knct.knct`, so the suffix is taken off rather than refused. It is the one
+  // transformation applied to a typed name: every other character is held to the rule
+  // and reported back, because a name silently corrected is a name the operator did
+  // not choose.
+  const to = String(requested ?? '').trim().replace(/\.knct$/i, '');
+  if (!VALID_ID.test(to)) {
+    throw new Error(
+      `${JSON.stringify(to)} cannot be a take name: it has to start with a letter, a digit or an `
+      + 'underscore and carry only letters, digits, dots, dashes and underscores',
+    );
+  }
+  if (to === id) throw new Error(`${id} is already its name, so there is nothing to rename`);
+
+  const from = join(dir, `${id}.knct`);
+  const target = join(dir, `${to}.knct`);
+  // The second door. `VALID_ID` already forbids a separator and a leading dot, and
+  // the one path-forming function asserts anyway - the same reading as `VALID_HASH`'s
+  // and for the same reason: a filter somewhere else is a thing that can be moved.
+  const root = resolve(dir);
+  for (const path of [from, target]) {
+    if (resolve(path) !== join(root, basename(path))) {
+      throw new Error(`refusing to rename outside ${root}`);
+    }
+  }
+  if (recordingPath !== null && resolve(from) === resolve(recordingPath)) {
+    throw new Error(`${id} is being recorded right now: stop the take before renaming it`);
+  }
+
+  const index = await cachedIndex(from);
+  if (index.hash !== hash) {
+    throw new Error(
+      `${id} is ${index.hash} here, not the ${hash} this rename named: `
+      + 'the library moved underneath the request and nothing was renamed',
+    );
+  }
+
+  // Every name the new id would claim, not only the capture's. A stray marks log at
+  // the target with no take beside it is somebody's footage annotations waiting for a
+  // take to come back, and renaming over it would destroy them to satisfy a name.
+  for (const path of [target, marksPathFor(target), indexPathFor(target)]) {
+    try {
+      await stat(path);
+      throw new Error(`${to} is taken: ${basename(path)} is already in ${root}`);
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
+    }
+  }
+
+  // **Linked and then unlinked, never renamed, and that is the difference between a
+  // refusal and destroyed footage.** The `stat` loop above is check-then-act: two
+  // renames onto one name both pass it, and `rename(2)` replaces an existing file
+  // without a word, so the second one silently overwrites a take. Reachable from two
+  // tabs. `link(2)` fails with EEXIST atomically instead, so the loser is refused by
+  // the kernel rather than by a reading taken a moment earlier - the stat stays
+  // because it is what produces a sentence naming the file in the way, where EEXIST
+  // alone would only produce an errno.
+  //
+  // What the two-step admits is a window where the take has both names, if this
+  // process dies between the link and the unlink. That is two library entries with
+  // one hash, which the reconciliation already treats as one take and an operator can
+  // see and remove - the opposite kind of failure from the one being closed, and the
+  // right way round.
+  const linkInto = async (source, dest) => {
+    try {
+      await link(source, dest);
+      return true;
+    } catch (err) {
+      if (err.code === 'ENOENT') return false;
+      if (err.code === 'EEXIST') throw new Error(`${to} is taken: ${basename(dest)} appeared in ${root} while this rename was running`);
+      throw err;
+    }
+  };
+  const marksMoved = await linkInto(marksPathFor(from), marksPathFor(target));
+  try {
+    if (!await linkInto(from, target)) throw new Error(`${id} is no longer in ${root}`);
+  } catch (err) {
+    if (marksMoved) await unlink(marksPathFor(target)).catch(() => {});
+    throw err;
+  }
+  try {
+    await unlink(from);
+  } catch (err) {
+    // The capture now has both names and this could not drop the old one, so the
+    // rename is undone rather than left half-done: a second entry nobody asked for is
+    // worse than a name that did not change.
+    await unlink(target).catch(() => {});
+    if (marksMoved) await unlink(marksPathFor(target)).catch(() => {});
+    throw err;
+  }
+  if (marksMoved) await unlink(marksPathFor(from)).catch(() => {});
+  // The sidecar validates on the capture's size and modification time, both of which
+  // `rename` preserves, so moving it is what stops the next reader re-scanning the
+  // whole take for a fact that was already on disk.
+  await rename(indexPathFor(from), indexPathFor(target))
+    .catch(() => unlink(indexPathFor(from)).catch(() => {}));
+  forgetCapture(from);
+  forgetCapture(target);
+  return { renamed: `${id}.knct`, id: to, file: `${to}.knct`, hash: index.hash, marks: marksMoved };
+}
+
+// ------------------------------------------------------------ showing a take in situ
+
+/**
+ * How each platform is asked to show a file where it lives.
+ *
+ * One entry per platform rather than a chain of `process.platform ===`, so a platform
+ * this does not know is a sentence rather than a spawn of something that is not there.
+ * The argument shape is the platform's, and `--reveal-with` substitutes **only the
+ * program** - a proof tool pointing this at a script that records its argv is then
+ * measuring the arguments the real file manager would have received, rather than a
+ * second code path written to be measurable.
+ */
+const REVEAL = {
+  darwin: { program: 'open', label: 'Finder', args: (path) => ['-R', path] },
+  // No `-R` equivalent exists across the desktops `xdg-open` fronts, so the
+  // containing directory is opened and the take is one glance rather than selected.
+  linux: { program: 'xdg-open', label: 'the file manager', args: (path) => [dirname(path)] },
+  win32: { program: 'explorer', label: 'Explorer', args: (path) => [`/select,${path}`] },
+};
+
+export const revealSupport = () => {
+  const shape = REVEAL[process.platform];
+  return shape ? { supported: true, label: shape.label } : { supported: false, label: null };
+};
+
+/**
+ * Opens the platform's file manager on a take.
+ *
+ * **This is the only route in the program that starts a process on the operator's
+ * behalf, so what bounds it is written here rather than assumed from the caller.** The
+ * id is held to `VALID_ID` and the path is asserted to be a direct child of the
+ * captures directory, so nothing a caller types decides what is opened; the program is
+ * a fixed string per platform or the one `--reveal-with` names, so nothing a caller
+ * types decides what is run; and `spawn` is given an argument array with no shell, so
+ * a filename cannot be a command however it is spelt. Who may ask at all - a browser
+ * on this machine and not one across the link - is the route's question rather than
+ * this function's, because the answer is about the socket the request arrived on.
+ *
+ * Resolved on the spawn rather than on the exit. `open -R` returns immediately and
+ * `xdg-open` may not return until the file manager closes, so waiting for an exit code
+ * would hang one platform to learn nothing on another - and the failure worth
+ * reporting, a file manager that is not installed, arrives as an `error` event either
+ * way.
+ */
+export async function revealTake(dir, id, { program = null } = {}) {
+  if (!VALID_ID.test(id)) throw new Error(`unusable take id ${id}`);
+  const shape = REVEAL[process.platform];
+  if (!shape) {
+    throw new Error(`no file manager is known for ${process.platform}, so there is nothing to open a take in`);
+  }
+  const root = resolve(dir);
+  const path = join(root, `${id}.knct`);
+  if (resolve(path) !== join(root, `${id}.knct`)) throw new Error(`refusing to reveal outside ${root}`);
+  await stat(path);
+  const args = shape.args(path);
+  const bin = program ?? shape.program;
+  return new Promise((settle, fail) => {
+    const child = spawn(bin, args, { stdio: 'ignore', detached: true });
+    child.on('error', (err) => fail(new Error(`${bin} could not be started: ${err.message}`)));
+    child.on('spawn', () => {
+      // Detached and unreferenced, so a file manager left open does not keep this
+      // process alive - the server outliving a request is the point, the request
+      // outliving the file manager is not.
+      child.unref();
+      settle({ revealed: `${id}.knct`, path, program: bin, args, label: shape.label });
+    });
+  });
 }
 
 // ------------------------------------------------- projects and the preset library

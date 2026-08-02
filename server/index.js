@@ -13,7 +13,8 @@ import { openCapture, withCapture, captureIdFor, openCaptureCount, decimatePaylo
 import { handleExportSocket, MAX_FRAME_BYTES } from './export.js';
 import {
   VALID_ID, DocumentStore, NodeLink, appendMarks, downloadTake, downloadsInFlight, hashFile,
-  markWriteCount, readMarkLog, readMarks, reconcile, remaining, removeTake, resolveMarks, scanTakes,
+  markWriteCount, readMarkLog, readMarks, reconcile, remaining, removeTake, renameTake, resolveMarks,
+  revealSupport, revealTake, scanTakes,
 } from './library.js';
 import { Recorder } from './recorder.js';
 import { JobStore } from './jobs.js';
@@ -140,6 +141,14 @@ const [GRABBER_BIN, ...GRABBER_ARGS] = (flag('--grabber') ?? '').split(' ').filt
 // directories. On a real node and a real Mac this is the default either way.
 const CAPTURES_DIR = resolve(flag('--captures', join(ROOT, 'captures')));
 const EXPORTS_DIR = join(ROOT, 'exports');
+
+// The program `POST /library/reveal/:id` starts, when it is not the platform's own.
+// It substitutes the program and nothing else - the arguments stay the shape the
+// platform's file manager takes - so a proof tool can point this at a script that
+// records its argv and be measuring the arguments Finder would have been given,
+// rather than a second code path that exists to be measured. `library-check` is the
+// caller; on an operator's machine this is never passed.
+const REVEAL_WITH = flag('--reveal-with', null);
 
 // A bare startsWith would also match a sibling like `web-private`, so the
 // separator has to be part of the comparison.
@@ -510,6 +519,36 @@ const localTakes = () => scanTakes(CAPTURES_DIR, recorder.openPath);
  * Wi-Fi link look like an operator who deleted everything - and the tile that then
  * offered a Delete on the last copy would be offering it on the wrong belief.
  */
+/**
+ * Whether the caller of *this request* could usefully be shown a file manager, and
+ * why not when it could not.
+ *
+ * **Per request rather than per server, because the answer is about the socket.**
+ * `POST /library/reveal/:id` opens a window on the machine running this process, which
+ * is the machine the operator is standing at exactly when the browser is on it. A
+ * gallery served to a laptop across the room would otherwise offer a menu item whose
+ * whole effect happens somewhere nobody is looking - and the honest way to present a
+ * control that cannot work is to show it saying why, not to hide it, which is the same
+ * reading the disabled Open on an unopenable take already gets.
+ *
+ * `isLoopback` is the socket's peer as the kernel reports it, so nothing the client
+ * sends can move this answer.
+ */
+function revealAvailability(req) {
+  const { supported, label } = revealSupport();
+  if (!supported) {
+    return { available: false, label: null, why: `no file manager is known for ${process.platform}` };
+  }
+  if (!isLoopback(req)) {
+    return {
+      available: false,
+      label,
+      why: `${label} would open on ${HERE_NAME}, which is not the machine this browser is on`,
+    };
+  }
+  return { available: true, label, why: null };
+}
+
 async function serveLibrary(req, res) {
   const here = await localTakes();
   const there = node ? await node.takes() : null;
@@ -521,7 +560,94 @@ async function serveLibrary(req, res) {
     unreadable: here.unreadable,
     storage: await remaining(CAPTURES_DIR, recordingRate()),
     recording: recorder.state,
+    reveal: revealAvailability(req),
   });
+}
+
+/**
+ * Renaming a take, which is a label moving and never footage moving.
+ *
+ * **A take that is only on the node is refused rather than renamed over there.** The
+ * link is deliberately one-directional about footage: this side asks for a manifest, a
+ * marks log and bytes, and the one thing it may ask the node to *do* is drop a copy it
+ * has verified survives here. Renaming somebody else's file on a machine nobody is
+ * standing at is a different decision from renaming one here, and it is not this
+ * button's. That refusal is here because only this module knows a node exists.
+ *
+ * **The take being recorded is refused one layer down and not here**, and that is
+ * worth stating because this function had a second copy of that test for one round.
+ * Both refused, in identical words - and the second copy is what made the mutation
+ * that removes one of them move nothing: `library-check` ran all 317 assertions
+ * against a build with the route's guard deleted and reported the refusal working,
+ * because the other guard was still refusing. Two gates that agree are not defence in
+ * depth when neither can be tested apart from the other; they are a rule with no
+ * measurement behind it. It lives in `renameTake` because that is the function that
+ * forms the path, which is where this file already puts `VALID_ID`.
+ */
+async function serveRename(req, res, [id]) {
+  const body = await readBody(req);
+  const here = await localTakes();
+  const mine = here.takes.find((t) => t.id === id);
+  if (!mine) {
+    sendJson(res, { error: `${id} is not on this machine, so there is nothing here to rename` }, 404);
+    return;
+  }
+  try {
+    const done = await renameTake(CAPTURES_DIR, id, body.to, {
+      hash: body.hash,
+      recordingPath: recorder.openPath,
+    });
+    sendJson(res, done);
+  } catch (err) {
+    sendJson(res, { error: err.message }, 409);
+  }
+}
+
+/**
+ * Showing a take where it lives, in the platform's own file manager.
+ *
+ * **Two gates, and they answer different questions.** `requireMutation` has already
+ * asked whether this request came from this program's own page - it is registered as a
+ * `write` for that reason, since a route that starts a process is a route that changes
+ * something even though no byte of the library moves. What is left for here is whether
+ * the window would open where the person asking is: `isLoopback` reads the peer address
+ * off the socket, which the client cannot dictate, and a browser across the link gets
+ * the same 409 the gallery's menu item is already greyed out with.
+ */
+async function serveReveal(req, res, [id]) {
+  if (!isLoopback(req)) {
+    const { label } = revealSupport();
+    sendJson(res, {
+      error: `${label ?? 'the file manager'} would open on ${HERE_NAME}, which is not the machine this `
+        + 'browser is on: refusing to open a window nobody is standing at',
+    }, 409);
+    return;
+  }
+  const here = await localTakes();
+  const mine = here.takes.find((t) => t.id === id);
+  if (!mine) {
+    sendJson(res, { error: `${id} is not on this machine, so there is no file here to show` }, 404);
+    return;
+  }
+  // **The take being recorded is refused, and this is the least obvious of the three
+  // refusals in this file.** Nothing about revealing writes: it stats a file and
+  // starts a window. What it hands over is the *path*, to a program whose job is to
+  // size, index and preview whatever it is pointed at - against the disk the recorder
+  // is writing to, which is precisely the contention `describeTake` refuses to cause
+  // by not scanning the open take. The gallery greys the menu item for the same
+  // reason; this is the gate, because a request does not have to come from that page.
+  if (mine.recording) {
+    sendJson(res, {
+      error: `${id} is being recorded right now: a file manager pointed at it would stat, index and `
+        + 'preview the file the recorder is writing to, which is disk the take needs',
+    }, 409);
+    return;
+  }
+  try {
+    sendJson(res, await revealTake(CAPTURES_DIR, id, { program: REVEAL_WITH }));
+  } catch (err) {
+    sendJson(res, { error: err.message }, 409);
+  }
 }
 
 /**
@@ -1134,6 +1260,14 @@ const ROUTES = [
   { path: '/library/delete/:id', pattern: /^\/library\/delete\/([^/]+)$/, write: { methods: ['POST'], run: (req, res, args) => serveRemoval(req, res, args, 'delete') } },
   { path: '/library/reclaim/:id', pattern: /^\/library\/reclaim\/([^/]+)$/, write: { methods: ['POST'], run: (req, res, args) => serveRemoval(req, res, args, 'reclaim') } },
   { path: '/library/sync-marks/:id', pattern: /^\/library\/sync-marks\/([^/]+)$/, write: { methods: ['POST'], run: serveMarkSync } },
+  { path: '/library/rename/:id', pattern: /^\/library\/rename\/([^/]+)$/, write: { methods: ['POST'], run: serveRename } },
+  // Registered as a `write` although no byte of the library moves, because what this
+  // table's `write` slot actually declares is "this route makes something happen", and
+  // a route that starts a process on the operator's machine is the clearest case of
+  // that there is. Registering it as a read to reflect that the captures directory is
+  // untouched would put the one process-spawning route in the program outside the
+  // origin and content-type gate every other consequence stands behind.
+  { path: '/library/reveal/:id', pattern: /^\/library\/reveal\/([^/]+)$/, write: { methods: ['POST'], run: serveReveal } },
 
   // ---- documents
   { path: '/projects', pattern: /^\/projects\/?$/, read: (req, res) => listDocuments(res, PROJECTS) },

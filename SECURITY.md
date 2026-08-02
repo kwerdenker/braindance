@@ -55,9 +55,23 @@ Everything, to everyone who can route to the port:
 - `GET /library/all` and `GET /capture/:id/file`: list every take and download the footage.
 - `POST /library/delete/:id`: destroy a take. This is the only irreversible action in the tool.
   The `confirm` flag it requires is an interlock against a misclick, not a check on who is asking.
+- `POST /library/rename/:id`: rename a take. Recoverable — the content hash does not move, so
+  every project built on it still resolves — but the name an operator reads on a tile is not
+  the name they left it under.
 - `PUT /projects/:name`, `/presets/:name`, `/deliverables/:name`: overwrite saved work.
 - `POST /jobs`: queue renders, without limit, on the disk your takes are being written to.
 - The WebSocket: the live sensor feed, and the recorder's controls.
+
+`POST /library/reveal/:id` is the one route that does **not** widen with the bind, and it is
+called out here because it is the only route in the program that starts a process — the
+platform's file manager, on a take's own path. It refuses any caller whose socket is not
+loopback, read off `remoteAddress` rather than off anything the client sends, so binding to
+`0.0.0.0` does not hand it to the network. What it grants a caller who is already on the
+machine is a file manager window on a path under the captures directory: the id is held to
+`VALID_ID`, the path is asserted to be a direct child of that directory, the program is a
+fixed string per platform, and the arguments are an array with no shell between them, so a
+filename cannot become a command however it is spelt. `--reveal-with` substitutes the program
+for a proof tool; on an operator's machine it is never passed.
 
 ## Staying safe
 
