@@ -5,18 +5,38 @@
 export const MAGIC = 0x4b4e4354;
 export const TYPE_HELLO = 1;
 export const TYPE_FRAME = 2;
+// The colour camera's own picture, at its native 1920x1080, for the webcam output.
+//
+// **A separate message rather than a second field on the frame, because it is a
+// different picture of a different thing.** Type 2 carries the *registered* colour:
+// `Registration::apply`'s resample of the colour camera into the depth camera's
+// viewpoint, which is a texture for the point cloud - it wears the depth camera's
+// 70.6 degree frustum instead of the colour camera's 84.1, and it is punched through
+// with holes wherever the depth solve returned nothing for a ray to carry colour on.
+// Useful for shading a cloud, useless as a picture of a room.
+//
+// **It is live-only: the recorder never writes one.** A capture file is the wire
+// verbatim, so a type 3 landing in one would move every take's content hash, and that
+// hash is the key the library joins two machines on. `vcam-check --mutate
+// hd-reaches-recorder` is the arm that fails if this ever stops being true. Recording
+// it is a decision nobody has taken - see issue #9.
+//
+// Emitted only while something is subscribed, because at roughly 215KB a frame it is
+// another ~50Mbit/s on a pipe whose backpressure reaches the grabber and costs the
+// take. The server asks for it over the grabber's stdin command channel.
+export const TYPE_COLOR = 3;
 export const HEADER_BYTES = 12;
 
 // The largest payload this format admits, and the reason it needs one at all:
 // `payloadLen` is a u32 off the wire, so a desynced stream can declare four
 // gigabytes and the reassembly below would buffer toward it a chunk at a time,
 // holding every byte for a message that is never going to be whole. A frame is a
-// 512x424 depth grid plus a JPEG - 486KB measured on this sensor - and a hello is a
-// few hundred bytes of JSON, so eight megabytes is more than an order of magnitude
-// of headroom over anything this format has ever carried, and a length past it is a
-// lie rather than a large frame. Named here rather than in either reader, because
-// the live parser and the sidecar index are both bounded by the same fact about the
-// format.
+// 512x424 depth grid plus a JPEG - 486KB measured on this sensor - a hello is a few
+// hundred bytes of JSON, and a 1080p colour message measures about 215KB, so eight
+// megabytes is more than an order of magnitude of headroom over anything this format
+// has ever carried, and a length past it is a lie rather than a large frame. Named
+// here rather than in either reader, because the live parser and the sidecar index
+// are both bounded by the same fact about the format.
 export const MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
 
 /**

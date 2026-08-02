@@ -61,6 +61,15 @@ Everything, to everyone who can route to the port:
 - `PUT /projects/:name`, `/presets/:name`, `/deliverables/:name`: overwrite saved work.
 - `POST /jobs`: queue renders, without limit, on the disk your takes are being written to.
 - The WebSocket: the live sensor feed, and the recorder's controls.
+- `GET /camera.mjpg`: **the colour camera, live, as an ordinary MJPEG stream.** This is the
+  plainest thing on the list — no framing to decode and no client to write, just a URL that
+  shows the room to anyone who opens it. Nothing has to be recording for it to work, and
+  opening it starts the encode rather than joining one already running.
+
+The origin rule covers this route as it covers the mutating ones, and it buys the same narrow
+thing: a browser that *declares* a foreign origin is refused. An `<img>` tag sends no origin at
+all, and neither does curl, ffmpeg, VLC or another machine on the Wi-Fi, so none of them is
+stopped. Treat the route as public to the network you bound to.
 
 `POST /library/reveal/:id` is the one route that does **not** widen with the bind, and it is
 called out here because it is the only route in the program that starts a process — the

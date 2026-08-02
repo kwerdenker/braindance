@@ -177,6 +177,9 @@ node tools/monitor-check.mjs --mutate expand-shifts-by-a-block   # ... and must 
 node tools/sensor-view-check.mjs                          # the intrinsics a take was shot with, against a build that assumes them
 node tools/sensor-view-check.mjs --mutate fov-hardcoded   # ... and must FAIL mutated
 node tools/sensor-view-check.mjs --mutate no-repaint      # ... and must FAIL mutated
+node tools/vcam-check.mjs                                 # the output to OBS: the colour camera, the take it must not touch, and the source's picture
+node tools/vcam-check.mjs --mutate hd-upscales-registered # ... and must FAIL mutated
+node tools/vcam-check.mjs --mutate hd-reaches-recorder    # ... and must FAIL mutated
 node tools/guard-check.mjs                                # the socket's origin rule, the bind, and the rebinding rule
 node tools/guard-check.mjs --mutate upgrade-skips-origin  # ... and must FAIL mutated
 node tools/guard-check.mjs --mutate host-accepts-a-name   # ... and must FAIL mutated
@@ -220,7 +223,7 @@ And the ones that are not proof tools, listed because a tool nobody documented i
 nobody runs. **`syntax-check` enforces that list**: anything in `tools/` this file does not
 mention fails it, so a tool added next year is asked by existing. The arithmetic, written
 down because a count nobody adds up is how this list rotted the first time: `tools/` holds
-**26** files, of which **16** are `*-check` proof tools and **10** are the block below.
+**27** files, of which **17** are `*-check` proof tools and **10** are the block below.
 
 ```
 node tools/convert-presets.mjs presets projects jobs # version 3 documents -> version 4, in place
