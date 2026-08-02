@@ -5677,9 +5677,13 @@ ui.rate.value = String(sliderFromRate(retime.rate));
  * the frame it is supposed to be holding.
  */
 let rateGesture = null;
+// Bumped once per gesture, so that a resume still queued behind one gesture's seek can
+// tell that a newer gesture has taken the transport over since.
+let rateGen = 0;
 
 function beginRateGesture() {
   if (rateGesture || !timeline) return;
+  rateGen++;
   rateGesture = {
     source: retime.sourceSecAt(timeline.programSec),
     wasPlaying: timeline.playing,
@@ -5732,13 +5736,20 @@ function endRateGesture() {
   }
   const rate = rateFromSlider(ui.rate.value);
   const program = applyRate(rate);
+  const gen = rateGen;
   rateGesture = null;
   // Whatever is queued behind the draft in flight would otherwise paint itself over
   // the true image this is about to ask for.
   draftWanted = null;
   timingChanged();
   timeline.seek(program)
-    .then(() => { if (wasPlaying) return timeline.play(); })
+    // Only if this gesture is still the current one. The seek is a pre-roll and the
+    // user can start a second speed change before it lands - and that second gesture
+    // has already paused the transport and recorded `wasPlaying: false` for itself. An
+    // unconditional resume here would start playback in the middle of it, against a
+    // retime and a set of cuts the second gesture is still moving, and its release
+    // would then leave the take running when it believes it left it paused.
+    .then(() => { if (wasPlaying && gen === rateGen) return timeline.play(); })
     .catch(showTimelineError);
   // A drag that came back to the slope it started at has restored the document
   // exactly - `applyRate` reads every time from the snapshot rather than from where
