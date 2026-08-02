@@ -146,6 +146,18 @@ const MUTATIONS = {
     + '      );',
     '      const d = Math.hypot(levelVec.x * 0.5 * size.w, levelVec.y * 0.5 * size.h);',
   ]] },
+  // The same discarded coordinate one link earlier, in the handler rather than in the
+  // function behind it. `levelAtStagePoint` still reads the point it is handed and
+  // still fits the plane under it correctly; what is lost is the press's own position
+  // on the way in. That distinction is the whole reason this mutation exists beside the
+  // one above: every arm that calls the hook directly passes its own coordinate and so
+  // cannot see the handler at all, and a single-plane frame answers the same whatever
+  // point reaches it. Only an off-centre press on the split plant, driven through
+  // `#camLevel` and `#stage`, has an answer that differs here.
+  'pointer-levels-the-centre': { file: 'web/main.js', edits: [[
+    '  const result = levelAtStagePoint(view.x, view.y);',
+    '  const result = levelAtStagePoint(stageSize().w / 2, stageSize().h / 2);',
+  ]] },
   // The button takes tilt back to neutral and leaves roll behind. Reading both
   // parameters and both sliders through the real control catches the half-reset.
   'reset-keeps-roll': { file: 'web/main.js', edits: [[
@@ -711,8 +723,18 @@ try {
   // about: the suite testing the model while the control it is named after was never
   // pressed, which is how the in and out markers spent their whole life detached from
   // the document with every proof tool green.
+  // **And the press has to be off the centre, on the split plant.** A frame of one plane
+  // answers the same whatever point reaches the fit, so a gesture on one only ever proves
+  // that pressing did *something* - the handler could drop `view.x`/`view.y` on the floor
+  // and hand the middle of the frame to an otherwise correct hook, and a single-plane
+  // press could not tell. The arms above cannot see it either, because each one passes its
+  // own coordinate straight to `levelAtStagePoint` and so starts one link past the thing
+  // that would be broken. Two planes and a named side is what gives the coordinate a
+  // consequence: `pointer-levels-the-centre` is the control, and it presses the seam
+  // between the two planted planes, where the answer belongs to neither side.
   await setTilt(0, 0);
-  await plant(SURFACES[1]);
+  const [pressLeftNormal, pressRightNormal] = await plant(SURFACES[0], SURFACES[2]);
+  await page.evaluate(() => globalThis.__kinect.sensorView());
   await page.evaluate(() => { document.getElementById('panel').style.display = ''; });
   await page.locator('#camLevel').click();
   const armed = await page.evaluate(() => ({
@@ -726,19 +748,27 @@ try {
     armed.active && armed.pressed === 'true' && /cancel/.test(armed.label)
       && armed.rotation[0] === 0 && armed.rotation[1] === 0,
     `${armed.label}, rotation ${armed.rotation.join('/')}; ${armed.note}`);
-  await page.locator('#stage').click({ position: { x: 550, y: 380 } });
-  const pressed = await page.evaluate(() => {
-    const k = globalThis.__kinect;
-    const state = {
-      tilt: k.params.get('tilt'),
-      roll: k.params.get('roll'),
-      note: document.getElementById('levelNote').textContent,
-      slider: document.getElementById('tilt').value,
-      active: k.levelSelection(),
-      pressed: document.getElementById('camLevel').getAttribute('aria-pressed'),
-    };
-    return state;
-  });
+  // Taken from the element rather than written down, because `#stage` is letterboxed to
+  // the export aspect and a hard-coded pixel would silently stop naming a side the day
+  // that aspect changes.
+  const stageBox = await page.locator('#stage').boundingBox();
+  const pressSide = async (xFraction) => {
+    await page.locator('#stage').click({
+      position: { x: stageBox.width * xFraction, y: stageBox.height * 0.5 },
+    });
+    return page.evaluate(() => {
+      const k = globalThis.__kinect;
+      return {
+        tilt: k.params.get('tilt'),
+        roll: k.params.get('roll'),
+        note: document.getElementById('levelNote').textContent,
+        slider: document.getElementById('tilt').value,
+        active: k.levelSelection(),
+        pressed: document.getElementById('camLevel').getAttribute('aria-pressed'),
+      };
+    });
+  };
+  const pressed = await pressSide(0.35);
   ok('clicking the picture through the armed control levels the room and spends the mode',
     (pressed.tilt !== 0 || pressed.roll !== 0) && !pressed.active && pressed.pressed === 'false',
     `tilt ${pressed.tilt} roll ${pressed.roll}, armed ${pressed.active}`);
@@ -746,6 +776,26 @@ try {
     Number(pressed.slider) === pressed.tilt, `slider reads ${pressed.slider}`);
   ok('and the selection says what it read rather than only that it worked',
     /samples/.test(pressed.note), pressed.note);
+  // Graded against the plane that was actually under the press, and read before the next
+  // `setTilt` moves the rotation this is measured through.
+  const pressedLeftLanded = await landNormal(pressLeftNormal);
+  ok('and the press read the plane under the point pressed, not the middle of the frame',
+    Math.hypot(pressedLeftLanded[0], pressedLeftLanded[2]) < LEVEL_TOLERANCE,
+    `lands at ${pressedLeftLanded.map((v) => v.toFixed(4)).join(', ')}, wrote ${pressed.tilt}/${pressed.roll}`);
+
+  await setTilt(0, 0);
+  await page.locator('#camLevel').click();
+  const pressedRight = await pressSide(0.65);
+  const pressedRightLanded = await landNormal(pressRightNormal);
+  ok('and pressing the other side of the same frame reads the other plane',
+    !pressedRight.active && Math.hypot(pressedRightLanded[0], pressedRightLanded[2]) < LEVEL_TOLERANCE,
+    `lands at ${pressedRightLanded.map((v) => v.toFixed(4)).join(', ')}, wrote ${pressedRight.tilt}/${pressedRight.roll}`);
+  // The two rows above could both pass on a build that levelled correctly on whichever
+  // single plane it always picked, if the two planted normals happened to be close. This
+  // is the row that says the two presses were answered differently at all.
+  ok('so two presses through one control are two rotations, and the coordinate reached the fit',
+    `${pressed.tilt}/${pressed.roll}` !== `${pressedRight.tilt}/${pressedRight.roll}`,
+    `${pressed.tilt}/${pressed.roll} then ${pressedRight.tilt}/${pressedRight.roll}`);
 
   await page.locator('#camLevel').click();
   await page.keyboard.press('Escape');
