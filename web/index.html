@@ -343,8 +343,19 @@
     pointer-events: none; }
   /* The window itself. A minimum width so a deep zoom leaves something to grab -
      at 2 seconds of a 900-second take the box is a third of a pixel wide, which is
-     a control that exists and cannot be used. */
-  .tminiwin { position: absolute; top: 1px; bottom: 1px; min-width: 10px;
+     a control that exists and cannot be used.
+
+     The minimum is named once here and `paintMinimap` reads it back through `min()`
+     when it writes `left`, because the two have to agree and a number repeated in
+     both files is a number that goes stale in one of them. They have to agree because
+     `min-width` only ever grows the box to the *right*: panned hard against the end of
+     a long clip the window sits at 99.8%, so the 10px it grows to lands outside a
+     `.tminibed` that clips, and the grab target the minimum exists to provide is
+     exactly what gets clipped away. Measured on an 800px track at that framing: 1.78px
+     of the box left on screen and nothing at all of the east handle. Clamping `left`
+     keeps the whole minimum box inside the track at either end. */
+  .tminiwin { position: absolute; top: 1px; bottom: 1px;
+    --tminiwin-min: 10px; min-width: var(--tminiwin-min);
     border: 1px solid var(--line-3); background: rgba(120, 220, 210, 0.10);
     cursor: grab; }
   .tminiwin i { position: absolute; top: -1px; bottom: -1px; width: 9px;

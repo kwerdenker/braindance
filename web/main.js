@@ -5035,7 +5035,10 @@ function paintMinimap() {
   if (!ui.mini) return;
   const dur = view.duration;
   const pct = (t) => `${Math.max(0, Math.min(100, (t / dur) * 100))}%`;
-  ui.miniWin.style.left = `${view.a * 100}%`;
+  // Clamped so the box `min-width` guarantees is inside the track at either end - see
+  // `.tminiwin`, which is where the minimum is declared. The minimum is read back out
+  // of the custom property rather than written again here, so there is one 10px.
+  ui.miniWin.style.left = `min(${view.a * 100}%, calc(100% - var(--tminiwin-min)))`;
   ui.miniWin.style.width = `${(view.b - view.a) * 100}%`;
   ui.miniHead.style.left = pct(timeline ? timeline.programSec : 0);
   const from = Math.min(clipIn, dur);
