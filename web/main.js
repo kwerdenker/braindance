@@ -1138,6 +1138,25 @@ function setViewCamera(cam) {
 // in its temporal dead zone on the `resize()` that runs at boot.
 let stageResizes = 0;
 
+/**
+ * Who owns the transport's play state right now.
+ *
+ * Four things pause the take, do something to the document, and then decide for
+ * themselves whether it should be running again: a speed gesture, an output-rate
+ * change, an undo, and a project load. Each reads `timeline.playing` up front and acts
+ * on it afterwards - and "afterwards" is across a seek that renders a pre-roll, which
+ * is long enough for the next one to start. The one that reads first can therefore land
+ * its answer on top of a newer one: a project load that deliberately restores a paused
+ * take found it playing, because a speed gesture from before it still owed a resume.
+ *
+ * So each of them takes the transport on the way in and checks it still holds on the
+ * way out. Counting rather than cancelling, because there is nothing to cancel - the
+ * resume lives inside a promise chain already in flight, and the cheapest true thing to
+ * ask it is whether the decision it carries is still the current one.
+ */
+let transportGen = 0;
+const takeTransport = () => { transportGen += 1; return transportGen; };
+
 function resize() {
   stageResizes++;
   // The stage is the window less whatever the timeline strip is taking, which is
@@ -2646,6 +2665,7 @@ const history = {
     // re-seeked afterwards, which is the same thing the speed slider does and for
     // the same reason. Playing again afterwards is deliberate: undo is about what
     // the clip is, and stopping the transport is not part of what it undoes.
+    const gen = takeTransport();
     const resume = timeline ? timeline.playing : false;
     if (resume) timeline.pause();
     // The parameterisation being left, read before the restore overwrites it. An undo
@@ -2676,7 +2696,7 @@ const history = {
     paintUndoCount();
     if (resume) {
       timeline.seek(timeline.programSec)
-        .then(() => timeline.play())
+        .then(() => { if (gen === transportGen) return timeline.play(); })
         .catch(showTimelineError);
     } else {
       requestRepaint();
@@ -5719,13 +5739,10 @@ ui.rate.value = String(sliderFromRate(retime.rate));
  * the frame it is supposed to be holding.
  */
 let rateGesture = null;
-// Bumped once per gesture, so that a resume still queued behind one gesture's seek can
-// tell that a newer gesture has taken the transport over since.
-let rateGen = 0;
 
 function beginRateGesture() {
   if (rateGesture || !timeline) return;
-  rateGen++;
+  takeTransport();
   rateGesture = {
     source: retime.sourceSecAt(timeline.programSec),
     wasPlaying: timeline.playing,
@@ -5778,20 +5795,19 @@ function endRateGesture() {
   }
   const rate = rateFromSlider(ui.rate.value);
   const program = applyRate(rate);
-  const gen = rateGen;
+  const gen = transportGen;
   rateGesture = null;
   // Whatever is queued behind the draft in flight would otherwise paint itself over
   // the true image this is about to ask for.
   draftWanted = null;
   timingChanged();
   timeline.seek(program)
-    // Only if this gesture is still the current one. The seek is a pre-roll and the
-    // user can start a second speed change before it lands - and that second gesture
-    // has already paused the transport and recorded `wasPlaying: false` for itself. An
-    // unconditional resume here would start playback in the middle of it, against a
-    // retime and a set of cuts the second gesture is still moving, and its release
-    // would then leave the take running when it believes it left it paused.
-    .then(() => { if (wasPlaying && gen === rateGen) return timeline.play(); })
+    // Only if nothing has taken the transport over since. The seek is a pre-roll, so it
+    // is long enough for a second speed change, a project load, an undo or an output-rate
+    // change to start and make its own decision about whether the take should be running
+    // - each of them having read a transport this gesture had already paused. An
+    // unconditional resume lands that older decision on top of the newer one.
+    .then(() => { if (wasPlaying && gen === transportGen) return timeline.play(); })
     .catch(showTimelineError);
   // A drag that came back to the slope it started at has restored the document
   // exactly - `applyRate` reads every time from the snapshot rather than from where
@@ -5874,11 +5890,12 @@ ui.fps.addEventListener('change', () => {
   ensureActiveDeliverable();
   activeDeliverable.outputFps = fps;
   paintDeliverable();
+  const gen = takeTransport();
   const wasPlaying = timeline.playing;
   timeline.pause();
   timingChanged();
   timeline.seek(held)
-    .then(() => { if (wasPlaying) return timeline.play(); })
+    .then(() => { if (wasPlaying && gen === transportGen) return timeline.play(); })
     .catch(showTimelineError);
   history.commit();
 });
@@ -7676,6 +7693,7 @@ async function loadProjectNamed(name) {
       + 'render against material it was never authored against',
     );
   }
+  const gen = takeTransport();
   const resume = timeline ? timeline.playing : false;
   if (resume) timeline.pause();
   restoreProject(doc.body);
@@ -7694,7 +7712,7 @@ async function loadProjectNamed(name) {
   ensureActiveDeliverable();
   applyDeliverable(activeDeliverable);
   await timeline.seek(timeline.programSec);
-  if (resume) timeline.play();
+  if (resume && gen === transportGen) timeline.play();
   ui.project.value = name;
   ui.note.textContent = `opened ${name}`;
   rememberOpened();
