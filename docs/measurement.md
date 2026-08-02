@@ -55,6 +55,36 @@ where 33ms and a JPEG encode sit between calls, the same change is worth 0.30ms 
 **An offline harness is for correctness; `grabber --profile` on the sensor is for cost** - and
 a screening measurement that removes the effect will confidently report its absence.
 
+## Replacing a shader literal with a uniform is not one question but two
+
+And the second one is about the expression rather than the value. Step 3 of the effects rework
+turned seven per-reading literals into parameters, each defaulting to exactly the literal it
+replaced, with `registry-check --against` hashing every reading against the build from before
+the readings existed. Five substitutions were exact on the first run. The two that were not are
+worth keeping:
+
+- **`pow(x, 1.0)` is not `x`.** Raising to the power of one is the mathematical identity and not
+  the arithmetic one - this GPU evaluates it as exp2 of the log2 and it comes back a few
+  last-bit values away. Ghost's exponent needed no guard, which is the other half of the
+  measurement: substituting a uniform *for a literal exponent* is exact, and it is asking for
+  the power of one that is not.
+- **A value that is bit-identical is not an expression that is bit-identical.** Guarding the
+  gamma with a ternary and handing the ramp the resulting variable produced a *third* image,
+  different from both `x` and `pow(x, 1.0)`: frame 0 came back `2cf348152757` unguarded,
+  `73d0479d20f9` through the ternary, and `885c07e968a6` - the old build's own hash - only when
+  the branch went around the whole statement so the default path *is* the old line. `depthRamp`
+  inlines to a mix by its argument over 0.33, so with the subtraction inside the call the
+  compiler contracts the two into one multiply-add and with a variable in its place it does not.
+  **To stay bit-exact, reach the old expression, do not recompute what it computed.**
+
+Two related roundings came out of the same step. The contour band edges are `0.5 ∓ width`, and
+doing that subtraction in the shader is float32: `f32(0.5) - f32(0.08)` is 0.42000001668930054
+where the literal `0.42` it replaces is 0.41999998688697815, so the width is halved either side
+of the middle **in double on the CPU** and uploaded as two uniforms, which lands on exactly the
+floats the literals did. And a `mix(x, y, 1.0)` is guarded rather than trusted for the same
+reason, since `x + (y - x)` is not always `y` - measured or not, the guard costs a coherent
+uniform branch and removes the question.
+
 ## A gate calibrated on earlier runs and then passed marginally by the run that matters is not a gate
 
 The monitor-cost harness inherited `prof-summary`'s 29.5fps floor, which belongs to a profiling

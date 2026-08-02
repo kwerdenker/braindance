@@ -43,5 +43,54 @@
  * output size and codec) now live in their own store, not inside the project.
  * Saved projects also carry an undo history (`history.stack` and
  * `history.baseline`) so a reload can restore it.
+ *
+ * **Version 4 dissolves the mode into five reading weights.** `look.mode` is gone
+ * from the project and `mode` is gone from the preset; what replaces both is five
+ * ordinary look parameters - `readRgb`, `readDepth`, `readGhost`, `readContour`,
+ * `readBlackwall` - which travel with every other value and need no special case.
+ *
+ * This is the version that most needs to be a refusal rather than a best guess, and
+ * for a reason the earlier ones did not have. A version 3 document read by this build
+ * would parse: its `values` are all still parameters this registry knows, so
+ * `params.apply` would write every one of them without complaint, and the reading
+ * would simply be missing - leaving whatever the previous document happened to
+ * select. A file that renders as somebody else's shading, silently, is worse than one
+ * that fails to open. `tools/convert-presets.mjs` is the way across, and it is a
+ * one-shot over files on disk rather than a path inside the program, because a loader
+ * that could read both shapes is the second implementation this design keeps refusing.
  */
-export const PROJECT_VERSION = 3;
+export const PROJECT_VERSION = 4;
+
+/**
+ * The sentence a document from the wrong version gets, in one place because the two
+ * doors were saying different things about the same file - and one of them was false.
+ *
+ * The refusal used to be two branches: version 3 was told to run the converter, and
+ * *everything else* was told that point size was pixels at the drawing buffer before
+ * version 1, so its look could not be reconstructed. That is only true of a document
+ * from before the version field existed, and the history above says there are none -
+ * so a version 1 or 2 project, whose point sizes are already 1080p and perfectly
+ * recoverable, was sent looking for a scale factor that is not its problem, and a
+ * document from a *later* build was told something about a format that predates it by
+ * four versions. A refusal that diagnoses the wrong thing is worse than one that says
+ * only "no", because it is followed.
+ *
+ * Three bands, which is what the shipped conversion actually distinguishes.
+ * `convert-presets.mjs` is the only migration this repo has and it starts at 3, so 1
+ * and 2 are honestly "known, and there is no path from here" rather than either
+ * "convertible" or "unreadable units". Everything else - a later version, a version
+ * field that is absent or is not a number - collapses into one sentence because the
+ * true statement about all of them is the same: nothing here knows what the document
+ * means, and guessing is the failure the version field exists to prevent.
+ */
+export function versionRefusal(what, version) {
+  const across = version === PROJECT_VERSION - 1
+    ? `version ${PROJECT_VERSION} carries the five reading weights where 3 carried a shading mode, `
+      + 'so run tools/convert-presets.mjs over the directory it is in to bring it across'
+    : version === 1 || version === 2
+      ? 'versions 1 and 2 predate the split into look and composition and the deliverable store, '
+        + `and the conversion this repo ships starts at 3, so there is no path from here to ${PROJECT_VERSION}`
+      : `nothing in this build knows what a version ${JSON.stringify(version)} document means - it is `
+        + 'either from a later build or was never one of these - so it is refused rather than guessed at';
+  return `${what} is version ${JSON.stringify(version)} and this build reads version ${PROJECT_VERSION}: ${across}`;
+}
