@@ -767,11 +767,11 @@ function stageServer() {
   // mutations run against a staged copy rather than an edit-and-restore. It is
   // 312K, so the isolation costs nothing worth counting.
   cpSync(join(REPO, 'web'), join(root, 'web'), { recursive: true });
-  // The looks that ship, copied in because the server resolves its built-in preset
-  // root relative to its own location and a staged tree without them serves an empty
-  // library - which would leave the fork-on-write rows below asserting against five
-  // documents that were not there rather than against five that are.
-  cpSync(join(REPO, 'presets-builtin'), join(root, 'presets-builtin'), { recursive: true });
+  // The looks that ship, copied where `--builtin-presets` points the mac server. Out
+  // of the staged tree on purpose: it makes the fork rows independent of whether the
+  // server happened to resolve its default correctly, which is a different claim, and
+  // it means those rows are driving the flag rather than the fallback.
+  cpSync(join(REPO, 'presets-builtin'), join(WORK, 'builtin-presets'), { recursive: true });
   for (const name of ['node_modules', 'vendor']) {
     const from = join(REPO, name);
     if (existsSync(from) && !existsSync(join(root, name))) symlinkSync(from, join(root, name));
@@ -1013,9 +1013,16 @@ const { nodeCaps, macCaps } = buildFixture();
 const root = stageServer();
 const nodeUrl = await startServer(root, ['--captures', nodeCaps, '--name', 'pi-01',
   '--presets', join(WORK, 'node-presets'), '--projects', join(WORK, 'node-projects')], NODE_PORT);
+// `--builtin-presets` named explicitly rather than left to resolve beside the staged
+// server, and for two reasons. It points the shipped-look rows at the repo's own
+// `presets-builtin/`, so they sweep the looks the product offers rather than a copy
+// that could have been staged wrong - the "compare what the tool tests against what
+// the product ships" rule. And it is the only caller of the flag: a flag whose sole
+// mention is the comment introducing it is a flag nothing proves does anything.
 const macUrl = await startServer(root, ['--captures', macCaps, '--name', 'mac',
   '--node', nodeUrl, '--node-name', 'pi-01',
-  '--presets', join(WORK, 'presets'), '--projects', join(WORK, 'projects')], MAC_PORT);
+  '--presets', join(WORK, 'presets'), '--projects', join(WORK, 'projects'),
+  '--builtin-presets', join(WORK, 'builtin-presets')], MAC_PORT);
 
 const { chromium } = await loadPlaywright();
 const browser = await chromium.launch({ headless: !HEADED, args: ['--use-gl=angle', '--use-angle=default'] });
@@ -2111,7 +2118,7 @@ async function runChecks() {
     // something the server could not have done under any implementation - a row that
     // passes by construction and reads exactly like a fork-on-write that works. The
     // file under test is the one the process can actually reach.
-    const builtinPath = join(root, 'presets-builtin/blackwall.json');
+    const builtinPath = join(WORK, 'builtin-presets/blackwall.json');
     const bytesBefore = readFileSync(builtinPath, 'utf8');
     const forkBody = { version: PROJECT_VERSION, values: { ...shipped.values, bloom: 5.5 } };
     await post(`${macUrl}/presets/blackwall`, forkBody, 'PUT');

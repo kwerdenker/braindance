@@ -1415,6 +1415,14 @@ try {
   {
     const known = { bloom: 2.75, grain: 0.66, readBlackwall: 1, readRgb: 0 };
     await page.evaluate(`globalThis.__kinect.applyPreset(${JSON.stringify(known)})`);
+    // Moved again *after* the apply and never saved, which is what makes the row below
+    // able to fail. `exportPresetFile` takes its name from the picker and its values
+    // from the live look, and the whole of that distinction is invisible to a probe
+    // whose look and whose stored document agree - a build exporting the picker's
+    // document instead of the screen would write a file containing `known` and pass.
+    // 3.9 exists in neither the picker's document nor any shipped look.
+    const onlyOnScreen = 3.9;
+    await page.evaluate(`globalThis.__kinect.params.set('bloom', ${onlyOnScreen})`);
     await settle();
 
     const [download] = await Promise.all([
@@ -1428,10 +1436,11 @@ try {
       'export writes a named file the browser actually downloaded', download.suggestedFilename());
     // The bytes are the document, so the assertion is on the values rather than on a
     // shape this file invents: what came out has to be the look that was on screen.
-    const wrong = Object.entries(known).filter(([n, v]) => exported.values?.[n] !== v);
+    const expected = { ...known, bloom: onlyOnScreen };
+    const wrong = Object.entries(expected).filter(([n, v]) => exported.values?.[n] !== v);
     check(exported.version === PROJECT_VERSION && wrong.length === 0,
-      'and what it wrote is the look that was on screen, at this build\'s version',
-      wrong.length ? wrong.map(([n, v]) => `${n} ${exported.values?.[n]} not ${v}`).join(' ') : `version ${exported.version}`);
+      'and what it wrote is the look on screen rather than the document the picker names',
+      wrong.length ? wrong.map(([n, v]) => `${n} ${exported.values?.[n]} not ${v}`).join(' ') : `version ${exported.version}, bloom ${exported.values.bloom}`);
 
     // Edited outside the program, which is the whole point of a file: a look you can
     // put in a repository, mail to somebody, or change in a text editor.
