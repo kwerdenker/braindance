@@ -452,14 +452,30 @@ export async function downloadTake(node, take, dir) {
   }
   // Claimed here, with nothing awaited between the reading and the taking, which is
   // the only placement that makes this a guard - see `downloadClaims` above.
-  if (downloadClaims.has(take.id)) {
+  //
+  // **Case-folded, because what has to be exclusive is the pathname and not the id.**
+  // `Take-1` and `take-1` are two ids and one file on a case-insensitive volume, which
+  // is the default on APFS and on NTFS - so two downloads keyed by exact id both pass
+  // this, then unlink, open, write, hash and install against one `.part` and one
+  // target. One can verify and link its inode while the other is still writing
+  // through it, and the take that lands no longer hashes to what it advertised.
+  //
+  // This over-serialises on a case-sensitive volume: two genuinely different takes
+  // whose names differ only by case cannot download at once, and the second is asked
+  // to wait rather than refused outright. That is the direction to be wrong in - the
+  // cost is a retry, where the other way round the cost is a corrupted take that
+  // still lists at full size. Folding rather than probing the volume, because a probe
+  // is a fact about the filesystem at one moment and this needs to hold for the ones
+  // already in flight.
+  const claim = take.id.toLowerCase();
+  if (downloadClaims.has(claim)) {
     throw new Error(`${take.id} is already downloading: wait for that transfer rather than starting a second one`);
   }
-  downloadClaims.add(take.id);
+  downloadClaims.add(claim);
   try {
     return await downloadClaimed(node, take, dir);
   } finally {
-    downloadClaims.delete(take.id);
+    downloadClaims.delete(claim);
   }
 }
 
@@ -506,7 +522,22 @@ async function downloadClaimed(node, take, dir) {
     // reconciliation folds and an operator can see and remove. This one is not
     // visible: `scanTakes` filters on `.knct`, so nothing lists a `.part` and nothing
     // offers to remove it, which is why it needs closing here rather than reporting.
-    await unlink(temp).catch(() => {});
+    // **Only an absent file is safe to carry on past.** The whole point of this unlink
+    // is that `temp` may be a second name for a take already in the library, so a
+    // failure to remove it and then opening it anyway is precisely the truncation this
+    // is here to prevent - a swallowed error would have made the guard cosmetic under
+    // exactly the conditions it exists for. ENOENT is the normal case and means the
+    // name was free.
+    try {
+      await unlink(temp);
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        throw new Error(
+          `refusing to download ${take.id}: ${basename(temp)} is in the way and could not be removed `
+          + `(${err.code}), and opening it would truncate whatever else is linked to it`,
+        );
+      }
+    }
     await pipeline(Readable.fromWeb(res.body), counted, createWriteStream(temp));
 
     // The same streaming scan step 2 built, against the file that actually landed.

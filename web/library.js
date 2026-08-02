@@ -1172,6 +1172,14 @@ function openViewer(key) {
   const take = takeByKey(key);
   if (!take) return;
   closeMenus();
+  // **Where the operator was, kept across a rebuild of the same take.** `paint` re-opens
+  // the viewer on every refresh while it is open, which is how it follows a take across
+  // a rename - so every completed action rebuilt the skim and the unconditional
+  // `setIndex(0)` below sent somebody inspecting a moment four minutes in back to the
+  // first frame. Read before `release`, because the old skim is what knows it. Zero for
+  // a first open and zero for a move to another take, which are the two cases where
+  // there is no position to keep.
+  const resumeAt = viewing && viewing.key === (take.hash ?? take.id) ? viewing.skim.index : 0;
   if (viewing) viewing.skim.release();
   const divisor = DIVISOR[take.state] ?? 1;
 
@@ -1225,7 +1233,13 @@ function openViewer(key) {
   // the selector became `[data-hash=""]` and matched nothing - and a null host
   // disables nothing at all rather than disabling the wrong thing.
   const hostOf = () => viewer;
-  if (take.state === 'remote') {
+  // The same condition the tile uses, and it has to be the same one: a take still being
+  // recorded has no settled hash, so the server answers 409 for it, and the tile has
+  // suppressed Download on that ground since before this viewer existed. Arrow-browsing
+  // reaches takes the grid is showing without going through a tile, which is how the
+  // viewer came to offer an action the tile had already decided against - the third time
+  // these two surfaces have disagreed about one take, after Delete and the name rule.
+  if (take.state === 'remote' && take.recording !== true) {
     addButton(acts, 'Download', 'act primary', () => run(
       hostOf(),
       `downloading ${take.id} — asking ${library.node?.name ?? 'the node'} for ${gb(take.bytes)}`,
@@ -1246,12 +1260,25 @@ function openViewer(key) {
   // open, and a listener left on the old node would act on the take before this one.
   const freshMore = vMore.cloneNode(true);
   freshMore.setAttribute('aria-expanded', 'false');
+  // **Focus moves to the replacement, or arrow-browsing stops after one take.** A
+  // viewer opened from the keyboard puts focus on its first control, which is this
+  // button; ArrowUp or ArrowDown rebuilds the next take and this line removes the very
+  // node holding focus. Focus then falls back outside the dialog, real key presses stop
+  // reaching the viewer's handler, and browsing dies silently after exactly one step.
+  //
+  // The review is right that the check could not see this: the test helper dispatches
+  // its key events straight at `viewer`, which arrive wherever focus is, so the arm
+  // walking takes passed against a build a person could not have walked. The helper
+  // sends them at `document.activeElement` now, and a row asserts focus is still inside
+  // the viewer after a move.
+  const hadFocus = document.activeElement === vMore;
   vMore.replaceWith(freshMore);
+  if (hadFocus) freshMore.focus();
   for (const old of viewer.querySelectorAll('.vhead .menu')) old.remove();
   viewer.querySelector('.vhead').style.position = 'relative';
   buildMenu(viewer.querySelector('.vhead'), freshMore, take, hostOf);
 
-  skim.setIndex(0);
+  skim.setIndex(resumeAt);
   if (!viewer.open) viewer.showModal();
 }
 
@@ -1566,9 +1593,17 @@ globalThis.__library = {
         return { width: r.width, height: r.height, ratio: r.width / r.height };
       })(),
     } : null),
-    key: (name, shift = false) => viewer.dispatchEvent(
+    // **Sent from wherever focus actually is, not at the viewer.** Dispatching straight
+    // at `viewer` delivers the event however focus is arranged, so an arm that walked
+    // takes with the arrows passed against a build where rebuilding the header dropped
+    // focus out of the dialog and a real key press reached nothing. The check was
+    // measuring its own dispatch. Firing at `document.activeElement` lets it bubble the
+    // way a keyboard's does, so focus escaping the viewer is a failure here too.
+    key: (name, shift = false) => (document.activeElement ?? viewer).dispatchEvent(
       new KeyboardEvent('keydown', { key: name, shiftKey: shift, bubbles: true, cancelable: true }),
     ),
+    /** Whether focus is still somewhere inside the viewer, which arrow-browsing needs. */
+    focusInside: () => viewer.contains(document.activeElement),
     draws: () => Number(viewer.dataset.draws ?? 0),
     async drawn(atLeast) {
       for (let i = 0; i < 200; i++) {
