@@ -4852,10 +4852,17 @@ const view = {
     return f >= this.a - margin && f <= this.b + margin;
   },
 
+  /**
+   * The narrowest window allowed here, as a fraction of the clip.
+   *
+   * Named rather than recomputed by each caller, because the edge drag needs the same
+   * number `set` clamps with and a second copy of it would be a second answer.
+   */
+  minSpan() { return Math.min(1, MIN_VIEW_SEC / this.duration); },
+
   /** The window, clamped: inside the clip, no narrower than `MIN_VIEW_SEC`, at most all. */
   set(a, b) {
-    const min = Math.min(1, MIN_VIEW_SEC / this.duration);
-    const span = Math.min(1, Math.max(min, b - a));
+    const span = Math.min(1, Math.max(this.minSpan(), b - a));
     const start = Math.min(1 - span, Math.max(0, a));
     const moved = start !== this.a || start + span !== this.b;
     this.a = start;
@@ -5442,7 +5449,16 @@ ui.mini.addEventListener('pointermove', (e) => {
   // Both edges read from the position the drag *started* at rather than from the last
   // event, so a drag that runs into the clamp at one end and comes back lands where
   // the pointer says instead of where the clamping left it.
-  const moved = miniDrag.edge === 'w' ? view.set(miniDrag.a + d, miniDrag.b)
+  // The west edge is clamped before `set` sees it, and the east one is not, which is
+  // asymmetric because `set` is. Handed a reversed pair it keeps the *start* it was
+  // given and grows the minimum span rightwards from there: for an east drag that start
+  // is the untouched west edge, so the gesture stops at the minimum holding the
+  // opposite edge, which is what an edge resize means. For a west drag the start is the
+  // pointer, so the east edge jumped past where it had been and the minimum-width
+  // window then panned along with the pointer - a resize that turns into a drag once it
+  // crosses the far edge.
+  const moved = miniDrag.edge === 'w'
+    ? view.set(Math.min(miniDrag.a + d, miniDrag.b - view.minSpan()), miniDrag.b)
     : miniDrag.edge === 'e' ? view.set(miniDrag.a, miniDrag.b + d)
       : view.set(miniDrag.a + d, miniDrag.b + d);
   if (moved) viewChanged();
