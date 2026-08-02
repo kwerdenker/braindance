@@ -28,6 +28,9 @@
 import { readdirSync, readFileSync, writeFileSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { PROJECT_VERSION } from '../web/format.js';
+// The queue's format number, read from the queue rather than copied, so the gate below
+// moves with `server/jobs.js` instead of being a second place that has to be updated.
+import { JOB_VERSION } from '../server/jobs.js';
 
 const argv = process.argv.slice(2);
 const DRY = argv.includes('--dry-run');
@@ -59,6 +62,46 @@ function readingsFrom(mode, what) {
   }
   return readingValues(mode);
 }
+
+/**
+ * **The seven constants each reading is made of, at the literals version 3 rendered
+ * them with** - and they are written into the converted file rather than left to
+ * default, because one of the two doors does not reset.
+ *
+ * In version 3 these were literals inside the mode branches of the shader, so a
+ * version 3 preset had nothing to say about them and every version 3 build drew them
+ * the same. Version 4 made them parameters. `applyStoredPreset` calls `params.apply`,
+ * which writes the keys the document names and leaves every other look value exactly
+ * where the session left it - so a converted Ghost preset applied after somebody had
+ * pulled `ghostRim` to 0.2 renders with 0.2 and is not the look it was saved as. The
+ * five shipped presets were given these seven for precisely this reason; the files
+ * this tool writes are the other half of that, and were missed.
+ *
+ * `restoreProject` is the door that does reset, so a converted project would come out
+ * right without them. They go in anyway, because "a converted document names what a
+ * freshly saved one names" is a rule that survives a future re-grade of a default and
+ * "the loader happens to reset" is not: these numbers are what the document rendered
+ * in 2026, and a default moved in a later release must not move it with them.
+ *
+ * Frozen literals for that same reason. If the registry's defaults drift away from
+ * this table, the table is still right and drift is not a bug to repair here.
+ */
+const READING_DETAIL = {
+  rgbSaturation: 1,
+  depthGamma: 1,
+  ghostRim: 0.7,
+  ghostFill: 0.35,
+  contourBands: 12,
+  contourWidth: 0.08,
+  blackwallSweep: 0.28,
+};
+
+// Everything version 4 added, for a document that named the mode `mode`. Spread ahead
+// of the document's own values at both call sites, so anything the file itself carries
+// still wins - a hand-edited `ghostRim` is a value somebody chose, in range, and
+// visible in the file, which is the opposite of the reading names `refuseReserved`
+// stops because those have no honest precedence at all.
+const newInVersion4 = (mode, what) => ({ ...readingsFrom(mode, what), ...READING_DETAIL });
 
 /**
  * A version 3 document may not already name a reading, and this is a refusal rather
@@ -101,6 +144,21 @@ function convert(body, what) {
   // is left exactly as it is - the queue format did not change and is jobs.js's to
   // number; only the project inside moves.
   if (body?.project && typeof body.project === 'object' && !Array.isArray(body.project)) {
+    // **The queue's own version is checked before the project inside it is touched.**
+    // Recognising a job by its shape is what gets past the document version gate, and
+    // it gets past it for every queue format rather than for the one this tool was
+    // written against. A record from a later `JOB_VERSION` would be rewritten and
+    // handed back still claiming that version, on the assumption that `project` will
+    // go on meaning what it means today - which is the guess the rest of this file
+    // refuses to make about a document. Left alone and reported instead, so a queue
+    // this tool does not understand survives it intact.
+    if (body.version !== JOB_VERSION) {
+      throw new Error(
+        `${what}: this is a queue record at version ${JSON.stringify(body.version)} and this tool `
+        + `understands version ${JOB_VERSION} - what \`project\` means at that version is `
+        + 'server/jobs.js\'s to say, so the record is left as it is',
+      );
+    }
     const inner = convert(body.project, `${what} job.project`);
     return inner ? { ...body, project: inner } : null;
   }
@@ -114,7 +172,7 @@ function convert(body, what) {
   if (body.values && !body.look) {
     const { mode, values, ...rest } = body;
     refuseReserved(Object.keys(values ?? {}), what, 'values');
-    return { ...rest, version: PROJECT_VERSION, values: { ...readingsFrom(mode, what), ...values } };
+    return { ...rest, version: PROJECT_VERSION, values: { ...newInVersion4(mode, what), ...values } };
   }
   // A project: the same move one level down, inside `look`.
   if (body.look && typeof body.look === 'object') {
@@ -139,7 +197,7 @@ function convert(body, what) {
     const next = {
       ...body,
       version: PROJECT_VERSION,
-      look: { ...look, params: { ...readingsFrom(mode, what), ...params } },
+      look: { ...look, params: { ...newInVersion4(mode, what), ...params } },
     };
     // **And every undo snapshot with it**, which the spread above does not reach.
     // A saved project carries its history so undo survives a reload, and each entry

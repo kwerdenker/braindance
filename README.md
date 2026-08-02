@@ -268,10 +268,11 @@ are the same thing only until you move a slider — as `<name>.braindance-preset
 `import` reads one back. The bytes are the document, so a look is something you can keep
 in a repository, mail to somebody, or edit in a text editor.
 
-An imported file is applied through the registry before it is saved, which is what makes
-that safe: a scalar carrying a string fails at the key that is wrong instead of writing a
-plausible-looking look, and a file carrying `__proto__` is refused as an unknown
-parameter. A file is the one door into the program that nothing upstream validates, so
+An imported file is checked against the registry before it is saved and applied only
+after, which is what makes that safe: a scalar carrying a string fails at the key that is
+wrong instead of writing a plausible-looking look, and a file carrying `__proto__` is
+refused as an unknown parameter — and neither ever reaches the library, because the
+refusal happens before the write rather than after it. A file is the one door into the program that nothing upstream validates, so
 nothing about it is taken on trust — `editor-check` section 9 drives the whole round trip
 in a browser, and `import-skips-normalise` is the mutation that must break it.
 

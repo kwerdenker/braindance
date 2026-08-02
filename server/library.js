@@ -554,6 +554,37 @@ export async function removeTake(dir, id, { hash, verifiedElsewhere = null }) {
 // ------------------------------------------------- projects and the preset library
 
 /**
+ * The JSON documents in a directory, by name, sorted - and **the one place that
+ * decides a missing directory may read as an empty one.**
+ *
+ * Only `ENOENT` is an absence. Every other reason `readdir` can fail is a directory
+ * that exists and holds documents this process could not enumerate: `EACCES` on a
+ * volume mounted without search permission, `ENOTDIR` from a path that names a file,
+ * an I/O error. Turned into `[]` those answer 200 with a shorter library and nothing
+ * anywhere to say why - a picker that has lost every fork looks exactly like a fresh
+ * install, and the render queue with an unreadable directory looks exactly like a
+ * queue that has drained.
+ *
+ * Shared rather than copied, because the copy is how this got out of step in the
+ * first place: `readPathFor` was taught the ENOENT rule and `DocumentStore.list` was
+ * not, so a store whose fork lookup refused an unsearchable directory went on
+ * listing past it. One implementation means the *next* caller inherits the rule by
+ * calling this rather than by being remembered.
+ */
+export async function listJsonNames(dir, { required = false, what = 'directory' } = {}) {
+  try {
+    return (await readdir(dir)).filter((f) => f.endsWith('.json')).sort();
+  } catch (err) {
+    // `required` is for a root that was configured on purpose and has no fallback
+    // behind it, where even absence is a broken deployment rather than a fresh one.
+    if (required || err?.code !== 'ENOENT') {
+      throw new Error(`the ${what} ${dir} cannot be read: ${err.message}`);
+    }
+    return [];
+  }
+}
+
+/**
  * A directory of JSON documents with a version on every one. Projects and presets
  * are the same storage problem - small JSON, named by the user, content-hashed so
  * a provenance stamp can point at a revision - so they are one class rather than
@@ -628,26 +659,17 @@ export class DocumentStore {
      * `--builtin-presets` pointing one directory too high, used to answer 200 with an
      * empty library, which reads as "this node has no presets" rather than as "this
      * node is broken". Required where it is configured, optional where it is the
-     * user's.
+     * user's - and optional means *absent*, which is `listJsonNames`'s whole subject.
      */
-    const filesIn = async (dir, required) => {
-      try {
-        return (await readdir(dir)).filter((f) => f.endsWith('.json')).sort();
-      } catch (err) {
-        if (required) {
-          throw new Error(`the shipped ${this.kind} directory ${dir} cannot be read: ${err.message}`);
-        }
-        return [];
-      }
-    };
-    const own = await filesIn(this.dir, false);
+    const own = await listJsonNames(this.dir, { what: `${this.kind} directory` });
     // The user's own names win, so a fork shadows the look it was forked from rather
     // than appearing beside it under the same name. Built-ins that have not been forked
     // come first, because they are the starting points and a library that opened with
     // somebody's twelve experiments buries them.
     const owned = new Set(own);
     const shipped = this.builtinDir
-      ? (await filesIn(this.builtinDir, true)).filter((f) => !owned.has(f)).map((f) => [this.builtinDir, f, true])
+      ? (await listJsonNames(this.builtinDir, { required: true, what: `shipped ${this.kind} directory` }))
+        .filter((f) => !owned.has(f)).map((f) => [this.builtinDir, f, true])
       : [];
     const files = [...shipped, ...own.map((f) => [this.dir, f, false])];
     const out = [];

@@ -336,6 +336,25 @@ take and a closed one, GET and HEAD, document names that exist and names that do
 asserts by name that every route got past the 409 — with any route it cannot build a concrete
 URL for named rather than silently driven at a URL still carrying a literal `:foo`.
 
+### The half measured by hand is the half the next round finds
+
+`readPathFor` used to treat every `stat` failure as "there is no fork" and fall back to the
+shipped look. That was fixed with the rule stated in its comment — only `ENOENT` is an
+absence — and the fix was **measured by hand**, two `curl`s against a server spawned for the
+purpose, and asserted nowhere. `DocumentStore.list` was the same rule at the other end of the
+same file, went on turning `EACCES`, `ENOTDIR` and an I/O error into an empty directory, and
+came back in the next review round: a user library the process cannot enumerate answered 200
+carrying exactly the five shipped looks, which is the page a fresh install draws.
+
+Two things to take from it. A rule with two call sites wants **one implementation** that both
+call — `listJsonNames` now, which the render queue's `list` also uses, so a third caller
+inherits the rule by calling it rather than by somebody remembering. And a hand measurement
+is not a row: it proves the instance on the day and leaves the class unwatched.
+`list-swallows-unreadable` is the control, and the directory it points at is a **file**, so
+`readdir` answers `ENOTDIR` deterministically without a `chmod` that a run as root would
+ignore. The row asserts both halves — that the route refuses, *and* that it does not serve
+the shipped looks in place of a library nobody could read.
+
 ## Assert against the resource, not against the bookkeeping that claims to track it
 
 `/library/descriptors` reported `openCaptures.size`, and the bug underneath it dropped the map

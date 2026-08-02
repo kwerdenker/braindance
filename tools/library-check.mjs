@@ -575,6 +575,12 @@ const MUTATIONS = {
   'confirm-promises-both-delete': { file: 'web/library.js', edits: [[
     "  const alsoOnNode = take.state === 'both';", '  const alsoOnNode = false;',
   ]] },
+  // The listing goes back to reading every failure as an absent directory, which is
+  // how a user library the process cannot enumerate answers 200 carrying only the
+  // looks that ship - the same page a fresh install draws.
+  'list-swallows-unreadable': { file: 'server/library.js', edits: [[
+    "    if (required || err?.code !== 'ENOENT') {", '    if (required) {',
+  ]] },
   'skim-ignores-state': { file: 'web/library.js', edits: [[
     'const DIVISOR = { local: 1, both: 1, remote: 4 };',
     'const DIVISOR = { local: 1, both: 1, remote: 1 };',
@@ -2150,6 +2156,48 @@ async function runChecks() {
     check(afterRemove.builtin === true && afterRemove.body.values.bloom === shipped.values.bloom,
       'and removing the fork brings the shipped look back',
       `builtin=${afterRemove.builtin} bloom=${afterRemove.body.values.bloom}`);
+
+    // ------------------------------------------- a library that cannot be read
+    //
+    // **An unreadable user directory is not an empty one, and the two answers are
+    // indistinguishable unless the route refuses.** With the shipped root behind it,
+    // a `/presets` that swallows the failure comes back 200 carrying exactly the five
+    // looks - which is precisely what a fresh install looks like, so the picker shows
+    // a healthy library with every fork and every grade the user ever saved missing
+    // from it. Nothing on the page could tell them apart.
+    //
+    // The directory is a *file*, so `readdir` answers ENOTDIR: deterministic, needs no
+    // `chmod`, and unlike a permission bit it behaves the same for a run as root. The
+    // control is the condition in `listJsonNames` - with `err?.code !== 'ENOENT'`
+    // removed it lists the five and answers 200, and both rows below go red.
+    const brokenRoot = join(WORK, 'presets-that-are-a-file');
+    writeFileSync(brokenRoot, 'a file where a directory should be\n');
+    const brokenUrl = await startServer(root, ['--captures', macCaps, '--name', 'broken-library',
+      '--presets', brokenRoot, '--builtin-presets', join(WORK, 'builtin-presets')], MAC_PORT + 14);
+    const brokenRes = await fetch(`${brokenUrl}/presets`);
+    const brokenText = await brokenRes.text();
+    check(!brokenRes.ok, 'a preset directory that cannot be read is reported rather than listed as empty',
+      `${brokenRes.status} ${brokenText.slice(0, 90)}`);
+    // And the second half, because a 500 whose body still carried the five would be a
+    // route that reported *and* served: the shipped looks must not stand in for a
+    // user library nobody could read.
+    let brokenListed = [];
+    try { brokenListed = (JSON.parse(brokenText).presets ?? []).map((d) => d.name); } catch { /* not JSON is fine */ }
+    check(brokenListed.length === 0,
+      'and the shipped looks are not served in its place, which would read as a library with no forks',
+      brokenListed.join(' ') || 'nothing listed');
+    // Still absent, though, stays empty: that is the ordinary state of a fresh node
+    // and the reason this rule is about ENOENT rather than about failing loudly.
+    const freshUrl = await startServer(root, ['--captures', macCaps, '--name', 'fresh-library',
+      '--presets', join(WORK, 'presets-never-made'), '--builtin-presets', join(WORK, 'builtin-presets')],
+    MAC_PORT + 15);
+    const fresh = await getJson(`${freshUrl}/presets`);
+    check(fresh.presets.length > 0 && fresh.presets.every((d) => d.builtin),
+      'while a user directory that was simply never made still lists the shipped looks and nothing else',
+      `${fresh.presets.length} presets, ${fresh.presets.filter((d) => d.builtin).length} shipped`);
+    for (const p of servers.filter((sv) => sv.port === MAC_PORT + 14 || sv.port === MAC_PORT + 15)) {
+      p.child.kill('SIGKILL');
+    }
 
     // A preset from a version this build does not read.
     const refusedPreset = await page.evaluate(`(() => {
