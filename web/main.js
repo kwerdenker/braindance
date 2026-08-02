@@ -5047,10 +5047,19 @@ function paintMinimap() {
   if (!ui.mini) return;
   const dur = view.duration;
   const pct = (t) => `${Math.max(0, Math.min(100, (t / dur) * 100))}%`;
-  // Clamped so the box `min-width` guarantees is inside the track at either end - see
-  // `.tminiwin`, which is where the minimum is declared. The minimum is read back out
-  // of the custom property rather than written again here, so there is one 10px.
-  ui.miniWin.style.left = `min(${view.a * 100}%, calc(100% - var(--tminiwin-min)))`;
+  // `left` stays the plain percentage the window actually sits at, and the clamp that
+  // keeps the `min-width` box inside the track rides on `margin-left` beside it. Both
+  // halves of that are deliberate. A clamp written into `left` itself - `min(x%,
+  // calc(100% - ...))` - draws correctly and breaks every reader: `editor-check`
+  // parses this property as a number and got NaN, which is this file's own rule about
+  // asserting against the resource seen from the other side. The margin resolves
+  // against the track, so it is 0 until the box would hang off the end and exactly the
+  // overhang after that, and it needs no measurement in JS to compute. The minimum
+  // itself is read out of the custom property rather than restated here, so there is
+  // one 10px - see `.tminiwin`, which declares it.
+  const leftPct = view.a * 100;
+  ui.miniWin.style.left = `${leftPct}%`;
+  ui.miniWin.style.marginLeft = `min(0px, calc(100% - ${leftPct}% - var(--tminiwin-min)))`;
   ui.miniWin.style.width = `${(view.b - view.a) * 100}%`;
   ui.miniHead.style.left = pct(timeline ? timeline.programSec : 0);
   const from = Math.min(clipIn, dur);
