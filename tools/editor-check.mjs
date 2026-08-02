@@ -1869,38 +1869,84 @@ try {
     // apart cannot be passing on rounding. `orbit-arms-stale-position` is the control.
     await page.evaluate('__kinect.timeline.transport().seek(4.0)');
     await settle();
-    // Focused *before* the drag rather than after it. The window this row needs to
-    // arrive inside is the damping's, about a third of a second wide, and a focus
-    // round-trip taken after the pointer comes up spends part of it - which is not a
-    // slow row but a row that stops testing anything, silently. Found by merging: the
-    // same row that caught `orbit-arms-stale-position` on one tree reported NOT CAUGHT
-    // on a heavier one, having simply arrived after the settle had finished.
+    // **The window is widened rather than raced, and that is the whole design of this
+    // row.** What it has to arrive inside is the damping still owing the camera
+    // movement, because that is what raises `change` from inside the seek's render.
+    // At the shipped `dampingFactor` of 0.07 that window is about a third of a second,
+    // and a driver round-trip is a real fraction of it: the first version of this row
+    // caught `orbit-arms-stale-position` on one tree and reported NOT CAUGHT on a
+    // heavier one, then caught it once in three runs on the same tree. A flaky control
+    // is worse than no control, because the run that passes reads as a build that is
+    // fine. A slower drain makes arriving inside the window certain rather than lucky.
+    //
+    // **0.02 rather than something far smaller, and the bound below it is the reason
+    // this number is written down.** `OrbitControls` only dispatches `change` when the
+    // camera moved more than its own `EPS` since the last update - `distanceToSquared`
+    // above 1e-6, which is a millimetre. The factor is the fraction of the remaining
+    // delta applied per update, so pushing it low enough makes each step land under
+    // that millimetre and the event stops being raised at all: the window is open by
+    // the flag and empty of the thing it was opened to catch. Tried at 0.002 first,
+    // and the row went from flaky to reliably NOT CAUGHT, which is the worse failure
+    // of the two because it looks settled. At 0.02 a residual of about a metre moves
+    // twenty millimetres an update, clear of the threshold, and the window is some
+    // three and a half times the shipped one.
+    const shippedDamping = await page.evaluate('__kinect.controls.dampingFactor');
+    await page.evaluate('__kinect.controls.dampingFactor = 0.02');
+    // Focused ahead of the drag, so no round-trip sits between the release and the key.
     await focusStage();
     await page.mouse.move(stage.x, stage.y);
     await page.mouse.down();
     await page.mouse.move(stage.x + 70, stage.y + 35);
-    await page.mouse.up();
-    // Deliberately no `settle()` here: arriving while the damping is still draining
-    // is the entire case, and waiting first would test the state that already worked.
+    // **The pointer stays down, and that is what makes this row deterministic rather
+    // than merely likely.** The handler under test admits both halves of the same
+    // window through one guard - `orbiting` while the pointer is down, `orbitSettling`
+    // after it lifts - and the mechanism is identical either side: a `change` raised
+    // by `advanceNavigation` from inside the seek's own render arms a position the
+    // transport has not moved to yet. Driven through the release first, it caught the
+    // mutation two runs in three: `orbitSettling` is cleared by the loop's settle
+    // branch the moment a frame finds nothing armed, so a keypress that arrives on
+    // that frame tests a build with the window already shut, and no precondition read
+    // from out here can close a gap that opens between the read and the seek. Held
+    // down, `orbiting` cannot flip underneath the row.
     //
-    // The precondition is asserted rather than hoped for, and it is the control for
-    // the row below. A release that had already finished settling would make that row
-    // pass on a build with the bug in it, so this says the window was open when the
-    // key went in - and fails loudly instead of passing quietly when it was not.
-    const midSettle = await read();
-    await page.keyboard.press('Home');
-    await settle();
-    const afterHome = await read();
+    // Deliberately no `settle()` either: arriving while the damping is still draining
+    // is the entire case, and waiting first would test the state that already worked.
+    // **Five gestures rather than one, and the repetition is the instrument rather
+    // than padding.** Whether the stale arm happens turns on where the damping's
+    // residual sits relative to `OrbitControls`' own change threshold at the instant
+    // the seek renders, and that is a race no read from out here can close: driven
+    // once, the mutation was caught two runs in three, and a control that reports a
+    // clean build a third of the time is worse than no control, because the run that
+    // passes is the one that gets believed. The claim is "a seek raised during an
+    // orbit is never pulled back", so asking it five times is a stronger reading of
+    // the same claim, and one pull-back in five is a failure.
+    const landings = [];
+    let midSettle = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (attempt > 0) {
+        await page.evaluate('__kinect.timeline.transport().seek(4.0)');
+        await settle();
+        await page.evaluate('__kinect.controls.dampingFactor = 0.02');
+        await page.mouse.move(stage.x, stage.y);
+        await page.mouse.down();
+        await page.mouse.move(stage.x + 70 - attempt * 8, stage.y + 35 + attempt * 6);
+      }
+      midSettle = await read();
+      await page.keyboard.press('Home');
+      await page.evaluate(`__kinect.controls.dampingFactor = ${shippedDamping}`);
+      await page.mouse.up();
+      await settle();
+      landings.push((await read()).programSec);
+    }
     const clipIn = await page.evaluate('__kinect.timeline.transport().clipInSec');
-    note('Home pressed while the release was still settling',
-      `settling ${midSettle.settling}, landed ${afterHome.programSec.toFixed(3)}s, `
-      + `clip in at ${clipIn.toFixed(3)}s, released from 4.000s`);
-    check(midSettle.settling === true,
-      'the release was still settling when the key went in, or the row below tests nothing',
-      `settling ${midSettle.settling}`);
-    check(Math.abs(afterHome.programSec - clipIn) < 0.05,
-      'and a seek raised while the release is still settling keeps the position it asked for',
-      `landed ${afterHome.programSec.toFixed(3)}s against ${clipIn.toFixed(3)}s asked for`);
+    const worst = Math.max(...landings.map((s) => Math.abs(s - clipIn)));
+    note('Home pressed five times with the orbit still live',
+      `landed ${landings.map((s) => s.toFixed(3)).join(', ')}s against ${clipIn.toFixed(3)}s asked for`);
+    check(midSettle.programSec === 4, 'the orbit had not moved the playhead before the key went in',
+      `playhead ${midSettle.programSec.toFixed(3)}s`);
+    check(worst < 0.05,
+      'and a seek raised while the orbit is still live keeps the position it asked for, every time',
+      `worst landing ${worst.toFixed(3)}s from ${clipIn.toFixed(3)}s`);
 
   }
 

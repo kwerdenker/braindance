@@ -5808,6 +5808,28 @@ controls.addEventListener('end', () => {
 });
 
 /**
+ * Hands the camera the movement the damping still owes it, so an action that reads
+ * the pose reads the one it is going to keep.
+ *
+ * Damping applies a fraction of the remaining delta per update, so it approaches the
+ * target without ever arriving; one update with damping off applies the whole
+ * remainder, which is the pose the glide was heading for anyway. Nothing is skipped
+ * and nothing new is invented - the camera simply stops being between two places.
+ *
+ * The flags are deliberately left alone. Clearing `orbitSettling` here would drop the
+ * deferred accurate seek and leave a draft standing where the true image belongs; the
+ * loop's settle branch still runs on the next frame, and it now seeks to a pose that
+ * has finished moving instead of one that is still travelling.
+ */
+function finishOrbitDrift() {
+  if (!orbiting && !orbitSettling) return;
+  const damped = controls.enableDamping;
+  controls.enableDamping = false;
+  controls.update();
+  controls.enableDamping = damped;
+}
+
+/**
  * The only thing that continues a drag while the playhead is parked, called once per
  * animation frame.
  *
@@ -7316,6 +7338,14 @@ ui.camKey.addEventListener('click', () => {
   // The pose you are looking from, which is what makes orbiting to a shot and
   // keying it one gesture. The free camera is navigation everywhere else in this
   // design; here it is the viewfinder, and the copy is one-way.
+  //
+  // And the gesture is why the drift has to be finished first. A hand that orbits to
+  // a shot and reaches straight for this button arrives inside the release's damping
+  // window, where the camera is still travelling - so the key would record a pose the
+  // viewport then glides away from, and the shot that was keyed is not the shot that
+  // was framed. The window is about a third of a second, which is well inside the
+  // reach of the very gesture the comment above describes.
+  finishOrbitDrift();
   freeCamera.updateMatrixWorld(true);
   track.setKey(playheadSec(), {
     position: freeCamera.position.toArray(),
@@ -7376,6 +7406,12 @@ function sensorView() {
   // follows from the aspect, so matching vertical on a stage narrower than the sensor
   // would crop the sides off the very thing the button exists to show. Whichever axis
   // binds is the one matched, and the sensor's frame is always contained.
+  // Before anything is assigned, for the same reason the camera key does it and one
+  // gesture earlier: a pose set underneath a release that is still draining slides
+  // back out, because the damping owes the camera movement it will deliver on the
+  // next frames whatever was written in between. Drained first, this button's answer
+  // is the one that stays.
+  finishOrbitDrift();
   const aspect = freeCamera.aspect;
   const binding = aspect >= tanH / tanV ? 'vertical' : 'horizontal';
   const fovV = binding === 'vertical' ? 2 * Math.atan(tanV) : 2 * Math.atan(tanH / aspect);
