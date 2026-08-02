@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { PROJECT_VERSION } from './format.js';
+import { PROJECT_VERSION, versionRefusal } from './format.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -2948,23 +2948,11 @@ function restoreProject(project) {
   // version. A document that is not this build's version is refused, because a
   // document whose units cannot be recovered is one that renders wrong with
   // nothing to say why.
-  // Two different refusals wearing one sentence, and saying the wrong one is worse
-  // than saying nothing: the point-size rebase is what version *1* records, so telling
-  // somebody holding a version 3 project that its units cannot be recovered is false
-  // and sends them looking for a scale factor. Version 3 is the immediately preceding
-  // shape, it already had 1080p point sizes, and the only thing it carries that this
-  // build cannot read is `look.mode` - which converts losslessly. So the version it
-  // found decides which of the two it is told.
+  // Which refusal it gets is `versionRefusal`'s, in `format.js` beside the history it
+  // reads from - because the two doors were writing that sentence separately and a
+  // version band added here would not have reached the preset one.
   if (project.version !== PROJECT_VERSION) {
-    const across = project.version === PROJECT_VERSION - 1
-      ? `version ${PROJECT_VERSION} carries the five reading weights where 3 carried a shading `
-        + 'mode, so run tools/convert-presets.mjs over the directory to bring it across'
-      : 'point size is pixels at 1080p from version 1 onwards and was pixels at the drawing '
-        + 'buffer before it, so there is no faithful reading of a document from before that';
-    throw new Error(
-      `this project is version ${JSON.stringify(project.version)} and this build reads `
-      + `version ${PROJECT_VERSION}: ${across}`,
-    );
+    throw new Error(versionRefusal('this project', project.version));
   }
   if (!project.look || typeof project.look !== 'object') {
     throw new Error('a project carries a look object');
@@ -6241,19 +6229,11 @@ function presetFromCurrentLook(names) {
  * because the gesture stamped a revision the store had not issued yet.
  */
 function refusePresetBody(name, body) {
-  // The same two refusals `restoreProject` distinguishes, for the same reason: a
-  // version 3 preset is one command away from opening and telling its holder the point
-  // size cannot be recovered sends them after a scale factor that is not the problem.
+  // The same refusal `restoreProject` gives, from the same helper, because a preset and
+  // a project carry the same version field and a holder of either needs the same three
+  // answers. Two copies of that sentence is how one of them came to be false.
   if (body?.version !== PROJECT_VERSION) {
-    const across = body?.version === PROJECT_VERSION - 1
-      ? `version ${PROJECT_VERSION} carries the five reading weights where 3 carried a shading `
-        + 'mode, so run tools/convert-presets.mjs over the file to bring it across'
-      : 'point size is pixels at 1080p from version 1 onwards and was pixels at the drawing '
-        + 'buffer before it, so its look cannot be reconstructed';
-    throw new Error(
-      `preset ${name} is version ${JSON.stringify(body?.version)} and this build reads `
-      + `${PROJECT_VERSION}: ${across}`,
-    );
+    throw new Error(versionRefusal(`preset ${name}`, body?.version));
   }
   // A document with no values is not a look that happens to change nothing. `?? {}`
   // used to make it one: the apply wrote nothing, the stamp went on anyway, and what
@@ -6320,7 +6300,24 @@ function applyStoredPreset(doc) {
   history.commit();
 }
 
-const documentsIn = async (kind) => (await (await fetch(`/${kind}`)).json())[kind];
+/**
+ * The documents of one kind, or the server's reason there are none.
+ *
+ * This used to reach straight through `res.json()` for `[kind]`, which reads a 500 as
+ * `undefined` and hands it to a `for...of` - so the refusal the server took trouble to
+ * write ("the shipped preset directory ... cannot be read: ENOTDIR") arrived on screen
+ * as "list is not iterable", and the one surface that does report a failed library
+ * reported the wrong thing. The error carries through now, because a message that
+ * names the directory is the difference between a five-second fix and a mystery.
+ */
+const documentsIn = async (kind) => {
+  const res = await fetch(`/${kind}`);
+  const body = await res.json().catch(() => null);
+  if (!res.ok || !Array.isArray(body?.[kind])) {
+    throw new Error(body?.error ?? `${kind} could not be listed: HTTP ${res.status}`);
+  }
+  return body[kind];
+};
 
 async function refreshPresets() {
   const list = await documentsIn('presets');
@@ -7843,9 +7840,22 @@ async function openTake(id) {
   // whose marks arrived a frame later would show them appearing, which reads as
   // the page finding them rather than the take having them.
   await loadMarks(id);
-  await refreshPresets().catch(() => {});
-  await refreshProjects().catch(() => {});
-  await refreshDeliverables().catch(() => {});
+  // **Softly, but never silently.** All three of these are allowed to fail without
+  // stopping the take from opening - a node with an unreachable library is still a node
+  // you can watch footage on - and all three used to fail into an empty `catch`, so a
+  // `--builtin-presets` pointing one directory too high drew a picker holding nothing
+  // but the placeholder and said not one word about why. The server's refusal exists
+  // and reaches here; only the editor was throwing it away.
+  //
+  // Collected rather than reported one at a time, because three notes written in
+  // sequence leave only the last one on screen - and the recorder's own note, which
+  // already reported this, is on a surface the editor does not show.
+  const unavailable = [];
+  for (const [what, refresh] of [['presets', refreshPresets], ['projects', refreshProjects],
+    ['deliverables', refreshDeliverables]]) {
+    await refresh().catch((err) => unavailable.push(`${what} (${err.message})`));
+  }
+  if (unavailable.length) ui.note.textContent = `library unavailable: ${unavailable.join('; ')}`;
   ensureActiveDeliverable();
   applyDeliverable(activeDeliverable);
   timingChanged();

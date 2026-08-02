@@ -112,6 +112,8 @@ node tools/library-check.mjs                              # step 7: library, rec
 node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL
 node tools/library-check.mjs --mutate write-overwrites-builtin # ... and must FAIL
 node tools/library-check.mjs --mutate list-swallows-unreadable # ... and must FAIL
+node tools/library-check.mjs --mutate open-take-swallows-library # ... and must FAIL
+node tools/library-check.mjs --mutate one-refusal-for-older-versions # ... and must FAIL
 node tools/editor-check.mjs --url http://localhost:8080   # the editor's controls: that they exist, that pressing them changes something
 node tools/editor-check.mjs --mutate lanes-clear-siblings --no-render  # ... and must FAIL
 node tools/editor-check.mjs --mutate plant-unswept-control --no-render # ... and must FAIL

@@ -581,6 +581,17 @@ const MUTATIONS = {
   'list-swallows-unreadable': { file: 'server/library.js', edits: [[
     "    if (required || err?.code !== 'ENOENT') {", '    if (required) {',
   ]] },
+  // The editor goes back to swallowing a library that will not load, which is the
+  // empty picker an operator gets told nothing about.
+  'open-take-swallows-library': { file: 'web/main.js', edits: [[
+    '    await refresh().catch((err) => unavailable.push(`${what} (${err.message})`));',
+    '    await refresh().catch(() => {});',
+  ]] },
+  // Every version older than this build gets one sentence again, so a document with no
+  // conversion path is told the thing that is true of a document from the future.
+  'one-refusal-for-older-versions': { file: 'web/format.js', edits: [[
+    '    : version === 1 || version === 2', '    : false',
+  ]] },
   'skim-ignores-state': { file: 'web/library.js', edits: [[
     'const DIVISOR = { local: 1, both: 1, remote: 4 };',
     'const DIVISOR = { local: 1, both: 1, remote: 1 };',
@@ -2195,19 +2206,72 @@ async function runChecks() {
     check(fresh.presets.length > 0 && fresh.presets.every((d) => d.builtin),
       'while a user directory that was simply never made still lists the shipped looks and nothing else',
       `${fresh.presets.length} presets, ${fresh.presets.filter((d) => d.builtin).length} shipped`);
+    // **And the same failure read where an operator would be standing.** The rows above
+    // are the route's answer; this one is the editor's, and it is a different question:
+    // the refusal reached the page and was thrown away by an empty `catch`, so a
+    // `--builtin-presets` one directory too high drew a picker holding the placeholder
+    // and nothing else, which is what a node with no presets legitimately looks like.
+    // Driven against the broken server rather than simulated, so the message on screen
+    // is the one the store wrote.
+    {
+      const { page: hurt, errors: hurtErrors } = await openPage(browser, editorPage(brokenUrl, 'local-clip'));
+      // **`#tNote`, which is what `ui.note` is.** Written against `#note` first, and
+      // that row read an element that does not exist: `?? ''` made every arm answer
+      // "the note is empty", so it was red against a build that was reporting perfectly
+      // and would have been red against one that reported nothing at all.
+      //
+      // The text is taken *at the moment it matches* rather than read again afterwards,
+      // because the note is one line that every later message overwrites - a read taken
+      // a beat too late measures whichever gesture came next.
+      const held = await hurt.waitForFunction(
+        '(() => { const t = document.getElementById("tNote")?.textContent ?? ""; return t.includes("library unavailable") ? t : null; })()',
+        null, { timeout: 30000 },
+      ).catch(() => null);
+      const note = held ? String(await held.jsonValue())
+        : await hurt.evaluate('document.getElementById("tNote")?.textContent ?? ""');
+      check(/library unavailable/.test(note) && /presets/.test(note),
+        'an editor whose preset library will not load says so instead of drawing an empty picker',
+        note.slice(0, 120) || 'the note is empty');
+      // The store's own sentence, not a paraphrase and not `list is not iterable`: the
+      // path from `listJsonNames` to the note is what makes the failure actionable.
+      check(/cannot be read/.test(note),
+        'and the note carries the server\'s reason rather than the shape of the crash',
+        note.slice(0, 120) || 'the note is empty');
+      // The 500 itself is the subject of this page, so the console line the browser
+      // writes for it is not a finding - asserting its absence would be asserting that
+      // the scenario did not happen. An uncaught exception still is one: reporting a
+      // failed library must not be a second way to break the editor.
+      const thrown = hurtErrors.filter((e) => !/Failed to load resource/.test(e));
+      check(thrown.length === 0, 'and reporting it raises no uncaught page errors',
+        thrown.slice(0, 2).join(' | ') || 'none beyond the 500 this page is about');
+      await hurt.close();
+    }
     for (const p of servers.filter((sv) => sv.port === MAC_PORT + 14 || sv.port === MAC_PORT + 15)) {
       p.child.kill('SIGKILL');
     }
 
-    // A preset from a version this build does not read.
-    const refusedPreset = await page.evaluate(`(() => {
+    // A preset from a version this build does not read - and **which** refusal it gets,
+    // because the sentence is the whole value of the row. One version too old to have a
+    // path and one from a build that does not exist yet: they are incompatible for
+    // different reasons, and a single fallback sentence sent the first after a scale
+    // factor that was never its problem while telling the second about a format four
+    // versions behind it.
+    const refusalFor = async (version) => page.evaluate(`(() => {
       try {
-        globalThis.__kinect.library.applyStoredPreset({ name: 'old', rev: 'sha256:0', body: { version: 0, values: { bloom: 1 } } });
+        globalThis.__kinect.library.applyStoredPreset({ name: 'old', rev: 'sha256:0', body: { version: ${version}, values: { bloom: 1 } } });
         return 'ACCEPTED';
       } catch (e) { return e.message; }
     })()`);
-    check(refusedPreset !== 'ACCEPTED', 'a preset from another format version is refused',
-      refusedPreset.slice(0, 70));
+    const refusedOld = await refusalFor(2);
+    const refusedFuture = await refusalFor(PROJECT_VERSION + 1);
+    check(refusedOld !== 'ACCEPTED' && refusedFuture !== 'ACCEPTED',
+      'a preset from another format version is refused', `${refusedOld.slice(0, 40)} / ${refusedFuture.slice(0, 40)}`);
+    check(/no path from here/.test(refusedOld) && !/later build/.test(refusedOld),
+      'a version this build has no conversion for says so rather than blaming the units',
+      refusedOld.slice(0, 130));
+    check(/later build/.test(refusedFuture) && !/no path from here/.test(refusedFuture),
+      'and a version from a later build gets its own answer rather than the older one\'s',
+      refusedFuture.slice(0, 130));
 
     check(errors.length === 0, 'the preset path raises no page errors', errors.slice(0, 2).join(' | '));
     await page.close();

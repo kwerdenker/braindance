@@ -1621,9 +1621,12 @@ try {
   // The one part of the preset library that is not HTTP: a look goes out through a
   // browser download and comes back through a file input. Neither can be reached from
   // `library-check`, which drives the routes - the download is a Blob the page makes
-  // and never sends anywhere, and the import applies the file *before* it saves it,
-  // which is the half that decides whether a hand-edited preset can put a wrong image
-  // on screen. So it is driven here, where there is a browser.
+  // and never sends anywhere, and the import checks the file against the registry
+  // *before* the PUT and applies it only after, so both the refusal and the ordering
+  // are page-side. That ordering is the half that decides whether a hand-edited preset
+  // can put a wrong image on screen or leave a document in the library it was refused
+  // from, which is what `import-saves-before-validating` moves. So it is driven here,
+  // where there is a browser.
   console.log('\n[9] a look leaves as a file and comes back as one');
   // **This section writes to the real preset library, so it writes only names nobody
   // else could own.** The import goes through the actual `/presets` route and takes the
