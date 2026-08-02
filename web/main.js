@@ -6268,6 +6268,16 @@ function lanesMoved() {
  */
 function timingChanged({ moved = false } = {}) {
   if (!timeline) return;
+  // Re-clamped against the duration this may just have changed, because the window is
+  // stored as *fractions* and its minimum is in *seconds*. Those disagree the moment
+  // the duration moves: a window sitting at exactly `MIN_VIEW_SEC` at 0.1x is a fixed
+  // fraction of a clip that a change to 4x makes forty times shorter, so the same
+  // fraction is now 0.00625 program seconds - a window narrower than a single output
+  // frame, which is the state `MIN_VIEW_SEC` exists to make unreachable and which
+  // resolves most pointer positions on the ruler to the same frame. `set` re-applies
+  // the minimum against the current duration, so handing it the fractions it already
+  // holds is the whole re-clamp, and every timing change passes through here.
+  view.set(view.a, view.b);
   // The slider's coordinate, not the rate - see `rateFromSlider`. Written only when
   // the thumb is not already showing this rate, and the condition is the invariant
   // itself rather than a flag standing in for it: the rate is quantised and snapped on
