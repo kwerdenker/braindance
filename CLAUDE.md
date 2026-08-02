@@ -174,6 +174,10 @@ node tools/level-check.mjs                                # levelling: the room 
 node tools/level-check.mjs --mutate tilt-ignored          # ... and must FAIL mutated
 node tools/level-check.mjs --mutate crop-follows-tilt     # ... and must FAIL mutated
 node tools/level-check.mjs --mutate plan-ignores-tilt     # ... and must FAIL mutated
+node tools/level-check.mjs --mutate plan-skips-vertical-crop # ... and must FAIL mutated
+node tools/level-check.mjs --mutate region-follows-tilt   # ... and must FAIL mutated
+node tools/level-check.mjs --mutate sensor-view-ignores-tilt # ... and must FAIL mutated
+node tools/level-check.mjs --mutate level-writes-zero     # ... and must FAIL mutated
 node tools/level-check.mjs --mutate level-order-swapped   # ... and must FAIL mutated
 node tools/guard-check.mjs                                # the socket's origin rule, the bind, and the rebinding rule
 node tools/guard-check.mjs --mutate upgrade-skips-origin  # ... and must FAIL mutated
