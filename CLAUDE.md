@@ -210,6 +210,27 @@ missing shot rather than as a call that did not happen. The house pattern is
 `page.evaluate(\`(${FN})(${JSON.stringify(opts)})\`)`, and it is what the other
 tools already do.
 
+**A control whose `value` stops meaning the quantity it is named after retargets every
+tool that writes it, silently and in the passing direction.** The speed slider's travel
+became logarithmic, so `#tRate.value` is a position now and not a rate - and three proof
+sites wrote a rate straight into it. `el.value = '1'` had meant 1x and now means 4x, the
+top of the range. Every assertion downstream would have gone on passing, because holding
+the source frame is true at *any* rate: the arms would have measured 4x while their labels
+said 1x, and nothing would ever have said so. What closes it is not remembering to convert
+- it is that each site now asks the page where a rate lives (`__kinect.editor.rateSlider`)
+and then **checks the rate that came out against the rate that went in**. The conversion
+alone would have been one more thing to keep in step; the assertion is what makes a wrong
+one loud. Ask this of any control whose scale you change, and of any `.value` a tool sets
+by hand.
+
+**And a detent has to be measured against the control, not chosen as a round number.**
+1.00x snaps because `slopeAt` reports it to the audio gate and 0.9995 reads as retimed.
+The band started at +/-1.5% of rate, which on a travel spanning a factor of 40 is
+`ln(1.015)/ln(40)` = 1.5px of a 380px slider - so the one value the detent existed to make
+reachable was not reachable, and the row asserting the snap went red on a build whose
+arithmetic was perfectly correct. The check was right and the feature was unusable, which
+is the more useful direction for a proof tool to fail in. It is +/-3% now, about 3px.
+
 **Place a probe where its answer would be different, not where it is convenient.** A third
 flaw came out of this on step 5: a mutation replacing the pre-roll's window query with the
 tangent it replaced was caught by only one of five probe positions, because four of them sat
@@ -358,6 +379,9 @@ node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL
 node tools/editor-check.mjs --url http://localhost:8080   # the editor's controls: that they exist, that pressing them changes something
 node tools/editor-check.mjs --mutate lanes-clear-siblings --no-render  # ... and must FAIL
 node tools/editor-check.mjs --mutate plant-unswept-control --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate rate-holds-cuts --no-render       # ... and must FAIL
+node tools/editor-check.mjs --mutate rate-holds-keys --no-render       # ... and must FAIL
+node tools/editor-check.mjs --mutate undo-skips-cuts --no-render       # ... and must FAIL
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated

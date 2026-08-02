@@ -2626,12 +2626,27 @@ const history = {
     // the clip is, and stopping the transport is not part of what it undoes.
     const resume = timeline ? timeline.playing : false;
     if (resume) timeline.pause();
+    // The parameterisation being left, read before the restore overwrites it. An undo
+    // that crosses a speed change has to carry the cuts across the same way the
+    // gesture did, and it cannot do it by restoring them: `serialiseProjectBody`
+    // deliberately leaves `clipIn`/`clipOut` out, because they are deliverable state
+    // rather than what the clip *is*. So the keys come back inside the snapshot
+    // already in the parameterisation being returned to, and the cuts - the one term
+    // outside it - are the only thing left to rescale. Without this, undoing a speed
+    // change puts every keyframe back and leaves the two markers where the new rate
+    // had put them, which is the original bug surviving its own fix.
+    const wasRate = retime.rate;
+    const wasIn = clipIn;
+    const wasOut = clipOut;
     this.restoring = true;
     try {
       restoreProject(JSON.parse(previous));
       this.baseline = previous;
     } finally {
       this.restoring = false;
+    }
+    if (retime.rate !== wasRate) {
+      reparameteriseProgramTime(wasRate / retime.rate, { clipIn: wasIn, clipOut: wasOut, keys: [] });
     }
     // The playhead deliberately does not move. Undo is about what the clip is, and
     // walking the playhead backwards on every press is the behaviour that teaches
@@ -3156,6 +3171,59 @@ const retime = {
     };
   },
 };
+
+/**
+ * Every program time, rescaled by `k`. Changing the slope is what does this to them.
+ *
+ * **This is the same fix the playhead already got, applied to the class it belongs
+ * to.** `beginRateGesture` holds *source* time across a speed change because program
+ * and source are the same number only at rate 1: park at program 10s, go from 1x to
+ * 2x, and program 10s is now source 20s - a different moment in the take under a
+ * playhead that did not move. That argument says nothing about the playhead
+ * specifically. It is true of anything measured in program time, and three such
+ * things were left behind: the clip's `in` and `out`, the deliverable's copy of them,
+ * and the `t` on every key of every track.
+ *
+ * The screenshots that started this are the arithmetic of it. Source runs ~960s, so
+ * the ruler ends at 800s at 1.20x and at 408s at 2.35x, while `in`/`out` stayed pinned
+ * at 234.509/407.612 program seconds - which puts the out cut at 50.3% of the ruler in
+ * one and 99.5% in the other. Nothing moved; the ruler rescaled underneath markers
+ * that did not. And the export followed the markers, so a speed change silently
+ * changed which footage the file would contain.
+ *
+ * `k` is `oldRate / newRate` and the map is exactly uniform, which is a fact about
+ * when this can run rather than a simplification. The slider is disabled the moment
+ * the retime carries keys (see `timingChanged`), so the only slope this ever changes
+ * is the keyless one, where `sourceSec = programSec * rate` everywhere at once. There
+ * is no general-curve case to handle and writing one would be writing for a caller
+ * that cannot exist. The retime's own keys are untouched for the same reason: if
+ * there were any, nothing would be calling this.
+ *
+ * Ease handles are fractions of their segment, so a uniform stretch leaves them
+ * alone - there is no fourth term hiding in them.
+ *
+ * `was` is where the times are read *from*, rather than the live values being
+ * multiplied in place, and that is what makes a drag exact: a slider emits dozens of
+ * `input` events, and a product of dozens of per-event factors is not the same number
+ * as one factor from where the gesture started. Same reason `rateGesture` captures its
+ * source anchor once instead of re-deriving it per event.
+ */
+function reparameteriseProgramTime(k, was) {
+  for (const [key, t] of was.keys) key.t = t * k;
+  // Through the one door the cuts have, so the deliverable's copy and the readouts
+  // follow rather than being written a second time here. It also keeps the playhead
+  // inside the range, which is why the caller moves the playhead to its anchor
+  // *before* calling this: both scale by the same `k`, so a playhead that was inside
+  // the range is still inside it and this costs a repaint rather than a seek.
+  setClipInOut({ in: was.clipIn * k, out: was.clipOut === null ? null : was.clipOut * k });
+}
+
+/** Where a later rescale reads its times from. Live objects, and the `t` they had. */
+const programTimeSnapshot = () => ({
+  clipIn,
+  clipOut,
+  keys: [...tracks.values()].flatMap((track) => track.keys.map((key) => [key, key.t])),
+});
 
 class LivePairSource {
   constructor() {
@@ -5051,6 +5119,47 @@ addEventListener('keydown', (e) => {
   }
 });
 
+// The speed slider's own coordinate, which is not the rate.
+//
+// `<input type="range">` is linear in its value, and program length goes as 1/rate,
+// so a slider whose value *was* the rate put almost all of its useful travel in the
+// bottom tenth: on the old 0.1..4 range one 0.05 step near 0.1 changed the clip's
+// length by a third and the same step near 4 changed it by one percent. The travel is
+// logarithmic instead, so a step anywhere is the same proportional change - about 1.9%
+// of the clip's length at the 0.005 the arrow keys move.
+//
+// The detent is not a rounding accident. 1.00x is the value that has to be reachable
+// exactly rather than approximately: it is what `slopeAt` reports to the audio gate,
+// and a take that is "playing at 1.0" at 0.9995 is a take the gate reads as retimed.
+// A log grid has no reason to land on 1 at all, so the band snaps to it and the rest
+// is quantised to a millirate, which is finer than the readout beside it can show.
+//
+// Its width is measured against the control rather than picked as a round number. The
+// travel spans a factor of 40, so a band of +/-r in rate is `ln(1+r)/ln(40)` of the
+// slider: at the +/-1.5% this started as, that is 1.5px on the ~380px the strip gives
+// it, which is not a detent anybody can land on and made the exactness it exists for
+// unreachable in exactly the case it was written for. +/-3% is about 3px, and it costs
+// nothing real - a deliberate 2% speed change is not a thing anyone grades.
+const RATE_MIN = 0.1;
+const RATE_MAX = 4;
+const RATE_DETENT = 0.03;
+
+const rateFromSlider = (v) => {
+  const rate = RATE_MIN * (RATE_MAX / RATE_MIN) ** Math.min(1, Math.max(0, Number(v) || 0));
+  return Math.abs(rate - 1) <= RATE_DETENT ? 1 : Number(rate.toFixed(3));
+};
+
+const sliderFromRate = (rate) => (
+  Math.log(Math.min(RATE_MAX, Math.max(RATE_MIN, rate)) / RATE_MIN)
+  / Math.log(RATE_MAX / RATE_MIN)
+);
+
+// Where the thumb starts. Written from the rate rather than spelled out in the markup,
+// so the position of 1.00x is stated once - and written here rather than left to
+// `timingChanged`, which returns early until a take is open and would otherwise leave
+// the thumb at 0.1x under a readout saying 1.00x.
+ui.rate.value = String(sliderFromRate(retime.rate));
+
 /**
  * What a speed gesture holds still, captured once when it starts.
  *
@@ -5079,9 +5188,36 @@ let rateGesture = null;
 
 function beginRateGesture() {
   if (rateGesture || !timeline) return;
-  rateGesture = { source: retime.sourceSecAt(timeline.programSec), wasPlaying: timeline.playing };
+  rateGesture = {
+    source: retime.sourceSecAt(timeline.programSec),
+    wasPlaying: timeline.playing,
+    // The parameterisation the gesture started in. Every program time in the document
+    // is rescaled from *these* on each event rather than from wherever the previous
+    // event left them - see `reparameteriseProgramTime` for why a product of per-event
+    // factors is the wrong number.
+    rate: retime.rate,
+    times: programTimeSnapshot(),
+  };
   // Paused once for the gesture rather than on every event, and resumed at the end.
   timeline.pause();
+}
+
+/**
+ * Puts the slope at `rate` and carries the whole document across with it.
+ *
+ * The order is load-bearing rather than tidy. The playhead moves to its anchor first,
+ * so that by the time the cuts are rescaled it is already sitting at the same fraction
+ * of the ruler they are - which means `setClipInOut` finds it inside the range and
+ * repaints instead of seeking. Rescaling first would step a still-old playhead against
+ * new cuts and buy an accurate seek per slider event, which is the storm the draft
+ * pump exists to avoid.
+ */
+function applyRate(rate) {
+  retime.rate = rate;
+  const program = programHoldingAnchor();
+  timeline.frame = timeline.frameAt(program);
+  reparameteriseProgramTime(rateGesture.rate / rate, rateGesture.times);
+  return program;
 }
 
 /** Where the anchored frame sits now that the slope has changed. */
@@ -5095,9 +5231,7 @@ ui.rate.addEventListener('keydown', beginRateGesture);
 ui.rate.addEventListener('input', () => {
   if (!timeline) return;
   beginRateGesture();
-  retime.rate = Number(ui.rate.value);
-  const program = programHoldingAnchor();
-  timeline.frame = timeline.frameAt(program);
+  const program = applyRate(rateFromSlider(ui.rate.value));
   // `moved` because a speed change rescales every lane and adds none: the set of
   // lanes is a property of which tracks carry keys, which a slope cannot touch.
   timingChanged({ moved: true });
@@ -5111,8 +5245,7 @@ ui.rate.addEventListener('input', () => {
 ui.rate.addEventListener('change', () => {
   if (!timeline) return;
   beginRateGesture();
-  retime.rate = Number(ui.rate.value);
-  const program = programHoldingAnchor();
+  const program = applyRate(rateFromSlider(ui.rate.value));
   const resume = rateGesture.wasPlaying;
   rateGesture = null;
   // Whatever is queued behind the draft in flight would otherwise paint itself over
@@ -5515,7 +5648,21 @@ function lanesMoved() {
  */
 function timingChanged({ moved = false } = {}) {
   if (!timeline) return;
-  ui.rate.value = String(retime.rate);
+  // The slider's coordinate, not the rate - see `rateFromSlider`. Written only when
+  // the thumb is not already showing this rate, and the condition is the invariant
+  // itself rather than a flag standing in for it: the rate is quantised and snapped on
+  // the way through, so writing the position back unconditionally would shove the thumb
+  // out from under a pointer that is mid-drag by the rounding, and inside the 1.00x
+  // detent it would jump the thumb to the centre of the band from anywhere in it.
+  //
+  // Asking "does the thumb already mean this rate" rather than "is a gesture running"
+  // is what makes it self-correcting. A gesture flag has to be cleared by something,
+  // and `change` is not guaranteed to arrive - a slider nudged with the arrow keys and
+  // never blurred would leave the flag set, and every later write-back from a project
+  // load or an undo would be skipped by a gesture that ended long ago.
+  if (rateFromSlider(ui.rate.value) !== retime.rate) {
+    ui.rate.value = String(sliderFromRate(retime.rate));
+  }
   ui.rateOut.textContent = `${retime.rate.toFixed(2)}×`;
   // The slider is the one-key version of the curve, so once the curve has keys it
   // has nothing left to say: it would set a slope only the extrapolated ends read.
@@ -7325,6 +7472,21 @@ globalThis.__kinect = {
    */
   editor: {
     clipRange: () => ({ in: clipIn, out: clipOut }),
+    // The speed slider's travel is logarithmic, so its `value` is a position and not a
+    // rate. A check that wants to drive the control at 2.35x has to be able to say
+    // where 2.35x is, and the alternative - writing the rate into `value` - would set
+    // some other rate and go on asserting happily about it.
+    rateSlider: { toValue: sliderFromRate, toRate: rateFromSlider },
+    // The take's marks as the strip draws them, planted without writing a sidecar. A
+    // mark is the one thing on the ruler that must hold still across a speed change
+    // *without* being rescaled - it is stored in source milliseconds and drawn through
+    // the curve - so a check needs one present to tell "every term was carried across"
+    // from "the ruler never moved". Going through `markHere` to get one would write
+    // into the take on disk, which is a check editing the fixture it measures.
+    setMarks(list) {
+      takeMarks = list.map((m) => ({ ...m }));
+      paintMarks();
+    },
     selection: () => (selection ? { owner: selection.owner, t: selection.key.t } : null),
     select(owner, index) {
       const keys = keysOf(owner);

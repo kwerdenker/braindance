@@ -591,7 +591,15 @@
         <div class="tclock derived"><small>source &middot; derived</small><output id="tSource">00:00.000</output></div>
       </div>
       <div class="tchips">
-        <label class="tchip">speed<input id="tRate" type="range" min="0.1" max="4" step="0.05" value="1"><b id="tRateOut">1.00&times;</b>
+        <!-- The slider's coordinate is not the rate, and the range here is deliberately
+             0..1 rather than 0.1..4. Program length goes as 1/rate, so a control linear
+             in rate spends most of its travel where the ruler barely moves: one 0.05 step
+             at the bottom of the old range changed the clip's length by a third and the
+             same step at the top changed it by one percent. The bounds live in `main.js`
+             beside the mapping that reads this, so there is one copy of them. `value` is
+             written from `retime.rate` at boot for the same reason - a position spelled
+             out here would be a second statement of where 1.00x sits. -->
+        <label class="tchip">speed<input id="tRate" type="range" min="0" max="1" step="any"><b id="tRateOut">1.00&times;</b>
           <button class="kf" id="tRateKey" type="button" aria-label="Retime keyframe"><i></i></button></label>
         <label class="tchip">out fps<select id="tFps"><option>24</option><option>30</option><option>60</option><option>120</option></select></label>
         <!-- The range the export takes, as numbers rather than only as two lines on

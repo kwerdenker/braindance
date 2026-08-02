@@ -132,6 +132,45 @@ const MUTATIONS = {
     ]],
   },
 
+  // The cuts stop being carried across a speed change, which is the bug the user
+  // photographed: at 1.20x the out marker sat at 50.3% of the ruler and at 2.35x the
+  // same `out` sat at 99.5%, because the ruler halved and the marker did not. Only the
+  // cut term is reverted, so this must redden the two cut rows and the two shade rows
+  // and leave the key rows and the mark row passing - a mutation that failed everything
+  // could not say which term it was about.
+  'rate-holds-cuts': {
+    file: 'web/main.js',
+    edits: [[
+      '  setClipInOut({ in: was.clipIn * k, out: was.clipOut === null ? null : was.clipOut * k });',
+      '  setClipInOut({ in: was.clipIn, out: was.clipOut });',
+    ]],
+  },
+
+  // The other term: keyframes stop being carried, so a bloom ramp graded against one
+  // moment of the take points at another the moment the speed moves. Reddens the key
+  // rows and leaves the cut rows alone, which is the pair that makes either one
+  // diagnostic.
+  'rate-holds-keys': {
+    file: 'web/main.js',
+    edits: [[
+      '  for (const [key, t] of was.keys) key.t = t * k;',
+      '  for (const [key, t] of was.keys) key.t = t;',
+    ]],
+  },
+
+  // Undo restores the keys from the snapshot and leaves the cuts where the rate it is
+  // undoing put them. Half a strip restored, which is worse than none: the markers and
+  // the keys disagree about which footage the edit is on, and nothing says so.
+  'undo-skips-cuts': {
+    file: 'web/main.js',
+    edits: [[
+      '    if (retime.rate !== wasRate) {\n'
+      + '      reparameteriseProgramTime(wasRate / retime.rate, { clipIn: wasIn, clipOut: wasOut, keys: [] });\n'
+      + '    }',
+      '    // the cuts are left where the rate being undone put them',
+    ]],
+  },
+
   // The space bar stops reaching the transport. Everything else about the keyboard
   // stays, so this reddens the transport rows and leaves the stepping and range rows
   // alone - which is what makes it diagnostic of its own term.
@@ -772,21 +811,34 @@ try {
   // trivially at program 0 and a single arm cannot tell holding one from holding the
   // other. `CLAUDE.md` has this failure twice already under "what do my arms agree
   // about".
-  const rateArm = async (parkAt, to) => {
-    await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
-    await page.evaluate(`(() => { const el = document.getElementById('tRate'); el.value = '1'; el.dispatchEvent(new Event('input')); el.dispatchEvent(new Event('change')); })()`);
-    await settle();
-    await page.evaluate(`__kinect.timeline.transport().seek(${parkAt})`);
-    await settle();
-    const before = await read();
-    const leftBefore = await page.evaluate(`document.getElementById('tPlayhead').style.left`);
+  // **The slider's `value` is a position, not a rate.** Its travel is logarithmic, so
+  // writing `2.35` into it asks for the top of the range and every row below would go
+  // on asserting about 4x while claiming to be about 2.35x - a check retargeted
+  // invisibly, which is the shape `CLAUDE.md` records twice. The rate goes through the
+  // page's own mapping, and the rate that came out is checked against the one that went
+  // in rather than assumed.
+  const driveRate = async (rate) => {
     await page.evaluate(`(() => {
       const el = document.getElementById('tRate');
-      el.value = ${JSON.stringify(String(to))};
+      el.value = String(__kinect.editor.rateSlider.toValue(${rate}));
       el.dispatchEvent(new Event('input'));
       el.dispatchEvent(new Event('change'));
     })()`);
     await settle();
+    const landed = await page.evaluate('__kinect.timeline.retime.rate');
+    check(near(landed, rate, 1e-6), `  the slider went to ${rate}x when it was asked for ${rate}x`,
+      `landed at ${landed}x`);
+    return landed;
+  };
+
+  const rateArm = async (parkAt, to) => {
+    await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
+    await driveRate(1);
+    await page.evaluate(`__kinect.timeline.transport().seek(${parkAt})`);
+    await settle();
+    const before = await read();
+    const leftBefore = await page.evaluate(`document.getElementById('tPlayhead').style.left`);
+    await driveRate(to);
     const after = await read();
     const leftAfter = await page.evaluate(`document.getElementById('tPlayhead').style.left`);
     return { before, after, leftBefore, leftAfter };
@@ -805,12 +857,164 @@ try {
       `program ${arm.before.programSec.toFixed(3)}s -> ${arm.after.programSec.toFixed(3)}s`);
   }
 
+  // ---------------------------------------------------------------------
+  // And the rest of the strip, which held the same bug for longer.
+  //
+  // The playhead rows above are one term of a class that has four. `in`, `out`, the
+  // deliverable's copy of them and every keyframe's `t` are all program times, and a
+  // speed change rescales the ruler underneath all of them. Measured on the user's own
+  // numbers before the fix: source ~960s, so the ruler ends at 800s at 1.20x and 408s
+  // at 2.35x while `in`/`out` stayed pinned at 234.509/407.612, which walked the out
+  // cut from 50.3% of the ruler to 99.5% - and took what the export contained with it.
+  //
+  // **Both arms are away from 1x, and that is the whole design of this row.** At rate 1
+  // program time *is* source time, so a build that never rescales anything is
+  // bit-identical to one that rescales correctly, and an arm touching 1x would pass on
+  // either. 1.20 -> 2.35 is the pair from the report.
+  //
+  // One row per marker kind rather than one boolean over all of them, because a
+  // cumulative assertion says something broke and not which term - `CLAUDE.md` has that
+  // as its own rule after step 6 measured three grade terms down one row. The mark is
+  // the odd one and belongs here for it: it is stored in source milliseconds and drawn
+  // through the curve, so it must hold still *without* being rescaled, which is what
+  // separates "every term was carried" from "the ruler never moved at all".
+  const STRIP = () => {
+    const left = (sel) => { const el = document.querySelector(sel); return el ? el.style.left : null; };
+    return {
+      playhead: left('#tPlayhead'),
+      tIn: left('#tIn'),
+      tOut: left('#tOut'),
+      shadeIn: `${document.querySelector('#tShadeIn').style.left}+${document.querySelector('#tShadeIn').style.width}`,
+      shadeOut: `${document.querySelector('#tShadeOut').style.left}+${document.querySelector('#tShadeOut').style.width}`,
+      keys: [...document.querySelectorAll('.tlane[data-owner=bloom] .tkey')].map((k) => k.style.left).join(' '),
+      marks: [...document.querySelectorAll('#tMarks .tmk')].map((m) => m.style.left).join(' '),
+      // What proves the sameness above was carried rather than merely undisturbed.
+      keyTimes: (__kinect.keyframes.project().look.tracks.bloom ?? []).map((k) => k.t.toFixed(4)).join(' '),
+      // The camera track, read separately because it is serialised separately - it
+      // lives under `composition` rather than under `look.tracks`, and a rescale that
+      // walked only the look tracks would pass every row above while sliding the whole
+      // camera move against the footage. One track kind cannot carry a claim about all
+      // of them.
+      cameraTimes: (__kinect.keyframes.project().composition.camera ?? []).map((k) => k.t.toFixed(4)).join(' '),
+      clip: __kinect.editor.clipRange(),
+      duration: __kinect.timeline.transport().duration,
+    };
+  };
+  const strip = () => page.evaluate(`(${STRIP})()`);
+
+  await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
+  await page.evaluate(`__kinect.keyframes.setTracks({ bloom: [ { t: 2, value: 0.2 }, { t: 6, value: 0.9 } ] })`);
+  // A camera key as well as a look key, because the two are serialised down different
+  // branches and a rescale could plausibly walk one list and not the other.
+  await page.evaluate(`(() => {
+    __kinect.timeline.transport().pause();
+    __kinect.setViewCamera(__kinect.viewCamera());
+    __kinect.keyframes.toggle('camera');
+  })()`);
+  await page.evaluate(`__kinect.editor.setMarks([{ id: 'm1', sourceMs: 3000, label: 'probe' }])`);
+  await settle();
+  await page.evaluate(`__kinect.timeline.transport().seek(1.5)`);
+  await settle();
+  await page.locator('#tSetIn').click();
+  await page.evaluate(`__kinect.timeline.transport().seek(7)`);
+  await settle();
+  await page.locator('#tSetOut').click();
+  await page.evaluate(`__kinect.timeline.transport().seek(4)`);
+  await settle();
+
+  await driveRate(1.2);
+  const at120 = await strip();
+  await driveRate(2.35);
+  const at235 = await strip();
+  // Read after the second rate change rather than before it. The slider's `change`
+  // commits, so a depth taken before it is a level short and the row reads 9 -> 9 on a
+  // pop that worked perfectly - a red row about the check's own bookkeeping rather than
+  // about undo.
+  const undoBefore = await page.evaluate('__kinect.keyframes.undo.depth()');
+
+  check(at235.duration < at120.duration - 1e-6,
+    'the ruler really did rescale from 1.20x to 2.35x, or none of the rows below mean anything',
+    `${at120.duration.toFixed(3)}s -> ${at235.duration.toFixed(3)}s`);
+  for (const [term, label] of [
+    ['tIn', 'the in cut holds its place on the ruler'],
+    ['tOut', 'the out cut holds its place on the ruler'],
+    ['shadeIn', 'and the shading before it does'],
+    ['shadeOut', 'and the shading after it does'],
+    ['keys', 'every keyframe holds its place on the ruler'],
+    ['marks', "the take's marks hold theirs, without being rescaled to do it"],
+  ]) {
+    check(at120[term] === at235[term], `  ${label}`, `${at120[term]} -> ${at235[term]}`);
+  }
+  check(near(parseFloat(at235.playhead), parseFloat(at120.playhead), 0.05),
+    '  and so does the playhead', `${at120.playhead} -> ${at235.playhead}`);
+  // The other direction. Holding still because nothing was carried is the failure this
+  // separates out: at 1.20 -> 2.35 the times must fall by 1.20/2.35, and a build that
+  // left them alone would hold the numbers and move every marker.
+  check(at120.keyTimes !== at235.keyTimes && at120.clip.in !== at235.clip.in,
+    '  by rescaling the times underneath, which is what proves it carried them',
+    `keys ${at120.keyTimes} -> ${at235.keyTimes}, in ${at120.clip.in.toFixed(4)} -> ${at235.clip.in.toFixed(4)}`);
+  check(at120.cameraTimes !== '' && at120.cameraTimes !== at235.cameraTimes,
+    '  including the camera track, which is serialised down a different branch',
+    `camera ${at120.cameraTimes} -> ${at235.cameraTimes}`);
+  const k = 1.2 / 2.35;
+  check(near(at235.clip.in, at120.clip.in * k, 1e-6) && near(at235.clip.out, at120.clip.out * k, 1e-6),
+    '  by exactly the ratio of the two rates, which is what keeps the export on the same footage',
+    `in ${at120.clip.in.toFixed(4)} -> ${at235.clip.in.toFixed(4)}, wanted ${(at120.clip.in * k).toFixed(4)}`);
+
+  // Undo across a speed change. `clipIn`/`clipOut` are deliverable state and
+  // deliberately outside the snapshot, so the keys come back from the document and the
+  // cuts have to be carried by the same map the gesture used - otherwise undo restores
+  // half the strip and leaves the markers where the new rate put them.
+  await page.evaluate(`__kinect.keyframes.undo.pop()`);
+  await settle();
+  const undone = await strip();
+  const undoAfter = await page.evaluate('__kinect.keyframes.undo.depth()');
+  check(undoAfter < undoBefore,
+    '  undo actually popped a level, so the rows below are about a restore',
+    `depth ${undoBefore} -> ${undoAfter}`);
+  check(near(undone.duration, at120.duration, 1e-6),
+    '  undoing a speed change puts the ruler back', `${undone.duration.toFixed(3)}s against ${at120.duration.toFixed(3)}s`);
+  check(undone.tIn === at120.tIn && undone.tOut === at120.tOut,
+    '  and puts the cuts back with it, which the snapshot alone cannot do',
+    `in ${at120.tIn} -> ${undone.tIn}, out ${at120.tOut} -> ${undone.tOut}`);
+  check(undone.keys === at120.keys, '  and the keys', `${at120.keys} -> ${undone.keys}`);
+
+  // The detent at 1.00x, which is the one rate that has to be reachable *exactly*
+  // rather than approximately: `slopeAt` reports it to the audio gate, and a take
+  // playing at 0.9995 is a take the gate reads as retimed. A logarithmic grid has no
+  // reason to land on 1 at all, so a band around it snaps.
+  //
+  // Both sides, because a band that snapped everything would pass the first row alone
+  // and quietly make every nearby rate unreachable - the same shape as a probe standing
+  // in a dead zone. The offsets are in slider travel: 0.005 is inside the band and 0.05
+  // is a tenth of the whole control away from it.
+  const atSlider = async (offset) => {
+    await page.evaluate(`(() => {
+      const el = document.getElementById('tRate');
+      el.value = String(__kinect.editor.rateSlider.toValue(1) + ${offset});
+      el.dispatchEvent(new Event('input'));
+      el.dispatchEvent(new Event('change'));
+    })()`);
+    await settle();
+    return page.evaluate('__kinect.timeline.retime.rate');
+  };
+  const inBand = await atSlider(0.005);
+  check(inBand === 1, 'a slider position just off 1.00x snaps to exactly 1, not to 0.99-something',
+    `landed at ${inBand}`);
+  const outOfBand = await atSlider(0.05);
+  check(outOfBand !== 1 && outOfBand > 1,
+    '  and a position clear of the detent is left alone, so the band is a detent and not a floor',
+    `landed at ${outOfBand}`);
+
   // The seek storm. A slider drag is dozens of `input` events and one `change`, and
-  // each accurate seek renders a whole pre-roll before it can show anything.
+  // each accurate seek renders a whole pre-roll before it can show anything. The sweep
+  // below is arbitrary travel - only the seek count is under test - but it does cross
+  // the 1.00x detent, which is worth knowing if this row ever goes red for a reason
+  // that has nothing to do with seeking.
   await page.evaluate('__kinect.timeline.counters.seeks = 0');
   await page.evaluate(`(() => {
     const el = document.getElementById('tRate');
-    for (let i = 0; i < 20; i++) { el.value = String(1 + i * 0.05); el.dispatchEvent(new Event('input')); }
+    for (let i = 0; i < 20; i++) { el.value = String(0.4 + i * 0.02); el.dispatchEvent(new Event('input')); }
     el.dispatchEvent(new Event('change'));
   })()`);
   await settle();
