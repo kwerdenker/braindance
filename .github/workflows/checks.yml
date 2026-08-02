@@ -5,10 +5,11 @@
 # the USB bus. Wiring those in would produce a workflow that is red from the first push
 # and ignored by the second, so they are named at the bottom rather than attempted.
 #
-# Nothing here installs a dependency, which keeps the runner off the package registry
-# entirely - the checks below need no module this repo does not already contain, so an
-# install would only add a network dependency and a supply-chain surface to a workflow
-# whose whole job is to be trustworthy.
+# Nothing here installs a *dependency of this repo* - the checks need no module the tree
+# does not already contain. The gate job does reach the registry twice, and both are the
+# point rather than a compromise: it pins npm itself, and the check asks npm to resolve a
+# package so it can read the refusal. That replaced a version-dependent config reading
+# which passed locally and failed on the runner while the gate was armed the whole time.
 #
 # `npm ci` does work, for the record: the lockfile carries the declared devDependency
 # and installs clean from a directory holding nothing but package.json, the lockfile
@@ -62,11 +63,22 @@ jobs:
           # with Node 18 - so that arm would fail on the runner's npm rather than on
           # anything in this repo. The check names that as its own row when it happens.
           node-version: 'lts/*'
+      # npm pinned rather than inherited, because this check is the one thing here whose
+      # answer depends on the npm running it. The runner brought 11.16.0, which enforces
+      # the gate perfectly and reports nothing through `npm config get before` - so the
+      # first version of this job went red against a repository whose gate was armed.
+      # A floating npm makes that a question about the runner's week rather than about
+      # this tree. 12 is what the author installs with, so it is what CI proves against.
+      - run: npm install -g npm@12.0.2
       - name: .npmrc gate
         run: node tools/release-gate-check.mjs
       # Broken on purpose, three ways, every run. A gate check nobody has tried to slip
-      # past is a green tick of unknown sensitivity, and both failure shapes it exists for
-      # are silent: npm treats a wrong unit as a warning and a missing file as no opinion.
+      # past is a green tick of unknown sensitivity. Note that only two of the three are
+      # silent - a missing file is no opinion, and an npm too old for the key ignores it
+      # without a word. A wrong unit is loud: measured on 11.12.1, 11.16.0 and 12.0.2,
+      # `min-release-age=2d` stops the install with `Invalid time value`. The silent
+      # value is the one npm accepts and nobody meant, which is what the bounds rows are
+      # for - `0` puts the cutoff at this instant and warns about nothing.
       # Caught is exit 0 for this tool, NOT CAUGHT is exit 1 - so `set -e` is what makes
       # a miss in the middle of the loop fail the step rather than being overwritten by
       # the next iteration's success.

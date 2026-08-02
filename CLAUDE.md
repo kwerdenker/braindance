@@ -419,8 +419,8 @@ node tools/registration-check.mjs                    # our registration == upstr
 node tools/registration-check.mjs --mutate one-lsb   # ... and must FAIL mutated
 ```
 
-These two need nothing at all - no server, no browser, no sensor, no network - which
-is what lets CI run them:
+These two are what CI runs. `syntax-check` needs nothing at all; `release-gate-check`
+needs the registry, for the reason below, and exits 2 when it cannot reach it:
 
 ```
 node tools/syntax-check.mjs                          # every JS file this repo ships parses
@@ -428,15 +428,32 @@ node tools/release-gate-check.mjs                    # the .npmrc supply-chain g
 node tools/release-gate-check.mjs --mutate wrong-unit # ... and must FAIL (also: no-gate, absent)
 ```
 
-`release-gate-check` exists because **npm fails open on a value it cannot parse.**
-`min-release-age=2d` is a warning rather than an error and the install proceeds
-ungated, so a wrong unit reads exactly like a configured gate to anybody reading the
-file. The only way to tell them apart is to ask npm what it *derived*, which is why
-the check reads `npm config get before` and not the key itself - npm answers `null`
-for the key whether it took or not. It masks the user and global config layers while
-it runs, and that is load-bearing rather than tidiness: this machine carries the same
-gate in `~/.npmrc`, so an unmasked run reads a date, passes, and proves nothing about
-the repo.
+**npm 12 is the version this repo uses.** CI installs `npm@12.0.2` explicitly in the
+gate job rather than taking whatever `setup-node` bundles, because this check is the one
+thing here whose answer depends on the npm running it.
+
+**`release-gate-check` used to read `npm config get before`, and that method was wrong
+in the direction that looks like a failure.** npm derives its cutoff from the age
+internally; npm 11.12.1 exposed the derived date through `before`, and 11.16.0 and
+12.0.2 answer `null` there while enforcing the gate identically. So the first public
+push went red against a repository whose gate had never been open - the config reading
+was bookkeeping that had stopped tracking the resource. The check now asks npm to
+resolve a package and reads the cutoff out of the refusal, which is measured identical
+on all three versions.
+
+**And this file used to say npm fails open on a value it cannot parse, which it does
+not.** Measured on 11.12.1, 11.16.0 and 12.0.2: `min-release-age=2d` warns `invalid
+config` and then stops with `npm error Invalid time value`, exit 1, nothing installed.
+A wrong *unit* is loud. What is silent is an npm older than 11, which does not know the
+key and installs ungated without a word, and a value npm accepts that nobody meant -
+`0` puts the cutoff at this instant and `-1` puts it tomorrow, neither warning about
+anything, which is what the tool's two bounds rows are for.
+
+It masks the user and global config layers while it runs, and that is load-bearing
+rather than tidiness: this machine carries the same gate in `~/.npmrc`, so an unmasked
+run inherits it and proves nothing about the repo. Rewriting the check reproduced that
+exact mistake in a throwaway probe - with the layers unmasked, the *no gate* arm came
+back carrying a cutoff.
 
 `syntax-check` refuses to pass on finding no files, for the reason this file keeps
 restating: a checker that globbed wrong prints a clean result about nothing. The roots
