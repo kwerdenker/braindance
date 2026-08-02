@@ -7183,22 +7183,6 @@
                 },
                 {
                   "type": "frame",
-                  "id": "FaKyY",
-                  "name": "Divider",
-                  "width": "fill_container",
-                  "height": 1,
-                  "fill": "#ffffff1a"
-                },
-                {
-                  "type": "frame",
-                  "id": "r8eaA",
-                  "name": "Divider",
-                  "width": "fill_container",
-                  "height": 1,
-                  "fill": "#ffffff1a"
-                },
-                {
-                  "type": "frame",
                   "id": "CKQho",
                   "name": "Export",
                   "width": "fill_container",
