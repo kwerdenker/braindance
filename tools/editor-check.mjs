@@ -402,10 +402,10 @@ const MUTATIONS = {
   'wheel-ignores-deltamode': {
     file: 'web/main.js',
     edits: [[
-      "  const unit = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? LANE_KEY_STEP\n"
-      + "    : e.deltaMode === WheelEvent.DOM_DELTA_PAGE ? Math.max(1, ui.bed.clientHeight)\n"
-      + "      : 1;",
-      '  const unit = 1;',
+      "  if (e.deltaMode === WheelEvent.DOM_DELTA_LINE) {\n"
+      + '    return { x: e.deltaX * LANE_KEY_STEP, y: e.deltaY * LANE_KEY_STEP };\n'
+      + '  }\n',
+      '',
     ]],
   },
 
