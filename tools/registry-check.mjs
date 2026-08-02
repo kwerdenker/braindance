@@ -833,6 +833,14 @@ const GOLDEN_ABSENT = new Set([
   // that drifted moves that reading's image and fails there by name.
   'rgbSaturation', 'depthGamma', 'ghostRim', 'ghostFill',
   'contourBands', 'contourWidth', 'blackwallSweep',
+  // The program-out size, on the same terms and for the same reason: not a registry
+  // parameter, no such control at the earlier revision, and its own bounds live in the
+  // handler that parses it rather than in the markup. What it is held to is
+  // `vcam-check`, whose section 5 asserts the drawing buffer really is the size this
+  // box says and not the window's. `progMode` is not here because it is a `select`
+  // and the snapshot walks `#panel input` - if it ever becomes an input it will
+  // arrive here as a failure, which is the right way round.
+  'progSize',
 ]);
 const absentBefore = (name, before) => GOLDEN_ABSENT.has(name) && before === undefined;
 

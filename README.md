@@ -348,6 +348,55 @@ rising to 10mm at 4.25m. `render %` scales the drawing buffer, and it is the one
 control that reliably buys back frame time on a large display, for the reason the
 [rendering cost](#rendering-cost) table gives.
 
+## Output to OBS
+
+Two outputs, and they are different pictures rather than two views of one. Add them in
+OBS from the panel's *Output to OBS* group, which prints both URLs.
+
+| What | How | What it is |
+| --- | --- | --- |
+| the viewport | browser source on `/program` | this renderer, at a fixed size, no chrome |
+| the webcam | media source on `/camera.mjpg` | the colour camera's own 1920x1080 frame |
+
+OBS's own virtual camera then publishes either one to Zoom, Meet or anything else, so
+nothing here installs a system camera extension.
+
+**The webcam is not the colour on the wire.** Type 2 carries the *registered* colour —
+`Registration::apply`'s resample of the colour camera into the depth camera's
+viewpoint, wearing its 70.6° frustum instead of the colour camera's 84.1° and punched
+through with holes wherever the depth solve returned nothing. Right for texturing a
+cloud, useless as a picture of a room. So the grabber encodes the native frame as a
+second stream, on its own thread: a 1080p TurboJPEG encode measures **5.50 ms mean**
+here (90 real sensor frames over a six-second subscription, no warmup discarded, zero
+busy drops, q80, TJSAMP_420, FASTDCT), against a 7.1 ms serial frame loop with a 33 ms
+budget — so putting it on the loop would add the full encode to capture-to-wire
+latency, and off it the loop pays only the copy. It is emitted only while something
+is subscribed, because it is another ~50 Mbit/s on a pipe whose backpressure reaches
+the grabber and costs the take.
+
+The viewport source has two modes. *Program camera* frames the keyed camera at a fixed
+output size; *mirror* follows what the operator is orbiting. Mirror is a second render
+of the operator's viewpoint rather than their pixels, because a browser source renders
+its own context — OBS window capture would give the exact pixels and was rejected for
+being window-sized and carrying whatever chrome is not hidden.
+
+**It renders once per sensor frame, and OBS is the clock after that.** Nothing is
+invented and nothing repeated on this side, but a browser source cannot hand frames to
+an encoder: CEF renders offscreen and OBS pulls the latest texture at canvas rate, so
+the two clocks beat. Negligible on a healthy link, where the sensor is a flat 30.00fps;
+uneven on a degraded one, where nothing available would fix it. The source shows its
+delivered rate and its missed count for that reason, and says the decimation it was
+granted if it is being served coarse — an output that quietly upscaled ÷4 depth would
+be the misattribution the monitor negotiation exists to prevent, arriving by another
+door.
+
+Two things worth knowing before you rely on it. Turning colour off restarts the grabber
+and **drops a live webcam mid-call**; that is allowed rather than refused, and the
+endpoint answers 503 with the reason instead of going silent. And `/camera.mjpg` serves
+the camera to anything that can reach the port — the origin rule refuses a browser
+declaring a foreign origin and nothing else, so see [SECURITY.md](SECURITY.md) before
+`--host 0.0.0.0`.
+
 ## Surface memory
 
 A ray landing on a different surface between frames is a death and a birth, and
@@ -542,7 +591,17 @@ type 1  hello  UTF-8 JSON, once, before any frame:
 type 2  frame  [u32 depthBytes][u32 colorBytes][u64 timestampMs]
                [u16 depth[512*424] millimetres, 0 = no reading]
                [JPEG of the registered 512x424 colour image]
+type 3  colour [u64 timestampMs][JPEG of the native 1920x1080 colour image]
+               Live only, and only while something is subscribed.
 ```
+
+**Type 3 is live-only, so "byte-identical" now means identical to the type 1 and 2
+subsequence.** A capture file is still exactly what the grabber emitted of the stream
+the recorder writes, and the colour message is not part of that stream — it is
+interleaved on the wire and dropped at the recorder, because a third message type in
+the file would move every take's content hash, which is the key the library joins two
+machines on. `vcam-check --mutate hd-reaches-recorder` is what keeps that true.
+Recording it is an open decision rather than a closed door.
 
 Measured over a real capture: 434,176 bytes of depth plus a 49–59KB JPEG, 486KB per
 frame all in. At 30fps that is 14.6MB/s, or 117Mbit/s per connected browser. Fine

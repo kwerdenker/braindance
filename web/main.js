@@ -25,6 +25,26 @@ const POINTS = DW * DH;
 // the answer has to be available at the top of the module rather than at the bottom.
 const EDITING = location.pathname === '/edit';
 
+/**
+ * Whether this page is the program-out source rather than a surface anybody is
+ * sitting in front of.
+ *
+ * OBS opens it as a browser source, so it is the same renderer as the viewer and the
+ * editor - one file, one scene, one post chain - with three differences: the output
+ * size is fixed rather than the window's, there is no chrome and no orbit, and it
+ * renders when a frame arrives rather than on the display's clock.
+ *
+ * **It is a second WebGL context on the same GPU as the operator's, and that is the
+ * trade this mode is.** A browser source cannot mirror somebody's pixels; CEF renders
+ * its own. What it can do is be told the same camera, which is what mirror mode is,
+ * and the cost of the pair is measurable - the rendering-cost table in README puts a
+ * full 1080p Blackwall frame at 1.17ms, so two of them at 30fps is a small fraction
+ * of the 8.33ms a 120Hz operator has. OBS window capture would give the exact pixels
+ * for free and was rejected because it is window-sized and carries whatever chrome
+ * the operator has not hidden.
+ */
+const PROGRAM_OUT = location.pathname === '/program';
+
 // The auto-save's name, in one place because two things need to agree about it: the
 // write below and the project picker that has to leave it out.
 const WORKING_PROJECT = '__working__';
@@ -3437,6 +3457,13 @@ function handleFrame(buffer) {
     lastFpsAt = now;
     setStatus();
   }
+
+  // **The output's clock is the sensor, and this is where that is decided.** The
+  // viewer runs `renderer.setAnimationLoop(liveLoop)` and draws at the display's rate,
+  // interpolating between the last two depth frames to fill the gap. A source does
+  // not: one arrival, one render, so every frame it produces corresponds to a frame
+  // the sensor actually delivered.
+  if (PROGRAM_OUT) programOutFrame();
 }
 
 // Camera settings live on the sensor, not in the shader, so the server owns them
@@ -3536,12 +3563,211 @@ function showMonitor(state) {
 
 for (const el of [monDivisorEl, monStrideEl]) el.addEventListener('input', sendMonitor);
 
+// ----------------------------------------------------------------- program out
+//
+// The operator's surface says what the program-out source should draw, and the
+// source draws it. Everything crossing that gap goes through the registry rather
+// than around it: a parameter write is forwarded by the one hook every write already
+// passes through, so the set of things the output honours is the set of parameters
+// that exist, and a parameter added later needs no line here. The mode, the output
+// size and - in mirror mode - the operator's own camera are the only things sent
+// that are not parameters, because none of them is one.
+
+/** Which camera the output frames. */
+let programOutMode = 'camera';
+/** The output's pixel size, which is deliberately not the window's. */
+let programOutSize = { w: 1920, h: 1080 };
+// What the output has actually delivered, for the readout. Counted here rather than
+// inferred from a clock, because the number worth showing is frames that left this
+// renderer and not frames the sensor sent.
+let programOutDrawn = 0;
+let programOutMissed = 0;
+let programOutFps = 0;
+let programOutLastAt = 0;
+let programOutSince = 0;
+
+const progModeEl = document.getElementById('progMode');
+const progSizeEl = document.getElementById('progSize');
+const progNoteEl = document.getElementById('progNote');
+
+/** Send a patch to whatever program-out sources are listening. Operator side. */
+function sendProgramOut(patch) {
+  if (PROGRAM_OUT) return; // a source does not tell other sources what to draw
+  if (socket?.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({ programOut: patch }));
+}
+
+/**
+ * The operator's whole state, sent when a source is known to have just connected or
+ * when the operator changes mode.
+ *
+ * **A source that joined late has to be caught up, and a per-write stream cannot do
+ * it.** Parameter writes are forwarded as they happen, so a browser source opened
+ * after the operator had already set up a look would render the defaults and stay
+ * wrong until every slider was touched again. `params.values()` is the same door the
+ * project file and the preset library read through, so this is one snapshot of the
+ * registry rather than a hand-listed set of fields that could fall behind it.
+ */
+function sendProgramOutState() {
+  sendProgramOut({
+    mode: programOutMode,
+    size: programOutSize,
+    params: params.values(),
+    view: cameraPose(freeCamera),
+  });
+}
+
+/** A camera as three plain values, which is what a pose is everywhere else here. */
+function cameraPose(cam) {
+  return {
+    position: cam.position.toArray(),
+    quaternion: cam.quaternion.toArray(),
+    fov: cam.fov,
+  };
+}
+
+/** Apply a patch. Source side. */
+function applyProgramOut(patch) {
+  if (!PROGRAM_OUT) return;
+  if (patch.size && Number.isInteger(patch.size.w) && Number.isInteger(patch.size.h)
+      && patch.size.w > 0 && patch.size.h > 0) {
+    programOutSize = { w: patch.size.w, h: patch.size.h };
+    outputSize = { ...programOutSize };
+    resize();
+  }
+  if (patch.mode === 'mirror' || patch.mode === 'camera') {
+    programOutMode = patch.mode;
+    setViewCamera(programOutMode === 'mirror' ? freeCamera : programCamera);
+  }
+  if (patch.params) {
+    // Through the registry's own write path, so a value arriving over a socket is
+    // normalised, clamped and applied exactly as one typed into a slider would be.
+    // A refused name throws rather than being ignored - a source silently dropping a
+    // parameter it did not recognise is a source drawing something other than what
+    // the operator is looking at, which is the one thing this mode must not do.
+    for (const [name, value] of Object.entries(patch.params)) {
+      try {
+        params.set(name, value);
+      } catch (err) {
+        console.error(`[program-out] ${err.message}`);
+      }
+    }
+  }
+  if (patch.view && programOutMode === 'mirror') {
+    freeCamera.position.fromArray(patch.view.position);
+    freeCamera.quaternion.fromArray(patch.view.quaternion);
+    if (freeCamera.fov !== patch.view.fov) {
+      freeCamera.fov = patch.view.fov;
+      freeCamera.updateProjectionMatrix();
+    }
+  }
+}
+
+/**
+ * Draw one output frame, called when a depth frame arrives rather than on a clock.
+ *
+ * **One render per sensor frame, and OBS is the clock after that.** Nothing is
+ * invented and nothing is repeated here - but a browser source cannot hand frames to
+ * OBS, because CEF renders offscreen and OBS pulls the latest texture at its own
+ * canvas rate. So the two clocks beat: on a healthy link the sensor is a flat
+ * 30.00fps and the beat is negligible, and on a degraded one it is uneven and nothing
+ * available here would fix it. That is accepted rather than hidden, which is what the
+ * readout below is for - a rate under the declared one has to be visible where
+ * somebody is judging the picture, or it gets read as the scene.
+ */
+function programOutFrame() {
+  const now = performance.now();
+  renderProgramFrame(liveTransport.positionAt(now));
+  programOutDrawn++;
+  if (programOutLastAt) {
+    // **The interval is measured, never assumed at 30fps.** The stream is irregular -
+    // a degraded link runs p50 64ms against p90 222ms - so a counter that divided by
+    // a nominal 33ms would report a healthy 15fps sensor as dropping half its frames
+    // and send somebody to look at a link that was fine. `deliveryMs` is the same
+    // smoothed arrival spacing the vertex shader blends against, so the readout and
+    // the picture are reasoning from one number.
+    const expected = livePairs.deliveryMs;
+    const gaps = Math.round((now - programOutLastAt) / expected) - 1;
+    if (gaps > 0) programOutMissed += gaps;
+  }
+  programOutLastAt = now;
+  if (now - programOutSince >= 1000) {
+    programOutFps = (programOutDrawn * 1000) / (now - programOutSince);
+    programOutDrawn = 0;
+    programOutSince = now;
+    paintProgramOutReadout();
+  }
+}
+
+/**
+ * The output's own health, on the output.
+ *
+ * Built here rather than in `index.html` because the other two surfaces have no use
+ * for it and a control that exists on a page that never shows it is a control the
+ * panel check has to special-case. It is drawn into the page rather than the WebGL
+ * buffer, so it never reaches the pixels OBS captures from the canvas - the readout
+ * is for whoever opens the source URL in a browser to see whether it is healthy.
+ */
+let programOutReadout = null;
+function paintProgramOutReadout() {
+  if (!programOutReadout) return;
+  // **A source fed by a coarsened stream says so.** A program-out page on a capture
+  // node over Wi-Fi is served at the recording cap, and an output that quietly
+  // upscaled ÷4 depth to 1080p would be handing somebody a coarse picture with no
+  // way to tell it from a badly placed subject - which is the misattribution the
+  // monitor negotiation exists to prevent, arriving through a different door.
+  const decim = monitorState && (monitorState.divisor > 1 || monitorState.stride > 1)
+    ? `  ÷${monitorState.divisor} ×${monitorState.stride}`
+    : '';
+  programOutReadout.textContent = `PROGRAM OUT  ${programOutMode}  `
+    + `${programOutSize.w}x${programOutSize.h}  ${programOutFps.toFixed(1)} fps  `
+    + `${programOutMissed} missed${decim}`;
+}
+
+/**
+ * The operator's two controls, and the URLs to paste into OBS.
+ *
+ * Wired only on a surface somebody is sitting at. A source loads the same file and so
+ * has these elements too, and letting it drive them would be a source telling itself
+ * what to draw a beat after being told by the operator.
+ */
+if (!PROGRAM_OUT && progModeEl) {
+  progModeEl.addEventListener('change', () => {
+    programOutMode = progModeEl.value;
+    // The whole state rather than the one field, because switching to mirror is the
+    // moment the source first needs a pose and it has never been sent one.
+    sendProgramOutState();
+  });
+  progSizeEl.addEventListener('change', () => {
+    const m = /^\s*([1-9][0-9]*)\s*x\s*([1-9][0-9]*)\s*$/.exec(progSizeEl.value);
+    if (!m) {
+      // Put back rather than left showing something that is not in force. The one
+      // property every readout in this program holds is that what is on screen is
+      // what is set, and a rejected size that stayed in the box would break it.
+      progSizeEl.value = `${programOutSize.w}x${programOutSize.h}`;
+      return;
+    }
+    programOutSize = { w: Number(m[1]), h: Number(m[2]) };
+    progSizeEl.value = `${programOutSize.w}x${programOutSize.h}`;
+    sendProgramOut({ size: programOutSize });
+  });
+  progNoteEl.textContent = `browser source: ${location.origin}/program  ·  `
+    + `webcam: ${location.origin}/camera.mjpg`;
+}
+
 function connect() {
   const ws = new WebSocket(`ws://${location.host}`);
   ws.binaryType = 'arraybuffer';
   socket = ws;
 
-  ws.onopen = () => { sensorLabel = 'waiting for sensor…'; setStatus(); };
+  ws.onopen = () => {
+    sensorLabel = 'waiting for sensor…';
+    setStatus();
+    // Asked for rather than waited for. OBS reconnects a browser source on its own
+    // schedule - a scene change, a reload, the machine waking - and each time it is a
+    // fresh page that knows nothing about the look currently set.
+    if (PROGRAM_OUT) ws.send(JSON.stringify({ programOut: { hello: true } }));
+  };
 
   ws.onmessage = (event) => {
     if (typeof event.data === 'string') {
@@ -3579,6 +3805,23 @@ function connect() {
       // setting on the wire.
       if (msg.monitor) {
         showMonitor(msg.monitor);
+        return;
+      }
+
+      // What the operator wants drawn. Ignored on any page that is not a source, so
+      // two operator surfaces open at once do not start applying each other's writes.
+      //
+      // **A source announces itself and the operator answers with everything**,
+      // because a per-write stream cannot catch up a latecomer: a browser source
+      // opened after the look was set would render the defaults and stay wrong until
+      // every slider was touched again. This is the one message that travels from a
+      // source toward an operator, and it carries nothing but the fact of arriving.
+      if (msg.programOut) {
+        if (msg.programOut.hello) {
+          if (!PROGRAM_OUT) sendProgramOutState();
+        } else {
+          applyProgramOut(msg.programOut);
+        }
         return;
       }
 
@@ -4162,6 +4405,27 @@ function liveLoop() {
   const t = liveTransport.positionAt(performance.now());
   advanceNavigation(t);
   renderProgramFrame(t);
+  // Mirror mode's pose, sent from the loop because that is where the orbit camera
+  // has finished moving for this frame. Rate-limited to the sensor's own cadence
+  // rather than the display's: the source draws once per arrival, so a pose sent at
+  // 120Hz would be three poses discarded for every one that reaches a frame.
+  if (programOutMode === 'mirror') streamMirrorPose();
+}
+
+// The last pose sent, so a still camera sends nothing at all. An operator who is not
+// touching the mouse should not be generating socket traffic, and on a capture-node
+// link that traffic competes with the frames.
+let mirrorSentAt = 0;
+let mirrorLastPose = '';
+function streamMirrorPose() {
+  const now = performance.now();
+  if (now - mirrorSentAt < 1000 / 30) return;
+  const pose = cameraPose(freeCamera);
+  const key = JSON.stringify(pose);
+  if (key === mirrorLastPose) return;
+  mirrorLastPose = key;
+  mirrorSentAt = now;
+  sendProgramOut({ view: pose });
 }
 
 // -------------------------------------------------------------- indexed frames
@@ -5931,6 +6195,14 @@ function requestRepaint() {
 }
 
 paramWritten = (name, tag) => {
+  // **Every parameter write reaches the program-out source through here**, which is
+  // the one place every write already passes. Forwarding from the individual controls
+  // instead would mean a list of parameters somebody has to extend, and the parameter
+  // added next year would be the one the output silently did not honour. View state
+  // is forwarded too, unlike the repaint below: render scale is the operator's own
+  // business on their window, but a source has its own buffer and its own reason to
+  // be told what scale to draw at.
+  sendProgramOut({ params: { [name]: params.get(name) } });
   // View state changes what you are looking at rather than what the clip is, and
   // both of today's view parameters already do their own work: render scale
   // resizes the buffers, and auto-orbit only means anything with a clock running.
@@ -9019,11 +9291,17 @@ function paintRecord(storage) {
   // The refusal exists so a full-rate monitor cannot quietly cost the take frames,
   // and an operator who only learns that from an error in the second they were
   // trying to roll has been told too late to do anything with it.
+  // **Consumers rather than monitors**, because the webcam costs the take the same way
+  // and through a route with no divisor and no stride to name. Each entry says its own
+  // kind and its own setting, so this reads them out rather than assuming both fields
+  // exist - which is what it used to do, and what would have printed "÷undefined
+  // ×undefined" the first time somebody attached a webcam over the network.
   const costly = recordState.monitors?.costingTheTake ?? [];
   const monitorWarning = !rec && costly.length
-    ? `${costly.length} monitor${costly.length > 1 ? 's are' : ' is'} watching over the network at `
-      + `${costly.map((m) => `÷${m.divisor} ×${m.stride}`).join(', ')} - a take will refuse to start until `
-      + `they are at ÷${recordState.monitors.cap.divisor} ×${recordState.monitors.cap.stride} or coarser`
+    ? `${costly.length} consumer${costly.length > 1 ? 's are' : ' is'} reading over the network `
+      + `(${costly.map((c) => `${c.kind} at ${c.at}`).join(', ')}) - a take will refuse to start until `
+      + `monitors are at ÷${recordState.monitors.cap.divisor} ×${recordState.monitors.cap.stride} `
+      + 'or coarser and the webcam is detached'
     : null;
   ui.recNote.textContent = blocked ?? monitorWarning ?? (rec
     ? `${recordState.takeId} · ${recordState.frames} frames`
@@ -9293,6 +9571,37 @@ if (EDITING && !REQUESTED_TAKE) {
       // rather than going dark: the footage is there and only the edit is missing.
       if (openTakeId) showTimelineError(new Error(`project ${REQUESTED_PROJECT}: ${err.message}`));
     });
+} else if (PROGRAM_OUT) {
+  // The source. A live socket like the viewer, and then three departures from it.
+  //
+  // **No animation loop.** `handleFrame` draws instead, so the output has one frame
+  // per sensor frame rather than one per display refresh.
+  //
+  // **A fixed output size.** `outputSize` takes the drawing buffer off the window,
+  // which is the same door `exportClip` opens for the length of a render and this
+  // mode simply holds open. A browser source is sized by OBS and would otherwise hand
+  // the encoder whatever the offscreen window happened to be.
+  //
+  // **No furniture and no orbit.** Chrome lives on its own canvas and cannot reach
+  // these pixels anyway, but the controls can: an OrbitControls still listening would
+  // let a stray event in the source's own window fight the pose being pushed to it.
+  document.body.classList.add('program-out');
+  controls.enabled = false;
+  chromeOn = false;
+  outputSize = { ...programOutSize };
+  resize();
+  setViewCamera(programCamera);
+
+  programOutReadout = document.createElement('div');
+  programOutReadout.id = 'programOutReadout';
+  programOutReadout.textContent = 'PROGRAM OUT  waiting for the operator';
+  document.body.appendChild(programOutReadout);
+
+  connect();
+  // Nothing renders until a frame lands, so the first thing OBS would otherwise
+  // capture is an uninitialised buffer. One frame now makes it the scene's clear
+  // colour instead, which is a black frame somebody chose.
+  renderProgramFrame(0);
 } else {
   // Opened here rather than beside the socket code, because `handleFrame` pushes
   // into the pair source above. Arrivals cannot dispatch until module evaluation
