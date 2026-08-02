@@ -289,11 +289,17 @@ const MUTATIONS = {
   // The height is applied but never stored, so it is gone on the next load. Reddens
   // only the reload row - every other splitter row runs inside one page and cannot
   // tell.
+  // Re-anchored when the splitter grew keyboard operation: the drag's inline storage
+  // write became `rememberLaneHeight`, shared with the arrow keys, so the line this
+  // names moved and lost two spaces of indent. The refusal is what surfaced that -
+  // it matched 0 times and the run reported DID NOT RUN rather than passing quietly.
+  // Mutating the shared writer is a strictly stronger mutation than mutating the
+  // drag's own copy was, because now it forgets whichever gesture set the height.
   'splitter-forgets': {
     file: 'web/main.js',
     edits: [[
-      '      localStorage.setItem(LANES_HEIGHT, String(userLaneHeight));',
-      '      void LANES_HEIGHT;',
+      '    localStorage.setItem(LANES_HEIGHT, String(userLaneHeight));',
+      '    void LANES_HEIGHT;',
     ]],
   },
 
