@@ -420,6 +420,34 @@ const MUTATIONS = {
     "  { path: '/record/stop', pattern: /^\\/record\\/stop$/, write: { methods: ['POST'], run: serveRecordStop } },",
     "  { path: '/record/stop', pattern: /^\\/record\\/stop$/, read: serveRecordStop },",
   ]] },
+  // **The viewer goes back to deciding for itself, and gets one rule wrong.** This is
+  // the shape that shipped four times: the viewer's action row computed from something
+  // slightly different from the tile's, which is invisible on the takes the two happen
+  // to agree about and wrong on exactly the take in the state nobody drove.
+  //
+  // The rule it drops is the first of the four the review caught: the viewer believing
+  // a take is here when it is only on the node. That surface then offers Open and a live
+  // Delete on footage this machine does not have, with the confirm in front of Delete
+  // reading "This is the only copy" - the most alarming sentence the page can show, on a
+  // button that was never going to do anything.
+  //
+  // **Told as a lie about the take rather than as a second copy of the rule**, because
+  // what has to be falsified is that the two surfaces cannot diverge, and re-deriving
+  // the old duplicated block would test whether I retyped it faithfully.
+  //
+  // Aimed at the viewer's call and not at `availability`: a rule broken inside
+  // `availability` breaks it for both surfaces, which leaves them agreeing. That is a
+  // real bug and a different one, and it is what the per-take rows above already cover.
+  //
+  // `state` rather than `recording`, because the mutation has to move something in the
+  // fixture this row actually walks. There is no take mid-shoot in the grid at that
+  // point - the recorder rows run on their own server - so telling the viewer nothing is
+  // recording changes nothing, and the row would have stayed green against a build with
+  // the surfaces genuinely split. There is a node-only take, so this one moves.
+  'viewer-decides-for-itself': { file: 'web/library.js', edits: [[
+    '  paintActs(acts, take, hostOf);',
+    "  paintActs(acts, { ...take, state: 'local' }, hostOf);",
+  ]] },
   // Marks for a take that is not here, which created its sidecar in the captures
   // directory out of a caller's own JSON.
   //
@@ -2237,6 +2265,53 @@ async function runChecks() {
     await page.keyboard.press('Escape');
     check(await page.evaluate('globalThis.__library.viewer.isOpen()') === false,
       'escape closes it, which is the dialog element\'s own behaviour rather than a second rule');
+
+    // ---- 6d-ii. the two surfaces offer one take one set of things to do
+    //
+    // **The class behind four separate findings, closed here rather than one instance
+    // at a time.** The tile and the viewer used to decide independently what a take
+    // allowed, in two blocks that read almost identically, and they drifted four times:
+    // Delete live on the viewer for a node-only take, the `VALID_ID` name rule known to
+    // one surface and not the other, Download offered on a take still being recorded,
+    // and Download surviving a reclaim. Each was fixed as an instance and the next one
+    // arrived on the following round.
+    //
+    // What made it structural is that arrow-browsing reaches takes *without* going
+    // through `buildTile`, so the viewer sees takes no tile was ever built for and any
+    // rule living in the tile was a rule the viewer had never been told. The page now
+    // has one `availability(take)` that both surfaces render, and this asserts the
+    // consequence rather than the implementation: for **every take in the listing**, the
+    // two surfaces agree on the actions, on which are disabled, and on the sentences the
+    // menu gives for the disabled ones.
+    //
+    // Every take rather than a chosen one, because the disagreements were all about a
+    // take in some particular state - being recorded, only on the node, named outside
+    // the rule - and a row that picked one take would be a row that happened to pick the
+    // agreeing case. The fixture deliberately holds all of those.
+    {
+      const listed = await page.evaluate('globalThis.__library.tiles()');
+      check(listed.length >= 3, 'the grid holds several takes, so the comparison below has range',
+        `${listed.length} tiles: ${listed.map((t) => t.state).join(' ')}`);
+      const disagreed = [];
+      for (const tile of listed) {
+        await page.evaluate(`globalThis.__library.viewer.open(${JSON.stringify(tile.hash ?? tile.id)})`);
+        const seen = await page.evaluate('globalThis.__library.viewer.state()');
+        if (seen === null) { disagreed.push(`${tile.id}: the viewer would not open on it`); continue; }
+        const sameActs = JSON.stringify(tile.acts.filter((a) => a.label !== '⋯'))
+          === JSON.stringify((seen.acts ?? []).filter((a) => a.label !== '⋯'));
+        if (!sameActs) {
+          disagreed.push(`${tile.id}: tile ${JSON.stringify(tile.acts)} vs viewer ${JSON.stringify(seen.acts)}`);
+        }
+        const menuOf = (m) => JSON.stringify((m ?? []).map((i) => [i.item, i.disabled, i.why]));
+        if (menuOf(tile.menu) !== menuOf(seen.menu)) {
+          disagreed.push(`${tile.id}: menu ${menuOf(tile.menu)} vs ${menuOf(seen.menu)}`);
+        }
+      }
+      check(disagreed.length === 0,
+        'every take is offered the same actions, the same disabling and the same reasons on both surfaces',
+        disagreed.length ? disagreed[0].slice(0, 150) : `${listed.length} takes agree`);
+      await page.evaluate('globalThis.__library.viewer.close()');
+    }
 
     // ---- 6e. every control the gallery renders is one this file drives
     //

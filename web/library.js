@@ -495,6 +495,103 @@ function unnameable(take) {
     + 'so it is listed and played but cannot be renamed, revealed or deleted here';
 }
 
+/**
+ * Everything a take allows, as data, for whichever surface is drawing it.
+ *
+ * **The grid tile and the modal viewer offer the same take the same things, and this is
+ * the only place that decides what those are.** They used to decide separately, in two
+ * blocks that read almost identically, and the gap between "almost" and "identically"
+ * has now produced four separate findings: Delete live on the viewer for a take that is
+ * only on the node, the `VALID_ID` name rule known to one surface and not the other,
+ * Download offered on a take still being recorded, and Download surviving on a take that
+ * had just been reclaimed. Every one of them was the same bug - a rule taught to the
+ * tile and not to the viewer - and every one was fixed as an instance.
+ *
+ * The reason it kept happening is structural rather than careless. A tile is built by
+ * `buildTile` for each take the current filter shows; the viewer is reached by
+ * arrow-browsing, which walks takes *without* going through `buildTile` at all. So the
+ * viewer sees takes no tile was ever built for, and any rule living in `buildTile` was
+ * a rule the viewer had never been told. Two lists that agree today is the shape this
+ * file spends its comments refusing, and this was that shape.
+ *
+ * Data rather than DOM calls, for the reason `menuItemsFor` already gives: a list that
+ * is also what gets rendered is a list that cannot describe an action the page does not
+ * have. `enabled` and `why` travel together because a control that is off still has to
+ * say what would make it work - on a touch panel a control that vanishes reads as a
+ * broken page, and there is no hover to explain one that is merely grey.
+ *
+ * `run` takes the surface it was pressed on, so the same entry works from either. That
+ * is the one thing the two surfaces genuinely do differently and it is a parameter
+ * rather than a branch.
+ */
+function availability(take) {
+  const shooting = take.recording === true;
+  const nodeName = library.node?.name ?? 'the node';
+  const acts = [];
+  if (take.state === 'remote' && !shooting) {
+    // The `!shooting` half is load-bearing rather than tidy: a take still being recorded
+    // has no settled hash, so the server answers 409 for a download of it. The tile had
+    // suppressed this since before the viewer existed and the viewer had not, which is
+    // the third of the four disagreements.
+    acts.push({
+      item: 'download',
+      label: 'Download',
+      cls: 'act primary',
+      enabled: true,
+      why: '',
+      // Caught rather than left to reject: a click handler has no caller to rethrow to,
+      // and the node dropping mid-transfer is the ordinary failure here. `run` has
+      // already put the message on the status line by then.
+      run: (host) => run(
+        host,
+        `downloading ${take.id} — asking ${nodeName} for ${gb(take.bytes)}`,
+        () => post(`/library/download/${encodeURIComponent(take.id)}`),
+        () => downloadProgress(take.id),
+      ).catch(() => {}),
+    });
+  } else {
+    // A take that cannot be opened says so on the button rather than throwing when
+    // pressed. Two frames is the floor for a pair source and a hello is what carries the
+    // intrinsics, so both are properties of the take rather than of the editor - and the
+    // gallery is where they are visible. A take still being recorded lands here too:
+    // every action on it needs a hash it does not have yet.
+    acts.push({
+      item: 'open',
+      label: 'Open',
+      cls: 'act primary',
+      enabled: Boolean(take.openable),
+      why: cannotOpen(take),
+      run: () => { location.href = `/edit?take=${encodeURIComponent(take.id)}`; },
+    });
+  }
+  acts.push({
+    item: 'delete',
+    label: 'Delete',
+    cls: 'act danger',
+    enabled: !cannotDelete(take),
+    why: cannotDelete(take),
+    run: (host) => askDelete(host, take),
+  });
+  return { acts, menu: menuItemsFor(take) };
+}
+
+/**
+ * Draws one surface's action row from `availability`.
+ *
+ * Here rather than at each surface, because "the tile and the viewer render the same
+ * list the same way" is the property `availability` exists to hold and a second copy of
+ * the loop is where it would go again.
+ */
+function paintActs(row, take, hostFor) {
+  for (const a of availability(take).acts) {
+    addButton(row, a.label, a.cls, () => a.run(hostFor()), {
+      disabled: !a.enabled,
+      why: a.why,
+      item: a.item,
+    });
+  }
+}
+
 function menuItemsFor(take) {
   const shooting = take.recording === true;
   const onlyThere = take.state === 'remote';
@@ -643,9 +740,11 @@ function buildMenu(host, toggle, take, hostFor) {
   menu.className = 'menu';
   menu.role = 'menu';
   menu.hidden = true;
-  // Computed once. Asking twice would be two lists that agree today, which is the
-  // shape this file spends its comments refusing.
-  const entries = menuItemsFor(take);
+  // Computed once, and through `availability` rather than by calling `menuItemsFor`
+  // here, so that there is one entry point describing what a take allows rather than
+  // one for the row and one for the menu. Asking twice would be two lists that agree
+  // today, which is the shape this file spends its comments refusing.
+  const entries = availability(take).menu;
   for (const entry of entries) {
     const b = addButton(menu, entry.label, 'mi', () => {
       closeMenus();
@@ -842,31 +941,7 @@ function buildTile(take) {
   paintMarks(barEl, take);
 
   const acts = tile.querySelector('.acts');
-  if (take.state === 'remote' && !shooting) {
-    // Caught for the reason the menu's boundary is: a click handler has no caller to
-    // rethrow to, and the node dropping mid-transfer is the ordinary failure here.
-    // The viewer's copy of this button already did; the tile's did not.
-    addButton(acts, 'Download', 'act primary', () => run(
-      tile,
-      `downloading ${take.id} — asking ${library.node?.name ?? 'the node'} for ${gb(take.bytes)}`,
-      () => post(`/library/download/${encodeURIComponent(take.id)}`),
-      () => downloadProgress(take.id),
-    ).catch(() => {}));
-  } else {
-    // A take that cannot be opened says so on the button rather than throwing when
-    // pressed. Two frames is the floor for a pair source and a hello is what carries
-    // the intrinsics, so both are properties of the take rather than of the editor -
-    // and the gallery is where they are visible. A take still being recorded lands
-    // here too: every action on it needs a hash it does not have yet and the server
-    // refuses all of them for that reason, so the buttons stay and say why.
-    addButton(acts, 'Open', 'act primary', () => {
-      location.href = `/edit?take=${encodeURIComponent(take.id)}`;
-    }, { disabled: !take.openable, why: cannotOpen(take) });
-  }
-  addButton(acts, 'Delete', 'act danger', () => askDelete(tile, take), {
-    disabled: Boolean(cannotDelete(take)),
-    why: cannotDelete(take),
-  });
+  paintActs(acts, take, () => tile);
   const more = addButton(acts, '⋯', 'act more', () => {}, { item: 'more' });
   more.setAttribute('aria-haspopup', 'menu');
   more.setAttribute('aria-expanded', 'false');
@@ -1312,28 +1387,13 @@ function openViewer(key) {
   // the selector became `[data-hash=""]` and matched nothing - and a null host
   // disables nothing at all rather than disabling the wrong thing.
   const hostOf = () => viewer;
-  // The same condition the tile uses, and it has to be the same one: a take still being
-  // recorded has no settled hash, so the server answers 409 for it, and the tile has
-  // suppressed Download on that ground since before this viewer existed. Arrow-browsing
-  // reaches takes the grid is showing without going through a tile, which is how the
-  // viewer came to offer an action the tile had already decided against - the third time
-  // these two surfaces have disagreed about one take, after Delete and the name rule.
-  if (take.state === 'remote' && take.recording !== true) {
-    addButton(acts, 'Download', 'act primary', () => run(
-      hostOf(),
-      `downloading ${take.id} — asking ${library.node?.name ?? 'the node'} for ${gb(take.bytes)}`,
-      () => post(`/library/download/${encodeURIComponent(take.id)}`),
-      () => downloadProgress(take.id),
-    ).catch(() => {}));
-  } else {
-    addButton(acts, 'Open', 'act primary', () => {
-      location.href = `/edit?take=${encodeURIComponent(take.id)}`;
-    }, { disabled: !take.openable, why: cannotOpen(take) });
-  }
-  addButton(acts, 'Delete', 'act danger', () => askDelete(hostOf(), take), {
-    disabled: Boolean(cannotDelete(take)),
-    why: cannotDelete(take),
-  });
+  // **The same list the tile draws, from the same call, rather than the same conditions
+  // written again.** This block used to restate what a take allows, and it drifted from
+  // the tile's copy four separate times - Delete, the name rule, Download while
+  // recording, and Download after a reclaim. Arrow-browsing reaches takes the grid is
+  // showing without ever going through `buildTile`, so a rule taught there was a rule
+  // this surface had not been told. There is one rule now and both surfaces read it.
+  paintActs(acts, take, hostOf);
   const vMore = document.getElementById('vMore');
   // Replaced rather than re-wired: the ⋯ in the header belongs to whichever take is
   // open, and a listener left on the old node would act on the take before this one.
@@ -1701,6 +1761,14 @@ globalThis.__library = {
       flags: [...document.querySelectorAll('#vFlags .flag')].map((f) => f.dataset.flag),
       marks: [...vBar.querySelectorAll('.mk')].map((m) => Number.parseFloat(m.style.left)),
       acts: [...document.querySelectorAll('#vActs .act')].map((b) => ({ label: b.textContent, disabled: b.disabled })),
+      // Reported in the same shape `tiles()` reports a tile's, because what reads them
+      // is one comparison: the two surfaces have to offer a take the same things, and a
+      // reader that could see only one half of each would be comparing the halves that
+      // never disagreed. The ⋯ itself is in the header rather than in `#vActs`, so the
+      // action rows line up without either side needing to be trimmed of it.
+      menu: [...viewer.querySelectorAll('.menu .mi')].map((b) => ({
+        item: b.dataset.item, label: b.textContent, disabled: b.disabled, why: b.title,
+      })),
       stage: (() => {
         const r = vStage.getBoundingClientRect();
         return { width: r.width, height: r.height, ratio: r.width / r.height };
