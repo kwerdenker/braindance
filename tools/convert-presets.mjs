@@ -18,7 +18,7 @@
 // other four at 0 - so there is nothing a runtime reader could do that this cannot do
 // once, in advance, where the result is inspectable.
 //
-//   node tools/convert-presets.mjs presets projects        # rewrite in place
+//   node tools/convert-presets.mjs presets projects jobs   # rewrite in place
 //   node tools/convert-presets.mjs --dry-run presets       # say what it would do
 //
 // Every rewrite is written aside and renamed, for the reason `DocumentStore.write`
@@ -35,7 +35,8 @@ const dirs = argv.filter((a) => !a.startsWith('--'));
 
 if (!dirs.length) {
   console.error('usage: convert-presets.mjs [--dry-run] <dir> [dir...]');
-  console.error('  rewrites version 3 presets and projects as version 4 in place');
+  console.error('  rewrites version 3 presets and projects as version 4 in place,');
+  console.error('  including the project snapshot inside a queued render job');
   process.exit(2);
 }
 
@@ -60,6 +61,22 @@ function readingsFrom(mode, what) {
 }
 
 function convert(body, what) {
+  // **A queued render job carries a whole project and is versioned separately**, so it
+  // has to be recognised before the version gate rather than refused by it. A job
+  // record is `{ version: 1, project, deliverable, capture, ... }` where `version` is
+  // the *queue's* format and has nothing to do with the project's - so pointing this
+  // tool at `jobs/` used to throw "version 1 is neither 3 nor 4" and never look inside.
+  //
+  // That mattered because of when it happens: a job enqueued before the upgrade sits
+  // on disk with a version 3 snapshot inside it, and the worker hands that snapshot
+  // straight to `restoreProject`, which refuses it. Every pending pre-upgrade render is
+  // claimed and then fails, and nothing could repair the records. The job's own version
+  // is left exactly as it is - the queue format did not change and is jobs.js's to
+  // number; only the project inside moves.
+  if (body?.project && typeof body.project === 'object' && !Array.isArray(body.project)) {
+    const inner = convert(body.project, `${what} job.project`);
+    return inner ? { ...body, project: inner } : null;
+  }
   if (body?.version === PROJECT_VERSION) return null;
   if (body?.version !== 3) {
     throw new Error(`${what}: version ${JSON.stringify(body?.version)} is neither 3 nor ${PROJECT_VERSION}`);
@@ -175,8 +192,12 @@ for (const dir of dirs) {
         continue;
       }
       const text = `${JSON.stringify(next, null, 2)}\n`;
-      const was = body.values ? `mode ${body.mode}` : `look.mode ${body.look?.mode}`;
-      const now = READING_FOR[body.values ? body.mode : body.look.mode];
+      // Read off whichever body actually carried the mode. A job record carries none of
+      // its own and holds the project that does, so the line names what moved rather
+      // than throwing on a `look` the outer record never had.
+      const from = body.project ?? body;
+      const was = from.values ? `mode ${from.mode}` : `look.mode ${from.look?.mode}`;
+      const now = READING_FOR[from.values ? from.mode : from.look.mode];
       // Named in every line rather than only when there were some, because "0 undo
       // snapshots" on a project that has a history is the tell that this reached the
       // top level and nothing else - which is the bug this count was added for.

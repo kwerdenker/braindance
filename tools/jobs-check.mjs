@@ -255,10 +255,21 @@ const HASH_A = `sha256:${'a'.repeat(64)}`;
 // queue. `mode` is a whole number 0-4 and `appliedPreset` is null or a name and a
 // rev; the first draft used `mode: 'rgb'` and failed the render row while every
 // queue row passed, which is a check reporting the wrong thing broken.
+//
+// It happened a second time and for the same reason, which is why the five readings
+// are written out below rather than left to defaults. `look.params` was `{}` and
+// loaded fine while an omitted reading simply meant its default - and then the loader
+// started refusing a project that names fewer than five, because `readRgb` defaults to
+// 1 and a partial document therefore comes back as a blend nobody saved. An empty map
+// is exactly that document. The lesson is the one already recorded above: this fixture
+// has to be what `restoreProject` accepts *today*, and a format change is the thing
+// most likely to make it quietly stop being that.
 const PROJECT = {
   version: PROJECT_VERSION,
   look: {
-    params: {},
+    params: {
+      readRgb: 1, readDepth: 0, readGhost: 0, readContour: 0, readBlackwall: 0,
+    },
     tracks: {},
   },
   composition: {

@@ -166,7 +166,7 @@ down because a count nobody adds up is how this list rotted the first time: `too
 **26** files, of which **16** are `*-check` proof tools and **10** are the block below.
 
 ```
-node tools/convert-presets.mjs presets projects   # version 3 documents -> version 4, in place
+node tools/convert-presets.mjs presets projects jobs # version 3 documents -> version 4, in place
 node tools/build-native.mjs        # builds libfreenect2 into vendor/prefix, then the grabber
 node tools/fake-grabber.mjs        # a grabber that needs no sensor, for driving the server
 node tools/make-fixture.js         # loops one short capture into an arbitrarily long one

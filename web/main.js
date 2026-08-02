@@ -1836,6 +1836,29 @@ const PARAMS = {
 // registry entry and nothing else discovers it late.
 const READINGS = Object.keys(PARAMS).filter((n) => PARAMS[n].reading);
 
+/**
+ * Which of the five readings a document does not name, which is a refusal at both
+ * doors a document arrives through rather than at one of them.
+ *
+ * **The defaults are what make a partial document dangerous rather than incomplete.**
+ * Every loader resets to defaults first so that a key a file omits means the default
+ * instead of whatever the session left behind - and `readRgb` defaults to 1, so a
+ * project naming only `readBlackwall: 1` does not load as Blackwall. It loads as a
+ * 50/50 blend of Blackwall and the camera image, and one naming no reading at all
+ * loads as RGB. That is `format.js`'s whole argument for why version 3 is refused,
+ * reappearing inside a document that passes the version gate: a look rendering as
+ * something nobody authored, silently.
+ *
+ * Derived from the `reading` flag rather than listed, so a sixth reading is required
+ * here by existing. Everything that writes either kind of document writes all five -
+ * `serialiseProjectBody` and `presetFromCurrentLook` both go through the whole look
+ * tag, and the converter emits them - so a document missing them is hand-made or
+ * truncated, and neither is a thing to guess at.
+ */
+function missingReadings(values) {
+  return READINGS.filter((n) => !Object.hasOwn(values, n));
+}
+
 // Each reading needs a uniform of its own name, and the shader string was built
 // hundreds of lines above this, so a reading declared in the registry with no
 // uniform behind it would fail as a slider that moves nothing rather than as an
@@ -2968,6 +2991,18 @@ function restoreProject(project) {
   setTargetSize(project.outputSize ?? DEFAULT_EXPORT_SIZE, { fromDocument: true });
   if (!project.look.params || typeof project.look.params !== 'object') {
     throw new Error('a project look carries a params object');
+  }
+  // The same demand the preset door makes, and it belongs on both for the reason the
+  // helper gives: the reset below hands an omitted reading its default, and `readRgb`
+  // defaults to 1. A project carrying only `readBlackwall: 1` would load as a 50/50
+  // blend with the camera image rather than as the wall it names.
+  const shortReadings = missingReadings(project.look.params);
+  if (shortReadings.length) {
+    throw new Error(
+      `this project names no ${shortReadings.join(', ')}: a version ${PROJECT_VERSION} look carries `
+      + 'all five reading weights, and the ones it leaves out would come back as defaults rather '
+      + 'than as the look it was saved with',
+    );
   }
   if (!project.look.tracks || typeof project.look.tracks !== 'object') {
     throw new Error('a project look carries a tracks object, empty if nothing is keyed');
@@ -6223,7 +6258,26 @@ function refusePresetBody(name, body) {
   // **Before the reading check below, deliberately.** A file gets told which of its
   // keys is wrong ahead of being told which are missing, because the wrong one is the
   // more specific answer and it is the one somebody editing a file by hand needs.
-  for (const [key, value] of Object.entries(body.values)) params.normalise(key, value);
+  // **A preset is look values and nothing else**, and the registry knowing a name is
+  // not the same question as the name belonging in a preset. `camera` is a registry
+  // parameter with a `composition` tag, and a valid pose passes `normalise` cleanly -
+  // so a hand-edited file naming it used to reach `params.apply` and move the program
+  // camera, changing what the next export frames. Worse, that write is in neither the
+  // look values nor the camera track, so the commit that follows cannot undo it: the
+  // pose is simply somewhere else now. `presetFromCurrentLook` writes the look tag and
+  // only the look tag, so this is the reading side of a rule the writing side already
+  // keeps, and the note in the README that applying a preset never moves your camera
+  // is only true with it here.
+  for (const [key, value] of Object.entries(body.values)) {
+    const { tag } = params.spec(key);
+    if (tag !== 'look') {
+      throw new Error(
+        `preset ${name} names ${key}, which is a ${tag} parameter: a preset carries look values `
+        + 'and nothing else, so that it can be applied to any clip without moving anything else',
+      );
+    }
+    params.normalise(key, value);
+  }
 
   // **And all five readings have to be there**, which is the whole reason there is a
   // version 4. `format.js` puts it plainly about a version 3 file: every value it names
@@ -6235,11 +6289,7 @@ function refusePresetBody(name, body) {
   // that writes a preset writes all five: the converter emits them, and an export is
   // `params.values` over the whole look tag. So a file missing them is hand-made, and
   // this is the sentence it should get.
-  // Read off `READINGS`, which the registry derives from the `reading` flag itself, so a
-  // sixth reading added later is required here by existing. `params.spec` deliberately
-  // does not carry that flag, and filtering on it through there would have matched
-  // nothing and passed every file - a check asserting on an empty list.
-  const missing = READINGS.filter((n) => !Object.hasOwn(body.values, n));
+  const missing = missingReadings(body.values);
   if (missing.length) {
     throw new Error(
       `preset ${name} names no ${missing.join(', ')}: a version ${PROJECT_VERSION} look carries all `
