@@ -154,10 +154,13 @@ node tools/jobs-check.mjs --mutate claim-ignores-renderer # ... and must FAIL mu
 `tools/render-worker.mjs`; `--no-render` drops that row. `guard-check` and `library-check`
 spawn their own servers. `export-check` needs ffmpeg and ffprobe.
 
-**`library-check` binds fixed ports** — 8210, 8211 and `MAC_PORT + 2/4/5` — so two worktrees
-running it at once do not collide, they get each other's server. Pass `--node-port` and
-`--mac-port` a range nothing else holds, and check `pgrep -f "tools/.*-check.mjs"` before any
-run, because on this machine another agent's is the normal state.
+**`library-check` binds a span of fixed ports** — `--node-port`, and `--mac-port` through
+`--mac-port + 16`, which default to 8210 and 8211..8227. It checks the whole span before it
+spawns anything and **exits 2 naming what is held**, because the old failure was silent: two
+worktrees running at once did not collide, they shared a server, and the suite asserted
+against the other tree's fixture. Pass a range nothing else holds, and check
+`pgrep -f "tools/.*-check.mjs"` first, because on this machine another agent's run is the
+normal state.
 
 The two below need no server, and `registration-check` needs no sensor either - it runs on a
 corpus of `Registration::apply` inputs dumped by `grabber --dump-corpus`.

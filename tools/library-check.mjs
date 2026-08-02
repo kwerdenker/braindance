@@ -86,6 +86,19 @@ const REPO = fileURLToPath(new URL('..', import.meta.url));
 const SAMPLE = flag('--capture') ?? join(REPO, 'captures/sample.knct');
 const NODE_PORT = Number(flag('--node-port', '8210'));
 const MAC_PORT = Number(flag('--mac-port', '8211'));
+// **How far above `--mac-port` this suite binds, declared rather than left to be
+// discovered by collision.** Sections spawn their own servers at `MAC_PORT + n` for a
+// scattered set of `n`, and the run instructions used to name only `+2/4/5` while the
+// code had grown as far as `+16`. Two worktrees running this at once therefore did not
+// collide loudly - they shared a server, because `startServer` polled until *something*
+// answered `/library/takes` and a stranger answers that just as well as its own child.
+//
+// Observed rather than predicted: a run on this machine failed six recorder rows with
+// `undefined counted, -1 on disk` because `MAC_PORT + 9` belonged to another worktree,
+// and the failure reads exactly like a finding about the recorder. The span is checked
+// end to end before anything spawns, and `startServer` asserts its port is inside it, so
+// a section added later at `+17` is caught by arithmetic rather than by a wrong reading.
+const PORT_SPAN = 16;
 const MUTATE = flag('--mutate');
 const HEADED = argv.includes('--headed');
 const WORK = flag('--work') ?? join(REPO, '.library-check');
@@ -1104,16 +1117,61 @@ function stageServer() {
 
 const servers = [];
 
+/** Whether something already holds a port, asked of the kernel rather than of a fetch. */
+const portHeld = (port) => new Promise((done) => {
+  const sock = createConnection({ host: '127.0.0.1', port });
+  const settle = (held) => { sock.destroy(); done(held); };
+  sock.on('connect', () => settle(true));
+  sock.on('error', () => settle(false));
+  setTimeout(() => settle(false), 400);
+});
+
+/**
+ * Refuses the run when any port this suite will bind is already taken.
+ *
+ * Up front and for the whole span, because the alternative is discovering it in section
+ * 9 with the previous eight sections' claims already printed - and discovering it as a
+ * wrong answer rather than as an error, since a stranger on the port answers the health
+ * check. Exit 2 rather than 1: this is the suite declining to run, not a claim failing.
+ */
+async function reservePorts() {
+  const wanted = [NODE_PORT, ...Array.from({ length: PORT_SPAN + 1 }, (_, i) => MAC_PORT + i)];
+  const held = [];
+  for (const port of new Set(wanted)) if (await portHeld(port)) held.push(port);
+  if (held.length === 0) return;
+  console.error(`[library] refusing to run: ${held.join(', ')} already ${held.length === 1 ? 'has' : 'have'} a listener.`);
+  console.error(`[library] this suite binds ${NODE_PORT} and ${MAC_PORT}..${MAC_PORT + PORT_SPAN}, all of which have to be free.`);
+  console.error('[library] another worktree is the usual cause - pass --node-port and --mac-port a range nothing else holds.');
+  process.exit(2);
+}
+
 async function startServer(root, args, port) {
+  // A port outside the declared span would not have been checked by `reservePorts`, so
+  // it is the one thing that could still attach to a stranger. Caught here rather than
+  // trusted, which is what makes adding a section at `+17` a failure instead of a
+  // silent hole.
+  if (port !== NODE_PORT && (port < MAC_PORT || port > MAC_PORT + PORT_SPAN)) {
+    throw new Error(`port ${port} is outside the reserved span ${MAC_PORT}..${MAC_PORT + PORT_SPAN}: `
+      + 'raise PORT_SPAN and the note beside it, or this server is one nothing checked was free');
+  }
   const child = spawn(process.execPath, [join(root, 'server/index.js'), '--port', String(port), ...args], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const log = [];
   child.stdout.on('data', (c) => log.push(c.toString()));
   child.stderr.on('data', (c) => log.push(c.toString()));
+  // **Our own child failing is a different answer from nothing listening yet.** Without
+  // this the loop below polls on after an `EADDRINUSE` exit until something else
+  // answers, and then returns that something else's URL.
+  let exited = null;
+  child.on('exit', (code, signal) => { exited = signal ?? code; });
   servers.push({ child, log, port });
   for (let i = 0; i < 200; i++) {
     await new Promise((done) => { setTimeout(done, 100); });
+    if (exited !== null) {
+      throw new Error(`the server this run spawned on ${port} exited (${exited}) instead of listening, `
+        + `so anything answering there is not ours:\n${log.join('')}`);
+    }
     try {
       const res = await fetch(`http://localhost:${port}/library/takes`);
       if (res.ok) return `http://localhost:${port}`;
@@ -1359,6 +1417,7 @@ async function openPage(browser, url, viewport = { width: 1100, height: 760 }) {
 
 console.log(`[library] ${MUTATE ? `MUTATED: ${MUTATE} (${mutation.file})` : 'unmutated tree'}`);
 
+await reservePorts();
 const { nodeCaps, macCaps } = buildFixture();
 const root = stageServer();
 const nodeUrl = await startServer(root, ['--captures', nodeCaps, '--name', 'pi-01',

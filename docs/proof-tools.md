@@ -102,11 +102,19 @@ a server that refused every upgrade, or bound to nothing, fails it rather than p
 worth naming beside it rather than a milder one: it is the control for the hole that let a read
 route destroy the take being shot.
 
-**It binds fixed ports** — 8210 and 8211, plus `MAC_PORT + 2/4/5` — so two worktrees running it
-at once do not get an address-in-use error, they get each other's server: one run stat-ed
-`three-warning-take.knct`, a fixture belonging to the other tree, and reported itself as not
-finishing. Pass `--node-port`/`--mac-port` a range nothing else holds. The quieter half of that
-same collision is in `docs/instruments.md`, because it fails in a way that reads as a finding.
+**It binds a span of fixed ports** — `--node-port`, and `--mac-port` through `--mac-port + 16`,
+defaulting to 8210 and 8211..8227. Two worktrees running it at once did not get an
+address-in-use error, they got each other's server: one run stat-ed `three-warning-take.knct`,
+a fixture belonging to the other tree, and reported itself as not finishing. The quieter half
+of that same collision is in `docs/instruments.md`, because it fails in a way that reads as a
+finding — most recently six recorder rows reporting `undefined counted, -1 on disk` when
+`MAC_PORT + 9` belonged to somebody else.
+
+It now **refuses the run rather than discovering this halfway through**: `reservePorts` asks
+the kernel about every port in the span before anything spawns and exits 2 naming what is
+held, `startServer` throws if its own child exits instead of listening, and it refuses a port
+outside the declared span so a section added at `+17` is a failure rather than a hole. Pass
+`--node-port`/`--mac-port` a range nothing else holds.
 
 **`editor-check` enumerates rather than lists, and it exists because the suite tested the model
 and never the control.** The clip in/out markers were detached from the document during boot
