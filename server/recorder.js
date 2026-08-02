@@ -378,20 +378,33 @@ export class Recorder {
     if (!take) return null;
     this.take = null;
     take.stream.end();
+    let closeError = null;
     try {
       await once(take.stream, 'close');
-    } finally {
-      // Marks pressed during the take were held until the file existed under its
-      // final name. A sidecar written beside a file that had not been closed yet
-      // would be a sidecar for a take whose hash was not computed.
-      //
-      // In a `finally`, because the close itself can reject - a card pulled between
-      // `end()` and the flush - and the old shape then skipped the flush while having
-      // already nulled the take, which is the same orphaning the mid-write handler
-      // above had: the marks travelled forward into whichever take closed next.
-      settle(take);
-      await flushMarks(take);
+    } catch (err) {
+      closeError = err;
+      // **`events.once` attaches its own error listener and rejects on it**, so a
+      // card pulled or a disk filling during this last flush used to throw straight
+      // out of `close` - past the index, past the hash, past the broadcast below.
+      // The take was then a capture file with no sidecar, no content hash and so no
+      // gallery entry, while every monitor stayed showing a recording that had
+      // already ended. None of that is in question because of a failed flush: the
+      // format is append-only and everything before the failing write is on disk, so
+      // the take is worth closing out either way. The mid-write handler above has
+      // already said which take failed and why; this only says how far it got.
+      console.error(`[recorder] take ${take.id}: the file did not close cleanly (${err.message}) - indexing what landed`);
     }
+    // Marks pressed during the take were held until the file existed under its final
+    // name. A sidecar written beside a file that had not been closed yet would be a
+    // sidecar for a take whose hash was not computed.
+    //
+    // Past the catch rather than inside a branch of it, because a close that failed
+    // is exactly when this must still run: the take has already been nulled above, so
+    // a flush skipped here is the orphaning the mid-write handler had - the marks
+    // travel forward into whichever take closes next, stamped in source milliseconds
+    // from a start that take never had.
+    settle(take);
+    await flushMarks(take);
     forgetCapture(take.path);
     const index = await buildIndex(take.path);
     console.log(
@@ -399,6 +412,14 @@ export class Recorder {
       + (take.dropped ? `, ${take.dropped} frames dropped to a slow disk` : ''),
     );
     this.onChange(this.state);
+    // **And now the failure is raised, after the take has been closed out rather
+    // than instead of it.** Doing the work and then swallowing the error would be
+    // the opposite mistake to the one above: `stop()` would answer as though the
+    // shoot ended cleanly, and the operator would be told a take is safe at the one
+    // moment they most need to hear that the card gave out. The two obligations are
+    // not in tension once the ordering is right - everything above is what the take
+    // needs, and this is what the caller needs.
+    if (closeError) throw closeError;
     return {
       id: take.id,
       path: take.path,

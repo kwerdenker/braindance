@@ -185,20 +185,25 @@ int main(int argc, char **argv) {
   int dumpCount = 24;
   int dumpEvery = 10;
 
+  // The text each numeric flag was actually given, kept alongside the parsed value
+  // purely so a refusal can quote it. `std::atoi` answers 0 for anything it cannot
+  // read, so reporting the parsed int tells somebody who typed `--dump-every all`
+  // that the problem is a '0' they never wrote, and sends them looking for it.
+  const char *qualityRaw = nullptr, *dumpCountRaw = nullptr, *dumpEveryRaw = nullptr;
 
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     if (a == "--no-color") wantColor = false;
     else if (a == "--pipeline" && i + 1 < argc) pipelineName = argv[++i];
-    else if (a == "--quality" && i + 1 < argc) jpegQuality = std::atoi(argv[++i]);
+    else if (a == "--quality" && i + 1 < argc) jpegQuality = std::atoi(qualityRaw = argv[++i]);
     else if (a == "--log" && i + 1 < argc) logLevel = argv[++i];
     else if (a == "--min-depth" && i + 1 < argc) minDepth = (float)std::atof(argv[++i]);
     else if (a == "--max-depth" && i + 1 < argc) maxDepth = (float)std::atof(argv[++i]);
     else if (a == "--no-low-light") lowLight = false;
     else if (a == "--profile") profile = true;
     else if (a == "--dump-corpus" && i + 1 < argc) dumpCorpus = argv[++i];
-    else if (a == "--dump-count" && i + 1 < argc) dumpCount = std::atoi(argv[++i]);
-    else if (a == "--dump-every" && i + 1 < argc) dumpEvery = std::atoi(argv[++i]);
+    else if (a == "--dump-count" && i + 1 < argc) dumpCount = std::atoi(dumpCountRaw = argv[++i]);
+    else if (a == "--dump-every" && i + 1 < argc) dumpEvery = std::atoi(dumpEveryRaw = argv[++i]);
     else if (a == "--help") {
       std::fprintf(stderr,
         "usage: grabber [--pipeline gl|cl|cpu] [--no-color] [--quality 1-100]\n"
@@ -247,6 +252,37 @@ int main(int argc, char **argv) {
         pipelineName.c_str());
       return 0;
     }
+  }
+
+  // The numeric flags are checked here rather than where they are parsed, because a
+  // later argument overwrites an earlier one and the only value worth judging is the
+  // one that survives the loop.
+  //
+  // All three arrive through std::atoi, which reports "not a number" as 0 - so a typo,
+  // a swapped argument, or the literal 0 are indistinguishable by the time the value is
+  // used. --dump-every reaching the loop as 0 makes the sampling test
+  // `frameCount % (uint64_t)dumpEvery` a division by zero, which on both arm64 and
+  // x86-64 is SIGFPE rather than anything the program can catch. Under the server that
+  // reads as a grabber dying the instant it is spawned, and the supervisor treats an
+  // instant exit as the flaky USB link it was written for and respawns forever - so the
+  // operator is told there is no sensor when what actually happened is that a flag was
+  // not a number. --dump-count 0 is quieter and no better: the frame that would end the
+  // dump can never satisfy `++dumped >= dumpCount`, so a corpus run never stops. And
+  // --quality reaches tjCompress2, which is undefined outside 1-100.
+  //
+  // Exit 2 rather than the 1 a runtime failure returns, because these two are different
+  // answers: nothing was attempted here, so there is nothing to retry or diagnose.
+  if (jpegQuality < 1 || jpegQuality > 100) {
+    std::fprintf(stderr, "[grabber] --quality must be an integer 1-100, got '%s'\n", qualityRaw ? qualityRaw : "");
+    return 2;
+  }
+  if (dumpEvery < 1) {
+    std::fprintf(stderr, "[grabber] --dump-every must be an integer 1 or greater, got '%s'\n", dumpEveryRaw ? dumpEveryRaw : "");
+    return 2;
+  }
+  if (dumpCount < 1) {
+    std::fprintf(stderr, "[grabber] --dump-count must be an integer 1 or greater, got '%s'\n", dumpCountRaw ? dumpCountRaw : "");
+    return 2;
   }
 
   // Debug is genuinely noisy - one line per incomplete depth frame - so it stays

@@ -21,7 +21,7 @@ import { createReadStream } from 'node:fs';
 import { open, readFile, writeFile, rename, stat } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { basename, resolve } from 'node:path';
-import { MAGIC, HEADER_BYTES, TYPE_HELLO, TYPE_FRAME } from './protocol.js';
+import { MAGIC, HEADER_BYTES, TYPE_HELLO, TYPE_FRAME, MAX_PAYLOAD_BYTES } from './protocol.js';
 
 export const INDEX_VERSION = 2;
 
@@ -210,6 +210,18 @@ export async function buildIndex(capturePath) {
         }
         const type = prefix.readUInt32LE(4);
         const len = prefix.readUInt32LE(8);
+        // The same ceiling the live parser holds, applied to a file. The scan itself
+        // only walks past a payload so a huge length costs it nothing here - what it
+        // costs is later, because this number is written into the sidecar and every
+        // read of that frame allocates a buffer of it. A capture whose framing has
+        // gone is better refused at the scan, where the message names an offset, than
+        // turned into an index that describes bytes the file does not contain.
+        if (len > MAX_PAYLOAD_BYTES) {
+          throw new Error(
+            `message at ${msgOffset} declares ${len} payload bytes, past the ${MAX_PAYLOAD_BYTES} `
+            + 'this format allows: the stream is desynced rather than carrying a large frame',
+          );
+        }
         // A frame carries its own lengths and stamp in its first sixteen bytes,
         // so one shorter than that is malformed rather than merely small, and
         // indexing it would put a fabricated zero timestamp into the pacing.
@@ -254,6 +266,51 @@ export async function buildIndex(capturePath) {
   return index;
 }
 
+/**
+ * Whether a sidecar's numbers describe the file it sits beside, closely enough to
+ * read from.
+ *
+ * The staleness test below says only that this sidecar was written for a file of
+ * this size at this modification time. Everything in it then reaches `readAt`,
+ * which allocates a buffer of the declared length and preads at the declared
+ * offset - so a length nobody checked is a `Buffer.allocUnsafe` of whatever the
+ * sidecar likes, and an offset nobody checked reads from wherever it likes. A
+ * sidecar is an ordinary small file beside the take, rewritten by any scan and
+ * writable by anything that can write the captures directory, which is a much
+ * lower bar than producing a multi-gigabyte capture - so it is checked rather than
+ * trusted for having the right size stamped in it.
+ *
+ * The bounds are the ones the scan itself enforces while building an index, which
+ * is what makes this a check on the file rather than a second opinion about the
+ * format: a payload fits the ceiling, a frame carries at least its own sixteen-byte
+ * header, and each frame's bytes lie inside the capture and after the frame before
+ * it. Failing any of them is treated exactly as a sidecar that is absent or not
+ * JSON - the take is scanned again, which is slow and correct.
+ */
+function indexDescribes(cached, size) {
+  const frames = cached?.frames;
+  if (!frames || !Array.isArray(frames.offset) || !Array.isArray(frames.length) || !Array.isArray(frames.stampMs)) {
+    return false;
+  }
+  if (frames.length.length !== frames.offset.length || frames.stampMs.length !== frames.offset.length) return false;
+  // A payload begins after a header at the very least, ends inside the file, and is
+  // no longer than the format allows.
+  const spans = (offset, length, least) => Number.isSafeInteger(offset) && Number.isSafeInteger(length)
+    && offset >= HEADER_BYTES && length >= least && length <= MAX_PAYLOAD_BYTES && offset + length <= size;
+  if (cached.hello !== null && !spans(cached.hello?.offset, cached.hello?.length, 0)) return false;
+  let after = 0;
+  for (let i = 0; i < frames.offset.length; i++) {
+    if (!spans(frames.offset[i], frames.length[i], STAMP_BYTES)) return false;
+    // Ordered and non-overlapping, because that is what appending messages to a file
+    // produces. Two entries pointing at one span is a sidecar describing some other
+    // arrangement of bytes than the one the take has.
+    if (frames.offset[i] < after) return false;
+    if (!Number.isFinite(frames.stampMs[i])) return false;
+    after = frames.offset[i] + frames.length[i];
+  }
+  return true;
+}
+
 /** The sidecar if it still describes this file, otherwise a fresh scan. */
 export async function loadIndex(capturePath) {
   const st = await stat(capturePath);
@@ -270,7 +327,13 @@ export async function loadIndex(capturePath) {
     // the design refuses, so deferring here would defer to a lie, and the
     // gallery's reconciliation-by-hash would inherit it.
     if (cached.version === INDEX_VERSION && cached.bytes === st.size && cached.mtimeMs === st.mtimeMs) {
-      return cached;
+      // Size and modification time say this sidecar was written for this file. What
+      // it *contains* is a separate question, and the offsets and lengths in it are
+      // what every later read allocates and preads on - so they are checked before
+      // the sidecar is accepted rather than when a frame is asked for, by which time
+      // the number has already reached `allocUnsafe`.
+      if (indexDescribes(cached, st.size)) return cached;
+      console.error(`[capture] the sidecar for ${basename(capturePath)} does not describe it - scanning again`);
     }
   } catch {
     // Absent, unreadable or not JSON all mean the same thing: scan it again.
@@ -321,6 +384,18 @@ export class Capture {
   }
 
   async readAt(position, bytes) {
+    // The one allocation both readers reach, so the bound is asserted here as well
+    // as where the numbers came from. The scan enforces the format's ceiling while
+    // building an index and `indexDescribes` enforces it on a sidecar read back off
+    // disk, and this is the line those two are protecting - a guard at the
+    // allocation is the one that cannot be reached around by a third caller.
+    if (!Number.isSafeInteger(position) || position < 0
+      || !Number.isSafeInteger(bytes) || bytes < 0 || bytes > MAX_PAYLOAD_BYTES) {
+      throw new Error(
+        `refusing to read ${bytes} bytes at ${position} in ${this.path}: that is not a span `
+        + `a payload of at most ${MAX_PAYLOAD_BYTES} bytes can occupy`,
+      );
+    }
     const buf = Buffer.allocUnsafe(bytes);
     let got = 0;
     // A positioned read of a regular file normally returns everything asked for,
@@ -546,7 +621,17 @@ export function openCapture(capturePath) {
     // A failure must not be remembered, or a capture that appears a moment later
     // would keep reporting the error from before it existed.
     pending.catch(() => openCaptures.delete(path));
-    pending.then((capture) => { settledValue.set(pending, capture); }, () => {});
+    pending.then((capture) => {
+      settledValue.set(pending, capture);
+      // Swept again now this one has a descriptor, and that second pass is what
+      // makes the cap hold at all. The pass below runs while this promise is still
+      // unresolved, and an unresolved entry is not a candidate - so under concurrent
+      // opens every pass looked at a map of promises, evicted nothing, and nothing
+      // ever looked again once they landed. The bound then failed silently, which is
+      // the worst way for a descriptor cap to fail: EMFILE arrives much later, in
+      // whatever else was next to ask the kernel for a file.
+      evictIdle();
+    }, () => {});
     openCaptures.set(path, pending);
     evictIdle();
   }
@@ -558,10 +643,24 @@ function evictIdle() {
   // Resolved entries only. A capture still opening has no descriptor yet and no
   // `usedAt` to rank by, and awaiting one here would make an eviction sweep wait
   // on the multi-gigabyte scan it is trying to make room for.
+  //
+  // And a `usedAt` of zero is a capture that has resolved but that nobody has
+  // touched yet: `withCapture` takes its lease in the continuation *after* the one
+  // this sweep now runs from, so for that moment a freshly opened capture has no
+  // lease and the oldest `usedAt` there is - it would sort to the front of the queue
+  // and be closed into the read it was opened for. It becomes a candidate the moment
+  // something actually uses it.
+  //
+  // Which is a rule about callers as much as about this loop: a caller that opens a
+  // capture and then neither leases it through `withCapture` nor `retain`s it holds a
+  // descriptor for the life of the process, because nothing will ever move its
+  // `usedAt` off zero. Both of today's callers do one or the other - every request
+  // goes through `withCapture` and the replay retains - and a third that did neither
+  // would be the leak this cap exists to prevent, arrived at from inside.
   const settled = [];
   for (const [path, pending] of openCaptures) {
     const capture = pendingValue(pending);
-    if (capture && capture.leases === 0) settled.push([path, capture]);
+    if (capture && capture.leases === 0 && capture.usedAt > 0) settled.push([path, capture]);
   }
   settled.sort((a, b) => a[1].usedAt - b[1].usedAt);
   for (const [path, capture] of settled) {

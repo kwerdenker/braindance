@@ -184,7 +184,7 @@ function buildTile(take) {
       ${divisor > 1 ? `<span class="coarse">decimated ÷${divisor}</span>` : ''}</div>
     <div class="bar"><span class="done"></span><span class="pos"></span></div>
     <div class="meta">
-      <div class="top"><span class="name">${take.id}</span><span class="dur">${shooting ? '···' : mmss(take.durationSec)}</span></div>
+      <div class="top"><span class="name"></span><span class="dur">${shooting ? '···' : mmss(take.durationSec)}</span></div>
       <div class="sub">
         <span class="state ${take.state}"><i></i>${take.state === 'remote' ? 'node' : take.state}</span>
         <span>${gb(take.bytes)}</span>
@@ -199,6 +199,20 @@ function buildTile(take) {
       </div>
       <div class="acts"></div>
     </div>`;
+
+  // **A take's id is a filename, so it is text from outside this page too, and the
+  // rule below applies to it exactly as it applies to a mark's label.** The id is
+  // `basename(path)` with `.knct` taken off (`server/capture.js`), and `scanTakes`
+  // admits any file whose name ends that way - `VALID_ID` guards the ids that arrive
+  // from a *node*, and the recorder names its own takes, but nothing constrains a
+  // file somebody dropped into the captures directory by hand. That is an ordinary
+  // move in a design built around carrying takes between machines, and interpolating
+  // the name into the template made `<img src=x onerror=...>.knct` run script on this
+  // page's real origin the moment the gallery drew it - with every mutating route
+  // then reachable, because the guard has nothing to say about a request the page
+  // itself makes. Filtering the file out of the listing would be the wrong repair:
+  // a gallery that hides footage is how footage gets lost.
+  tile.querySelector('.name').textContent = take.id;
 
   // The marks go on through the DOM rather than through the template above. A
   // label is written by whoever pressed mark - on this machine or on a node whose
@@ -413,10 +427,15 @@ document.getElementById('cGo').addEventListener('click', () => {
 function askDelete(tile, take) {
   const alsoOnNode = take.state === 'both';
   document.getElementById('cTitle').textContent = alsoOnNode ? 'Two copies exist' : 'Delete take';
-  document.getElementById('cBody').innerHTML =
-    `<b>${take.id}</b> · ${mmss(take.durationSec)} · ${gb(take.bytes)}`
+  // The id goes in as text, for the reason `buildTile` states: it is a filename and
+  // nobody promised it was not markup. The dialogs are the worse place for it of the
+  // two, because this one is the confirm in front of the only irreversible action.
+  const body = document.getElementById('cBody');
+  body.innerHTML =
+    `<b class="tid"></b> · ${mmss(take.durationSec)} · ${gb(take.bytes)}`
     + (take.marks?.length ? ` · ${take.marks.length} marks` : ' · no marks')
     + `<br>on ${take.state === 'remote' ? library.node?.name : alsoOnNode ? `this ${library.here} and ${library.node?.name}` : `this ${library.here}`}.`;
+  body.querySelector('.tid').textContent = take.id;
   document.getElementById('cWarn').textContent = alsoOnNode
     ? `Delete removes the last copy, and this take has two - so it is refused while ${library.node?.name} still holds one. `
       + 'Reclaim removes the copy over there, after re-hashing the one here.'
@@ -434,9 +453,11 @@ function askDelete(tile, take) {
 function askReclaim(tile, take) {
   document.getElementById('cGo').disabled = false;
   document.getElementById('cTitle').textContent = `Reclaim on ${library.node?.name}`;
-  document.getElementById('cBody').innerHTML =
-    `Free <b>${gb(take.bytes)}</b> on ${library.node?.name} by removing its copy of <b>${take.id}</b>. `
+  const rBody = document.getElementById('cBody');
+  rBody.innerHTML =
+    `Free <b>${gb(take.bytes)}</b> on ${library.node?.name} by removing its copy of <b class="tid"></b>. `
     + `The copy here is re-hashed before anything is removed, and stays.`;
+  rBody.querySelector('.tid').textContent = take.id;
   document.getElementById('cWarn').textContent = '';
   document.getElementById('cGo').textContent = 'Reclaim';
   confirmAction = () => run(tile, `reclaiming ${take.id}`, () => post(`/library/reclaim/${take.id}`));

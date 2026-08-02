@@ -173,7 +173,6 @@ export function handleExportSocket(ws, { outDir, log = console.log }) {
       frames: msg.frames, codec: msg.codec ?? 'h264',
     });
 
-    await mkdir(outDir, { recursive: true });
     const ext = CODECS[codec].ext;
     // A unique directory per export makes `rename(temp, final)` target a fresh
     // path, so the video and its sidecar land together without replacing any
@@ -192,6 +191,15 @@ export function handleExportSocket(ws, { outDir, log = console.log }) {
     // directory behind an `isInside` check, and both segments come from a name
     // `validateExport` has already held to letters, digits, dot, dash and underscore.
     const href = `/exports/${dirName}/${msg.name}.${ext}`;
+    // **Assigned before the first await, because `job` is what says an export is
+    // already running.** The message handler refuses a second `begin` by finding
+    // this non-null, and it used to be set after the directory was made - so two
+    // begins in one tick both reached that test with nothing there, both passed, and
+    // the second overwrote the first's record. The first ffmpeg then had no reader
+    // for its stdin and nothing that could name its scratch directory: unreachable,
+    // blocked forever on a stream nobody closes, with `fail` pointed at the second
+    // export's paths. Everything above is arithmetic on validated values, so there is
+    // nothing to wait for before claiming the socket.
     job = {
       width, height, fps, frames, codec, frameBytes, output, outputDir, temp, scratchFile, href, name: msg.name, began: Date.now(),
       project: msg.project ?? null,
@@ -199,6 +207,8 @@ export function handleExportSocket(ws, { outDir, log = console.log }) {
       renderer: msg.renderer ?? null,
     };
 
+    // Recursive, so this makes the exports directory as well as the scratch inside
+    // it - one call, on the path this run is actually going to write.
     await mkdir(temp, { recursive: true });
     const args = ffmpegArgs({ width, height, fps, codec, into: scratchFile });
     log(`[export] ${FFMPEG} ${args.join(' ')}`);
@@ -229,7 +239,13 @@ export function handleExportSocket(ws, { outDir, log = console.log }) {
         + `${job.width}x${job.height} RGBA frame is`,
       );
     }
-    if (received >= job.frames) {
+    // **Only when a count was declared.** `frames` is optional - `validateExport`
+    // admits null and skips its checks - and a bare `received >= job.frames` coerces
+    // null to zero, so the very first frame of a legal open-ended export was refused
+    // for being more than the nothing it declared. The validator and the consumer
+    // have to agree about what null means, and the validator's answer is "no count
+    // was given", so this is the one that moves.
+    if (job.frames !== null && received >= job.frames) {
       throw new Error(`more frames arrived than the ${job.frames} this export declared`);
     }
     received++;
@@ -261,7 +277,10 @@ export function handleExportSocket(ws, { outDir, log = console.log }) {
 
   const end = async () => {
     if (!job) throw new Error('an export ended before it was described');
-    if (received !== job.frames) {
+    // Same reading as the frame guard above: an export that declared no count cannot
+    // have sent the wrong number of frames, and comparing against null would refuse
+    // every one of them.
+    if (job.frames !== null && received !== job.frames) {
       throw new Error(`the export declared ${job.frames} frames and sent ${received}`);
     }
     ended = true;
@@ -302,7 +321,19 @@ export function handleExportSocket(ws, { outDir, log = console.log }) {
     // or the write still reaches `fail`, which cleans the scratch directory up
     // and tells the browser.
     finished = true;
-    await rename(job.temp, job.outputDir);
+    try {
+      await rename(job.temp, job.outputDir);
+    } catch (err) {
+      // **And it comes back down if the rename is the thing that failed**, because
+      // then this run has not finished at all. `fail` reads the flag as "this export
+      // has already been answered" and returns immediately, so a rename that threw -
+      // a full disk, a scratch directory removed underneath - ended in silence: no
+      // done, no error, the browser waiting on a socket nobody closes, and the
+      // scratch still on disk. Lowering it here hands the failure back to the one
+      // place that cleans up and speaks.
+      finished = false;
+      throw err;
+    }
     const elapsed = Date.now() - job.began;
     log(`[export] ${job.output} ${job.frames} frames ${(st.size / 1e6).toFixed(1)}MB in ${(elapsed / 1000).toFixed(1)}s`);
     send({

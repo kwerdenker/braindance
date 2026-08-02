@@ -67,6 +67,17 @@ const MUTATIONS = {
     '  if (/[@/?#\\s\\\\]/.test(rawHost)) return false;',
     '  if (false) return false;',
   ]] },
+  // The control for the rebinding rule. Reverting it puts the predicate back to
+  // comparing the two headers against each other and nothing else - which is the
+  // shape a rebound browser satisfies by construction, since both headers carry
+  // the attacker's own name. It must fail the name rows and leave the address rows
+  // alone: a mutation that reddens everything cannot say which row carries the
+  // claim, which is the reason `origin-allows-null` exists directly below.
+  'host-accepts-a-name': { file: 'server/http-guard.js', edits: [[
+    `  const isAddress = /^\\d{1,3}(\\.\\d{1,3}){3}$/.test(hostname) || hostname.startsWith('[');
+  if (!isAddress && hostname !== 'localhost' && !hostname.endsWith('.local')) return false;`,
+    '  if (false) return false;',
+  ]] },
   // A `file://` page and a sandboxed iframe both send the literal string `null`,
   // which is not a URL and is same-origin with anything. Treating an unparseable
   // origin as absent is the plausible wrong reading of "no origin is not a browser".
@@ -255,6 +266,37 @@ try {
   const dup = await duplicateHostUpgrade();
   ok('and two Host headers do not upgrade, whoever refuses them - `req.headers.host` keeps only the first, so the one that was checked is not necessarily the one anything downstream believes',
     !/^HTTP\/1\.1 101/.test(dup), dup.slice(0, 40));
+
+  // **Host equality alone cannot survive DNS rebinding, and every row above agrees
+  // with a rebound browser.** The attacker re-resolves a name they control onto the
+  // address this server listens on, so the browser sends that name in both headers
+  // and the two match because they are the same string. Measured before it was
+  // fixed: this shape wrote a preset, drove the recorder against the real sensor,
+  // opened the socket and deleted a take, on the *default loopback bind* - so these
+  // rows are not about `--host`, and running them against loopback is the point.
+  const rebound = await Promise.all([
+    upgradeWithHost(`http://evil.example.com:${PORT}`, `evil.example.com:${PORT}`),
+    upgradeWithHost('http://evil.example.com', 'evil.example.com'),
+    upgradeWithHost(`http://sub.attacker.test:${PORT}`, `sub.attacker.test:${PORT}`),
+  ]);
+  ok('a Host that is a name the attacker could have pointed here does not upgrade, however exactly the Origin agrees with it - agreement is what rebinding manufactures',
+    rebound.every((r) => r !== 'open'), rebound.join(', '));
+
+  // The positive twin, and it is doing real work rather than balancing the books:
+  // a guard that refused every authority would pass the row above and break every
+  // way this program is actually reached. An address cannot be rebound without
+  // controlling the address, which is what the bind already decides; `localhost` is
+  // reserved to loopback by RFC 6761; and a `.local` name is answered over
+  // multicast on the link by whoever is already on it.
+  const stillReachable = await Promise.all([
+    upgradeWithHost(`http://127.0.0.1:${PORT}`, `127.0.0.1:${PORT}`),
+    upgradeWithHost(`http://[::1]:${PORT}`, `[::1]:${PORT}`),
+    upgradeWithHost(`http://localhost:${PORT}`, `localhost:${PORT}`),
+    upgradeWithHost(`http://capture-node.local:${PORT}`, `capture-node.local:${PORT}`),
+    ...(LAN ? [upgradeWithHost(`http://${LAN}:${PORT}`, `${LAN}:${PORT}`)] : []),
+  ]);
+  ok('while an address literal, IPv6 loopback, `localhost` and an mDNS name all still open - the rule discriminates by the kind of authority, and a guard that refused everything would fail here rather than pass quietly',
+    stillReachable.every((r) => r === 'open'), stillReachable.join(', '));
 
   console.log('\n[guard] nothing is on the network unless somebody typed a flag');
   ok('the server is up on loopback', await reachable('127.0.0.1'));

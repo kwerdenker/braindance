@@ -36,6 +36,16 @@ import { cachedIndex, forgetCapture, indexPathFor, captureIdFor, readHelloOnce }
 // a valid document name.
 export const VALID_ID = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 
+// The shape a content hash has, and the reason it is checked at all: a node's
+// manifest is JSON from another machine, and `downloadTake` puts eight characters
+// of the hash it advertises into a filename whenever the plain name is taken. A
+// node offering `sha256:/../../x` therefore names a path outside the captures
+// directory and truncates whatever is at the other end of it - so the hash is held
+// to this before it can reach `join`, on the same reading as `VALID_ID` beside it
+// and through the same two doors: the manifest filters, and the one path-forming
+// function asserts.
+export const VALID_HASH = /^sha256:[0-9a-f]{64}$/;
+
 // One constant, shared with the page rather than restated here. See web/format.js
 // for what version 1 means and why it is a version rather than an authored buffer
 // height; re-exported so callers on this side have one import to reach for.
@@ -295,7 +305,12 @@ export class NodeLink {
     try {
       const body = await this.fetchJson('/library/takes');
       this.lastError = null;
-      return body.takes.filter((t) => VALID_ID.test(t.id));
+      // The hash is filtered beside the id because it is the other field of a node's
+      // that reaches a path here. **A take still being shot advertises no hash at
+      // all** - `describeTake` reports null on purpose, and `reconcile` keys those by
+      // side and name - so null is a take the gallery has to be able to list and
+      // refuse to download. What must not pass is a string that is not a hash.
+      return body.takes.filter((t) => VALID_ID.test(t.id) && (t.hash === null || VALID_HASH.test(t.hash)));
     } catch (err) {
       this.lastError = err.message;
       return null;
@@ -403,6 +418,13 @@ export const downloadsInFlight = new Map();
 
 export async function downloadTake(node, take, dir) {
   if (!VALID_ID.test(take.id)) throw new Error(`the node offered an unusable id: ${take.id}`);
+  // Asserted here rather than filtered, unlike the manifest's: the hash goes into a
+  // filename on the collision branch below, and a download with nothing to verify
+  // against is not a download this function can perform at all - the verification is
+  // the whole of it.
+  if (!VALID_HASH.test(take.hash ?? '')) {
+    throw new Error(`the node offered ${take.id} with an unusable hash: ${JSON.stringify(take.hash ?? null)}`);
+  }
   // A filename is not an identity, and this is where that stops being a slogan.
   // Two machines can hold genuinely different takes under one name - the library
   // already lists them as two entries, because it joins on the hash - and writing
@@ -438,7 +460,6 @@ export async function downloadTake(node, take, dir) {
     progress.phase = 'verifying';
     const got = await hashFile(temp);
     if (got !== take.hash) {
-      await unlink(temp).catch(() => {});
       throw new Error(
         `${take.id} arrived as ${got}, not the ${take.hash} the node advertised: `
         + 'discarded rather than filed under a hash it does not have',
@@ -446,6 +467,17 @@ export async function downloadTake(node, take, dir) {
     }
     await rename(temp, target);
     forgetCapture(target);
+  } catch (err) {
+    // **Every failure takes the `.part` with it, not only the hash mismatch.** A
+    // transfer that dropped mid-stream left gigabytes at a name nothing in the tool
+    // can see or act on: `scanTakes` filters on `.knct`, so no tile lists it and no
+    // removal offers to remove it, while `remaining` counts the space as gone - and
+    // the recorder divides that by the capture rate and starts refusing takes over a
+    // file no surface mentions. The mismatch was cleaned up because it was the one
+    // failure somebody had in mind; the link going away mid-download is the ordinary
+    // one, since the link is a room's wifi and the take is minutes of it.
+    await unlink(temp).catch(() => {});
+    throw err;
   } finally {
     // In a `finally` because a failed download must not leave the gallery showing a
     // transfer that is no longer happening - and the hash mismatch above throws.

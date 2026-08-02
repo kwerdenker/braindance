@@ -357,8 +357,8 @@ const MUTATIONS = {
   // other file in there should still be covered - and "should" is what this repo
   // measures. A read route unlinking a take that is not the one being recorded.
   'plant-unlink-closed-take': { file: 'server/index.js', edits: [
-    ["import { createReadStream, mkdirSync, readdirSync, statSync } from 'node:fs';",
-      "import { createReadStream, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs';"],
+    ["import { createReadStream, mkdirSync, readdirSync, realpathSync, statSync } from 'node:fs';",
+      "import { createReadStream, mkdirSync, readdirSync, realpathSync, statSync, unlinkSync } from 'node:fs';"],
     ["  { path: '/library/writes', pattern: /^\\/library\\/writes$/, read: serveWriteCounts },",
       "  { path: '/library/writes', pattern: /^\\/library\\/writes$/, read: serveWriteCounts },\n"
       + "  { path: '/library/sweep-probe', pattern: /^\\/library\\/sweep-probe$/, read: (req, res) => {\n"
@@ -441,9 +441,20 @@ const MUTATIONS = {
   ]] },
   // The flush moves out of the `finally`, so a close that rejects loses them - the
   // second way the same orphaning arrived.
-  'close-flush-outside-finally': { file: 'server/recorder.js', edits: [[
-    '    try {\n      await once(take.stream, \'close\');\n    } finally {',
-    '    {\n      await once(take.stream, \'close\');\n    }\n    {',
+  // **This replaced `close-flush-outside-finally`, which had become vacuous rather
+  // than merely misaimed.** That mutation moved the flush out of a `finally`, and the
+  // `finally` no longer exists: closing a take now catches the stream error, records
+  // it, closes the take out, and raises afterwards. Control reaches the flush either
+  // way, so re-anchoring the old text would have bought a green row testing nothing -
+  // which is worse than a refusal, because a refusal is at least loud.
+  //
+  // What is worth breaking now is the recovery itself. Throwing where the error is
+  // recorded puts the code back to rejecting straight out of `close`, past the index,
+  // the hash and the broadcast, which is the bug defect 4 was about: a take left with
+  // no sidecar and no content hash while every monitor shows a recording that ended.
+  'close-rethrows-before-indexing': { file: 'server/recorder.js', edits: [[
+    '      console.error(`[recorder] take ${take.id}: the file did not close cleanly (${err.message}) - indexing what landed`);',
+    '      throw err;',
   ]] },
   // The write stream's backpressure is discarded again, so a stalling card becomes
   // heap that grows until the process is killed.

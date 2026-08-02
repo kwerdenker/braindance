@@ -46,6 +46,22 @@ const isTerminal = (state) => state === 'done' || state === 'failed';
  */
 export const rendererMatches = (want, have) => want === null || want === undefined || want === have;
 
+// How long a renderer class may be, and that it is a string at all.
+//
+// **The comparison above is `===`, so anything that is not a string pins a job to
+// something no worker can ever equal.** `{"renderer":{}}` was accepted on the
+// strength of being truthy and stamped into the record; the record is JSON, so the
+// next read produces a *different* object and the identity can never hold again -
+// a job queued, unclaimable, forever, and unclaimable in the one way the queue
+// reports as "pinned to a different class" rather than as a fault. Checked
+// wherever a class arrives rather than at the claim alone, because `enqueue` pins
+// one too and that is the same field reached by a different door. The bound is
+// generous against a real one - `ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro,
+// Unspecified Version)` is seventy-odd characters - and finite against a caller,
+// because it lands in a file and in every listing of the queue.
+const MAX_RENDERER_CHARS = 256;
+const validRenderer = (v) => typeof v === 'string' && v.length > 0 && v.length <= MAX_RENDERER_CHARS;
+
 // How long a claim may go without saying anything before it is treated as gone.
 //
 // **A timeout on its own would be a guess about how long a render takes**, and
@@ -164,6 +180,15 @@ export class JobStore {
     if (typeof capture !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(capture)) {
       throw new Error(`a job names its capture by content hash, got ${JSON.stringify(capture)}`);
     }
+    // A job may be enqueued with no class at all - that is the common case, and the
+    // claim is what stamps one on - but a class that is *given* here is pinned from
+    // the start, so it is the same field under the same rule as the claim's.
+    if (renderer !== null && renderer !== undefined && !validRenderer(renderer)) {
+      throw new Error(
+        `a job pins its renderer class as a string of at most ${MAX_RENDERER_CHARS} characters, `
+        + `got ${JSON.stringify(renderer)} - and a pin nothing can equal is a job nothing can claim`,
+      );
+    }
     // All the export rules run at enqueue, so the queue refuses work it already
     // knows cannot run. The worker and the export socket must not be the place a
     // bad width, an odd h264 dimension, or an unknown codec is first discovered.
@@ -223,7 +248,15 @@ export class JobStore {
    * an absence rather than a wrong image.
    */
   claim({ worker, renderer }) {
-    if (!renderer) return Promise.reject(new Error('a worker claims with the renderer class it will render on'));
+    // Held to a string before the transition rather than merely to being present:
+    // this value is what gets written into the record as the pin, and a pin nothing
+    // can equal is a job the queue can never hand out again. See `validRenderer`.
+    if (!validRenderer(renderer)) {
+      return Promise.reject(new Error(
+        'a worker claims with the renderer class it will render on, as a string of at most '
+        + `${MAX_RENDERER_CHARS} characters, not ${JSON.stringify(renderer ?? null)}`,
+      ));
+    }
     return this.serialise(async () => {
       const all = (await this.list()).filter((j) => j.state === 'queued').sort((a, b) => a.created - b.created);
       const mine = all.filter((j) => rendererMatches(j.renderer, renderer));

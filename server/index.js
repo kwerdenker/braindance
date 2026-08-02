@@ -3,7 +3,7 @@
 
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { createReadStream, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { createReadStream, mkdirSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { pipeline } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, join, normalize, extname, sep, resolve } from 'node:path';
@@ -39,12 +39,25 @@ const PORT = Number(flag('--port', '8080'));
 // when nobody thought about it.
 //
 // The origin checks are the other half and they are not a substitute for this one.
-// Host equality cannot survive DNS rebinding in general: a name the attacker
-// controls, resolving to the node's LAN address, makes `Origin` and `Host` the
-// same string, so the request is genuinely same-origin by every test a server can
-// run on itself. That is an argument for not being on the network by default, not
-// a hole in the guard - the guard stops the ordinary drive-by, and the bind
-// address stops the thing that has to be routable to be attacked at all.
+// Host equality cannot survive DNS rebinding on its own: a name the attacker
+// controls, re-resolved onto the address this server listens on, makes `Origin`
+// and `Host` the same string, so the request is genuinely same-origin by every
+// test a server can run on itself.
+//
+// **This comment used to claim the bind address answered that, and it does not.**
+// The argument was that the attack has to be routable to happen at all, so
+// listening on loopback removes it - but the browser doing the connecting is
+// already on the machine, which is what makes loopback routable to it. Measured
+// rather than argued: on the default `127.0.0.1` bind, a request carrying an
+// attacker's name in both headers wrote a preset, drove `/record/start` and
+// `/record/stop` against the sensor, opened the socket, and deleted a take.
+//
+// So the answer is in the guard, where it belongs. `originAllowed` additionally
+// requires that a browser arrived at an *address* rather than a name, because
+// rebinding needs a name whose resolution the attacker owns and an address literal
+// cannot be rebound without owning the address - which is the thing this line
+// decides. The bind still matters for everything that is not a browser: an origin
+// header is a browser's claim about itself, and curl has no such claim to check.
 const LOOPBACK = '127.0.0.1';
 const HOST = flag('--host', LOOPBACK);
 const REPLAY = flag('--replay');
@@ -131,6 +144,29 @@ const EXPORTS_DIR = join(ROOT, 'exports');
 // A bare startsWith would also match a sibling like `web-private`, so the
 // separator has to be part of the comparison.
 const isInside = (dir, candidate) => candidate === dir || candidate.startsWith(dir + sep);
+
+/**
+ * A directory as the kernel would reach it, or the path itself where there is
+ * nothing there yet.
+ *
+ * The containment check below compares a realpathed candidate against these, and
+ * both sides have to be resolved the same way or the comparison stops being about
+ * the same tree: `node_modules/three` is a real directory here, but a pnpm store
+ * links it, and `exports/` is exactly the sort of directory somebody points at
+ * another volume when a render fills the disk. Falling back to the path is for
+ * `exports/`, which does not exist until the first export finishes - and resolving
+ * per request rather than once at load is so that the answer is not the lexical
+ * path forever after, which would 403 every file under it the day it becomes a
+ * link. Three `realpath` calls against a handler that is about to stat, open and
+ * read a file is not a cost worth caching a wrong answer for.
+ */
+const realOrLexical = (dir) => {
+  try {
+    return realpathSync(dir);
+  } catch {
+    return dir;
+  }
+};
 
 // A capture is addressed by id - its file name without the extension - resolved
 // inside the captures directory. Ids arrive off the URL, so anything that could
@@ -1314,8 +1350,22 @@ const httpServer = createServer((req, res) => {
     filePath = join(WEB_DIR, urlPath);
   }
 
-  const resolved = normalize(filePath);
-  if (!isInside(WEB_DIR, resolved) && !isInside(THREE_DIR, resolved) && !isInside(EXPORTS_DIR, resolved)) {
+  // **Resolved through the filesystem and not only through the string.** `normalize`
+  // folds `..` lexically, which is the whole of the containment argument, while
+  // `statSync` and `createReadStream` two lines down follow symlinks - so a link
+  // inside `web/` pointing anywhere at all passed a comparison about where its name
+  // is and was then served from where it actually is. Defence in depth rather than a
+  // hole being closed: nothing in this tree creates such a link, and that is a fact
+  // about today's tree rather than a property of the check. A path with nothing at it
+  // throws here and is the same 404 the stat below would have given.
+  let resolved;
+  try {
+    resolved = realpathSync(normalize(filePath));
+  } catch {
+    res.writeHead(404).end('not found');
+    return;
+  }
+  if (![WEB_DIR, THREE_DIR, EXPORTS_DIR].map(realOrLexical).some((root) => isInside(root, resolved))) {
     res.writeHead(403).end('forbidden');
     return;
   }
@@ -1328,7 +1378,16 @@ const httpServer = createServer((req, res) => {
       'Content-Length': stat.size,
       'Cache-Control': 'no-cache',
     });
-    createReadStream(resolved).pipe(res);
+    // `pipeline` rather than `pipe`, for both of the reasons `serveFrameRun` gives
+    // and one this path has to itself. A bare pipe unpipes when the client walks away
+    // and never destroys the file stream, so an aborted page load leaks the
+    // descriptor - and this is the handler every asset of every page goes through. It
+    // also leaves a read error as an unhandled `error` event, which ends the process:
+    // a file removed between the stat above and the first read is enough, and it
+    // would take the replay, the socket fan-out and the recorder with it.
+    pipeline(createReadStream(resolved), res, (err) => {
+      if (err) console.error(`[server] serving ${urlPath} failed: ${err.message}`);
+    });
   } catch {
     res.writeHead(404).end('not found');
   }
@@ -1793,6 +1852,19 @@ function startLive() {
 
     child.on('exit', (code, signal) => {
       console.error(`[server] grabber exited (code=${code} signal=${signal})`);
+      // **The hello goes with the grabber that sent it.** `/record/start` stamps the
+      // take it opens with whatever is in here, and between a grabber exiting and the
+      // next one handshaking that is the *previous* grabber's - so a take started
+      // during a USB drop or a colour toggle carried a hello describing a moment
+      // before it was shot, which `describeTake` then dates and sorts the whole
+      // library by, and which can declare `color: true` over a take that carries no
+      // JPEG at all. Nulled rather than refused: `start` with no hello arms and lets
+      // the next `onHello` open the take, and refusing to record through a blip the
+      // supervisor is already riding out is worse than waiting a second for the
+      // sensor to come back. At the top of the handler because every exit path
+      // matters - the restart branch below returns before the state is set, and that
+      // branch is the colour toggle.
+      helloJson = null;
       // The take ends here. One take is one continuous stream with one hello and
       // monotonic timestamps, and the index, the retime curve and `mixT` all depend
       // on it - a blend fraction across a restart seam has no meaning, and the

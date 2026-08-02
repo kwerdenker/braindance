@@ -110,6 +110,48 @@ export function originAllowed(req) {
   if (hostUrl.pathname !== '/' || hostUrl.search !== '' || hostUrl.username !== '' || hostUrl.password !== '') {
     return false;
   }
+  // **Host equality is a rule about who the caller thinks they reached, and DNS
+  // rebinding is the attack that makes the caller think it reached us while the
+  // page belongs to somebody else.** The attacker serves a page from a name they
+  // control, lets the record expire, re-resolves that name onto the address this
+  // server listens on, and the browser then sends the attacker's name in *both*
+  // headers. Everything above this line agrees: the origin's host and the Host
+  // header are the same string, because they are the same name.
+  //
+  // This was measured against the default loopback bind rather than reasoned
+  // about. A request carrying `Host: evil.example.com:8231` and a matching Origin
+  // wrote a preset, drove `/record/start` and `/record/stop` against the sensor,
+  // opened the socket, read every take's hash from `/library/all` and then deleted
+  // a take - the one irreversible action in the program, reached by a page the
+  // operator merely visited.
+  //
+  // The bind address does not answer it, and the comment in `server/index.js` that
+  // said it did was wrong: the browser making the connection is already on the
+  // machine, so loopback is routable to it by definition. Binding to loopback stops
+  // a page that guesses the port. It does nothing about a page that rebinds a name
+  // onto it.
+  //
+  // What separates the two cases is the *kind* of authority. Rebinding needs a
+  // name, because the attacker has to control what it resolves to; an address
+  // literal cannot be rebound without controlling the address itself, which is
+  // what the bind already decides. So a browser is required to have arrived at an
+  // address, with two carve-outs that do not widen anything:
+  //
+  //   - `localhost` is reserved to loopback by RFC 6761 and hardcoded as such by
+  //     browsers, so it is not a name an attacker can point anywhere.
+  //   - a `.local` name resolves over multicast on the local link rather than
+  //     through DNS the attacker controls. Answering one means already being on
+  //     the link, which is already enough to reach the port directly - so this
+  //     concedes nothing the network position did not concede first. It is here
+  //     because a browser on the editing Mac reaches a capture node by mDNS name.
+  //     Drop this clause if nothing here is ever reached that way.
+  //
+  // Placed after the origin-less return above, so the capture-node link is
+  // untouched: every call across it is a server-side `fetch` that declares no
+  // origin at all, and this rule never sees them.
+  const { hostname } = hostUrl;
+  const isAddress = /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname) || hostname.startsWith('[');
+  if (!isAddress && hostname !== 'localhost' && !hostname.endsWith('.local')) return false;
   return originUrl.protocol === 'http:' && originUrl.host === hostUrl.host;
 }
 
