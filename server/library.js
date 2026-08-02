@@ -419,6 +419,28 @@ export function durationLabel(sec) {
  */
 export const downloadsInFlight = new Map();
 
+/**
+ * The ids a download has claimed, which is a different question from the one
+ * `downloadsInFlight` answers.
+ *
+ * **Two structures because they are two facts, not one fact written twice.** The map
+ * above is a *report*: what to tell the gallery about a transfer the node has actually
+ * answered, which is why it is filled in after the fetch rather than before - a
+ * request the node refused should never appear as one stalled at zero. This set is a
+ * *claim*, taken before anything is awaited, and it exists because the report cannot
+ * do a guard's job: by the time the map has an entry there have been two awaits, and a
+ * second request arriving in that gap finds it empty and proceeds.
+ *
+ * Guarding at all is what the surface could not do. The page held down whichever
+ * surface the press came from, which is right for that surface and says nothing about
+ * the other one - close the viewer mid-transfer and the grid tile behind it is live,
+ * and a duplicate is one tap away. Both requests would then write one `${target}.part`
+ * and overwrite one progress entry, so the two verifications race over bytes neither
+ * wrote alone. A rule that has to hold across every surface belongs on the one thing
+ * every surface goes through.
+ */
+const downloadClaims = new Set();
+
 export async function downloadTake(node, take, dir) {
   if (!VALID_ID.test(take.id)) throw new Error(`the node offered an unusable id: ${take.id}`);
   // Asserted here rather than filtered, unlike the manifest's: the hash goes into a
@@ -428,6 +450,20 @@ export async function downloadTake(node, take, dir) {
   if (!VALID_HASH.test(take.hash ?? '')) {
     throw new Error(`the node offered ${take.id} with an unusable hash: ${JSON.stringify(take.hash ?? null)}`);
   }
+  // Claimed here, with nothing awaited between the reading and the taking, which is
+  // the only placement that makes this a guard - see `downloadClaims` above.
+  if (downloadClaims.has(take.id)) {
+    throw new Error(`${take.id} is already downloading: wait for that transfer rather than starting a second one`);
+  }
+  downloadClaims.add(take.id);
+  try {
+    return await downloadClaimed(node, take, dir);
+  } finally {
+    downloadClaims.delete(take.id);
+  }
+}
+
+async function downloadClaimed(node, take, dir) {
   // A filename is not an identity, and this is where that stops being a slogan.
   // Two machines can hold genuinely different takes under one name - the library
   // already lists them as two entries, because it joins on the hash - and writing
@@ -468,7 +504,28 @@ export async function downloadTake(node, take, dir) {
         + 'discarded rather than filed under a hash it does not have',
       );
     }
-    await rename(temp, target);
+    // **Linked and unlinked rather than renamed, for the reason `renameTake` states
+    // fifty lines down and this call did not honour.** `rename(2)` replaces an
+    // existing file without a word, and the name this is about to claim was chosen
+    // minutes ago, before a transfer long enough for the directory to have moved
+    // underneath it. A local take renamed onto this name in that window - which the
+    // gallery now offers, because a node-only name is correctly not a local clash -
+    // was replaced by the arriving remote take and lost its only directory entry.
+    // Footage destroyed by a transfer nobody would think of as a write to another
+    // take.
+    //
+    // The EEXIST branch is not a refusal, because refusing here would throw away a
+    // download that has already succeeded. It is the same answer the collision check
+    // at the top of this function gives, arrived at from the other side: the two
+    // takes coexist, and the one that turned up second wears the hash in its name.
+    try {
+      await link(temp, target);
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      target = join(dir, `${take.id}-${take.hash.slice(7, 15)}.knct`);
+      await link(temp, target);
+    }
+    await unlink(temp);
     forgetCapture(target);
   } catch (err) {
     // **Every failure takes the `.part` with it, not only the hash mismatch.** A
