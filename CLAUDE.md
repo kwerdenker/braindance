@@ -461,10 +461,17 @@ must exist, each must yield files, and the count is printed beside the verdict s
 number that has quietly halved is visible rather than implied. It also asserts that
 every tool in `tools/` is named in this file - see below.
 
-And the four that are not proof tools, listed because a tool nobody documented is a
-tool nobody runs:
+And the seven with no home anywhere above, listed because a tool nobody documented is
+a tool nobody runs. The arithmetic, written down because a count nobody adds up is how
+this list rotted the first time: `tools/` holds **25** files, of which **16** are
+`*-check` proof tools, **7** are the block below, and **2** — `prof-summary.mjs` and
+`render-worker.mjs` — are described further up beside the tools that drive them rather
+than here. This line said "four" over a list of six until that was counted instead of
+recalled, which is the same drift the paragraph below it warns about, happening to the
+paragraph that warns about it:
 
 ```
+node tools/build-native.mjs        # builds libfreenect2 into vendor/prefix, then the grabber
 node tools/fake-grabber.mjs        # a grabber that needs no sensor, for driving the server
 node tools/make-fixture.js         # loops one short capture into an arbitrarily long one
 node tools/sweep-all.mjs           # every mutation of every tool; needs a server and hours

@@ -329,30 +329,30 @@ brew install libusb jpeg-turbo cmake                       # macOS
 sudo apt install libusb-1.0-0-dev libturbojpeg0-dev cmake  # Debian / Raspberry Pi OS
 ```
 
-Then, on macOS with Homebrew:
+Then build both:
 
 ```bash
-cmake -S third_party/libfreenect2 -B vendor/build \
-  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-  -DCMAKE_INSTALL_PREFIX="$PWD/vendor/prefix" \
-  -DENABLE_CXX11=ON -DENABLE_OPENCL=ON -DENABLE_OPENGL=OFF -DENABLE_CUDA=OFF \
-  -DTurboJPEG_INCLUDE_DIRS="$(brew --prefix jpeg-turbo)/include" \
-  -DTurboJPEG_LIBRARIES="$(brew --prefix jpeg-turbo)/lib/libturbojpeg.dylib"
-cmake --build vendor/build --target install -j8
-
-cmake -S native -B native/build && cmake --build native/build -j8
+npm run build:native
 ```
 
-`brew --prefix` rather than a literal `/opt/homebrew` because that path is
-Apple-Silicon-only — Intel Macs put it at `/usr/local`, and a hardcoded prefix is a
-build failure whose message does not mention the prefix.
+It picks a preset from the platform — `macos` builds depth on OpenCL, `linux`
+covers the Pi and builds it on OpenGL — resolves Homebrew's prefix rather than
+assuming one, and refuses with the `brew install` line you need when a dependency
+is missing rather than letting it surface as a cmake package it could not find.
+`--preset macos|linux` overrides the detection, `--clean` discards the vendored
+build, and `node tools/build-native.mjs --help` has the rest.
 
-On Linux and the Pi, drop both `TurboJPEG_*` flags entirely — pkg-config finds it —
-and swap `-DENABLE_OPENCL=ON -DENABLE_OPENGL=OFF` for `OFF`/`ON`. V3D has OpenGL
-and no OpenCL, and the grabber's `--pipeline` is guarded by whichever the library
-was actually compiled with rather than falling through silently. OpenGL is off on
-macOS deliberately: it only drives libfreenect2's own viewer, which we don't use,
-and it is the most deprecated path on the platform.
+Picking the wrong preset costs you a refusal rather than a silent slow path: the
+grabber's `--pipeline` is guarded by whichever backend the library was actually
+compiled with, so a build without the one you ask for says so instead of falling
+through to something else.
+
+The flags are in that script rather than here, one copy, next to the comments
+explaining why each is what it is — the OpenCL/OpenGL split, the CMake policy
+floor that v0.2.1 needs, and why the Homebrew prefix is looked up instead of
+written down. It closes by running the grabber it just built rather than checking
+that the file exists, since a stale binary and one linked against a prefix that
+has moved both exist perfectly well.
 
 `node tools/vendor-check.mjs` proves the source is upstream v0.2.1 plus exactly
 the declared edits, offline, before you trust a build of it.
