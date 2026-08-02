@@ -395,10 +395,28 @@ function serveTakeFile(req, res, [id]) {
 // an earlier one, and a deletion is a tombstone. That is also the whole of the
 // two-machine merge - concatenate and resolve - so there is one rule here rather
 // than one for editing and one for syncing.
+/**
+ * Which capture is at a path, as an identity rather than a yes.
+ *
+ * **`dev` and `ino` rather than the path, because the path is what changes.** A rename
+ * frees the old id, and nothing stops a later take being renamed into it - so "a take
+ * is here" is true again afterwards while being a *different* take. Anything that
+ * checks a path, waits, and then acts on it has to compare what it found the second
+ * time against what it found the first, and only the inode says that. Two numbers off a
+ * stat this code was already paying for, rather than a hash read.
+ */
+const takeIdentity = (path) => {
+  try {
+    const st = statSync(path ?? '');
+    return { dev: st.dev, ino: st.ino };
+  } catch {
+    return null;
+  }
+};
+const sameTake = (a, b) => a !== null && b !== null && a.dev === b.dev && a.ino === b.ino;
 const takeIsHere = (path) => {
   try {
-    statSync(path ?? '');
-    return true;
+    return takeIdentity(path) !== null;
   } catch {
     return false;
   }
@@ -422,11 +440,37 @@ async function serveMarkWrite(req, res, [id]) {
   // up to four megabytes a request and tombstones that would delete real marks the
   // moment a take of that name ever existed. Marks hang off a take, so the take is
   // the thing that has to exist first.
-  if (!takeIsHere(path)) {
+  const wasThere = takeIdentity(path);
+  if (wasThere === null) {
     sendJson(res, { error: `no take ${id} here, so there is nothing to mark` }, 404);
     return;
   }
   const body = await readBody(req);
+  // **Asked again, and asked which take rather than whether one is there.** The check
+  // above happens before this await, and this await is a body of up to four megabytes
+  // arriving over a room's wifi - so the gap between deciding the take exists and
+  // appending to it is however long the client takes to send, not a few microtasks. A
+  // rename landing in that gap moves the sidecar to the new name and this append then
+  // recreates the old one, which the renamed take never reads: the response says the
+  // mark was saved and it is gone.
+  //
+  // Comparing the inode rather than re-asking `takeIsHere`, because a rename frees the
+  // old id and a later take can be renamed into it. Presence alone is true again in
+  // that case, against different footage, and the marks would attach to it - the marks
+  // resolve cleanly onto frames that exist, so nothing downstream can notice. That is
+  // the corruption this is actually for; the lost annotation is the milder half.
+  //
+  // This narrows the window rather than closing it: a rename can still land between
+  // this line and the append below. That remainder is microtask-sized instead of
+  // transfer-sized, and closing it properly means addressing marks by content hash the
+  // way the rest of the program addresses footage, which is issue #10.
+  if (!sameTake(wasThere, takeIdentity(path))) {
+    sendJson(res, {
+      error: `${id} changed underneath this request - it was renamed or replaced while the marks `
+        + 'were being sent, and they have not been written to anything',
+    }, 409);
+    return;
+  }
   const now = Date.now();
   const records = (body.marks ?? []).map((m) => ({
     ...m,
@@ -532,7 +576,11 @@ const localTakes = () => scanTakes(CAPTURES_DIR, recorder.openPath);
  * reading the disabled Open on an unopenable take already gets.
  *
  * `isLoopback` is the socket's peer as the kernel reports it, so nothing the client
- * sends can move this answer.
+ * sends can move this answer - but read its comment for what the answer is worth: a
+ * browser reaching this server through the SSH tunnel `SECURITY.md` recommends arrives
+ * on loopback and is offered Reveal, and the window then opens on the host rather than
+ * where that operator is sitting. Deliberate, since building the tunnel is a stronger
+ * act of authorisation than this program asks of anybody else.
  */
 function revealAvailability(req) {
   const { supported, label } = revealSupport();
@@ -1614,6 +1662,24 @@ const monitors = new WeakMap();
 // Whether this socket's frames leave the machine. `remoteAddress` is the peer as the
 // kernel sees it, so it cannot be spoofed by anything the client sends - which
 // matters, because this decides whether the record refusal applies.
+//
+// **What it answers is "this connection arrived on loopback", which is not the same
+// sentence as "this browser is on this machine", and the difference is a deployment
+// this project recommends.** `SECURITY.md` tells an operator crossing an untrusted
+// network to use an SSH tunnel or WireGuard with the server still bound to loopback on
+// the far side - and a forwarded port terminates on this host, so the request genuinely
+// arrives from `127.0.0.1` while the person is somewhere else entirely. Every caller
+// below therefore reads as slightly stronger than it is: a tunnelled browser is treated
+// as local, gets the full monitor rate, and can open a Finder window on a machine
+// nobody is standing at.
+//
+// That is the recommended setup working rather than a hole in it. The operator who
+// builds the tunnel is the party the gate exists to identify, and they have
+// authenticated to the host to build it - which is more than this program asks of a
+// genuinely local browser, since it asks nothing. So the gate is left alone and the
+// claim is corrected instead: **loopback here means the connection, and the operator
+// decides who reaches loopback.** Anything stronger needs a credential, and this
+// program deliberately has none - see `SECURITY.md` for that decision and its cost.
 const isLoopback = (req) => {
   const a = req.socket.remoteAddress ?? '';
   return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';

@@ -422,10 +422,31 @@ const MUTATIONS = {
   ]] },
   // Marks for a take that is not here, which created its sidecar in the captures
   // directory out of a caller's own JSON.
-  'marks-without-a-take': { file: 'server/index.js', edits: [[
-    '  if (!takeIsHere(path)) {\n    sendJson(res, { error: `no take ${id} here, so there is nothing to mark` }, 404);\n    return;\n  }',
-    '  /* mutation: any id may have marks */',
-  ]] },
+  //
+  // **Two edits now, because there are two things enforcing this and removing one
+  // leaves the other refusing.** The route grew a second check when marks were made to
+  // survive a rename: it takes the capture's inode before awaiting the body and
+  // compares it after, so a take that vanished - or was replaced by a different take
+  // renamed into the freed id - is refused. That check also happens to cover the take
+  // that was never there at all, since `sameTake(null, null)` is false.
+  //
+  // Removing only the 404 branch therefore does not produce the shape this mutation is
+  // named for. It produces a 409 and no sidecar, and the row would still go red -
+  // purely because its message no longer matches `nothing to mark|no take`. That is a
+  // catch on the wording of an error rather than on the behaviour, which is the kind of
+  // green-for-the-wrong-reason this file exists to refuse. Both gates come out, so what
+  // is under test is the claim - a take that is not here gets no marks - against a
+  // build with nothing left to enforce it. Both rows then fail: the refusal is gone and
+  // `nosuchtake.marks.jsonl` is on disk.
+  //
+  // `const wasThere` stays, or the identity check below it is a ReferenceError and the
+  // route crashes - which reads as a catch while proving only that a mutation broke the
+  // build.
+  'marks-without-a-take': { file: 'server/index.js', edits: [
+    ['  const wasThere = takeIdentity(path);\n  if (wasThere === null) {\n    sendJson(res, { error: `no take ${id} here, so there is nothing to mark` }, 404);\n    return;\n  }',
+      '  const wasThere = takeIdentity(path);'],
+    ['  if (!sameTake(wasThere, takeIdentity(path))) {', '  if (false) {'],
+  ] },
   // The document store restamps the version instead of checking it, so a project
   // from a build this one is not lands looking like one this build wrote.
   'store-restamps-version': { file: 'server/library.js', edits: [[

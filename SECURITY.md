@@ -82,6 +82,13 @@ for a proof tool; on an operator's machine it is never passed.
 - **Put it behind something if it must cross a network you do not control.** An SSH tunnel or a
   WireGuard link, with the server still bound to loopback on the far side, gives you the
   authentication and the transport security this program deliberately does not have.
+  **A tunnelled browser counts as local, and that is the point.** The server's one test for
+  "is this person here" is whether the connection arrived on loopback, and a forwarded port
+  terminates on the host — so a tunnelled browser gets the uncapped monitor rate and is offered
+  *Show in Finder*, which opens a window on the host rather than where you are sitting. Nothing
+  is being bypassed: whoever built the tunnel authenticated to the host to do it, which is more
+  than this program asks of a browser sitting at the machine. Treat tunnel access as equivalent
+  to sitting down at it, because that is what it is.
 - **Nothing here is safe to expose to the internet.** Not behind a reverse proxy, not on a
   forwarded port.
 
