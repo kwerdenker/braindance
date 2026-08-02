@@ -67,6 +67,9 @@ import { networkInterfaces } from 'node:os';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { MessageParser, TYPE_HELLO, TYPE_FRAME, encodeMessage } from '../server/protocol.js';
+// The shipped argument shape per platform, read rather than restated - see the reveal
+// argv row for what a second copy of it cost.
+import { REVEAL } from '../server/library.js';
 
 const argv = process.argv.slice(2);
 const flag = (name, fallback = null) => {
@@ -2415,14 +2418,27 @@ async function runChecks() {
     check(revealed.path === join(renameDir, 'after-the-rename.knct'),
       'reveal answers with the take\'s own path under the captures directory',
       String(revealed.path ?? revealed.error));
-    // Given a moment: the answer is written on the spawn rather than on the exit, so
-    // the program is running and may not have written yet.
-    for (let i = 0; i < 40 && !argvSeen().includes(join(renameDir, 'after-the-rename.knct')); i++) {
+    // **What counts as the right argv is the platform's own shape, not the bare
+    // path.** `revealTake` hands Finder `-R <path>`, `xdg-open` the *containing
+    // directory* because no `-R` equivalent exists across the desktops it fronts, and
+    // Explorer a single `/select,<path>`. Requiring the bare `.knct` path in the argv
+    // therefore asserted the Darwin branch on every platform: the unmutated check
+    // failed on Linux and Windows against a correct implementation, and
+    // `reveal-drops-the-path` edits only the Darwin branch so it changed nothing
+    // there either - a row that was red for the wrong reason next to a mutation that
+    // could not go red at all.
+    //
+    // Derived from `revealSupport`'s own table rather than restated here, because a
+    // second copy of the argument shape is the drift this repo keeps refusing.
+    const takePath = join(renameDir, 'after-the-rename.knct');
+    const wanted = REVEAL[process.platform]?.args(takePath) ?? [takePath];
+    const sawWanted = () => wanted.every((arg) => argvSeen().includes(arg));
+    for (let i = 0; i < 40 && !sawWanted(); i++) {
       await new Promise((r) => { setTimeout(r, 50); });
     }
-    check(argvSeen().includes(join(renameDir, 'after-the-rename.knct')),
+    check(sawWanted(),
       'and the file manager really was started on that file - the argv it received, not the status it answered',
-      argvSeen().join(' ') || 'nothing was spawned');
+      `${process.platform} wants ${JSON.stringify(wanted)}, saw ${JSON.stringify(argvSeen())}`);
     const ghost = await post(`${renameUrl}/library/reveal/no-such-take`);
     check(/not on this machine/.test(ghost.error ?? ''),
       'a take that is not here reveals nothing rather than starting a file manager on a path that does not exist',

@@ -1224,6 +1224,10 @@ function openViewer(key) {
   // The actions, which are the tile's - one surface should not offer a take a
   // different set of things to do from the other.
   const acts = document.getElementById('vActs');
+  // Read before the rebuild empties everything, and by label because the nodes it
+  // names are about to stop existing.
+  const focusWas = document.activeElement === document.getElementById('vMore') ? 'more'
+    : (acts.contains(document.activeElement) ? document.activeElement.textContent : null);
   acts.replaceChildren();
   // **The surface an action is running on is this one, so this is what `run` holds
   // down.** It used to hand over the grid tile behind the modal, which disabled
@@ -1260,6 +1264,15 @@ function openViewer(key) {
   // open, and a listener left on the old node would act on the take before this one.
   const freshMore = vMore.cloneNode(true);
   freshMore.setAttribute('aria-expanded', 'false');
+  // **And it comes back enabled, because the node it was cloned from may not be.**
+  // `run` holds this button down with the rest of the surface and puts it back
+  // afterwards - but a successful action repaints first, and the repaint clones the
+  // button while it is still held. `restore` then writes the old state onto the node
+  // it captured, which by then is detached, so the ⋯ the operator can see stays dead.
+  // Closing and reopening does not help: the next rebuild clones the dead one again.
+  // Its availability does not depend on the take, so the intended state is simply
+  // "enabled" and it is set rather than inherited.
+  freshMore.disabled = false;
   // **Focus moves to the replacement, or arrow-browsing stops after one take.** A
   // viewer opened from the keyboard puts focus on its first control, which is this
   // button; ArrowUp or ArrowDown rebuilds the next take and this line removes the very
@@ -1271,9 +1284,19 @@ function openViewer(key) {
   // walking takes passed against a build a person could not have walked. The helper
   // sends them at `document.activeElement` now, and a row asserts focus is still inside
   // the viewer after a move.
-  const hadFocus = document.activeElement === vMore;
   vMore.replaceWith(freshMore);
-  if (hadFocus) freshMore.focus();
+  // Where focus was before any of this surface was rebuilt, restored to the control
+  // that replaced it. `vMore` was the case the review named and the one a
+  // keyboard-opened viewer lands on, but `#vActs` is emptied and refilled on every
+  // rebuild too - so a Download or Reclaim started from the keyboard lost focus the
+  // moment it succeeded, for the same reason and with the same result: arrow-browsing
+  // stops reaching the viewer's handler. Restoring by label rather than by node,
+  // because every one of these buttons is a new element.
+  if (focusWas === 'more') freshMore.focus();
+  else if (focusWas) {
+    const same = [...acts.querySelectorAll('.act')].find((b) => b.textContent === focusWas);
+    (same && !same.disabled ? same : freshMore).focus();
+  }
   for (const old of viewer.querySelectorAll('.vhead .menu')) old.remove();
   viewer.querySelector('.vhead').style.position = 'relative';
   buildMenu(viewer.querySelector('.vhead'), freshMore, take, hostOf);

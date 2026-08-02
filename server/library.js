@@ -491,6 +491,34 @@ async function downloadClaimed(node, take, dir) {
     const local = await cachedIndex(target);
     if (local.hash !== take.hash) target = join(dir, `${take.id}-${take.hash.slice(7, 15)}.knct`);
   } catch { /* nothing at that name, or nothing readable: the plain name is free */ }
+  // **The pathname is claimed as well as the id, because the id does not determine
+  // it.** The line above rewrites `target` when the plain name is occupied, so a take
+  // called `foo` can end up writing `foo-1a2b3c4d.knct.part` - which is exactly the
+  // `.part` a *different* remote take whose literal id is `foo-1a2b3c4d` uses. Two
+  // different ids, two granted claims, one temporary file: the writers share an inode
+  // and one can verify and install what the other is still writing. Folding the id was
+  // right and insufficient; what has to be exclusive is the path.
+  //
+  // Taken here with nothing awaited between resolving `target` and adding it, which is
+  // what makes it a claim rather than a reading - the same placement rule as the id
+  // claim, applied at the point the real answer is finally known.
+  const pathClaim = `path:${target.toLowerCase()}`;
+  if (downloadClaims.has(pathClaim)) {
+    throw new Error(
+      `${take.id} would write ${basename(target)}, which another download is already writing: `
+      + 'wait for that transfer rather than racing it',
+    );
+  }
+  downloadClaims.add(pathClaim);
+  try {
+    return await downloadToPath(node, take, dir, target);
+  } finally {
+    downloadClaims.delete(pathClaim);
+  }
+}
+
+async function downloadToPath(node, take, dir, targetIn) {
+  let target = targetIn;
   const temp = `${target}.part`;
   const res = await fetch(`${node.url}/capture/${encodeURIComponent(take.id)}/file`);
   if (!res.ok) throw new Error(`downloading ${take.id}: ${res.status} ${res.statusText}`);
@@ -832,7 +860,7 @@ export async function renameTake(dir, id, requested, { hash, recordingPath = nul
  * measuring the arguments the real file manager would have received, rather than a
  * second code path written to be measurable.
  */
-const REVEAL = {
+export const REVEAL = {
   darwin: { program: 'open', label: 'Finder', args: (path) => ['-R', path] },
   // No `-R` equivalent exists across the desktops `xdg-open` fronts, so the
   // containing directory is opened and the take is one glance rather than selected.
