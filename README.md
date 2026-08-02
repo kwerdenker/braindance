@@ -5,6 +5,15 @@ what a depth sensor saw, and then lets you fly a camera through the recording
 afterwards — the shot is chosen at edit time rather than at capture time, because
 the footage is a cloud of points in space rather than a picture of them.
 
+![A camera arcing across a recorded room, shaded by depth: the near column is warm
+yellow, the far wall cool blue, and the two slide past each other as the camera
+moves.](media/flythrough.gif)
+
+That move was never shot. The sensor never left its mount; the arc is five camera
+keyframes laid over the recording afterwards and rendered through the editor's own
+export, and the parallax between the near column and the back of the room is the
+thing this repository exists to make possible.
+
 A native grabber pulls depth and registered colour from
 [libfreenect2](https://github.com/OpenKinect/libfreenect2), a Node server fans the
 frames out over WebSocket, and a Three.js viewer unprojects them on the GPU using
@@ -51,6 +60,15 @@ npm run replay            # replay a capture you already have, no sensor needed
 
 `npm start` lands on a menu, not directly on the viewer — from there you pick the
 live viewer, the take library, or the editor.
+
+![The menu: three cards reading RECORD, GALLERY and EDITOR, the last one saying
+nothing has been opened on this machine yet.](media/menu.png)
+
+**`--record` arms the *first* take rather than offering the recorder**: the flag is
+read once at boot, a take opens on the sensor's hello, and after you stop that one the
+flag has no further effect — arming again is the record button. So `npm run record`
+starts writing to `captures/` the moment the server is up, and `npm start` is the one
+to reach for if you want to decide when.
 
 **`npm run replay` needs a capture, and none ships with this repository.** Captures
 are large and binary, so `captures/` is gitignored. If you have a Kinect, record one
@@ -104,7 +122,12 @@ three that are not the viewer. The reasoning behind each one lives in the commen
 of the file that implements it.
 
 **The viewer** is the live cloud — orbit around what the sensor sees right now, with
-the render modes below.
+the render modes below. The recorder shares the surface, because arming a take is a
+thing you do while looking at what the sensor sees.
+
+![The live viewer in Blackwall: a room drawn as a crimson containment volume, a hot
+rim burning along the ceiling edge, with the record and shading controls down the left
+and "30 fps in" at the top.](media/viewer.png)
 
 **The recorder** writes takes. It arms, waits for the sensor's hello so the take
 carries the intrinsics it was shot with, and streams frames straight to disk in the
@@ -122,12 +145,24 @@ genuinely different takes under one name, and writing one over the other to sati
 a naming convention would destroy footage. Takes can be pulled down, and a copy can
 be reclaimed on the node after the local one is re-hashed.
 
+![The gallery: three take cards with depth thumbnails, each carrying its size, frame
+count, content hash and whether it is local, on the node, or both.](media/gallery.png)
+
 **The editor** is where a take becomes a shot. The camera is keyframed through the
 recorded volume on its own track, the look is keyframed on others, and a retime
 curve maps program time onto source time so the footage can be slowed, held or run
 backwards independently of the camera move. Seeking to a frame and playing to that
 frame produce the same image, which is a property `tools/timeline-check.mjs` exists
 to prove rather than assert.
+
+![The editor. The recorded cloud sits on the left; on the right the keyed camera path
+draws as a line of nodes with the program camera's frustum on it. Below, three lanes —
+retime, camera, exposure — carry their keys, and the program clock reads 00:03.000
+against a source clock of 00:02.350.](media/editor.png)
+
+The two clocks in that screenshot are the point of the section below: the playhead sits
+three seconds into the output and two-and-a-third seconds into the footage, because the
+retime lane is holding the take back while the camera keeps its own pace.
 
 **The render queue** takes finished edits and produces video. Jobs are claimed by a
 worker pinned to the renderer class it will actually draw with, frames are pushed to
@@ -179,6 +214,14 @@ pan, drag an edge to zoom, click anywhere to go there.
 | Ghost | luminance shell that glows along depth discontinuities |
 | Contour | topographic bands sweeping through depth |
 | Blackwall | crimson containment volume, cyan scan sweep, torn datastream bands |
+
+![The five shading modes on one frame of one take: RGB, Depth, Ghost and Contour in a
+grid, and Blackwall full width beneath them.](media/shading-modes.png)
+
+All five are the same frame from the same pose, and each is at its own brightness
+rather than a shared one — the room was shot unlit, so RGB and Contour are reading a
+colour signal the sensor barely produced, while Blackwall blends additively into bloom
+and rim and blows out long before the others have lifted.
 
 Blackwall is a pipeline preset rather than just a shader branch: selecting it switches
 the points to additive blending and drives the whole post chain (scan, rim, bloom,
@@ -333,33 +376,40 @@ Install the dependencies first:
 
 ```bash
 brew install libusb jpeg-turbo cmake                       # macOS
-sudo apt install libusb-1.0-0-dev libturbojpeg0-dev cmake  # Debian / Raspberry Pi OS
+sudo apt install libusb-1.0-0-dev libturbojpeg0-dev cmake \
+                 libglfw3-dev libgl1-mesa-dev              # Debian / Raspberry Pi OS
 ```
 
-Then, on macOS with Homebrew:
+The two GL packages are on the Debian line and not the macOS one because the `linux`
+preset builds depth on OpenGL, and libfreenect2 treats a missing GLFW as a reason to
+build without it rather than a reason to stop — so this line lacking them produced a
+CPU-only library and a build that reported success over it. The build now refuses that
+outcome, but the refusal is a worse way to find out than installing them here.
+
+Then build both:
 
 ```bash
-cmake -S third_party/libfreenect2 -B vendor/build \
-  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-  -DCMAKE_INSTALL_PREFIX="$PWD/vendor/prefix" \
-  -DENABLE_CXX11=ON -DENABLE_OPENCL=ON -DENABLE_OPENGL=OFF -DENABLE_CUDA=OFF \
-  -DTurboJPEG_INCLUDE_DIRS="$(brew --prefix jpeg-turbo)/include" \
-  -DTurboJPEG_LIBRARIES="$(brew --prefix jpeg-turbo)/lib/libturbojpeg.dylib"
-cmake --build vendor/build --target install -j8
-
-cmake -S native -B native/build && cmake --build native/build -j8
+npm run build:native
 ```
 
-`brew --prefix` rather than a literal `/opt/homebrew` because that path is
-Apple-Silicon-only — Intel Macs put it at `/usr/local`, and a hardcoded prefix is a
-build failure whose message does not mention the prefix.
+It picks a preset from the platform — `macos` builds depth on OpenCL, `linux`
+covers the Pi and builds it on OpenGL — resolves Homebrew's prefix rather than
+assuming one, and refuses with the `brew install` line you need when a dependency
+is missing rather than letting it surface as a cmake package it could not find.
+`--preset macos|linux` overrides the detection, `--clean` discards the vendored
+build, and `node tools/build-native.mjs --help` has the rest.
 
-On Linux and the Pi, drop both `TurboJPEG_*` flags entirely — pkg-config finds it —
-and swap `-DENABLE_OPENCL=ON -DENABLE_OPENGL=OFF` for `OFF`/`ON`. V3D has OpenGL
-and no OpenCL, and the grabber's `--pipeline` is guarded by whichever the library
-was actually compiled with rather than falling through silently. OpenGL is off on
-macOS deliberately: it only drives libfreenect2's own viewer, which we don't use,
-and it is the most deprecated path on the platform.
+Picking the wrong preset costs you a refusal rather than a silent slow path: the
+grabber's `--pipeline` is guarded by whichever backend the library was actually
+compiled with, so a build without the one you ask for says so instead of falling
+through to something else.
+
+The flags are in that script rather than here, one copy, next to the comments
+explaining why each is what it is — the OpenCL/OpenGL split, the CMake policy
+floor that v0.2.1 needs, and why the Homebrew prefix is looked up instead of
+written down. It closes by running the grabber it just built rather than checking
+that the file exists, since a stale binary and one linked against a prefix that
+has moved both exist perfectly well.
 
 `node tools/vendor-check.mjs` proves the source is upstream v0.2.1 plus exactly
 the declared edits, offline, before you trust a build of it.

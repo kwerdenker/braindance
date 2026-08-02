@@ -19,6 +19,7 @@
   },
   "scripts": {
     "start": "node server/index.js",
+    "build:native": "node tools/build-native.mjs",
     "replay": "node server/index.js --replay captures/sample.knct",
     "record": "node server/index.js --record",
     "syntax": "node tools/syntax-check.mjs",

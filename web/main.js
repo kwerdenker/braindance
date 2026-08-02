@@ -4726,8 +4726,6 @@ const ui = {
   recLookNote: document.getElementById('recLookNote'),
   recRange: document.getElementById('recRange'),
   extended: document.getElementById('extended'),
-  toLibrary: document.getElementById('toLibrary'),
-  toMenu: document.getElementById('toMenu'),
 };
 
 // The chips strip hides its scrollbar so the bar keeps its 51px and the lanes stay
@@ -5539,7 +5537,13 @@ addEventListener('keydown', (e) => {
 
   if (e.key === 'h' || e.key === 'H') {
     const p = document.getElementById('panel');
-    p.style.display = p.style.display === 'none' ? 'block' : 'none';
+    // Back to the empty string rather than to `block`, because the panel is a flex
+    // column now - a head that does not scroll over a body that does - and putting
+    // `block` back would leave the body unable to shrink, so pressing H twice would
+    // return a panel taller than the window with its foot cut off by the radius.
+    // The empty string restores whatever the stylesheet says, which is the only
+    // answer that stays right when the stylesheet changes.
+    p.style.display = p.style.display === 'none' ? '' : 'none';
     return;
   }
   if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) {
@@ -7704,8 +7708,6 @@ if (ui.recGo) {
     })).json();
     ui.recNote.textContent = body.error ?? `${body.label} at ${(body.sourceMs / 1000).toFixed(1)}s`;
   });
-  ui.toLibrary.addEventListener('click', () => { location.href = '/gallery'; });
-  ui.toMenu.addEventListener('click', () => { location.href = '/'; });
 }
 
 // Everything below the shooting controls, revealed rather than removed. The design
