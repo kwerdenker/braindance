@@ -138,6 +138,8 @@ node tools/editor-check.mjs --mutate import-saves-before-validating --no-render 
 node tools/editor-check.mjs --mutate panel-row-skips-parameter --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate nav-at-the-foot --no-render       # ... and must FAIL
 node tools/editor-check.mjs --mutate orbit-pumps-on-change --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate camera-motion-keeps-history --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate orbit-uses-scrub-draft --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate orbit-arms-into-playback --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate orbit-arms-stale-position --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate release-seeks-past-target --no-render # ... and must FAIL
@@ -260,8 +262,8 @@ than by duration. See `docs/proof-tools.md`.
 `change` on a damped control that moved — so a handler that renders on `change` has asked for
 the next render, and with the playhead parked there is no frame clock to pace it. That shipped:
 one pointer move on a paused orbit cost 34 rebuilds and the drag ran at 12fps while rendering
-190. Arm `draftWanted` and let the animation loop pump it; **nothing may start a redraw except
-the loop**. `editor-check` section 9 counts drafts against animation frames, with
+190. Arm a redraw request and let the animation loop pump it; **nothing may start a redraw except
+the loop**. `editor-check` section 9 counts navigation redraws against animation frames, with
 `--mutate orbit-pumps-on-change` as its control.
 
 

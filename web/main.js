@@ -4045,6 +4045,7 @@ const noop = () => {};
 // that it did, or it is asserting the claim rather than enforcing it.
 const counters = {
   renders: 0, stateAdvances: 0, resets: 0, drafts: 0, seeks: 0, requests: 0, framesFetched: 0,
+  navigationRedraws: 0, navigationHistoryClears: 0,
   // The lane rebuild is the expensive one - it resizes the drawing buffer - and the
   // reposition is the cheap one. Counted separately because "a drag no longer rebuilds"
   // is a claim about which of the two ran, and a check that timed the drag instead
@@ -4419,31 +4420,74 @@ function advanceSurfaceState(dtSec) {
 
 let lastProgramTime = 0;
 
+// Screen-space history belongs to the camera pose that produced it. Carrying it
+// across a different pose overlays the old view on the new one: Three's afterimage
+// pass takes the component-wise maximum of the current pixel and the damped old
+// pixel, so a pan raises the frame's luminance until the camera stops. The camera
+// used by the render is compared here rather than inferred from OrbitControls
+// events. That covers the program camera, auto-orbit and camera-view switches too,
+// and it leaves one policy at the seam every surface and export already shares.
+let renderedCamera = null;
+const renderedCameraPosition = new THREE.Vector3();
+const renderedCameraQuaternion = new THREE.Quaternion();
+const renderedProjection = new THREE.Matrix4();
+
+function renderedCameraChanged() {
+  const changed = renderedCamera !== null && (
+    renderedCamera !== viewCamera
+    || !renderedCameraPosition.equals(viewCamera.position)
+    || !renderedCameraQuaternion.equals(viewCamera.quaternion)
+    || !renderedProjection.equals(viewCamera.projectionMatrix)
+  );
+  renderedCamera = viewCamera;
+  renderedCameraPosition.copy(viewCamera.position);
+  renderedCameraQuaternion.copy(viewCamera.quaternion);
+  renderedProjection.copy(viewCamera.projectionMatrix);
+  return changed;
+}
+
+function clearFeedback(targets, refusal) {
+  if (!targets.every((target) => target?.isWebGLRenderTarget)) throw new Error(refusal);
+  const color = new THREE.Color();
+  renderer.getClearColor(color);
+  const alpha = renderer.getClearAlpha();
+  renderer.setClearColor(0x000000, 0);
+  try {
+    for (const target of targets) {
+      renderer.setRenderTarget(target);
+      renderer.clear(true, true, true);
+    }
+  } finally {
+    renderer.setRenderTarget(null);
+    renderer.setClearColor(color, alpha);
+  }
+}
+
+function clearAfterimage() {
+  // Three exposes no reset on the afterimage pass, so its two buffers are reached
+  // for directly. They are the whole of its state at 0.185.1, and the check makes an
+  // upstream rename loud instead of clearing the canvas while stale history survives.
+  clearFeedback(
+    [afterimage._textureComp, afterimage._textureOld],
+    'afterimage internals moved: camera history can no longer be cleared safely',
+  );
+}
+
 // Clears both feedback paths. Neither can be walked backwards, so an accurate
 // seek clears them and pre-rolls forward from a known state - and all zeroes is
 // that state, since a zero last-depth reads as invalid and the first frame after
 // it comes through as births rather than as swaps.
 function resetAccumulators() {
   counters.resets++;
-  const color = new THREE.Color();
-  renderer.getClearColor(color);
-  const alpha = renderer.getClearAlpha();
-  renderer.setClearColor(0x000000, 0);
   // Three exposes no reset on the afterimage pass, so its two buffers are reached
   // for directly. They are the whole of its state at 0.185.1, and the check is
   // there because a rename on upgrade would fail silently: setRenderTarget of
   // undefined binds the canvas instead, the clear lands nowhere, and the seek
   // would quietly carry the previous image's trails into its pre-roll.
-  const feedback = [statePrev, stateNext, afterimage._textureComp, afterimage._textureOld];
-  if (!feedback.every((target) => target?.isWebGLRenderTarget)) {
-    throw new Error('afterimage internals moved: the accumulator reset is no longer complete');
-  }
-  for (const target of feedback) {
-    renderer.setRenderTarget(target);
-    renderer.clear(true, true, true);
-  }
-  renderer.setRenderTarget(null);
-  renderer.setClearColor(color, alpha);
+  clearFeedback(
+    [statePrev, stateNext, afterimage._textureComp, afterimage._textureOld],
+    'afterimage internals moved: the accumulator reset is no longer complete',
+  );
   lastProgramTime = 0;
 }
 
@@ -4491,6 +4535,16 @@ function renderProgramFrame(t) {
     // operation. A clip with no keys writes nothing and the registry's own values
     // stand, which is a locked-off camera and a static look.
     evaluateTracks(t);
+
+    // Temporal source history remains valid while the camera is still. A changed
+    // camera is a different projection, so only the screen-space feedback is
+    // discarded; the surface-state texture still describes the same room and must
+    // survive the navigation. This happens after track evaluation because that is
+    // where the program camera moves.
+    if (renderedCameraChanged()) {
+      clearAfterimage();
+      counters.navigationHistoryClears++;
+    }
 
     const dt = Math.max(0, t - lastProgramTime);
     lastProgramTime = t;
@@ -5293,6 +5347,38 @@ class TimelineTransport {
     counters.drafts++;
     this.frame = target;
     this.drafted = true;
+    this.paint();
+    return this.lastCostMs;
+  }
+
+  /**
+   * Rebuilds the parked viewport after navigation without borrowing the scrub
+   * draft's look. With trails active, the accurate image requires a pre-roll at
+   * the new camera pose because screen-space history cannot be reprojected. With
+   * trails off, the already-bound source pair and surface state are sufficient,
+   * so the same frame can be drawn directly unless another draft left incomplete
+   * state behind it.
+   */
+  redraw(programSec) {
+    return this.exclusive(() => this.redrawNow(programSec));
+  }
+
+  async redrawNow(programSec) {
+    counters.navigationRedraws++;
+    const target = this.frameAt(programSec);
+    const t = target / this.outputFps;
+    const source = this.sourceFrameAt(t);
+    if (this.drafted || valueAtProgram('trails', t) > 0
+        || target !== this.frame || this.source.applied !== source + 1) {
+      return this.seekNow(t);
+    }
+
+    const began = performance.now();
+    advanceNavigation(t);
+    renderProgramFrame(t);
+    this.lastCostMs = performance.now() - began;
+    this.frame = target;
+    this.drafted = false;
     this.paint();
     return this.lastCostMs;
   }
@@ -7299,10 +7385,11 @@ ui.fps.addEventListener('change', () => {
   history.commit();
 });
 
-// Orbiting while the playhead is parked has the same shape as scrubbing: a drag
-// wants a cheap frame per pointer move and a true one on release. It differs from
-// scrubbing in the one way that matters, and the difference is why this arms rather
-// than pumps: **the render answers this event**. `renderProgramFrame` runs
+// Orbiting while the playhead is parked differs from scrubbing in two ways that
+// matter. The first is temporal: a scrub draft deliberately zeros fade, wake and
+// trails, while an orbit must keep the grade stable as the camera moves. The second
+// is scheduling, and it is why this arms rather than pumps: **the render answers this
+// event**. `renderProgramFrame` runs
 // `advanceNavigation`, `advanceNavigation` calls `controls.update()`, and a damped
 // control that moved fires `change` - so a handler that rendered here would be a
 // render asking for the next render, with the damping settle running at rebuild rate
@@ -7414,15 +7501,18 @@ function pumpParkedDraft() {
   // never paint over one that is already queued.
   if (orbitRedrawWanted && !draftBusy) {
     orbitRedrawWanted = false;
-    draftWanted = timeline.programSec;
-    pumpDraft();
+    draftBusy = true;
+    timeline.redraw(timeline.programSec)
+      .catch(showTimelineError)
+      .finally(() => { draftBusy = false; });
     return;
   }
   // Nothing armed and nothing in flight, so the controls have stopped moving.
   if (orbitSettling && !draftBusy) {
     orbitSettling = false;
-    // Releasing is what asks for the true image, the same rule the scrubber follows
-    // and for the same reason: a draft is not the picture playback would produce.
+    // The redraws above are already accurate. This last seek closes the race between
+    // the final redraw and the last damping step and makes release an explicit
+    // accuracy boundary, the same rule the scrubber follows.
     timeline.seek(timeline.programSec).catch(showTimelineError);
   }
 }
@@ -10382,6 +10472,8 @@ globalThis.__kinect = {
      * in here ties a picture to a frame number instead.
      */
     injectDepth(depth) { bindDepth(depth); },
+    /** Clears only screen-space history, for a proof arm that keeps surface memory. */
+    clearAfterimage() { clearAfterimage(); },
     reset() {
       pinnedPairs?.rewind();
       resetAccumulators();
