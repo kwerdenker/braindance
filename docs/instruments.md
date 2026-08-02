@@ -189,6 +189,17 @@ measures, and leaving the column scrolled put section 8's crop sliders under dif
 coordinates — the crop rows went from 0.005% apart to 0.446% and read as a rendering regression
 the change had caused. It restores the scroll position now.
 
+**And the mutation's own anchor moved when the panel started generating its grade**, which is
+the ordinary half of the story and worth recording beside the two flaws because it is the half
+that recurs. The second edit used to re-insert the nav after the Viewer lookgroup's closing
+tag, and there is no static lookgroup left to close — the panel's whole grade is built from the
+registry at boot now. It anchors on the end of `#panelBody` instead, which is the position that
+survives that change and is still the foot the bug had: the generated groups are placed against
+`#extendedRow` and walk down from there, so a nav written in last stays under every slider. The
+mutation was re-run rather than reasoned about and reddens both geometric rows, reporting `in
+the scrolling body: true` — which is what says it failed for its own reason rather than a
+neighbouring one.
+
 ### A probe that changes the state it samples proves whatever it did to it
 
 This is a distinct failure from the two above - not a probe in a dead zone and not a vacuous

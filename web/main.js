@@ -2046,9 +2046,19 @@ const params = {
     // belongs here instead, because a name that exists is only half the question and
     // every caller of the bulk door has the same problem. `normalise` is exactly "what
     // `set` would store, without storing it", so this is the write's own rule asked
-    // early rather than a second opinion that could drift from it - and the second pass
-    // through it inside `set` is idempotent, which is the price of keeping one write
-    // path rather than a bypass that skips the checks by construction.
+    // early rather than a second opinion that could drift from it.
+    //
+    // The value is normalised twice on this path, once here and once inside `set`, and
+    // that is the price of keeping one write path rather than a bypass that skips the
+    // checks by construction. **Measured rather than assumed to be free**, because the
+    // repo has already been bitten by a last-bit difference in exactly this arithmetic:
+    // every scalar and step parameter swept at 41 points across its range, plus its
+    // bounds, its default, two off-grid values and two out-of-range ones - 2408 probes,
+    // and `normalise(normalise(x))` is `Object.is`-identical to `normalise(x)` on all of
+    // them. `contourWidth` was checked at full precision as well, since it is the one
+    // whose band edges are subtracted in double here to land on the float the shader
+    // literal had: 0.08 comes back 0.080000000000000001665 both times, and the derived
+    // edge 0.41999999999999998446 both times.
     const checked = Object.entries(next).map(([name, value]) => [name, this.normalise(name, value)]);
     for (const [name, value] of checked) this.set(name, value);
     return this;
@@ -2992,11 +3002,17 @@ function restoreProject(project) {
 
   // The same refusal for the parameter values, and for the same reason - but it has
   // to happen *here*, in the build-whole phase, rather than where they are applied.
-  // `params.apply` throws on the first name the registry does not know, and by then
-  // the output size and the mode have already been written and the tracks have not,
-  // so the editor is left in the half-applied state the comment above promises it
-  // never is. A project carrying a parameter this build has since removed is exactly
-  // the case: loud and named is right, mid-write is not.
+  //
+  // **What this buys has changed and it is still load-bearing**, so the reason is
+  // restated rather than left to read as the old one. It used to be the only thing
+  // standing between a bad name and a half-applied registry, because `params.apply`
+  // wrote as it walked and threw on the first name it did not know. `apply` checks the
+  // whole object before writing any of it now, so that particular hole is closed at
+  // the door instead. What is left is the wider window: this line runs before
+  // `outputSize` is written and before the tracks are rebuilt, and `apply` cannot,
+  // because by the time it is reached the output size has already moved. A project
+  // carrying a parameter this build has since removed still has to be refused with
+  // nothing touched at all, and that is earlier than the registry can see.
   for (const name of Object.keys(project.look.params)) params.spec(name);
 
   const restoredCamera = project.composition.camera.map((k) => {
