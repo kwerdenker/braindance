@@ -54,6 +54,8 @@
 //   node tools/editor-check.mjs --mutate ease-handles-on-flat  --no-render  # must FAIL
 //   node tools/editor-check.mjs --mutate ease-preset-ignored   --no-render  # must FAIL
 //   node tools/editor-check.mjs --mutate scroller-cannot-shrink --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate camera-motion-keeps-history --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate orbit-uses-scrub-draft --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate orbit-arms-stale-position --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate release-seeks-past-target --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate pin-keeps-orbit-armed  --no-render # must FAIL
@@ -258,19 +260,43 @@ const MUTATIONS = {
     ],
   },
 
-  // The control for section 9, and it is one line because the bug was one line: a
-  // finishing draft starts whatever was armed while it ran. For a scrub that is
-  // harmless, since the pointer cannot outrun the display; for an orbit it is the
-  // whole failure, because the draft's own render arms the next position through
-  // `advanceNavigation`. The mutated build renders correct images at forty-five
-  // times the rate anything can show them, which is why the row it must redden is
-  // the count and not the picture.
+  // The control for section 9: a finishing navigation redraw immediately starts
+  // whatever the redraw armed while it ran. The accurate image is still produced,
+  // but OrbitControls damping advances at rebuild rate instead of display rate. The
+  // row it must redden is therefore the page-side count, not the picture.
   'orbit-pumps-on-change': {
     file: 'web/main.js',
     edits: [[
-      '    draftBusy = false;\n  }\n}',
-      '    draftBusy = false;\n    if (orbitRedrawWanted) {\n      orbitRedrawWanted = false;\n'
-      + '      draftWanted = timeline.programSec;\n      pumpDraft();\n    }\n  }\n}',
+      '      .finally(() => { draftBusy = false; });',
+      '      .finally(() => {\n        draftBusy = false;\n'
+      + '        if (orbitRedrawWanted) pumpParkedDraft();\n      });',
+    ]],
+  },
+
+  // The parked orbit goes back through the scrub preview. The pointer still moves
+  // the camera and the release still performs an accurate seek, so a release-only
+  // check passes. The picture sampled while the pointer is held must fail because
+  // the draft deliberately zeros fade, wake and trails.
+  'orbit-uses-scrub-draft': {
+    file: 'web/main.js',
+    edits: [[
+      '    draftBusy = true;\n'
+      + '    timeline.redraw(timeline.programSec)\n'
+      + '      .catch(showTimelineError)\n'
+      + '      .finally(() => { draftBusy = false; });',
+      '    draftWanted = timeline.programSec;\n    pumpDraft();',
+    ]],
+  },
+
+  // The renderer keeps the afterimage produced by the previous camera pose. The
+  // next frame is otherwise valid, which makes this the exact old failure: Three's
+  // component-wise maximum overlays the old projection and raises luminance while
+  // navigation is moving.
+  'camera-motion-keeps-history': {
+    file: 'web/main.js',
+    edits: [[
+      '    if (renderedCameraChanged()) {',
+      '    if (false && renderedCameraChanged()) {',
     ]],
   },
 
@@ -2801,12 +2827,14 @@ try {
 
   // ================ 9. orbiting the parked viewport costs frames, not settles
 
-  console.log('\n[9] orbiting while paused redraws once per frame, not once per rebuild');
+  console.log('\n[9] a parked orbit keeps its temporal look and redraws once per frame');
 
   // The control the editor gives you for looking at the cloud is the drag itself, and
-  // it is the one control in this file whose failure is a *rate* rather than a wrong
-  // answer. Every image it produced was correct; there were just forty-five of them
-  // per pointer move, because `renderProgramFrame` runs `advanceNavigation`, which
+  // it is the one control in this file whose scheduling failure is a *rate* rather
+  // than a wrong answer. The old temporal path also produced a wrong picture while
+  // the pointer was held; the picture rows below keep those two claims separate.
+  // Before the scheduling fix one pointer move could cause dozens of redraws,
+  // because `renderProgramFrame` runs `advanceNavigation`, which
   // calls `controls.update()`, which fires `change` on a damped control that moved -
   // so the render asked for the next render and the damping settle ran at whatever
   // rate the machine could rebuild a frame. Measured before the fix: one pointer move
@@ -2920,7 +2948,7 @@ try {
 
     const poseBefore = await poseOf();
     const before = await page.evaluate(
-      '({ drafts: __kinect.timeline.counters.drafts, frames: globalThis.__orbitFrames })');
+      '({ redraws: __kinect.timeline.counters.navigationRedraws, frames: globalThis.__orbitFrames })');
     await page.mouse.move(stage.x, stage.y);
     await page.mouse.down();
     const MOVES = 24;
@@ -2931,35 +2959,91 @@ try {
     await page.mouse.up();
     await settle();
     const after = await page.evaluate(
-      '({ drafts: __kinect.timeline.counters.drafts, frames: globalThis.__orbitFrames })');
+      '({ redraws: __kinect.timeline.counters.navigationRedraws, frames: globalThis.__orbitFrames })');
     const poseAfter = await poseOf();
 
-    const drafts = after.drafts - before.drafts;
+    const redraws = after.redraws - before.redraws;
     const frames = after.frames - before.frames;
     const travelled = Math.hypot(...poseAfter.map((v, i) => v - poseBefore[i]));
     note(`${MOVES} pointer moves across the stage`,
-      `${drafts} drafts over ${frames} animation frames, camera moved ${travelled.toFixed(3)} m`);
+      `${redraws} navigation redraws over ${frames} animation frames, camera moved ${travelled.toFixed(3)} m`);
 
     // The control for the row below, and it has to come first: a drag that rendered
     // nothing would satisfy any ceiling at all, and so would one that never moved
     // the camera.
-    check(drafts > 0 && travelled > 0.05, 'the drag renders, and it moves the camera',
-      `${drafts} drafts, ${travelled.toFixed(3)} m`);
+    check(redraws > 0 && travelled > 0.05, 'the drag renders, and it moves the camera',
+      `${redraws} navigation redraws, ${travelled.toFixed(3)} m`);
     // The invariant rather than a threshold: the animation loop is the only thing
-    // that starts a draft while the playhead is parked, so it cannot start more than
+    // that starts a redraw while the playhead is parked, so it cannot start more than
     // one per frame. The slack is one frame, for the turn this counter was installed
     // on relative to the loop's.
-    check(drafts <= frames + 1, 'and never more than one redraw per frame the display was given',
-      `${drafts} drafts against ${frames} frames`);
-    // Forty tile means across the stage rather than one lit count over it, and the
-    // reason is the same one `docs/measurement.md` records for the bloom rebase: a
-    // scalar over the whole frame can come out equal for two genuinely different
-    // pictures, because a cloud that has moved a second along mostly *redistributes*
-    // its brightness rather than changing how much of it there is. A spatial
-    // signature cannot be fooled that way, and the row below needs it to not be.
+    check(redraws <= frames + 1, 'and never more than one redraw per frame the display was given',
+      `${redraws} navigation redraws against ${frames} frames`);
+    // The largest part of the renderer that nothing is drawn over, established by
+    // what is actually on top rather than by the stage's bounds. The panel is fixed
+    // over the stage and its cost readout changes between a draft and an accurate
+    // seek, so a stage screenshot can distinguish the UI while the renderer agrees.
+    // `elementFromPoint` closes that false-positive path, and the two rows below make
+    // the conditions of every following picture comparison assertions of the tool.
+    const picture = await page.evaluate(`(() => {
+      const canvas = __kinect.renderer.domElement;
+      const r = canvas.getBoundingClientRect();
+      const clean = (rect) => {
+        let covered = 0;
+        const over = new Set();
+        for (let i = 0; i <= 4; i++) {
+          for (let j = 0; j <= 4; j++) {
+            const at = document.elementFromPoint(
+              rect.x + (rect.width * i) / 4, rect.y + (rect.height * j) / 4,
+            );
+            if (at !== canvas) {
+              covered++;
+              over.add(at ? (at.id ? '#' + at.id : at.tagName.toLowerCase()) : 'nothing');
+            }
+          }
+        }
+        return { covered, over: [...over].join(' ') };
+      };
+      let rect = {
+        x: Math.ceil(r.x) + 1, y: Math.ceil(r.y) + 1,
+        width: Math.floor(r.width) - 2, height: Math.floor(r.height) - 2,
+      };
+      let hits = clean(rect);
+      for (let step = 0;
+        step < 40 && hits.covered > 0 && rect.width > 64 && rect.height > 64;
+        step++) {
+        const dx = Math.max(2, Math.round(rect.width * 0.05));
+        const dy = Math.max(2, Math.round(rect.height * 0.05));
+        rect = {
+          x: rect.x + dx, y: rect.y + dy,
+          width: rect.width - 2 * dx, height: rect.height - 2 * dy,
+        };
+        hits = clean(rect);
+      }
+      return {
+        ...rect, covered: hits.covered, over: hits.over,
+        chromeHidden: document.getElementById('chrome')?.hidden === true,
+      };
+    })()`);
+    check(picture.chromeHidden,
+      'the chrome overlay is off, so temporal signatures contain the renderer rather than annotations',
+      '#chrome hidden');
+    check(picture.covered === 0 && picture.width > 200 && picture.height > 200,
+      'and nothing is drawn over the temporal signature region, hit-tested rather than assumed',
+      `${picture.width}x${picture.height} at ${picture.x},${picture.y}, `
+      + `${picture.covered} of 25 probes covered${picture.over ? ` by ${picture.over}` : ''}`);
+
+    // Forty tile means across that renderer-only region rather than one lit count
+    // over it, and the reason is the same one `docs/measurement.md` records for the
+    // bloom rebase: a scalar over the whole frame can come out equal for two genuinely
+    // different pictures, because a cloud that has moved a second along mostly
+    // *redistributes* its brightness rather than changing how much of it there is. A
+    // spatial signature cannot be fooled that way, and the row below needs it to not
+    // be.
     const signature = async () => {
-      const box = await page.locator('#stage').boundingBox();
-      const shot = await page.screenshot({ clip: box });
+      const shot = await page.screenshot({
+        clip: { x: picture.x, y: picture.y, width: picture.width, height: picture.height },
+      });
       return page.evaluate(`(async (dataUrl) => {
         const img = new Image();
         img.src = dataUrl;
@@ -2987,6 +3071,22 @@ try {
     };
     /** The worst of the forty tiles, in 0-255 luma. */
     const apart = (a, b) => Math.max(...a.map((v, k) => Math.abs(v - b[k])));
+
+    // The falsification control for the region itself. The panel's composited pixels
+    // change conspicuously while the renderer does nothing. A screenshot that went
+    // back to the stage's bounds would redden this row even if it kept asserting a
+    // different hit-tested rectangle, which is the exact split that let the panel
+    // contaminate the first version of these signatures.
+    const panelControlBefore = await signature();
+    await page.evaluate("document.getElementById('panel').style.background = '#fff'");
+    await page.evaluate('new Promise(requestAnimationFrame)');
+    const panelControlAfter = await signature();
+    await page.evaluate("document.getElementById('panel').style.background = ''");
+    await page.evaluate('new Promise(requestAnimationFrame)');
+    const panelApart = apart(panelControlBefore, panelControlAfter);
+    check(panelApart < 0.01,
+      'control: changing only the panel changes no temporal signature pixels',
+      `worst tile ${panelApart.toFixed(2)}/255`);
 
     // The picture the release actually left on the stage, read before anything else
     // moves the transport. The rows below ask whether it is the picture an accurate
@@ -3020,11 +3120,126 @@ try {
     // drafts row's does: a signature that could not tell two moments apart would make
     // the comparison below pass on every build there is, including one that released
     // to the wrong second.
-    check(canSee > 2, 'the stage signature can tell this moment from one a second away',
+    check(canSee > 2, 'the renderer signature can tell this moment from one a second away',
       `worst tile ${canSee.toFixed(2)}/255 apart`);
     check(landed < canSee / 4,
       'and the release lands the picture an accurate seek to that moment gives, not merely an accurate seek',
       `worst tile ${landed.toFixed(2)}/255 against the ${canSee.toFixed(2)} a wrong second would cost`);
+
+    // The renderer-level half of the bug, separated from the editor transport. A
+    // camera change is rendered once through the live seam with trails enabled, then
+    // the same pose and source position are rendered after an explicit afterimage
+    // clear. Surface memory and the trails parameter stay untouched in both arms. The
+    // first enabled frame has no legitimate old screen pixel to contribute: after the
+    // camera-history clear it is `max(current, 0)`, so the two pictures must agree.
+    // `camera-motion-keeps-history` removes only that clear. It leaves the camera move,
+    // render and look intact and must redden the picture row below.
+    const historyProbe = await page.evaluate(`(() => {
+      const k = __kinect;
+      const c = k.freeCamera;
+      const t = k.controls.target;
+      return {
+        look: k.params.values(['fade', 'wake', 'trails', 'bloom']),
+        view: { p: c.position.toArray(), q: c.quaternion.toArray(), t: [t.x, t.y, t.z] },
+        clears: k.timeline.counters.navigationHistoryClears,
+      };
+    })()`);
+    await page.evaluate(`__kinect.params.apply({ fade: 0, wake: 0, trails: 0.75, bloom: 0 })`);
+    await settle();
+    await page.evaluate('__kinect.timeline.transport().seek(4.0)');
+    await settle();
+    const cameraBeforeHistoryMove = await poseOf();
+    await page.evaluate(`(() => {
+      const k = __kinect;
+      const c = k.freeCamera;
+      const t = k.controls.target;
+      const offset = c.position.clone().sub(t).applyAxisAngle(c.up, 0.24);
+      c.position.copy(t).add(offset);
+      c.lookAt(t);
+      k.controls.update(0);
+      k.drive.stepTo(4.0);
+    })()`);
+    const movedWithTrails = await signature();
+    const cameraAfterHistoryMove = await poseOf();
+    const historyClears = await page.evaluate(
+      `__kinect.timeline.counters.navigationHistoryClears - ${historyProbe.clears}`);
+    await page.evaluate(`(() => {
+      __kinect.drive.clearAfterimage();
+      __kinect.drive.stepTo(4.0);
+    })()`);
+    const movedWithoutHistory = await signature();
+    const historyTravel = Math.hypot(...cameraAfterHistoryMove.map(
+      (v, i) => v - cameraBeforeHistoryMove[i]));
+    const historyApart = apart(movedWithTrails, movedWithoutHistory);
+    note('the first frame at a new camera pose against the same frame with no old screen history',
+      `worst tile ${historyApart.toFixed(2)}/255 after ${historyTravel.toFixed(3)} m and ${historyClears} history clears`);
+    check(historyTravel > 0.05 && historyClears > 0,
+      'the camera-history probe moves the camera and exercises the clear',
+      `${historyTravel.toFixed(3)} m, ${historyClears} clears`);
+    check(historyApart < 0.5,
+      'and camera motion carries no pixels from the previous view into the new one',
+      `worst tile ${historyApart.toFixed(2)}/255`);
+    await page.evaluate(`(() => {
+      const k = __kinect;
+      const v = ${JSON.stringify(historyProbe.view)};
+      const c = k.freeCamera;
+      c.position.fromArray(v.p);
+      c.quaternion.fromArray(v.q);
+      k.controls.target.set(v.t[0], v.t[1], v.t[2]);
+      k.controls.update(0);
+      k.params.apply(${JSON.stringify(historyProbe.look)});
+    })()`);
+    await settle();
+    await page.evaluate('__kinect.timeline.transport().seek(4.0)');
+    await settle();
+
+    // Now sample the actual editor gesture before release. Damping is disabled for
+    // this one move so the pose is stationary while the two pictures are read; the
+    // rate row above exercises the shipped damped path. The first picture is what the
+    // orbit redraw left while the pointer is still held. The second is an explicit
+    // accurate seek at that unchanged pose. A deliberately requested scrub draft is
+    // the falsification control: it must differ, or this look cannot tell whether the
+    // orbit reused the degraded preview.
+    const orbitLook = await page.evaluate(`(() => ({
+      look: __kinect.params.values(['fade', 'wake', 'trails']),
+      damping: __kinect.controls.enableDamping,
+    }))()`);
+    await page.evaluate('__kinect.params.apply({ fade: 400, wake: 900, trails: 0.5 })');
+    await settle();
+    await page.evaluate('__kinect.timeline.transport().seek(4.0)');
+    await settle();
+    await page.evaluate('__kinect.controls.enableDamping = false');
+    await page.mouse.move(stage.x, stage.y);
+    await page.mouse.down();
+    await page.mouse.move(stage.x + 95, stage.y + 45);
+    await page.evaluate('new Promise(requestAnimationFrame)');
+    await settle();
+    const heldSig = await signature();
+    const heldState = await read();
+    await page.evaluate('__kinect.timeline.transport().seek(4.0)');
+    await settle();
+    const heldAccurateSig = await signature();
+    await page.evaluate('__kinect.timeline.transport().draft(4.0)');
+    await settle();
+    const scrubDraftSig = await signature();
+    await page.evaluate('__kinect.timeline.transport().seek(4.0)');
+    await settle();
+    const heldApart = apart(heldSig, heldAccurateSig);
+    const draftApart = apart(scrubDraftSig, heldAccurateSig);
+    note('the picture while the orbit is held against an accurate seek at its pose',
+      `worst tile ${heldApart.toFixed(2)}/255; a scrub draft differs by ${draftApart.toFixed(2)}`);
+    check(draftApart > 1,
+      'the temporal look can distinguish the scrub draft from the accurate image',
+      `worst tile ${draftApart.toFixed(2)}/255`);
+    check(heldState.drafted === false && heldApart < draftApart / 4,
+      'and the held orbit keeps the accurate temporal look instead of substituting the scrub draft',
+      `drafted ${heldState.drafted}; ${heldApart.toFixed(2)}/255 against ${draftApart.toFixed(2)}`);
+    await page.mouse.up();
+    await page.evaluate(`(() => {
+      __kinect.controls.enableDamping = ${orbitLook.damping};
+      __kinect.params.apply(${JSON.stringify(orbitLook.look)});
+    })()`);
+    await settle();
 
     // An armed position means something only while something will consume it, and
     // hitting play mid-drag is a state where nothing will - the loop's first act is

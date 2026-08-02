@@ -142,8 +142,11 @@ const MUTATIONS = {
   ]],
   // The accumulators are not cleared before a pre-roll.
   'no-reset': [[
-    'const feedback = [statePrev, stateNext, afterimage._textureComp, afterimage._textureOld];',
-    'const feedback = [];',
+    '  clearFeedback(\n'
+    + '    [statePrev, stateNext, afterimage._textureComp, afterimage._textureOld],\n'
+    + "    'afterimage internals moved: the accumulator reset is no longer complete',\n"
+    + '  );',
+    '  /* mutation: accumulator reset skipped */',
   ]],
   // The surface memory's age ceiling drops back under the longest life the
   // sliders can ask for, so a ray that stops swapping sheds forever. The boot
