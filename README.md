@@ -186,7 +186,17 @@ Three consequences worth knowing before changing anything near it:
   curve to stay monotonic — so a hold or a reverse breaks it outright.
 - **The virtual camera keeps its own pace when the footage slows**, which is the
   creative point rather than a side effect: the whole idea is re-photographing a take,
-  and a photographer's movement is independent of what they are filming.
+  and a photographer's movement is independent of what they are filming. **This is about
+  the retime *curve*, not about the speed control**, and the difference is worth stating
+  because a reviewer read it as forbidding what the speed control does. A ramp or a hold
+  changes how fast the footage runs and leaves the program length alone, so a camera key
+  at program 10s stays at program 10s and the move keeps its duration while the take
+  slows underneath it - that is the sentence above, and it is what keying in program time
+  buys. The speed control is a different operation: it changes the clip's output length,
+  so every program time in the document has to be reparameterised or the content simply
+  falls off the end. Every track goes across together there, camera included, which is
+  why `reparameteriseProgramTime` walks the camera track and why `editor-check` asserts
+  that it does.
 - **`fade` and `wake` stay in source time anyway**, because they drive surface memory,
   which advances per source frame. Converting them would mean dividing by the local
   retime slope, which is zero at a hold, so every trail would snap off exactly where a
@@ -199,6 +209,13 @@ is visibly variable motion through real time.
 ## Viewer controls
 
 Drag to orbit, scroll to zoom, right-drag to pan, `H` hides the panel.
+
+The timeline's ruler shows a *window* of the clip rather than all of it, because a
+fifteen-minute take drawn across one screen puts a keyframe against gradations forty
+times coarser than the thing being placed. Scroll over the strip to zoom about the
+pointer, `+`/`-` to zoom about the playhead, `,`/`.` to pan it, `F` to fit the whole clip
+and `Z` to frame the trimmed range. The overview underneath is always the whole clip:
+drag its box to pan, drag an edge to zoom, click anywhere to go there.
 
 Five readings of the take, split on the panel into what colours a point and what is then
 made of it. Each is a weight from 0 to 1 rather than a choice, so they mix.

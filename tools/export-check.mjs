@@ -139,7 +139,9 @@ const STAGE = { width: 640, height: 400 };
 // mentions the timeline except here - hung in `setStage` waiting for a buffer height
 // the fit had made 44px shorter. `docs/instruments.md` records the same shape when
 // the stage was first letterboxed and four tools found out one at a time. Measuring
-// closes it: the next change to the strip is absorbed instead of discovered.
+// closes it: the next change to the strip is absorbed instead of discovered. It is
+// deliberately not asserted against `--timeline-h` either - a tool that had to be
+// edited whenever the strip grew is the copy that went stale here once already.
 const TIMELINE_H_GUESS = 148;
 
 // The document's own pair. Same 1.6 aspect, an exact 2x so the downsample is a
@@ -919,17 +921,21 @@ async function openPage(viewport, source = mutatedBody, html = null) {
   await page.waitForFunction(() => !!globalThis.__kinect);
   await page.waitForFunction(() => !!globalThis.__kinect.timeline.transport(), null, { timeout: 20000 });
   await page.evaluate(INSTALL);
-  // **Every page frames at the stage it was opened with.** The editor letterboxes
-  // itself to the export aspect now, so a viewport alone no longer decides the
-  // buffer: `STAGE` is 640x400 and 1.6, the menu's default is 16:9, and without this
-  // the fit made the buffer 640x360 while the export beside it wrote 640x400. Nine of
-  // nine frames then differed, and the row that caught it is the one comparing the
-  // editor's own image against what crossed the wire - which is exactly the row that
-  // should catch two sizes wearing one name.
+  // **Every page frames at the stage it was opened with**, and it gets there by
+  // measuring the strip rather than by believing `TIMELINE_H_GUESS`. The editor
+  // letterboxes itself to the export aspect, so a viewport alone no longer decides the
+  // buffer: `STAGE` is 640x400 and 1.6, the menu's default is 16:9, and without a
+  // correction the fit made the buffer 640x360 while the export beside it wrote
+  // 640x400. Nine of nine frames then differed, and the row that catches it is the one
+  // comparing the editor's own image against what crossed the wire.
   //
-  // Optional because the cross-build arms load an older `main.js` deliberately, and
-  // that build has no letterbox to tell.
-  await page.evaluate(`globalThis.__kinect.setTargetSize?.(${JSON.stringify(`${viewport.width}x${viewport.height}`)})`);
+  // **It used to only set the target size, and the guess was the rest of the answer.**
+  // That made the constant a second copy of `--timeline-h`, and the copy went stale
+  // the first time the strip grew - a row of the overview took the strip from 148 to
+  // 170, the fit came out 22px short, and the same nine-of-nine mismatch came back on
+  // a build with nothing wrong with it. `keyframe-check` has measured-then-corrected
+  // since it was written, for exactly this reason; this is that, here.
+  await setStage(page, viewport);
   const gpu = await page.evaluate(() => {
     const gl = globalThis.__kinect.renderer.getContext();
     const dbg = gl.getExtension('WEBGL_debug_renderer_info');
@@ -979,6 +985,16 @@ async function onFreshPage(what, work, attempts = 3) {
       return { ok: true, value };
     } catch (err) {
       const message = String(err.message ?? err);
+      // `promise was garbage collected` is the same failure wearing a different message:
+      // a pending `page.evaluate` whose execution context went away. Seen twice in about
+      // ten runs of this file, both times in section 4 and both times passing on the very
+      // next run with nothing changed - which is the shape that teaches people to re-run a
+      // gating check until it goes green. Retried on the same terms as its sibling, with
+      // the count printed, so a genuine hang still fails rather than being absorbed.
+      //
+      // Both sides of this merge found it independently and wrote the same fix; the
+      // pattern here is the broader of the two, since the message arrives with and
+      // without its `Resulting` prefix.
       if (!/Execution context was destroyed|Target (page|closed)|crashed|promise was garbage collected/i.test(message)) {
         return { ok: false, error: message };
       }

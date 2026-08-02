@@ -33,7 +33,7 @@
        one thing allowed to grow it, and they do it through a second variable the
        lane builder writes - a lane appearing is a structural change and should
        move the stage, where a three-digit frame count should not. */
-    --timeline-h: 148px;
+    --timeline-h: 170px;
     --tlanes-h: 0px;
   }
   * { box-sizing: border-box; }
@@ -286,11 +286,35 @@
   .tlanes { flex: 1; min-height: 0; display: grid; grid-template-columns: 96px minmax(0, 1fr); }
   .tcol { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .tcol.rail { border-right: 1px solid var(--line); }
-  .tcol.beds { position: relative; }
+  /* Clipped, which it did not need to be while the ruler always showed the whole clip
+     and nothing could be positioned outside it. Under a window the cuts and the
+     playhead are routinely off-screen - `left` goes negative or past 100% - and an
+     unclipped marker would be drawn over the panel and the stage. */
+  .tcol.beds { position: relative; overflow: hidden; }
   /* The rebuild's own territory. It empties this and nothing else, so a sibling in
      either column - the cuts, the playhead, the shading - is out of its reach because
      of where it sits rather than because the loop remembers to skip it. */
   .tstack { display: flex; flex-direction: column; flex: none; min-width: 0; }
+  /* Capped at whatever `--tlanes-h` is, so the lanes scroll instead of pushing the
+     strip taller without limit. Every keyed parameter used to add a permanent row and
+     take that height off the stage with no way to get it back.
+
+     `overflow-x` is spelled out because leaving it `visible` beside a non-visible
+     `overflow-y` computes it to `auto` - and a key outside the window carries a `left`
+     of -195%, so the lanes would grow a horizontal scrollbar describing markers that
+     are deliberately off-screen. */
+  #tLanes { max-height: var(--tlanes-h); overflow-y: auto; overflow-x: hidden;
+    scrollbar-width: thin; }
+  /* The rail follows `#tLanes` rather than scrolling itself: one scroller and one
+     mirror, so there is no second gesture that could disagree with the first. */
+  #tRailLanes { max-height: var(--tlanes-h); overflow: hidden; }
+
+  /* The splitter. It sits over the top 5px of the transport bar, which is padding, so
+     it costs no height of its own - a grip that took a row would take it from the
+     lanes it exists to give room to. */
+  .tgrip { position: absolute; top: 0; left: 0; right: 0; height: 5px; z-index: 20;
+    cursor: ns-resize; touch-action: none; }
+  .tgrip:hover, .tgrip.dragging { background: var(--accent-low); }
 
   /* The ruler row keeps the height the strip already had, so a clip with no keys
      is exactly the surface step 4 left behind. Every other row is fixed and adds
@@ -305,6 +329,48 @@
     letter-spacing: 0.14em; text-transform: uppercase; }
   .tcol.rail .trow b { color: var(--ink); font-weight: 500; font-size: 9px;
     font-variant-numeric: tabular-nums; flex: none; }
+
+  /* ── the overview strip ────────────────────────────────────────────────────
+     Fixed at 22px and outside `.tlanes`, so it is part of `--timeline-h` and the
+     lanes keep the height they had. Nothing in here is drawn through `view.pct` -
+     it is the whole clip by definition, which is the one thing the window cannot
+     tell you about itself. */
+  .tmini { flex: none; height: 22px; display: grid; grid-template-columns: 96px minmax(0, 1fr);
+    align-items: center; border-top: 1px solid var(--line); }
+  .tmini > span { padding: 0 8px; font-size: 9px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--faint); }
+  .tminibed { position: relative; height: 100%; overflow: hidden; cursor: pointer;
+    touch-action: none; background: var(--paper-2); }
+  /* What the export keeps, so the overview answers "where is my clip" as well as
+     "where am I looking". */
+  .tminirange { position: absolute; top: 0; bottom: 0; background: var(--accent-low); }
+  .tminimarks { position: absolute; inset: 0; pointer-events: none; }
+  .tminimarks span { position: absolute; top: 50%; width: 3px; height: 3px;
+    margin: -1.5px 0 0 -1.5px; background: var(--accent); transform: rotate(45deg); }
+  .tminihead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--ink);
+    pointer-events: none; }
+  /* The window itself. A minimum width so a deep zoom leaves something to grab -
+     at 2 seconds of a 900-second take the box is a third of a pixel wide, which is
+     a control that exists and cannot be used.
+
+     The minimum is named once here and `paintMinimap` reads it back out of this
+     property when it writes the window's `margin-left`, because the two have to agree
+     and a number repeated in both files is a number that goes stale in one of them.
+     They have to agree because `min-width` only ever grows the box to the *right*:
+     panned hard against the end of a long clip the window sits at 99.8%, so the 10px
+     it grows to lands outside a `.tminibed` that clips, and the grab target the
+     minimum exists to provide is exactly what gets clipped away. Measured on an 800px
+     track at that framing: 1.78px of the box left on screen and nothing at all of the
+     east handle. The margin pulls it back inside at either end, and it is the margin
+     rather than `left` so that `left` stays a number things can read. */
+  .tminiwin { position: absolute; top: 1px; bottom: 1px;
+    --tminiwin-min: 10px; min-width: var(--tminiwin-min);
+    border: 1px solid var(--line-3); background: rgba(120, 220, 210, 0.10);
+    cursor: grab; }
+  .tminiwin i { position: absolute; top: -1px; bottom: -1px; width: 9px;
+    cursor: ew-resize; }
+  .tminiwin i.w { left: -5px; }
+  .tminiwin i.e { right: -5px; }
 
   .tbed { position: relative; cursor: pointer; touch-action: none; }
   .truler { position: absolute; inset: 0; }
@@ -368,7 +434,13 @@
      about the shape between them, which is the half an ease handle edits. Step
      and pose lanes are diamonds only — a boolean has no shape, and a camera move
      is judged in the world rather than here. */
-  .tlane { position: relative; height: 100%; touch-action: none; }
+  /* `pan-y` rather than `none`, and the axis is the whole of it. A lane covers its row
+     and every gesture on it that we want - dragging a key, dragging an ease handle - is
+     horizontal, so handing the vertical axis back to the browser costs nothing and buys
+     the one thing it was blocking: the lane stack scrolls, and with `none` a swipe on a
+     touchscreen could not reach a lane below the fold at all. The scrollbar is not an
+     answer there either, which is what made this unreachable rather than merely awkward. */
+  .tlane { position: relative; height: 100%; touch-action: pan-y; }
   .tlane svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
   /* Both of these carry a transparent `::after` that is bigger than the shape, because
      a rotated square is hit-tested through its transform - the corners of its bounding
@@ -380,6 +452,14 @@
     background: var(--dim); transform: rotate(45deg); cursor: grab; z-index: 2;
   }
   .tkey::after, .thandle::after { content: ""; position: absolute; inset: -4px; }
+  /* And these two take the vertical axis back off the lane, because they are the only
+     things in it that drag on that axis: a scalar key's *value* and an ease handle's
+     vertical component both come from `clientY`. With the lane's `pan-y` inherited, a
+     mostly-vertical touch drag starting on one of them is claimed by the browser for
+     native scrolling and the pointer sequence is cancelled, so changing a key's value by
+     touch is not slow or awkward - it is impossible. The lane keeps `pan-y` where there
+     is nothing to drag, which is what makes the stack scrollable by touch at all. */
+  .tkey, .thandle { touch-action: none; }
   .tkey:hover { background: var(--ink); }
   .tkey.sel { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-low); }
   .thandle {
@@ -494,6 +574,14 @@
   <div id="hint">drag to orbit · scroll to zoom · right-drag to pan · <b>H</b> hides panel</div>
 
   <section id="timeline" hidden aria-label="Timeline">
+    <!-- `tabindex` because the role is a promise. A functional `separator` that only a
+         pointer can move tells assistive technology there is a control here and then
+         answers nothing when it is asked to move it - and the thing behind it is the
+         only way to reveal lanes past the fold or give the height back to the stage.
+         `aria-valuenow` and its bounds are written by `applyLaneHeight`, which is the
+         one writer of the height they describe. -->
+    <div class="tgrip" id="tGrip" role="separator" aria-orientation="horizontal"
+      tabindex="0" aria-label="Resize the timeline" aria-valuemin="0" aria-valuenow="0"></div>
     <!-- Row one: the transport, and what the transport is addressed in. Everything
          here answers "where am I and how fast am I going", including the in/out pair,
          which is where the playhead is allowed to be. -->
@@ -504,7 +592,15 @@
         <div class="tclock derived"><small>source &middot; derived</small><output id="tSource">00:00.000</output></div>
       </div>
       <div class="tchips">
-        <label class="tchip">speed<input id="tRate" type="range" min="0.1" max="4" step="0.05" value="1"><b id="tRateOut">1.00&times;</b>
+        <!-- The slider's coordinate is not the rate, and the range here is deliberately
+             0..1 rather than 0.1..4. Program length goes as 1/rate, so a control linear
+             in rate spends most of its travel where the ruler barely moves: one 0.05 step
+             at the bottom of the old range changed the clip's length by a third and the
+             same step at the top changed it by one percent. The bounds live in `main.js`
+             beside the mapping that reads this, so there is one copy of them. `value` is
+             written from `retime.rate` at boot for the same reason - a position spelled
+             out here would be a second statement of where 1.00x sits. -->
+        <label class="tchip">speed<input id="tRate" type="range" min="0" max="1" step="any"><b id="tRateOut">1.00&times;</b>
           <button class="kf" id="tRateKey" type="button" aria-label="Retime keyframe"><i></i></button></label>
         <label class="tchip">out fps<select id="tFps"><option>24</option><option>30</option><option>60</option><option>120</option></select></label>
         <!-- The range the export takes, as numbers rather than only as two lines on
@@ -604,6 +700,21 @@
         <div class="tcut tcut-in" id="tIn" style="left: 0%"></div>
         <div class="tcut tcut-out" id="tOut" style="left: 100%"></div>
         <div class="tplayhead" id="tPlayhead" style="left: 0%"></div>
+      </div>
+    </div>
+    <!-- The overview. The ruler above shows a window now rather than the whole clip,
+         and a window with nothing to say where it sits is a control you can get lost
+         in - which on a 900-second take is most of the time. This is always the whole
+         clip: the visible window as a box you can drag, the trimmed range, the marks
+         and the playhead. It carries the same 96px rail offset as the lanes so its
+         coordinates line up with theirs by construction rather than by arithmetic. -->
+    <div class="tmini">
+      <span>clip</span>
+      <div class="tminibed" id="tMini">
+        <div class="tminirange" id="tMiniRange"></div>
+        <div class="tminimarks" id="tMiniMarks"></div>
+        <div class="tminihead" id="tMiniHead"></div>
+        <div class="tminiwin" id="tMiniWin"><i class="w"></i><i class="e"></i></div>
       </div>
     </div>
   </section>
