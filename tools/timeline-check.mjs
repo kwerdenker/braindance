@@ -1259,6 +1259,24 @@ console.log('\n== 5. a look change while paused rebuilds the image and the estim
     el.dispatchEvent(new Event('change'));
   })()`);
 
+  // The speed slider needs its own, because its travel is logarithmic and its `value`
+  // is therefore a position rather than a rate. Writing 1.05 into it lands at 4x - the
+  // top of the range - and every assertion downstream would go on passing about a rate
+  // nobody asked for. So the rate goes through the page's own mapping, and the rate
+  // that came out is checked against the rate that went in rather than assumed.
+  const slideRate = async (rate) => {
+    await page.evaluate(`(() => {
+      const el = document.getElementById('tRate');
+      el.value = String(__kinect.editor.rateSlider.toValue(${rate}));
+      el.dispatchEvent(new Event('input'));
+      el.dispatchEvent(new Event('change'));
+    })()`);
+    const landed = await page.evaluate('__kinect.timeline.retime.rate');
+    if (Math.abs(landed - rate) > 1e-6) {
+      throw new Error(`asked the speed slider for ${rate}x and the page went to ${landed}x`);
+    }
+  };
+
   await page.evaluate(`(async () => {
     await globalThis.__tl.configure(${JSON.stringify({ look: RGB_LOOK, rate: 1, fps: 30 })});
     await globalThis.__kinect.timeline.transport().seek(8.0);
@@ -1321,9 +1339,9 @@ console.log('\n== 5. a look change while paused rebuilds the image and the estim
   // (c) The control that makes the above mean something. Nudging the rate away
   // and back was what used to correct both surfaces, so if the repaint really
   // happened it has already done everything the nudge would do.
-  await slide('tRate', 1.05);
+  await slideRate(1.05);
   await settle();
-  await slide('tRate', 1);
+  await slideRate(1);
   await settle();
   const nudgedImage = await image();
   const nudgedChip = await chip();

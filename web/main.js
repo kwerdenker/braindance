@@ -1275,7 +1275,86 @@ function setViewCamera(cam) {
   controls.enabled = cam === freeCamera;
 }
 
+// How many times the drawing buffer has been resized. Read by `editor-check` rather
+// than timed, for the reason the lane counters exist: "the splitter does not resize per
+// pointer event" is a claim about how often this ran, and a stopwatch would pass on a
+// fast machine that ran it every time. A plain `let` beside the function rather than a
+// field on `counters`, which is declared eighteen hundred lines below this and would be
+// in its temporal dead zone on the `resize()` that runs at boot.
+let stageResizes = 0;
+
+/**
+ * Who owns the transport's play state right now.
+ *
+ * Four things pause the take, do something to the document, and then decide for
+ * themselves whether it should be running again: a speed gesture, an output-rate
+ * change, an undo, and a project load. Each reads `timeline.playing` up front and acts
+ * on it afterwards - and "afterwards" is across a seek that renders a pre-roll, which
+ * is long enough for the next one to start. The one that reads first can therefore land
+ * its answer on top of a newer one: a project load that deliberately restores a paused
+ * take found it playing, because a speed gesture from before it still owed a resume.
+ *
+ * So each of them takes the transport on the way in and checks it still holds on the
+ * way out. Counting rather than cancelling, because there is nothing to cancel - the
+ * resume lives inside a promise chain already in flight, and the cheapest true thing to
+ * ask it is whether the decision it carries is still the current one.
+ */
+let transportGen = 0;
+const takeTransport = () => {
+  transportGen += 1;
+  dropRateGesture();
+  return transportGen;
+};
+
+/**
+ * Drops a speed gesture whose document has been replaced underneath it.
+ *
+ * **A gesture holds a snapshot of the document it began in, so anything that replaces
+ * that document from outside the gesture has to say so.** Guarding only the release left
+ * the other half open: a slider event arriving after the swap called `applyRate` with no
+ * check at all, which writes the *old* cuts through `setClipInOut` and leaves the new
+ * document's keys - different objects now - unrescaled while the ruler rescales under
+ * them. That is the bug this whole branch exists to fix, arriving through the back. There
+ * is nothing left to check once the gesture is gone, and the next slider event simply
+ * starts a fresh one on the document that is actually open.
+ *
+ * **This is separate from `takeTransport` because the class is wider than that door, and
+ * finding out cost a round.** Transport ownership and document ownership looked like one
+ * thing while the only replacers were undo and a project load, which take the transport
+ * on their way past. `applyDeliverable` replaces both cuts and the output rate and takes
+ * nothing - so a deliverable chosen from the menu while the thumb was held had its trim
+ * overwritten from the previous one's snapshot, and the export would have written the
+ * wrong range. Folding it into `takeTransport` instead would have bumped the generation a
+ * second time inside `loadProjectNamed`, which reads that number to decide whether to
+ * resume, so the loader would have stopped resuming - one rule, two questions.
+ */
+const dropRateGesture = () => {
+  // It cannot cancel the gesture that is being started: `beginRateGesture` calls
+  // `takeTransport` before it has anything to assign.
+  if (rateGesture) rateGesture = null;
+};
+
+/**
+ * Stops the transport *and says so*, which is what every navigation here has to do.
+ *
+ * **A pause is a claim on the transport, and the resumes queued behind an older gesture
+ * only ask whether anybody has claimed it since.** A rate release seeks before it plays
+ * again, and that seek is a pre-roll - long enough to start a scrub, drag a cut, step a
+ * frame, press space or begin an export. All of those paused, none of them took the
+ * transport, so the older gesture's `.then` still found its own generation current and
+ * started the take playing underneath a gesture that had deliberately stopped it. The
+ * space bar was the plainest version: pause, and a moment later the take is running.
+ *
+ * `beginRateGesture` deliberately does not come through here - it takes the transport
+ * *before* it pauses, so that the generation it keeps is its own.
+ */
+const pauseTransport = () => {
+  takeTransport();
+  timeline.pause();
+};
+
 function resize() {
+  stageResizes++;
   // The stage is the window less whatever the timeline strip is taking, which is
   // nothing at all while it is hidden. Overlaying it on the image instead would
   // have cost nothing here and hidden the bottom of every frame being graded.
@@ -1369,7 +1448,20 @@ function resize() {
   grade.uniforms.resolution.value.set(buf.x, buf.y);
   uniforms.bufferHeight.value = buf.y;
 }
-addEventListener('resize', resize);
+addEventListener('resize', () => {
+  // The ceiling is a share of the window, so a window that got shorter can put the
+  // strip over it - and a strip taller than its own bound is the state the splitter
+  // exists to make unreachable. Re-applied before the stage is sized against it.
+  applyLaneHeight();
+  resize();
+  // The ruler picks its tick step from the bed's width, so a window that changed width
+  // has the previous width's tick count on it until something else happens to rebuild
+  // it - a zoom, or a timing change. Narrowed, that is labels written over each other;
+  // widened, it is a ruler far sparser than the space it has. Nothing else on this path
+  // touches it, and the strip is the one surface whose content depends on how wide it is
+  // rather than only on where it is.
+  if (timeline) buildRuler();
+});
 resize();
 
 function postEnabled() {
@@ -2401,6 +2493,9 @@ function setActiveDeliverable(deliverable) {
 }
 
 function applyDeliverable(deliverable) {
+  // Before anything is written, because what follows replaces the cuts and the output
+  // rate wholesale - see `dropRateGesture` for why this is not `takeTransport`.
+  dropRateGesture();
   setActiveDeliverable(deliverable);
   setClipInOut({ in: deliverable.in, out: deliverable.out });
   setTargetSize(deliverable.outputSize);
@@ -2421,8 +2516,22 @@ function setClipInOut(values) {
   activeDeliverable.out = clipOut;
   paintDeliverable();
   if (timeline) {
-    if (timeline.programSec < clipIn) timeline.seek(clipIn).catch(showTimelineError);
-    else if (clipOut !== null && timeline.programSec > clipOut) timeline.seek(clipOut).catch(showTimelineError);
+    // **Compared on the output grid, because that is the only place the playhead can be.**
+    // `programSec` is a frame divided by the rate, and a boundary is a float - so after a
+    // speed change rescales the cuts, a playhead that was sitting exactly on `clipIn` can
+    // land a fraction of a frame outside the rescaled one and read as out of range. From
+    // 10s at 1x to 2.3x the boundary becomes 4.3478s and the nearest frame is 130 at
+    // 4.3333s: outside by 14ms, which buys a full accurate seek. Per `input` event, that
+    // is the seek storm this control was rewritten to avoid, coming back through the one
+    // case the count probe cannot see - it parks the playhead in the interior.
+    //
+    // Nothing is lost by comparing frames: a boundary between two frames is a boundary
+    // the transport cannot show either side of, so "outside by less than a frame" is a
+    // distinction with no picture attached.
+    const frameIn = timeline.frameOf(clipIn);
+    const frameOut = clipOut === null ? null : timeline.frameOf(clipOut);
+    if (timeline.frame < frameIn) timeline.seek(clipIn).catch(showTimelineError);
+    else if (frameOut !== null && timeline.frame > frameOut) timeline.seek(clipOut).catch(showTimelineError);
     else timeline.paint();
   }
 }
@@ -3202,8 +3311,21 @@ const history = {
     // re-seeked afterwards, which is the same thing the speed slider does and for
     // the same reason. Playing again afterwards is deliberate: undo is about what
     // the clip is, and stopping the transport is not part of what it undoes.
+    const gen = takeTransport();
     const resume = timeline ? timeline.playing : false;
     if (resume) timeline.pause();
+    // The parameterisation being left, read before the restore overwrites it. An undo
+    // that crosses a speed change has to carry the cuts across the same way the
+    // gesture did, and it cannot do it by restoring them: `serialiseProjectBody`
+    // deliberately leaves `clipIn`/`clipOut` out, because they are deliverable state
+    // rather than what the clip *is*. So the keys come back inside the snapshot
+    // already in the parameterisation being returned to, and the cuts - the one term
+    // outside it - are the only thing left to rescale. Without this, undoing a speed
+    // change puts every keyframe back and leaves the two markers where the new rate
+    // had put them, which is the original bug surviving its own fix.
+    const wasRate = retime.rate;
+    const wasIn = clipIn;
+    const wasOut = clipOut;
     this.restoring = true;
     try {
       restoreProject(JSON.parse(previous));
@@ -3211,13 +3333,16 @@ const history = {
     } finally {
       this.restoring = false;
     }
+    if (retime.rate !== wasRate) {
+      reparameteriseProgramTime(wasRate / retime.rate, { clipIn: wasIn, clipOut: wasOut, keys: [] });
+    }
     // The playhead deliberately does not move. Undo is about what the clip is, and
     // walking the playhead backwards on every press is the behaviour that teaches
     // people not to trust it.
     paintUndoCount();
     if (resume) {
       timeline.seek(timeline.programSec)
-        .then(() => timeline.play())
+        .then(() => { if (gen === transportGen) return timeline.play(); })
         .catch(showTimelineError);
     } else {
       requestRepaint();
@@ -3734,6 +3859,59 @@ const retime = {
     };
   },
 };
+
+/**
+ * Every program time, rescaled by `k`. Changing the slope is what does this to them.
+ *
+ * **This is the same fix the playhead already got, applied to the class it belongs
+ * to.** `beginRateGesture` holds *source* time across a speed change because program
+ * and source are the same number only at rate 1: park at program 10s, go from 1x to
+ * 2x, and program 10s is now source 20s - a different moment in the take under a
+ * playhead that did not move. That argument says nothing about the playhead
+ * specifically. It is true of anything measured in program time, and three such
+ * things were left behind: the clip's `in` and `out`, the deliverable's copy of them,
+ * and the `t` on every key of every track.
+ *
+ * The screenshots that started this are the arithmetic of it. Source runs ~960s, so
+ * the ruler ends at 800s at 1.20x and at 408s at 2.35x, while `in`/`out` stayed pinned
+ * at 234.509/407.612 program seconds - which puts the out cut at 50.3% of the ruler in
+ * one and 99.5% in the other. Nothing moved; the ruler rescaled underneath markers
+ * that did not. And the export followed the markers, so a speed change silently
+ * changed which footage the file would contain.
+ *
+ * `k` is `oldRate / newRate` and the map is exactly uniform, which is a fact about
+ * when this can run rather than a simplification. The slider is disabled the moment
+ * the retime carries keys (see `timingChanged`), so the only slope this ever changes
+ * is the keyless one, where `sourceSec = programSec * rate` everywhere at once. There
+ * is no general-curve case to handle and writing one would be writing for a caller
+ * that cannot exist. The retime's own keys are untouched for the same reason: if
+ * there were any, nothing would be calling this.
+ *
+ * Ease handles are fractions of their segment, so a uniform stretch leaves them
+ * alone - there is no fourth term hiding in them.
+ *
+ * `was` is where the times are read *from*, rather than the live values being
+ * multiplied in place, and that is what makes a drag exact: a slider emits dozens of
+ * `input` events, and a product of dozens of per-event factors is not the same number
+ * as one factor from where the gesture started. Same reason `rateGesture` captures its
+ * source anchor once instead of re-deriving it per event.
+ */
+function reparameteriseProgramTime(k, was) {
+  for (const [key, t] of was.keys) key.t = t * k;
+  // Through the one door the cuts have, so the deliverable's copy and the readouts
+  // follow rather than being written a second time here. It also keeps the playhead
+  // inside the range, which is why the caller moves the playhead to its anchor
+  // *before* calling this: both scale by the same `k`, so a playhead that was inside
+  // the range is still inside it and this costs a repaint rather than a seek.
+  setClipInOut({ in: was.clipIn * k, out: was.clipOut === null ? null : was.clipOut * k });
+}
+
+/** Where a later rescale reads its times from. Live objects, and the `t` they had. */
+const programTimeSnapshot = () => ({
+  clipIn,
+  clipOut,
+  keys: [...tracks.values()].flatMap((track) => track.keys.map((key) => [key, key.t])),
+});
 
 class LivePairSource {
   constructor() {
@@ -4386,9 +4564,21 @@ class TimelineTransport {
   get clipInSec() { return Math.max(0, Number(clipIn) || 0); }
   get clipOutSec() { return clipOut === null ? this.duration : Math.min(this.duration, clipOut); }
 
+  /**
+   * Program seconds onto the output grid, bounded by the take and by nothing else.
+   *
+   * Split out of `frameAt` rather than duplicated beside it, so the rounding and the
+   * take's bounds have one implementation and the clip range is the only thing the
+   * two callers disagree about. `applyRate` wants this one: it is mid-way through
+   * changing the slope, and the clip range it would otherwise be clamped against
+   * belongs to the rate it is leaving.
+   */
+  frameOf(programSec) {
+    return Math.max(0, Math.min(this.lastFrame, Math.round(programSec * this.outputFps)));
+  }
+
   frameAt(programSec) {
-    const clamped = Math.max(this.clipInSec, Math.min(this.clipOutSec, programSec));
-    return Math.max(0, Math.min(this.lastFrame, Math.round(clamped * this.outputFps)));
+    return this.frameOf(Math.max(this.clipInSec, Math.min(this.clipOutSec, programSec)));
   }
 
   sourceFrameAt(programSec) {
@@ -5080,7 +5270,7 @@ async function exportClip(options = {}) {
   };
 
   exporting = true;
-  timeline.pause();
+  pauseTransport();
   try {
     // The rate first, because the frame grid every position below is named in is
     // the output rate's grid.
@@ -5177,6 +5367,12 @@ const ui = {
   railLanes: document.getElementById('tRailLanes'),
   lanes: document.getElementById('tLanes'),
   ruler: document.getElementById('tRuler'),
+  grip: document.getElementById('tGrip'),
+  mini: document.getElementById('tMini'),
+  miniRange: document.getElementById('tMiniRange'),
+  miniMarks: document.getElementById('tMiniMarks'),
+  miniHead: document.getElementById('tMiniHead'),
+  miniWin: document.getElementById('tMiniWin'),
   playhead: document.getElementById('tPlayhead'),
   in: document.getElementById('tIn'),
   out: document.getElementById('tOut'),
@@ -5267,20 +5463,176 @@ function showTimelineError(err) {
   console.error('[timeline]', err);
 }
 
+// How little program time the strip will show. A window is bounded below so a wheel
+// cannot zoom into a point, where every position on screen is the same instant and the
+// gesture that got there has no inverse.
+const MIN_VIEW_SEC = 0.25;
+
 /**
- * The program length the ruler and the lanes are drawn against.
+ * The window of program time the strip is drawn against, and the only thing that turns
+ * a program second into a position on it.
  *
- * Frozen for the length of a lane drag, and that is not a nicety. The retime curve
- * *is* the program length: dragging one of its keys down slows the clip, which
- * lengthens the program, which rescales the ruler, which moves the key under a
- * pointer that has not moved horizontally - and the new position is read back as a
- * new program time, which slows it further. Measured before it was fixed: a
- * twelve-pixel vertical drag walked one key from 15.0s to 48.3s in four moves, and
- * the drag got faster the longer it went on.
+ * **It replaced `rulerDuration()` rather than joining it.** Eleven places used to work
+ * out a position by dividing by the clip's length, and a twelfth that kept doing so
+ * under a zoomed window would not look broken - it would draw its marker *unzoomed*,
+ * at a plausible place, silently disagreeing with the eleven around it. Deleting the
+ * old name is what makes a missed caller a throw on the first paint instead of a wrong
+ * picture nobody can see is wrong.
+ *
+ * **The window is held as fractions of the program duration, and that is load-bearing
+ * rather than a unit preference.** A speed change rescales the duration and every
+ * program time in the document by the same factor - see `reparameteriseProgramTime` -
+ * so a window in *seconds* would be a twelfth quantity somebody had to remember to
+ * scale, and forgetting it would move the visible footage on a gesture whose whole
+ * point is that nothing moves. In fractions there is nothing to remember: the ruler
+ * and the window rescale together and the same footage stays on screen because the
+ * arithmetic cannot express anything else.
+ *
+ * The one place that reads oddly is the consequence of the same choice, and it is
+ * worth stating so it is not filed as this bug returning: a *retime key* changes the
+ * program duration non-uniformly, so dragging one shifts the visible window on
+ * release. That is a different situation from the speed slider - there the map is
+ * uniform and nothing moves at all - and it is accepted rather than overlooked.
  */
-const rulerDuration = () => {
-  if (laneDrag) return laneDrag.duration;
-  return timeline ? timeline.duration : 1;
+const view = {
+  // The visible window, as fractions of `duration`. `0..1` is the whole clip.
+  a: 0,
+  b: 1,
+  // And the window that was *asked* for, which is what the limits are re-derived from -
+  // see `set`. These two are equal except while a clamp is binding.
+  wantA: 0,
+  wantB: 1,
+
+  /**
+   * The program length the ruler is drawn against.
+   *
+   * Frozen for the length of a lane drag, and that is not a nicety. The retime curve
+   * *is* the program length: dragging one of its keys down slows the clip, which
+   * lengthens the program, which rescales the ruler, which moves the key under a
+   * pointer that has not moved horizontally - and the new position is read back as a
+   * new program time, which slows it further. Measured before it was fixed: a
+   * twelve-pixel vertical drag walked one key from 15.0s to 48.3s in four moves, and
+   * the drag got faster the longer it went on.
+   */
+  get duration() {
+    if (laneDrag) return Math.max(1e-6, laneDrag.duration);
+    return Math.max(1e-6, timeline ? timeline.duration : 1);
+  },
+
+  get startSec() { return this.a * this.duration; },
+  get endSec() { return this.b * this.duration; },
+  get spanSec() { return (this.b - this.a) * this.duration; },
+  /** True when the whole clip is on screen, which is what the fit control returns to. */
+  get whole() { return this.a === 0 && this.b === 1; },
+
+  /** Where a program second sits across the bed, in percent. Off-window is out of 0..100. */
+  pct(t) {
+    return ((t / this.duration) - this.a) / Math.max(1e-9, this.b - this.a) * 100;
+  },
+
+  /** Program seconds at a percentage across the bed. The inverse of `pct`. */
+  secAtPct(p) {
+    return (this.a + (p / 100) * (this.b - this.a)) * this.duration;
+  },
+
+  /** Where the pointer is, in program seconds, clamped to the window it is over. */
+  timeAt(clientX) {
+    const r = ui.bed.getBoundingClientRect();
+    const f = r.width > 0 ? Math.min(1, Math.max(0, (clientX - r.left) / r.width)) : 0;
+    return Math.max(0, Math.min(this.duration, (this.a + f * (this.b - this.a)) * this.duration));
+  },
+
+  /**
+   * Whether a marker at `t` is worth drawing. The margin is a whole window because a
+   * curve is sampled across the visible span and a key's node is 11px wide - a marker
+   * just outside still has a corner inside, and hiding it would pop at the edge.
+   */
+  holds(t) {
+    const f = t / this.duration;
+    const margin = (this.b - this.a) * 0.02;
+    return f >= this.a - margin && f <= this.b + margin;
+  },
+
+  /**
+   * The narrowest window allowed here, as a fraction of the clip.
+   *
+   * Named rather than recomputed by each caller, because the edge drag needs the same
+   * number `set` clamps with and a second copy of it would be a second answer.
+   */
+  minSpan() { return Math.min(1, MIN_VIEW_SEC / this.duration); },
+
+  /**
+   * The window, clamped: inside the clip, no narrower than `MIN_VIEW_SEC`, at most all.
+   *
+   * **What was asked for is kept beside what the clamp allowed, and the clamp is
+   * re-derived rather than accumulated.** `minSpan` is a number of seconds expressed as
+   * a fraction, so it moves whenever the clip's length does - and a clamp applied to its
+   * own previous output only ever ratchets outward. Measured: at 0.1x the whole clip is
+   * 480s and the minimum window is a fraction of 0.00052; going to 4x makes that 0.00625s
+   * of a 12s clip, the clamp widens it to 0.0208, and coming back to 0.1x that fraction
+   * is 10s. The document returns exactly, no undo step is committed, and the ruler is
+   * forty times wider than it started - which is the one thing the speed control claims
+   * not to do.
+   *
+   * `userLaneHeight` already had the answer, and its comment says why in the same words:
+   * store the request, apply the limits on the way out, so a window narrowed by a clip
+   * that got shorter opens back up when the clip gets longer again.
+   */
+  set(a, b) {
+    this.wantA = a;
+    this.wantB = b;
+    return this.reclamp();
+  },
+
+  /**
+   * Re-applies the limits to the window that was last asked for.
+   *
+   * Called whenever the duration moves under the window rather than only after a rate
+   * gesture, because a rate gesture is not the only thing that moves it - undo across a
+   * speed change, a project load and an output-rate change all do, and a fix that lived
+   * on the slider would have left three doors open.
+   */
+  reclamp() {
+    const span = Math.min(1, Math.max(this.minSpan(), this.wantB - this.wantA));
+    const start = Math.min(1 - span, Math.max(0, this.wantA));
+    const moved = start !== this.a || start + span !== this.b;
+    this.a = start;
+    this.b = start + span;
+    return moved;
+  },
+
+  /**
+   * Zooms by `factor` (>1 closer) holding the fraction `at` where it is on screen.
+   *
+   * **The clamp is applied here rather than left to `set`, because `set` can only widen
+   * the span and would keep the start that went with the narrower one.** At the minimum
+   * window, another notch inward asked for a span `set` refused and a start computed for
+   * it, so the window kept its width and slid to the right: a gesture that could not zoom
+   * panned instead, and the time under the pointer walked away a notch at a time. Deriving
+   * the start from the span that actually survives makes a further zoom-in a no-op, which
+   * is what a control at the end of its travel should do.
+   */
+  zoomAbout(at, factor) {
+    const span = Math.min(1, Math.max(this.minSpan(), (this.b - this.a) / factor));
+    // Where the anchor sits in the window now, kept where it is in the window after.
+    const held = (at - this.a) / Math.max(1e-9, this.b - this.a);
+    const start = at - held * span;
+    return this.set(start, start + span);
+  },
+
+  /** Pans by a share of the visible window, positive to the right. */
+  panBy(shareOfWindow) {
+    const d = (this.b - this.a) * shareOfWindow;
+    return this.set(this.a + d, this.b + d);
+  },
+
+  fit() { return this.set(0, 1); },
+
+  /** Frames a range with a margin, so the two markers are not on the very edges. */
+  frame(fromSec, toSec) {
+    const pad = Math.max(MIN_VIEW_SEC, (toSec - fromSec) * 0.05);
+    return this.set((fromSec - pad) / this.duration, (toSec + pad) / this.duration);
+  },
 };
 
 function paintUndoCount() {
@@ -5293,9 +5645,44 @@ function paintDeliverable() {
     ui.deliverableReadout.textContent = 'none';
     return;
   }
-  const out = activeDeliverable.out ?? rulerDuration();
+  const out = activeDeliverable.out ?? view.duration;
   const outStr = activeDeliverable.out === null ? 'end' : timecode(out);
   ui.deliverableReadout.textContent = `${activeDeliverable.outputSize} @ ${activeDeliverable.outputFps}fps ${activeDeliverable.codec} [${timecode(activeDeliverable.in)} - ${outStr}]`;
+}
+
+/**
+ * The furniture that says *where* on the ruler something is: the playhead, the two
+ * cuts and the shading outside them.
+ *
+ * Split out of `paintTimeline` because a zoom gesture needs exactly this and nothing
+ * else. The rest of that function recomputes the pre-roll plan and redraws the chrome
+ * canvas, which is the right cost for a seek and the wrong cost per wheel notch.
+ */
+function paintStripPositions() {
+  const dur = view.duration;
+  const inPct = view.pct(Math.min(clipIn, dur));
+  const outPct = view.pct(Math.min(clipOut ?? dur, dur));
+  ui.playhead.style.left = `${view.pct(timeline ? timeline.programSec : 0)}%`;
+  ui.in.style.left = `${inPct}%`;
+  ui.out.style.left = `${outPct}%`;
+  // What the export will leave out, shown rather than left to be worked out from
+  // the position of two thin lines. Nothing here decides anything - `exportClip`
+  // reads `clipIn`/`clipOut` directly - so this is the range made visible and not a
+  // second copy of it.
+  //
+  // Clamped to the bed rather than drawn from the marker, because under a window that
+  // starts after the in point the shading runs off the left edge and a negative width
+  // draws nothing at all - which reads as "everything is included" on precisely the
+  // view where the cut is out of sight and the shading is the only evidence left.
+  const lo = Math.max(0, Math.min(100, inPct));
+  const hi = Math.max(0, Math.min(100, outPct));
+  ui.shadeIn.style.left = '0%';
+  ui.shadeIn.style.width = `${lo}%`;
+  ui.shadeOut.style.left = `${hi}%`;
+  ui.shadeOut.style.width = `${Math.max(0, 100 - hi)}%`;
+  // The overview carries the same three things, so it is repainted from here rather
+  // than from a second list of callers that could fall out of step with this one.
+  paintMinimap();
 }
 
 function paintTimeline(t) {
@@ -5307,28 +5694,19 @@ function paintTimeline(t) {
   // The name an empty field will use, said on the field rather than only in the
   // filename that turns up afterwards. Once, because it is a default and not a value.
   if (!ui.exportName.placeholder) ui.exportName.placeholder = t.source.id;
-  ui.playhead.style.left = `${(program / Math.max(1e-6, rulerDuration())) * 100}%`;
-  const rangeDur = Math.max(1e-6, rulerDuration());
-  const inPct = (Math.min(clipIn, rangeDur) / rangeDur) * 100;
-  const outPct = (Math.min(clipOut ?? rangeDur, rangeDur) / rangeDur) * 100;
-  ui.in.style.left = `${inPct}%`;
-  ui.out.style.left = `${outPct}%`;
-  // What the export will leave out, shown rather than left to be worked out from
-  // the position of two thin lines. Nothing here decides anything - `exportClip`
-  // reads `clipIn`/`clipOut` directly - so this is the range made visible and not a
-  // second copy of it.
-  ui.shadeIn.style.left = '0%';
-  ui.shadeIn.style.width = `${inPct}%`;
-  ui.shadeOut.style.left = `${outPct}%`;
-  ui.shadeOut.style.width = `${Math.max(0, 100 - outPct)}%`;
+  paintStripPositions();
   // The same range as numbers. Two markers on a ruler say where the boundaries are
   // and cannot say where they are to the millisecond, which is what an export needs
   // - and "out" says `end` rather than a time when nothing has been set, because
   // `clipOut === null` means the whole clip and following the duration around would
   // read as a value somebody chose.
+  //
+  // `view.duration` here and `view.pct` in the positions above, and the split is the
+  // distinction the rename was for: this is a *length*, which the window cannot change,
+  // where a marker is a *place*, which is all the window changes.
   ui.inOut.textContent = timecode(clipIn);
   ui.outOut.textContent = clipOut === null ? 'end' : timecode(clipOut);
-  ui.clipLen.textContent = `${Math.max(0, (clipOut ?? rangeDur) - clipIn).toFixed(2)}s`;
+  ui.clipLen.textContent = `${Math.max(0, (clipOut ?? view.duration) - clipIn).toFixed(2)}s`;
   const plan = t.preroll(program);
   // Both halves, because which one wins is the whole point of computing it: the
   // surface half moves with fade, wake, speed and output rate, the trails half
@@ -5358,16 +5736,48 @@ function paintTimeline(t) {
   drawChrome();
 }
 
+// The ladder a ruler picks its spacing from, in seconds. Every rung divides the one
+// above it or is half of it, so zooming walks the labels through the ladder instead of
+// re-labelling everything on each notch, and the sub-second rungs are the frame-ish
+// intervals somebody placing a key actually wants.
+const TICK_STEPS = [
+  1 / 30, 1 / 10, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600,
+];
+
+/** A tick's label. Bare seconds under a minute, `m:ss` over it, so it reads as a clock. */
+function tickLabel(sec, step) {
+  const decimals = step < 0.1 ? 2 : step < 1 ? 1 : 0;
+  if (sec < 60) return `${sec.toFixed(decimals)}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec - m * 60;
+  return `${m}:${s.toFixed(decimals).padStart(decimals ? decimals + 3 : 2, '0')}`;
+}
+
+/**
+ * The ruler, drawn across the visible window rather than across the clip.
+ *
+ * The step comes from the *window*, which is the whole reason a long take became
+ * usable: at 800s the old ladder gave 20-second ticks and no way to look closer, so a
+ * key was placed against gradations forty times coarser than the thing being placed.
+ * The count is what is held roughly constant now - about one label per 90px - and the
+ * spacing falls out of it.
+ */
 function buildRuler() {
-  const total = Math.max(1e-6, rulerDuration());
-  const step = total > 120 ? 20 : total > 60 ? 10 : total > 20 ? 5 : 1;
+  const span = Math.max(1e-6, view.spanSec);
+  const width = Math.max(1, ui.bed.clientWidth);
+  const wanted = span / Math.max(2, width / 90);
+  const step = TICK_STEPS.find((s) => s >= wanted) ?? TICK_STEPS[TICK_STEPS.length - 1];
   const ticks = [];
-  for (let s = 0; s <= total; s += step) {
+  // Only the ticks the window holds are built, so a two-second window on an hour-long
+  // take costs the same as a two-second window on a short one. The old loop walked the
+  // whole clip and made every tick outside the view as well.
+  const first = Math.ceil(view.startSec / step - 1e-9) * step;
+  for (let s = first; s <= view.endSec + 1e-9; s += step) {
     const tick = document.createElement('div');
     tick.className = 'ttick';
-    tick.style.left = `${(s / total) * 100}%`;
+    tick.style.left = `${view.pct(s)}%`;
     const label = document.createElement('label');
-    label.textContent = `${s}s`;
+    label.textContent = tickLabel(s, step);
     tick.appendChild(label);
     ticks.push(tick);
   }
@@ -5394,6 +5804,64 @@ function buildRuler() {
 // frame the compositor never gets a turn to show is work nobody sees, and the
 // animation loop is what knows when that turn comes. `pumpParkedDraft` is the only
 // thing that continues a drag.
+/**
+ * The overview strip: the whole clip, with the visible window drawn on it.
+ *
+ * Nothing here goes through `view.pct`, and that is the point of it rather than an
+ * oversight - it is the one surface that has to be in whole-clip coordinates, because
+ * it exists to say where the window is, and a window cannot say that about itself.
+ */
+function paintMinimap() {
+  if (!ui.mini) return;
+  const dur = view.duration;
+  const pct = (t) => `${Math.max(0, Math.min(100, (t / dur) * 100))}%`;
+  // `left` stays the plain percentage the window actually sits at, and the clamp that
+  // keeps the `min-width` box inside the track rides on `margin-left` beside it. Both
+  // halves of that are deliberate. A clamp written into `left` itself - `min(x%,
+  // calc(100% - ...))` - draws correctly and breaks every reader: `editor-check`
+  // parses this property as a number and got NaN, which is this file's own rule about
+  // asserting against the resource seen from the other side. The margin resolves
+  // against the track, so it is 0 until the box would hang off the end and exactly the
+  // overhang after that, and it needs no measurement in JS to compute. The minimum
+  // itself is read out of the custom property rather than restated here, so there is
+  // one 10px - see `.tminiwin`, which declares it.
+  const leftPct = view.a * 100;
+  ui.miniWin.style.left = `${leftPct}%`;
+  ui.miniWin.style.marginLeft = `min(0px, calc(100% - ${leftPct}% - var(--tminiwin-min)))`;
+  ui.miniWin.style.width = `${(view.b - view.a) * 100}%`;
+  ui.miniHead.style.left = pct(timeline ? timeline.programSec : 0);
+  const from = Math.min(clipIn, dur);
+  const to = Math.min(clipOut ?? dur, dur);
+  ui.miniRange.style.left = pct(from);
+  ui.miniRange.style.width = `${Math.max(0, ((to - from) / dur) * 100)}%`;
+}
+
+/**
+ * The window moved. Everything drawn against it is redrawn and nothing else is.
+ *
+ * It goes down `lanesMoved` rather than `lanesChanged`, and that is the same rule a
+ * key drag follows for the same measured reason: the structural path calls `resize()`,
+ * which resizes the drawing buffer, and a wheel gesture is dozens of events. See the
+ * note on `repositionLanes`, which counted 24 `renderer.setSize` calls in a ten-move
+ * drag before the two were split.
+ */
+function viewChanged() {
+  // Nothing on the strip means anything without a clip, and `view.duration` floors at
+  // 1e-6 to keep its arithmetic finite - so a caller that arrived before a take opened
+  // would write positions computed against that floor. Every gesture already checks;
+  // the test hooks are the path that does not, which is exactly the sort of caller that
+  // turns up first.
+  if (!timeline) return;
+  buildRuler();
+  paintMarks();
+  paintStripPositions();
+  lanesMoved();
+}
+
+// A drag resolves at whatever rate the drafts come back, and never queues more
+// than one behind the one in flight: the position the pointer is at now is the
+// only one worth rendering, so an older one is dropped rather than caught up on.
+// Same shape as the colour decode pump, and for the same reason.
 let draftWanted = null;
 let draftBusy = false;
 
@@ -5470,10 +5938,7 @@ paramWritten = (name, tag) => {
   requestRepaint();
 };
 
-const programAtPointer = (e) => {
-  const r = ui.bed.getBoundingClientRect();
-  return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * rulerDuration();
-};
+const programAtPointer = (e) => view.timeAt(e.clientX);
 
 let scrubbing = false;
 
@@ -5481,7 +5946,7 @@ ui.bed.addEventListener('pointerdown', (e) => {
   if (!timeline) return;
   ui.bed.setPointerCapture(e.pointerId);
   scrubbing = true;
-  timeline.pause();
+  pauseTransport();
   draftWanted = programAtPointer(e);
   pumpDraft();
 });
@@ -5512,6 +5977,343 @@ for (const type of ['pointerup', 'pointercancel']) {
   });
 }
 
+// ------------------------------------------------------------ how tall the strip is
+
+// The least of the window the stage keeps. A splitter that can be dragged until there
+// is no picture left is not a bound on the strip, it is a different way of losing it.
+const MIN_STAGE_SHARE = 0.35;
+// Where the splitter sits before anybody drags it: as tall as the lanes need, up to
+// this. Without a default the strip still grows a permanent row per keyed parameter
+// and takes it off the stage, which is the thing being fixed - the splitter decides
+// where the bound is, it is not the only reason there is one.
+const DEFAULT_LANES_SHARE = 0.35;
+// Client state, like `kinect.lastOpened`: how tall you like the strip is a property of
+// this browser and this screen, not of the clip.
+const LANES_HEIGHT = 'kinect.lanesHeight';
+
+// What the lanes would take if nothing capped them, written by the rebuild.
+let laneStackHeight = 0;
+// What the splitter has been dragged to, or null while nobody has.
+let userLaneHeight = null;
+try {
+  // Asked of the string, not of the number, and that is the whole of it: `getItem`
+  // answers null when nothing was ever stored, `Number(null)` is 0, and the `saved > 0`
+  // this replaces used that one test for both questions. So a strip deliberately dragged
+  // shut - which the splitter allows, and stores as a real 0 - came back at the 35%
+  // default on the next load, because a stored zero and a missing entry were the same
+  // reading. `Number('')` is 0 for the same reason, so an empty entry is excluded here
+  // rather than read as a collapsed strip.
+  const saved = localStorage.getItem(LANES_HEIGHT);
+  const px = Number(saved);
+  if (saved !== null && saved.trim() !== '' && Number.isFinite(px) && px >= 0) userLaneHeight = px;
+} catch {
+  // Private browsing or storage disabled by policy. The default is a good height.
+}
+
+/** The tallest the lanes may be here, so the stage keeps its share of the window. */
+function laneHeightCeiling() {
+  // `--timeline-h` is the fixed part of the strip - the two bar rows, the ruler bed and
+  // the overview - and it is read off the element rather than repeated here, because a
+  // second copy of it in this file is the mistake `export-check` had already made.
+  const fixed = parseFloat(getComputedStyle(ui.root).getPropertyValue('--timeline-h')) || 0;
+  return Math.max(0, Math.round(innerHeight * (1 - MIN_STAGE_SHARE)) - fixed);
+}
+
+/**
+ * `--tlanes-h`, from the two things that decide it, written in the one place that
+ * writes it.
+ *
+ * The variable had a single writer - the rebuild - and the splitter is a second input
+ * rather than a second writer, which is the distinction that keeps them from drifting.
+ * It also preserves what `--timeline-h` was written for: content still cannot make the
+ * strip taller than the lanes it actually has, and a person dragging it is a different
+ * thing from a readout growing a digit.
+ */
+function applyLaneHeight() {
+  const wanted = userLaneHeight ?? Math.round(innerHeight * DEFAULT_LANES_SHARE);
+  const reachable = Math.min(laneStackHeight, laneHeightCeiling());
+  const height = Math.min(laneStackHeight, Math.max(0, Math.min(wanted, laneHeightCeiling())));
+  ui.root.style.setProperty('--tlanes-h', `${height}px`);
+  // The separator says what it is currently at and what it can reach, written here
+  // rather than by the two gestures that move it, for the same reason `--tlanes-h` is:
+  // this is the one place that knows the height after both bounds have been applied,
+  // and a value announced from anywhere else would be the height that was asked for.
+  ui.grip.setAttribute('aria-valuenow', String(height));
+  ui.grip.setAttribute('aria-valuemax', String(Math.max(0, reachable)));
+}
+
+// One scroller and one mirror. The rail has `overflow: hidden` so there is no second
+// gesture that could disagree with this one - two synchronised scrollers is two
+// implementations of one position.
+ui.lanes.addEventListener('scroll', () => {
+  ui.railLanes.scrollTop = ui.lanes.scrollTop;
+});
+
+/**
+ * The splitter.
+ *
+ * `resize()` is throttled to one animation frame rather than run per pointer event,
+ * and that is the same measured cost `repositionLanes` exists to avoid: it reallocates
+ * the drawing buffer and the composer's targets. It cannot simply be deferred to the
+ * release either - the strip is growing under a canvas that has not been told, so the
+ * two would overlap for the length of the drag. One per frame is what a smooth drag
+ * needs and is bounded; a pointer stream is neither.
+ */
+let gripDrag = null;
+let gripFrame = 0;
+
+ui.grip.addEventListener('pointerdown', (e) => {
+  ui.grip.setPointerCapture(e.pointerId);
+  ui.grip.classList.add('dragging');
+  gripDrag = {
+    y: e.clientY,
+    from: parseFloat(getComputedStyle(ui.root).getPropertyValue('--tlanes-h')) || 0,
+  };
+});
+
+ui.grip.addEventListener('pointermove', (e) => {
+  if (!gripDrag) return;
+  // Upwards is taller, which is the direction the edge is being dragged.
+  userLaneHeight = Math.max(0, gripDrag.from + (gripDrag.y - e.clientY));
+  applyLaneHeight();
+  if (gripFrame) return;
+  gripFrame = requestAnimationFrame(() => {
+    gripFrame = 0;
+    resize();
+    placeChrome();
+  });
+});
+
+/**
+ * The same splitter from the keyboard, because the pointer was the only way to it.
+ *
+ * A step is a lane row rather than a pixel. What is being resized is a stack of rows,
+ * so a press that moves less than one of them looks like a control that does nothing -
+ * and reaching a lane past the fold would take dozens of presses. Home and End are the
+ * two ends the drag can reach, which is what `aria-valuemin`/`max` announce.
+ *
+ * Written against the height the strip *has* rather than against `userLaneHeight`,
+ * which is null until something drags it - so the first press moves from where the
+ * splitter visibly is instead of jumping from the default it was never told about.
+ */
+const LANE_KEY_STEP = 22;
+
+ui.grip.addEventListener('keydown', (e) => {
+  const from = parseFloat(getComputedStyle(ui.root).getPropertyValue('--tlanes-h')) || 0;
+  const ceiling = Math.min(laneStackHeight, laneHeightCeiling());
+  const to = e.key === 'ArrowUp' ? from + LANE_KEY_STEP
+    : e.key === 'ArrowDown' ? from - LANE_KEY_STEP
+      : e.key === 'PageUp' ? from + LANE_KEY_STEP * 4
+        : e.key === 'PageDown' ? from - LANE_KEY_STEP * 4
+          : e.key === 'Home' ? 0
+            : e.key === 'End' ? Math.max(0, ceiling)
+              : null;
+  if (to === null) return;
+  // Only once it is going to act, so Tab and everything else still leave the strip.
+  e.preventDefault();
+  userLaneHeight = Math.max(0, to);
+  applyLaneHeight();
+  resize();
+  placeChrome();
+  rememberLaneHeight();
+});
+
+/** Where the splitter has been put, kept for this browser rather than for the clip. */
+function rememberLaneHeight() {
+  // Stored as what was asked for rather than as what the clamp allowed, so a strip
+  // dragged tall on a big screen is still tall when the window is made big again.
+  try {
+    localStorage.setItem(LANES_HEIGHT, String(userLaneHeight));
+  } catch {
+    // Storage is a convenience here; the gesture already worked.
+  }
+}
+
+for (const type of ['pointerup', 'pointercancel']) {
+  ui.grip.addEventListener(type, () => {
+    if (!gripDrag) return;
+    gripDrag = null;
+    ui.grip.classList.remove('dragging');
+    if (gripFrame) cancelAnimationFrame(gripFrame);
+    gripFrame = 0;
+    resize();
+    placeChrome();
+    rememberLaneHeight();
+  });
+}
+
+// ------------------------------------------------------------------ zoom and pan
+
+// How much one wheel notch zooms. Chosen so a notch is a visible step and a flick is
+// not a jump to the bottom of the range: about eight notches per factor of ten.
+const ZOOM_PER_NOTCH = 1.33;
+
+/**
+ * The wheel over the strip. Vertical zooms about the pointer, horizontal pans.
+ *
+ * **Zooming about the pointer rather than the centre is the whole usability of it.**
+ * The gesture people run is "put the cursor on the thing, zoom in" - anchoring the
+ * centre instead means the thing you were pointing at walks off the edge, and the way
+ * you find it again is to zoom back out, which is the gesture you were trying to
+ * avoid.
+ *
+ * `preventDefault` is safe here rather than rude: `html, body` are `overflow: hidden`,
+ * so there is no page scroll to suppress, and the trackpad's horizontal axis would
+ * otherwise do nothing at all.
+ */
+/**
+ * Where the pointer is as a fraction of the *clip*, which is the coordinate both the
+ * zoom and the pan are expressed in.
+ *
+ * The two surfaces answer it differently because they show different things, and that
+ * is the whole of what "over the overview" means: an x on the ruler is a position in
+ * the window, an x on the overview is a position in the clip. Reading both through one
+ * of the two mappings is how a wheel over the overview ends up zooming somewhere the
+ * cursor is not.
+ */
+function clipFractionAt(surface, clientX) {
+  const r = (surface === ui.mini ? ui.mini : ui.bed).getBoundingClientRect();
+  const f = r.width > 0 ? Math.min(1, Math.max(0, (clientX - r.left) / r.width)) : 0.5;
+  return surface === ui.mini ? f : view.a + f * (view.b - view.a);
+}
+
+/**
+ * A wheel event's two deltas in pixels, whatever unit the browser chose to report.
+ *
+ * `deltaMode` is `DOM_DELTA_LINE` on Firefox and on some Linux mice, where one notch is
+ * `3` rather than `100` - so a rule dividing by 100 turned a full notch into 3% of one
+ * and the zoom read as a control that does nothing. `DOM_DELTA_PAGE` is rarer still and
+ * is a viewport. Both are converted here rather than at the two places that consume the
+ * deltas, because the second consumer is the pan and it had the same unit bug for the
+ * same reason - a share of the track computed from three "pixels".
+ *
+ * The line height is the strip's own row rather than a constant: `LANE_KEY_STEP` is what
+ * one lane is worth everywhere else in this file, and a wheel notch moving a different
+ * amount from an arrow key on the same surface is the kind of disagreement nothing
+ * records.
+ *
+ * **A page has two dimensions and the two axes get the right one each.** This converted
+ * both through `ui.bed.clientHeight`, which is the ruler row - tens of pixels, and not a
+ * page by any reading. The horizontal case was the worse of the two: a page of panning
+ * became a couple of dozen pixels and was then divided by the track width, so a page-mode
+ * pan moved almost nothing. Stated rather than measured, because nothing on this rig
+ * emits `DOM_DELTA_PAGE` - the line mode is what Firefox actually sends and what the
+ * proof row drives.
+ */
+const wheelPixels = (e) => {
+  if (e.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+    return { x: e.deltaX * LANE_KEY_STEP, y: e.deltaY * LANE_KEY_STEP };
+  }
+  if (e.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+    return {
+      x: e.deltaX * Math.max(1, globalThis.innerWidth),
+      y: e.deltaY * Math.max(1, globalThis.innerHeight),
+    };
+  }
+  return { x: e.deltaX, y: e.deltaY };
+};
+
+const onStripWheel = (surface) => (e) => {
+  if (!timeline) return;
+  const delta = wheelPixels(e);
+  // A wheel that started inside the lane scroller, on the axis that scroller uses,
+  // belongs to it rather than to the zoom - so it is left alone entirely, native
+  // scrolling and all, rather than being handled here. `#tLanes` is a descendant of
+  // `ui.beds`, so without this every wheel over a lane bubbled to this listener, got
+  // `preventDefault`ed and zoomed, and the only way left to reach a lane below the fold
+  // was to find and drag a thin scrollbar.
+  //
+  // Only while the lanes actually overflow, asked of `scrollHeight` against
+  // `clientHeight` rather than of the scroll position - a rule keyed on position would
+  // hand the wheel back to the zoom at the top and bottom of the travel, which is a
+  // surface that changes what it does depending on how far you have already come. With
+  // room for every lane there is nothing to scroll and the wheel zooms as it does
+  // anywhere else on the strip.
+  //
+  // The axis test is the same one the branch below uses, so a horizontal pan over the
+  // lanes still pans rather than falling through to the browser.
+  if (Math.abs(delta.y) >= Math.abs(delta.x)
+    && ui.lanes.contains(e.target)
+    && ui.lanes.scrollHeight > ui.lanes.clientHeight) return;
+  e.preventDefault();
+  // A trackpad reports both axes at once and a mouse reports one, so the dominant
+  // axis decides which gesture this is - reading both would zoom and pan on every
+  // diagonal twitch.
+  if (Math.abs(delta.x) > Math.abs(delta.y)) {
+    const width = Math.max(1, (surface === ui.mini ? ui.mini : ui.bed).clientWidth);
+    const d = (delta.x / width) * (surface === ui.mini ? 1 : view.b - view.a);
+    if (!view.set(view.a + d, view.b + d)) return;
+  } else {
+    const factor = ZOOM_PER_NOTCH ** (-delta.y / 100);
+    if (!view.zoomAbout(clipFractionAt(surface, e.clientX), factor)) return;
+  }
+  viewChanged();
+};
+
+// Both surfaces, because the overview is where somebody who has just found the window
+// box will try the wheel next, and a strip that zooms on one half and does nothing on
+// the other reads as broken rather than as scoped.
+for (const surface of [ui.beds, ui.mini]) {
+  surface.addEventListener('wheel', onStripWheel(surface), { passive: false });
+}
+
+/**
+ * The overview's own gestures: drag the window to pan, drag an edge to zoom, click
+ * anywhere else to bring the window there.
+ *
+ * One handler deciding by what was hit rather than three listeners, because the edges
+ * are children of the box and a listener on each would have to stop the box's own
+ * handler from also running - which is a thing to get right on every path instead of
+ * a question asked once.
+ */
+let miniDrag = null;
+
+ui.mini.addEventListener('pointerdown', (e) => {
+  if (!timeline) return;
+  const rect = ui.mini.getBoundingClientRect();
+  if (rect.width <= 0) return;
+  const at = (e.clientX - rect.left) / rect.width;
+  const edge = e.target.classList.contains('w') ? 'w' : e.target.classList.contains('e') ? 'e' : null;
+  const inside = e.target === ui.miniWin || edge !== null;
+  ui.mini.setPointerCapture(e.pointerId);
+  if (!inside) {
+    // A click on open track centres the window there rather than jumping its left
+    // edge to the pointer, which is what "take me there" means and what leaves the
+    // thing you clicked on in the middle of the ruler.
+    const half = (view.b - view.a) / 2;
+    view.set(at - half, at + half);
+    viewChanged();
+  }
+  miniDrag = { edge, at, a: view.a, b: view.b };
+});
+
+ui.mini.addEventListener('pointermove', (e) => {
+  if (!miniDrag) return;
+  const rect = ui.mini.getBoundingClientRect();
+  const at = (e.clientX - rect.left) / Math.max(1, rect.width);
+  const d = at - miniDrag.at;
+  // Both edges read from the position the drag *started* at rather than from the last
+  // event, so a drag that runs into the clamp at one end and comes back lands where
+  // the pointer says instead of where the clamping left it.
+  // The west edge is clamped before `set` sees it, and the east one is not, which is
+  // asymmetric because `set` is. Handed a reversed pair it keeps the *start* it was
+  // given and grows the minimum span rightwards from there: for an east drag that start
+  // is the untouched west edge, so the gesture stops at the minimum holding the
+  // opposite edge, which is what an edge resize means. For a west drag the start is the
+  // pointer, so the east edge jumped past where it had been and the minimum-width
+  // window then panned along with the pointer - a resize that turns into a drag once it
+  // crosses the far edge.
+  const moved = miniDrag.edge === 'w'
+    ? view.set(Math.min(miniDrag.a + d, miniDrag.b - view.minSpan()), miniDrag.b)
+    : miniDrag.edge === 'e' ? view.set(miniDrag.a, miniDrag.b + d)
+      : view.set(miniDrag.a + d, miniDrag.b + d);
+  if (moved) viewChanged();
+});
+
+for (const type of ['pointerup', 'pointercancel']) {
+  ui.mini.addEventListener(type, () => { miniDrag = null; });
+}
+
 let handleDrag = null;
 
 for (const handle of [ui.in, ui.out]) {
@@ -5519,7 +6321,7 @@ for (const handle of [ui.in, ui.out]) {
     if (!timeline) return;
     handle.setPointerCapture(e.pointerId);
     handleDrag = handle === ui.in ? 'in' : 'out';
-    timeline.pause();
+    pauseTransport();
     e.stopPropagation();
   });
   handle.addEventListener('pointermove', (e) => {
@@ -5558,7 +6360,7 @@ ui.play.addEventListener('click', () => {
 /** Parks the playhead somewhere, stopping first. Seeks clamp into the clip range. */
 function goTo(sec) {
   if (!timeline) return;
-  timeline.pause();
+  pauseTransport();
   timeline.seek(Math.max(0, Math.min(sec, timeline.duration))).catch(showTimelineError);
 }
 
@@ -5594,7 +6396,8 @@ const isTyping = (el) => el instanceof HTMLElement && (TYPING_TAGS.has(el.tagNam
 
 const SHORTCUTS = 'space play/pause · arrows step a frame, with shift a second · '
   + 'home/end · i/o set in/out, with shift jump to them · del removes the selected key · '
-  + 'm marks · cmd-z undoes · h hides the panel';
+  + 'm marks · +/- zoom the ruler, ,/. pan it, f fits the clip, z frames in..out · '
+  + 'cmd-z undoes · h hides the panel';
 
 /**
  * The editor's keyboard, and the guard that has to come with it.
@@ -5612,6 +6415,19 @@ const SHORTCUTS = 'space play/pause · arrows step a frame, with shift a second 
  */
 addEventListener('keydown', (e) => {
   if (isTyping(e.target)) return;
+  // A key another control has already consumed is not a shortcut, and the guard is
+  // written against the class rather than against the control that found it. `isTyping`
+  // covers the form fields, which is every control whose keys the *browser* owns - and
+  // the splitter is the first one in this page whose keys are owned by us: it takes
+  // Home and End to reach the two ends of its travel, and those are the same two keys
+  // that seek to the clip boundaries. A keyboard user collapsing the strip got the
+  // collapse *and* a pause and an accurate seek, one gesture reading as two.
+  //
+  // `defaultPrevented` rather than `stopPropagation` in the splitter, because this is
+  // the handler with the conflict and a control that consumes a key already says so by
+  // calling `preventDefault`. The next control that binds a key of its own is asked by
+  // existing rather than having to know this handler is here.
+  if (e.defaultPrevented) return;
 
   if (e.key === 'h' || e.key === 'H') {
     const p = document.getElementById('panel');
@@ -5636,7 +6452,7 @@ addEventListener('keydown', (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
 
   const step = (frames) => {
-    timeline.pause();
+    pauseTransport();
     timeline.seek(Math.max(0, Math.min((timeline.frame + frames) / timeline.outputFps, timeline.duration)))
       .catch(showTimelineError);
   };
@@ -5649,7 +6465,7 @@ addEventListener('keydown', (e) => {
       if (e.target instanceof HTMLElement && e.target.closest('button, [role=button]')) return;
       // Or the page scrolls under the strip.
       e.preventDefault();
-      if (timeline.playing) timeline.pause();
+      if (timeline.playing) pauseTransport();
       else timeline.play().catch(showTimelineError);
       return;
     case 'ArrowRight': e.preventDefault(); step(e.shiftKey ? timeline.outputFps : 1); return;
@@ -5668,10 +6484,139 @@ addEventListener('keydown', (e) => {
       return;
     case 'Delete': case 'Backspace': e.preventDefault(); deleteSelectedKey(); return;
     case 'm': case 'M': e.preventDefault(); markHere().catch(showTimelineError); return;
+    // Zoom about the playhead rather than about the centre of the window, for the same
+    // reason the wheel zooms about the pointer: the playhead is what the keyboard is
+    // pointing at, and zooming away from it is zooming away from the edit.
+    case '+': case '=':
+      e.preventDefault();
+      if (view.zoomAbout(timeline.programSec / view.duration, ZOOM_PER_NOTCH)) viewChanged();
+      return;
+    case '-': case '_':
+      e.preventDefault();
+      if (view.zoomAbout(timeline.programSec / view.duration, 1 / ZOOM_PER_NOTCH)) viewChanged();
+      return;
+    // Pan the window along the clip, which was the one thing the keyboard could not do.
+    //
+    // Zoom, fit and frame were all here and all of them *change* the window's width;
+    // moving a window of the width you already have was reachable only by dragging the
+    // overview box, and the overview and its two edges are `div` and `i` elements with
+    // no tabindex and nothing but pointer handlers - so on a long clip at a close zoom
+    // there was no keyboard way to get from one end to the other except by widening the
+    // window and narrowing it again somewhere else.
+    //
+    // A quarter of the visible window per press rather than a fixed number of seconds,
+    // for the same reason the wheel zooms by a factor: at a close zoom a second is the
+    // whole screen and at fit-zoom it is invisible, so a constant is the wrong pace at
+    // every zoom but one. `panBy` already existed for this and had no caller, which is
+    // its own small piece of evidence that the gesture was meant to be here.
+    case ',': case '<': e.preventDefault(); if (view.panBy(-0.25)) viewChanged(); return;
+    case '.': case '>': e.preventDefault(); if (view.panBy(0.25)) viewChanged(); return;
+    case 'f': case 'F': e.preventDefault(); if (view.fit()) viewChanged(); return;
+    case 'z': case 'Z':
+      e.preventDefault();
+      if (view.frame(clipIn, clipOut ?? view.duration)) viewChanged();
+      return;
     case '?': e.preventDefault(); ui.note.textContent = SHORTCUTS; return;
     default:
   }
 });
+
+// The speed slider's own coordinate, which is not the rate.
+//
+// `<input type="range">` is linear in its value, and program length goes as 1/rate,
+// so a slider whose value *was* the rate put almost all of its useful travel in the
+// bottom tenth: on the old 0.1..4 range one 0.05 step near 0.1 changed the clip's
+// length by a third and the same step near 4 changed it by one percent. The travel is
+// logarithmic instead, so a step anywhere is the same proportional change - about 1.9%
+// of the clip's length at the 0.005 the arrow keys move.
+//
+// The detent is not a rounding accident. 1.00x is the value that has to be reachable
+// exactly rather than approximately: it is what `slopeAt` reports to the audio gate,
+// and a take that is "playing at 1.0" at 0.9995 is a take the gate reads as retimed.
+// A log grid has no reason to land on 1 at all, so the band snaps to it and the rest
+// is quantised to a millirate, which is finer than the readout beside it can show.
+//
+// Its width belongs to the control rather than to the rate, and the two attempts to
+// state it in rate are both recorded below at `DETENT_PX` - the second was wrong by a
+// factor of four because the arithmetic was done against a slider four times wider than
+// the one the stylesheet ships.
+const RATE_MIN = 0.1;
+const RATE_MAX = 4;
+
+/**
+ * How wide the 1.00x detent is, in pixels of the control it lives on.
+ *
+ * **It was a band of rate, and a band of rate is not a band of anything a finger can
+ * find.** The travel spans a factor of 40, so +/-3% of rate is `ln(1.03)/ln(40)` of the
+ * slider - 0.74px on each side of the shipped 92px control, which is sub-pixel and makes
+ * the one value the detent exists to make reachable unreachable again. That is the same
+ * failure this constant was written to fix, surviving its own fix: the comment beside it
+ * did the arithmetic against a ~380px control and the stylesheet says
+ * `.tchip input[type=range] { width: 92px }`.
+ *
+ * So it is stated in pixels and converted against the control as rendered, rather than
+ * agreed with in a comment - the same rule the proof tools learned about layout constants
+ * they kept their own copy of. It costs nothing real either way, since a deliberate 2%
+ * speed change is not a thing anyone grades.
+ *
+ * **The number of pixels it actually buys is measured rather than computed**, because the
+ * value a click produces is not `x / width`: a range input's track is shorter than its box
+ * by the thumb, so arithmetic from the element's width is off by however wide that is.
+ * `editor-check` sweeps the control a pixel at a time and reports what a pointer really
+ * gets - 8 contiguous pixels of the 92, x 56..63, on the shipped stylesheet.
+ */
+const DETENT_PX = 3;
+
+const rawRateFromSlider = (v) => (
+  RATE_MIN * (RATE_MAX / RATE_MIN) ** Math.min(1, Math.max(0, Number(v) || 0))
+);
+/**
+ * Whether a slider *position* is inside the detent - a position, because the band is a
+ * number of pixels and the mapping from rate to travel is logarithmic, so the same band
+ * in rate is a different number of pixels at every point on the control.
+ *
+ * The width is read off the element each time rather than cached: the strip is resizable
+ * and a cached number would be one more layout constant kept in two places. The 92px
+ * fallback is for a panel that is hidden, where the rect is zero and no pointer can reach
+ * the control anyway.
+ */
+const insideDetent = (v) => {
+  const width = ui.rate.getBoundingClientRect().width || 92;
+  return Math.abs(Number(v) - sliderFromRate(1)) <= DETENT_PX / Math.max(1, width);
+};
+
+/**
+ * The rate a slider position means, with the detent applied - but only to a gesture that
+ * came into the band from outside it.
+ *
+ * **A detent is for a value you are aiming at, and it was also eating one you already
+ * had.** `restoreProject` accepts any positive finite rate, so a project can carry 1.02x;
+ * the thumb is positioned there correctly, and then the first small pointer input - a
+ * touch, a nudge, anything landing back in the same neighbourhood - came through here and
+ * returned exactly 1.00. Two percent off every cut and every key and a different rendered
+ * file, before the pointer had meaningfully moved. The band exists so 1.00x is *reachable*
+ * exactly, not so it is the only thing reachable near it.
+ *
+ * Read here and armed in the `input` handler rather than armed here, because this is also
+ * called by `timingChanged` to ask whether the thumb already shows the current rate -
+ * arming from inside would make a comparison change the thing it is comparing, which is
+ * the observer effect this repo keeps finding in its own instruments.
+ */
+const rateFromSlider = (v) => {
+  const holding = rateGesture ? rateGesture.detentArmed === false : false;
+  return !holding && insideDetent(v) ? 1 : Number(rawRateFromSlider(v).toFixed(3));
+};
+
+const sliderFromRate = (rate) => (
+  Math.log(Math.min(RATE_MAX, Math.max(RATE_MIN, rate)) / RATE_MIN)
+  / Math.log(RATE_MAX / RATE_MIN)
+);
+
+// Where the thumb starts. Written from the rate rather than spelled out in the markup,
+// so the position of 1.00x is stated once - and written here rather than left to
+// `timingChanged`, which returns early until a take is open and would otherwise leave
+// the thumb at 0.1x under a readout saying 1.00x.
+ui.rate.value = String(sliderFromRate(retime.rate));
 
 /**
  * What a speed gesture holds still, captured once when it starts.
@@ -5699,11 +6644,156 @@ addEventListener('keydown', (e) => {
  */
 let rateGesture = null;
 
-function beginRateGesture() {
+function beginRateGesture({ fromKey = false } = {}) {
   if (rateGesture || !timeline) return;
-  rateGesture = { source: retime.sourceSecAt(timeline.programSec), wasPlaying: timeline.playing };
+  // Taken before the object exists rather than inside it, so `takeTransport`'s cancel
+  // provably cannot reach this gesture - the ordering is stated here instead of resting
+  // on when a property initialiser happens to run.
+  const gen = takeTransport();
+  rateGesture = {
+    // Whether a key is holding this open, which decides whether `change` may end it -
+    // see the listener wiring below. Read off how the gesture *started*, because the
+    // repeats after the first arrive as `input` and would otherwise look like a value
+    // written by a script.
+    fromKey,
+    // The generation this gesture owns. A gesture is held for as long as a finger or a
+    // key is down, which is long enough for a project fetch started *before* it to land
+    // in the middle of it - and `loadProjectNamed` takes the transport and restores a
+    // different document. `takeTransport` drops the gesture outright when that happens,
+    // so this number is what the *resume* is checked against: the seek below is a
+    // pre-roll, long enough for a second taker to arrive after the release has already
+    // decided the take should be running.
+    gen,
+    // Whether the detent may act yet. Disarmed only for a gesture that *begins* inside
+    // the band at something other than 1.00x, which is a rate no slider could have
+    // produced - it came out of a project file. The `input` handler arms it the moment
+    // the thumb leaves the band, so aiming at 1.00x from outside still snaps.
+    detentArmed: retime.rate === 1 || !insideDetent(sliderFromRate(retime.rate)),
+    source: retime.sourceSecAt(timeline.programSec),
+    wasPlaying: timeline.playing,
+    // The parameterisation the gesture started in. Every program time in the document
+    // is rescaled from *these* on each event rather than from wherever the previous
+    // event left them - see `reparameteriseProgramTime` for why a product of per-event
+    // factors is the wrong number.
+    rate: retime.rate,
+    times: programTimeSnapshot(),
+    // Whether the slope was ever actually put anywhere. A gesture that only ever
+    // touched the control has nothing to seek for and nothing to undo but its pause.
+    applied: false,
+  };
   // Paused once for the gesture rather than on every event, and resumed at the end.
   timeline.pause();
+}
+
+/**
+ * Ends the gesture, whichever event gets here first.
+ *
+ * **A gesture must end on release rather than on a change, because the two are not
+ * the same set of gestures** - and the difference was silent data loss. `change` fires
+ * only when the committed value differs from the one the control was picked up at, so
+ * two ordinary things ended nothing: a press that releases in place, and a drag that
+ * wanders and comes back. Measured in Chromium: the first emits `pointerdown ->
+ * pointerup` and the second `pointerdown -> input x6 -> pointerup`, neither with a
+ * `change` anywhere in it. The gesture therefore stayed live, holding a
+ * `programTimeSnapshot` of the document as it was *then* - and the next real speed
+ * change reused it, rewriting every key and both cuts from that stale snapshot and
+ * silently undoing whatever had been edited in between. The take stayed paused too,
+ * because the resume lives on the path that never ran.
+ *
+ * So every way out of the control ends it - `change`, `pointerup`, `pointercancel`,
+ * `keyup` - and the first one through does the work while the rest find it already
+ * ended. That ordering is measured rather than assumed: `pointerup` lands *before*
+ * `change` on a pointer drag, and `change` before `keyup` on an arrow key, so neither
+ * path has a winner that leaves the other's work undone. The control captures the
+ * pointer, so a release 600px outside it still arrives here.
+ */
+function endRateGesture() {
+  if (!rateGesture) return;
+  // A take closed while the slider was held leaves a gesture with nothing to end it
+  // against. Dropped rather than applied, because there is no transport to seek.
+  if (!timeline) { rateGesture = null; return; }
+  // No branch here for a gesture that lost the transport, because there is no such
+  // gesture to find: `takeTransport` dropped it, and the guard above is what catches it.
+  // A second check here would be a second thing to keep in step with the first.
+  const { wasPlaying, applied, rate: began, gen } = rateGesture;
+  if (!applied) {
+    rateGesture = null;
+    if (wasPlaying) timeline.play().catch(showTimelineError);
+    return;
+  }
+  const rate = rateFromSlider(ui.rate.value);
+  // Before the gesture is cleared, because `applyRate` rescales *from* it - the
+  // snapshot and the parameterisation it was taken in both live on `rateGesture`, so
+  // nulling it first throws inside the one call the release exists to make.
+  const program = applyRate(rate);
+  rateGesture = null;
+  // Whatever is queued behind the draft in flight would otherwise paint itself over
+  // the true image this is about to ask for.
+  draftWanted = null;
+  timingChanged();
+  timeline.seek(program)
+    // Only if nothing has taken the transport over since. The seek is a pre-roll, so it
+    // is long enough for a second speed change, a project load, an undo or an output-rate
+    // change to start and make its own decision about whether the take should be running
+    // - each of them having read a transport this gesture had already paused. An
+    // unconditional resume lands that older decision on top of the newer one.
+    .then(() => { if (wasPlaying && gen === transportGen) return timeline.play(); })
+    .catch(showTimelineError);
+  // A drag that came back to the slope it started at has restored the document
+  // exactly - `applyRate` reads every time from the snapshot rather than from where
+  // the last event left it - so there is nothing to remember. Committing anyway would
+  // put an undo step on the stack that undoes nothing. The true image is still asked
+  // for above, because the drafts along the way were real and one of them is on screen.
+  if (rate !== began) history.commit();
+}
+
+/**
+ * Puts the slope at `rate` and carries the whole document across with it.
+ *
+ * The order is load-bearing rather than tidy. The playhead moves to its anchor first,
+ * so that by the time the cuts are rescaled it is already sitting at the same fraction
+ * of the ruler they are - which means `setClipInOut` finds it inside the range and
+ * repaints instead of seeking. Rescaling first would step a still-old playhead against
+ * new cuts and buy an accurate seek per slider event, which is the storm the draft
+ * pump exists to avoid.
+ */
+function applyRate(rate) {
+  retime.rate = rate;
+  rateGesture.applied = true;
+  const program = programHoldingAnchor();
+  // `frameOf` rather than `frameAt`, and that is the second half of the ordering above.
+  // `frameAt` clamps to the clip range, which at this instant is still the *previous*
+  // rate's range - the cuts are rescaled on the next line. Clamping against them puts
+  // the playhead on an old boundary that the rescale then moves out from under it:
+  // with cuts at 10s/15s and the slope going 1x -> 2x, the anchor at 5.5s is dragged
+  // up to the old in-point at 10s while the new range becomes 5s/7.5s, so
+  // `setClipInOut` finds the playhead outside and buys the accurate seek this whole
+  // path exists to avoid - one per slider event. Unclamped, the playhead and the cuts
+  // scale by the same `k` and it stays inside by arithmetic rather than by luck.
+  // **And the anchor lands on the output grid, which costs up to half a frame of program
+  // time - `rate / (2 * outputFps)` of source.** A reviewer read that as the speed control
+  // failing to hold the picture, and the number is real: from program 10s at 1x, 2.35x
+  // wants program 4.255319s, the nearest frame is 128 at 4.266667s, and the source moment
+  // moves 10.0000s to 10.0267s. At 4x and 30fps the worst case is 66.7ms, two capture
+  // frames.
+  //
+  // It is the grid rather than the rounding, and that is worth being exact about because
+  // "preserve the source position" sounds available and is not. The transport shows a
+  // frame, so the only choice is *which* frame - and with `source = program * rate` the
+  // two errors differ by a constant factor, so the frame nearest in program time is
+  // already the frame nearest in source time. `Math.round` is the minimiser; what is left
+  // is that no output frame maps to the moment being asked for.
+  //
+  // It also accumulates: each change re-derives the anchor from a frame the previous one
+  // quantised, so 1x -> 2.35x -> 1x lands about 33ms from where it started. Carrying a
+  // sub-frame program time through the transport would close that, and it would change
+  // the thing `determinism-check` and `timeline-check` both rest on - a frame-indexed
+  // program clock - so it is named here rather than done in passing. `editor-check` has
+  // an off-grid arm asserting the bound, because its other three sit exactly on the grid
+  // and had never measured this at all.
+  timeline.frame = timeline.frameOf(program);
+  reparameteriseProgramTime(rateGesture.rate / rate, rateGesture.times);
+  return program;
 }
 
 /** Where the anchored frame sits now that the slope has changed. */
@@ -5711,15 +6801,71 @@ function programHoldingAnchor() {
   return Math.max(0, Math.min(retime.programSecAt(rateGesture.source), timeline.duration));
 }
 
-ui.rate.addEventListener('pointerdown', beginRateGesture);
-ui.rate.addEventListener('keydown', beginRateGesture);
+// Wrapped rather than passed straight in, because the listener's first argument is a
+// `PointerEvent` and this function's is now an options object - handing it the event
+// would read `fromKey` off it and get `undefined`, which happens to be the right answer
+// today and would silently stop being one.
+ui.rate.addEventListener('pointerdown', () => beginRateGesture());
+// The keys a range input answers, named rather than left unconditional. Tab fires
+// `keydown` here too and then takes the focus away *before* `keyup`, so an
+// unconditional start paused the take and handed the gesture to a control that has no
+// end handler for it. Measured: `keydown -> blur -> focusout -> button:keyup`, with the
+// keyup delivered to the button.
+const RATE_KEYS = new Set([
+  'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End',
+]);
+ui.rate.addEventListener('keydown', (e) => { if (RATE_KEYS.has(e.key)) beginRateGesture({ fromKey: e.key }); });
+// `blur` is in here for the same reason and is the one that closes the class: it is the
+// last event the control gets on *any* way out of it, including the ones nobody thought
+// of. It cannot pre-empt a commit either - on an arrow followed by Tab, `change` lands
+// three events before `blur`, so the gesture is already over by then.
+for (const type of ['pointerup', 'pointercancel', 'blur']) {
+  ui.rate.addEventListener(type, endRateGesture);
+}
+// **A `keyup` ends this gesture only when it is the key holding it open**, which is why
+// `fromKey` is the key's name rather than a flag. Any other release used to end it: hold
+// an arrow to ramp the speed, tap Shift on the way, and the Shift release closed the
+// gesture while the arrow was still repeating. The next repeat opened a *new* one, read
+// `timeline.playing` off a transport the first had already paused, and so recorded
+// `wasPlaying: false` - so the real release left a running take stopped, and one
+// adjustment became several undo steps and several accurate seeks. Same shape as the
+// `change` handler two doors up, arriving on a different event.
+//
+// A gesture with no `fromKey` - a pointer drag, or a value written straight into the
+// control - is not ended here at all. `pointerup` and `blur` own those, and a stray
+// keyboard release during a pointer drag is the same intruder wearing the other hand.
+ui.rate.addEventListener('keyup', (e) => {
+  if (rateGesture && rateGesture.fromKey === e.key) endRateGesture();
+});
+// **`change` ends a gesture only when no key is holding one open, because a held arrow
+// key is not one gesture to this control - it is one per repeat.** Chromium fires
+// `keydown -> input -> change` on every auto-repeat and a single `keyup` at the end, so
+// an unconditional `change` handler ended and restarted the gesture on each one:
+// measured at six undo commits and six accurate pre-roll seeks for one held key, where
+// a drag of the same travel costs one of each. The seek storm this control was rewritten
+// to avoid was still there on the keyboard, behind the one gesture that cannot be
+// noticed by watching the pointer.
+//
+// It also lost the take. Each repeat's `beginRateGesture` read `timeline.playing` off a
+// transport the previous repeat had just paused, so `wasPlaying` was true only for the
+// first of six - and the resume the first one owned was invalidated by the second taking
+// the transport. Releasing the key left a running take stopped.
+//
+// The condition is on the gesture rather than on the event because `change` is still the
+// only ending a value written straight into the control ever gets - no pointer, no key,
+// which is how every tool that drives this slider works.
+ui.rate.addEventListener('change', () => { if (!rateGesture?.fromKey) endRateGesture(); });
 
 ui.rate.addEventListener('input', () => {
   if (!timeline) return;
   beginRateGesture();
-  retime.rate = Number(ui.rate.value);
-  const program = programHoldingAnchor();
-  timeline.frame = timeline.frameAt(program);
+  // Once the thumb has been outside the band, the detent is live for the rest of the
+  // gesture. Armed from the raw position rather than from the snapped rate, because the
+  // snapped one cannot say whether it is inside the band or exactly on the value.
+  if (rateGesture && !rateGesture.detentArmed && !insideDetent(ui.rate.value)) {
+    rateGesture.detentArmed = true;
+  }
+  const program = applyRate(rateFromSlider(ui.rate.value));
   // `moved` because a speed change rescales every lane and adds none: the set of
   // lanes is a property of which tracks carry keys, which a slope cannot touch.
   timingChanged({ moved: true });
@@ -5730,23 +6876,6 @@ ui.rate.addEventListener('input', () => {
   pumpDraft();
 });
 
-ui.rate.addEventListener('change', () => {
-  if (!timeline) return;
-  beginRateGesture();
-  retime.rate = Number(ui.rate.value);
-  const program = programHoldingAnchor();
-  const resume = rateGesture.wasPlaying;
-  rateGesture = null;
-  // Whatever is queued behind the draft in flight would otherwise paint itself over
-  // the true image this is about to ask for.
-  draftWanted = null;
-  timingChanged();
-  timeline.seek(program)
-    .then(() => { if (resume) return timeline.play(); })
-    .catch(showTimelineError);
-  history.commit();
-});
-
 ui.fps.addEventListener('change', () => {
   if (!timeline) return;
   const held = timeline.programSec;
@@ -5755,11 +6884,12 @@ ui.fps.addEventListener('change', () => {
   ensureActiveDeliverable();
   activeDeliverable.outputFps = fps;
   paintDeliverable();
+  const gen = takeTransport();
   const wasPlaying = timeline.playing;
   timeline.pause();
   timingChanged();
   timeline.seek(held)
-    .then(() => { if (wasPlaying) return timeline.play(); })
+    .then(() => { if (wasPlaying && gen === transportGen) return timeline.play(); })
     .catch(showTimelineError);
   history.commit();
 });
@@ -5963,7 +7093,6 @@ function rebuildLanes() {
   ui.railLanes.replaceChildren();
   ui.lanes.replaceChildren();
   const rows = laneRows();
-  const duration = Math.max(1e-6, rulerDuration());
 
   for (const row of rows) {
     const rail = document.createElement('div');
@@ -5988,10 +7117,11 @@ function rebuildLanes() {
     lane.__row = row;
     bed.appendChild(lane);
     ui.lanes.appendChild(bed);
-    drawLane(lane, row, duration);
+    drawLane(lane, row);
   }
 
-  ui.root.style.setProperty('--tlanes-h', `${rows.reduce((n, r) => n + r.height + 1, 0)}px`);
+  laneStackHeight = rows.reduce((n, r) => n + r.height + 1, 0);
+  applyLaneHeight();
   // The strip changed height, so the stage the renderer sizes itself to did too -
   // and so did the canvas the furniture is drawn on, which is sized to the stage.
   resize();
@@ -6016,7 +7146,6 @@ function rebuildLanes() {
  * underneath it changes nothing about where the events go.
  */
 function repositionLanes() {
-  const duration = Math.max(1e-6, rulerDuration());
   for (const lane of ui.lanes.querySelectorAll('.tlane')) {
     const row = lane.__row;
     if (!row) return false;
@@ -6025,8 +7154,13 @@ function repositionLanes() {
     if (nodes.length !== keys.length) return false;
     for (const node of nodes) {
       if (!keys.includes(node.__key)) return false;
-      node.style.left = `${(node.__key.t / duration) * 100}%`;
+      node.style.left = `${view.pct(node.__key.t)}%`;
       node.style.top = `${keyY(row, node.__key)}%`;
+      // Hidden rather than removed. `repositionLanes` refuses to run when the node
+      // count and the key count disagree - that identity is what lets a drag take the
+      // cheap path - so culling by removal would send every zoomed drag down the
+      // rebuild, which resizes the drawing buffer.
+      node.hidden = !view.holds(node.__key.t);
     }
     for (const handle of lane.querySelectorAll('.thandle')) {
       // The segment is recomputed rather than trusted. `__seg` was correct when the
@@ -6041,11 +7175,12 @@ function repositionLanes() {
       if (!segmentHasShape(keys, seg)) return false;
       const point = handlePoint(row, keys, seg, handle.__side);
       handle.__seg = seg;
-      handle.style.left = `${(point.t / duration) * 100}%`;
+      handle.style.left = `${view.pct(point.t)}%`;
       handle.style.top = `${point.y}%`;
+      handle.hidden = !view.holds(point.t);
     }
     const curve = lane.querySelector('polyline');
-    if (curve) curve.setAttribute('points', lanePoints(row.owner, duration));
+    if (curve) curve.setAttribute('points', lanePoints(row.owner));
   }
   return true;
 }
@@ -6063,15 +7198,20 @@ function repositionLanes() {
  * cannot hold. The fix is to draw through `params.normalise` the way the keys
  * already are.
  */
-function lanePoints(owner, duration) {
+function lanePoints(owner) {
   const { min, max } = laneRange(owner);
   const span = Math.max(1e-9, max - min);
   const at = owner === 'retime'
     ? (t) => retime.sourceSecAt(t)
     : (t) => tracks.get(owner).valueAt(t);
   const points = [];
+  // Sampled across the *visible* window rather than the clip, which does two things at
+  // once: nothing is drawn outside the lane, so there is no horizontal overflow to clip
+  // and `.tlane svg` can stay `overflow: visible` for the vertical excursions it is
+  // there for - and the same 120 samples buy proportionally more detail the further in
+  // you zoom, instead of a curve that gets coarser exactly where you are looking at it.
   for (let i = 0; i <= CURVE_SAMPLES; i++) {
-    const t = (i / CURVE_SAMPLES) * duration;
+    const t = view.startSec + (i / CURVE_SAMPLES) * view.spanSec;
     const y = 100 - ((at(t) - min) / span) * 100;
     points.push(`${(i / CURVE_SAMPLES) * 1000},${Math.max(-20, Math.min(120, y)).toFixed(2)}`);
   }
@@ -6091,9 +7231,9 @@ function lanePoints(owner, duration) {
  */
 const segmentHasShape = (keys, seg) => Math.abs(keys[seg + 1].value - keys[seg].value) > 1e-9;
 
-function drawLane(lane, row, duration) {
+function drawLane(lane, row) {
   const keys = keysOf(row.owner);
-  const x = (t) => (t / duration) * 100;
+  const x = (t) => view.pct(t);
 
   if (row.kind === 'scalar') {
     // The curve itself, because a row of diamonds says where the keys are and
@@ -6102,7 +7242,7 @@ function drawLane(lane, row, duration) {
     // lane, so it costs nothing to redraw at a different width.
     const box = svg('svg', { viewBox: '0 0 1000 100', preserveAspectRatio: 'none' });
     box.appendChild(svg('polyline', {
-      points: lanePoints(row.owner, duration), fill: 'none', stroke: 'var(--accent)',
+      points: lanePoints(row.owner), fill: 'none', stroke: 'var(--accent)',
       'stroke-width': 1.4, 'vector-effect': 'non-scaling-stroke',
     }));
     lane.appendChild(box);
@@ -6114,6 +7254,7 @@ function drawLane(lane, row, duration) {
     if (selection && selection.key === key) node.classList.add('sel');
     node.style.left = `${x(key.t)}%`;
     node.style.top = `${keyY(row, key)}%`;
+    node.hidden = !view.holds(key.t);
     node.dataset.role = 'key';
     lane.appendChild(node);
     node.__key = key;
@@ -6134,6 +7275,7 @@ function drawLane(lane, row, duration) {
     const point = handlePoint(row, keys, seg, side);
     handle.style.left = `${x(point.t)}%`;
     handle.style.top = `${point.y}%`;
+    handle.hidden = !view.holds(point.t);
     handle.dataset.role = 'handle';
     handle.__key = selection.key;
     handle.__row = row;
@@ -6235,7 +7377,38 @@ function lanesMoved() {
  */
 function timingChanged({ moved = false } = {}) {
   if (!timeline) return;
-  ui.rate.value = String(retime.rate);
+  // Re-clamped against the duration this may just have changed, because the window is
+  // stored as *fractions* and its minimum is in *seconds*. Those disagree the moment
+  // the duration moves: a window sitting at exactly `MIN_VIEW_SEC` at 0.1x is a fixed
+  // fraction of a clip that a change to 4x makes forty times shorter, so the same
+  // fraction is now 0.00625 program seconds - a window narrower than a single output
+  // frame, which is the state `MIN_VIEW_SEC` exists to make unreachable and which
+  // resolves most pointer positions on the ruler to the same frame.
+  //
+  // **`reclamp` rather than `set`, and the difference is a bug that lived here.** Handing
+  // `set` the fractions the window already holds writes the *clamped* window back as the
+  // one that was asked for, so the limit applies to its own previous output and the
+  // window only ever ratchets outward: a round trip from 0.1x to 4x and back left a
+  // 0.25s window at 10s, with the document returned exactly and no undo step committed.
+  // `reclamp` re-derives from the request instead, so the same round trip comes back to
+  // where it started. Every timing change passes through here, which is what makes undo,
+  // a project load and an output-rate change get it too.
+  view.reclamp();
+  // The slider's coordinate, not the rate - see `rateFromSlider`. Written only when
+  // the thumb is not already showing this rate, and the condition is the invariant
+  // itself rather than a flag standing in for it: the rate is quantised and snapped on
+  // the way through, so writing the position back unconditionally would shove the thumb
+  // out from under a pointer that is mid-drag by the rounding, and inside the 1.00x
+  // detent it would jump the thumb to the centre of the band from anywhere in it.
+  //
+  // Asking "does the thumb already mean this rate" rather than "is a gesture running"
+  // is what makes it self-correcting. A gesture flag has to be cleared by something,
+  // and `change` is not guaranteed to arrive - a slider nudged with the arrow keys and
+  // never blurred would leave the flag set, and every later write-back from a project
+  // load or an undo would be skipped by a gesture that ended long ago.
+  if (rateFromSlider(ui.rate.value) !== retime.rate) {
+    ui.rate.value = String(sliderFromRate(retime.rate));
+  }
   ui.rateOut.textContent = `${retime.rate.toFixed(2)}×`;
   // The slider is the one-key version of the curve, so once the curve has keys it
   // has nothing left to say: it would set a slope only the extrapolated ends read.
@@ -6244,6 +7417,11 @@ function timingChanged({ moved = false } = {}) {
   ui.fps.value = String(timeline.outputFps);
   buildRuler();
   paintMarks();
+  // The window is fractions of a duration this may just have changed, so everything
+  // positioned against it moves even though nothing in the document did. Not left to
+  // the caller's seek: most of them do repaint afterwards, but "most" is how the
+  // overview ends up showing the previous rate's window on the one path that does not.
+  paintStripPositions();
   if (moved) lanesMoved();
   else lanesChanged();
 }
@@ -6263,7 +7441,9 @@ function paintMarks() {
   host.replaceChildren();
   ui.markCount.textContent = String(takeMarks.length);
   if (!timeline) return;
-  const total = Math.max(1e-6, rulerDuration());
+  // The clip's length, not the window's: whether a mark is past the end of the edit is
+  // a fact about the edit, and it must not change because somebody scrolled.
+  const total = view.duration;
   for (const mark of takeMarks) {
     // Marks are stamped in source milliseconds and the ruler is program seconds,
     // so every tick goes through the curve. The two coincide only at rate 1 with
@@ -6279,9 +7459,23 @@ function paintMarks() {
     // somebody shortened the clip would be worse than one that needs explaining.
     const beyond = program >= total - 1e-9 && mark.sourceMs / 1000 > retime.sourceSecAt(total) + 1e-9;
     el.className = beyond ? 'tmk beyond' : 'tmk';
-    el.style.left = `${Math.max(0, Math.min(1, program / total)) * 100}%`;
+    const at = Math.max(0, Math.min(total, program));
+    el.style.left = `${view.pct(at)}%`;
+    el.hidden = !view.holds(at);
     el.title = `${mark.label ?? mark.id} · source ${(mark.sourceMs / 1000).toFixed(2)}s`;
     host.appendChild(el);
+  }
+  // The same marks on the overview, in whole-clip coordinates. Built here rather than
+  // in `paintMinimap` because that runs on every repaint and this list only changes
+  // when the marks or the timing do - rebuilding N nodes per played frame would be a
+  // cost with nothing to show for it.
+  if (ui.miniMarks) {
+    ui.miniMarks.replaceChildren(...takeMarks.map((mark) => {
+      const el = document.createElement('span');
+      const program = retime.programSecAt(mark.sourceMs / 1000);
+      el.style.left = `${Math.max(0, Math.min(100, (program / total) * 100))}%`;
+      return el;
+    }));
   }
 }
 
@@ -6579,10 +7773,7 @@ async function saveDeliverable(name, deliverable) {
 // longer in the document.
 let laneDrag = null;
 
-function laneProgramAt(clientX) {
-  const r = ui.bed.getBoundingClientRect();
-  return Math.min(1, Math.max(0, (clientX - r.left) / r.width)) * rulerDuration();
-}
+const laneProgramAt = (clientX) => view.timeAt(clientX);
 
 // **Known gap, carried deliberately.** An undo landing between this pointerdown
 // and its pointerup rebuilds every track from the snapshot, so `laneDrag.key` is
@@ -6615,7 +7806,7 @@ ui.beds.addEventListener('pointerdown', (e) => {
   laneDrag = {
     el, row: el.__row, key: el.__key, side: el.__side, seg: el.__seg,
     role: el.dataset.role, rect: lane.getBoundingClientRect(),
-    // Read before anything in the drag can change it - see `rulerDuration`.
+    // Read before anything in the drag can change it - see `view.duration`.
     duration: timeline.duration,
   };
   selection = { owner: el.__row.owner, key: el.__key };
@@ -6650,7 +7841,7 @@ ui.beds.addEventListener('pointermove', (e) => {
     // The one thing a retime key drag moves that the lanes below do not cover. A
     // mark is a source position and the curve carrying it onto the ruler is exactly
     // what this drag bends, so the ticks walk while the ruler itself stays pinned to
-    // `laneDrag.duration` - see `rulerDuration`.
+    // `laneDrag.duration` - see `view.duration`.
     if (row.owner === 'retime') paintMarks();
   } else {
     const a = keys[laneDrag.seg];
@@ -7759,6 +8950,7 @@ async function loadProjectNamed(name) {
       + 'render against material it was never authored against',
     );
   }
+  const gen = takeTransport();
   const resume = timeline ? timeline.playing : false;
   if (resume) timeline.pause();
   restoreProject(doc.body);
@@ -7777,7 +8969,7 @@ async function loadProjectNamed(name) {
   ensureActiveDeliverable();
   applyDeliverable(activeDeliverable);
   await timeline.seek(timeline.programSec);
-  if (resume) timeline.play();
+  if (resume && gen === transportGen) timeline.play();
   ui.project.value = name;
   ui.note.textContent = `opened ${name}`;
   rememberOpened();
@@ -7970,6 +9162,10 @@ async function openTake(id) {
 
   pairSource = source;
   timeline = new TimelineTransport(source);
+  // A new take gets the whole clip. The window is not saved anywhere on purpose: where
+  // you were looking is not what the clip is, and a project that reopened zoomed into
+  // four seconds of a fifteen-minute take would read as having lost the rest of it.
+  view.fit();
   document.body.classList.add('editing');
   ui.root.hidden = false;
   ui.cameraGroup.hidden = false;
@@ -8225,6 +9421,50 @@ globalThis.__kinect = {
    */
   editor: {
     clipRange: () => ({ in: clipIn, out: clipOut }),
+    // The speed slider's travel is logarithmic, so its `value` is a position and not a
+    // rate. A check that wants to drive the control at 2.35x has to be able to say
+    // where 2.35x is, and the alternative - writing the rate into `value` - would set
+    // some other rate and go on asserting happily about it.
+    rateSlider: { toValue: sliderFromRate, toRate: rateFromSlider },
+    /** The strip's height and what bounds it, so a check can drive the splitter. */
+    strip: () => ({
+      lanes: parseFloat(getComputedStyle(ui.root).getPropertyValue('--tlanes-h')) || 0,
+      stacked: laneStackHeight,
+      ceiling: laneHeightCeiling(),
+      height: ui.root.getBoundingClientRect().height,
+      scrollTop: ui.lanes.scrollTop,
+      railScrollTop: ui.railLanes.scrollTop,
+      scrollable: ui.lanes.scrollHeight > ui.lanes.clientHeight + 1,
+    }),
+    stageResizes: () => stageResizes,
+    /**
+     * The window the strip is drawn against, and the mapping both ways through it.
+     *
+     * `pct` and `secAtPct` are exposed as a pair on purpose: the claim worth checking
+     * is that they invert each other at an arbitrary window, and a check that could
+     * only read one of them would have to reimplement the other to say anything -
+     * which is a second copy of the arithmetic under test.
+     */
+    view: {
+      window: () => ({
+        a: view.a, b: view.b, startSec: view.startSec, endSec: view.endSec,
+        spanSec: view.spanSec, duration: view.duration, whole: view.whole,
+      }),
+      pct: (t) => view.pct(t),
+      secAtPct: (p) => view.secAtPct(p),
+      set(a, b) { if (view.set(a, b)) viewChanged(); return { a: view.a, b: view.b }; },
+      fit() { if (view.fit()) viewChanged(); },
+    },
+    // The take's marks as the strip draws them, planted without writing a sidecar. A
+    // mark is the one thing on the ruler that must hold still across a speed change
+    // *without* being rescaled - it is stored in source milliseconds and drawn through
+    // the curve - so a check needs one present to tell "every term was carried across"
+    // from "the ruler never moved". Going through `markHere` to get one would write
+    // into the take on disk, which is a check editing the fixture it measures.
+    setMarks(list) {
+      takeMarks = list.map((m) => ({ ...m }));
+      paintMarks();
+    },
     selection: () => (selection ? { owner: selection.owner, t: selection.key.t } : null),
     select(owner, index) {
       const keys = keysOf(owner);

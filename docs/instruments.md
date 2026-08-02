@@ -211,6 +211,17 @@ came back 1, because a plant that silently failed leaves the grey behind and the
 reports a dead zone as a measurement. **A tool's own synthetic fixture is not the take the
 program ships with, and a claim about "every arm" has to be read off the arms.**
 
+### Two bounds on one number means a probe has to be placed where the one under test is the binding one
+
+The splitter's clamp keeps the stage a third of the window, and `--tlanes-h` is
+`min(stacked, min(asked, ceiling))` - two limits on the same value. The arm stacked eight
+lanes at 280px against a 415px ceiling, so the height was decided by the *content* and the row
+asserting the clamp passed with the clamp deleted: `splitter-unclamped` came back NOT CAUGHT
+with every row green. Fourteen lanes stack 443px, the ceiling binds, and the same mutation
+drags the stage to 31.9% and reddens that one row. This is the dead-zone rule with the two
+terms in a `min` rather than in a sum, and the tell was in the row's own detail line - it
+printed a strip height that was neither the ceiling nor anywhere near it.
+
 ### Place a probe where its answer would be different, not where it is convenient
 
 A third flaw came out of this on step 5: a mutation replacing the pre-roll's window query
@@ -459,6 +470,16 @@ containing no code. Inside a template literal, name things in plain words. It ha
 time in step 3 of the effects rework, `Unexpected identifier 'rgb'`, at a comment explaining why
 a mix is guarded.
 
+**It arrives under a second message, which is why the retry missed it for a while.**
+`Resulting promise was garbage collected` is the same thing - a pending `page.evaluate` whose
+context went away - and it was seen twice in about ten runs of `export-check`, both times in
+section 4 and both times green on the very next run with the tree unchanged. That is the shape
+that teaches people to re-run a gating check until it passes, so it is retried on the same
+terms rather than left as folklore. The tell for "flake rather than regression" is not the
+message either, since the paragraph above has it arriving from contention as well: it is that
+nothing the failing section tests had changed between the red run and the green one, which is
+a `git diff` rather than a judgement.
+
 **`page.evaluate(fnSourceString, arg)` does not call the function.** Playwright evaluates the
 string as an expression, so the arrow function is created, never invoked, and `undefined` comes
 back - which surfaced three helpers later as a missing shot rather than as a call that did not
@@ -488,6 +509,62 @@ expected 1.0. That is the whole look appearing not to rebase, caused entirely by
 **Each build applies its own graded values**; the one that still has `setMode` is left to.
 Caught by A/B against a worktree at the previous commit, which is the only thing that separates
 "my change broke this" from "this was already red".
+
+**A control whose `value` stops meaning the quantity it is named after retargets every tool
+that writes it, silently and in the passing direction.** The speed slider's travel became
+logarithmic, so `#tRate.value` is a position now and not a rate - and three proof sites wrote a
+rate straight into it. `el.value = '1'` had meant 1x and now means 4x, the top of the range.
+Every assertion downstream would have gone on passing, because holding the source frame is true
+at *any* rate: the arms would have measured 4x while their labels said 1x, and nothing would
+ever have said so. What closes it is not remembering to convert - it is that each site now asks
+the page where a rate lives (`__kinect.editor.rateSlider`) and then **checks the rate that came
+out against the rate that went in**. The conversion alone would have been one more thing to
+keep in step; the assertion is what makes a wrong one loud. Ask this of any control whose scale
+you change, and of any `.value` a tool sets by hand.
+
+**And a detent has to be measured against the control, not chosen as a round number - and
+that mistake was made twice in the same place, the second time by the fix for the first.**
+1.00x snaps because `slopeAt` reports it to the audio gate and 0.9995 reads as retimed. The
+band started at +/-1.5% of rate, which on a travel spanning a factor of 40 is
+`ln(1.015)/ln(40)` of the slider - so the one value the detent existed to make reachable was
+not reachable, and the row asserting the snap went red on a build whose arithmetic was
+perfectly correct.
+
+It was widened to +/-3% and the comment recorded that as "about 3px", **and that number came
+from arithmetic against a ~380px control while the stylesheet ships
+`.tchip input[type=range] { width: 92px }`**. So the real band was 0.74px each side: the fix
+restored the same unusable state it was written to remove, and every row asserting it passed,
+because they all assign `el.value` and none of them touch the rendered control. A band in
+*rate* is not a band in anything a finger can find, so it is `DETENT_PX = 3` now, converted
+against the element as rendered.
+
+The row that finally measures it is worth copying, because the obvious version does not
+work. Sweeping the control a pixel at a time and counting the pixels that land on 1.00x
+reported **8px with the band and 8px without** - a probe answering the same number either way
+measures neither, for two reasons at once: a range input's track is shorter than its box by
+the thumb, so pixel arithmetic from `width` is off by however wide that is, and clicking is
+itself a gesture whose detent arming gets in the way of reading the band off it. Taken apart
+into two separately measured terms - the band in travel, bisected through the page's own
+mapping, and the travel a pixel is worth, taken from two clicks far apart - it reports 76px of
+track inside a 92px box and 2.48px each side, and the mutation reddens it at 0.61px.
+**Whenever a constant is stated in one unit and lived in another, measure both terms
+separately; a single number that comes out the same on both builds is not a measurement.**
+
+**A tool holding its own copy of a layout constant is a copy that goes stale, and it fails
+looking exactly like a regression in the product.** Adding one 22px row to the timeline took
+`--timeline-h` from 148 to 170, and `export-check` carried `TIMELINE_H_GUESS = 148` as the
+height it added to the viewport. So its stage came out 22px short, the editor arm rendered at
+the fitted size while the export beside it wrote 640x400, and the row that went red was "every
+frame that crossed the wire is byte-identical to the editor's own image" - nine of nine
+mismatched, on a build whose export was perfect. The same row had caught the same *shape* once
+before, when the letterbox arrived, and the comment beside it says so.
+
+Bumping the constant would close the instance and leave the class: the next row added to the
+strip breaks it again, identically. `keyframe-check` had the answer already - its
+`CHROME_H_GUESS` is documented as a first guess and the real height is measured after load and
+the viewport corrected - so `openPage` now goes through `setStage`, which measures. **When a
+tool needs a number the page owns, have it ask the page once rather than agree with it in a
+comment.**
 
 **Letterboxing the editor stage moved every pointer coordinate and every buffer-size
 expectation, and four proof tools found out one at a time.** `export-check` needed two separate
