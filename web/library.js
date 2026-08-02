@@ -551,8 +551,19 @@ function menuItemsFor(take) {
 function closeMenus(except = null) {
   for (const menu of document.querySelectorAll('.menu:not([hidden])')) {
     if (menu === except) continue;
+    // **Focus comes back to the toggle whenever the menu holding it is hidden, and
+    // that belongs here rather than at any one caller.** Hiding an ancestor of the
+    // focused element drops focus to the body, which inside the viewer means outside
+    // the dialog - so the arrows stop reaching its handler and browsing dies, exactly
+    // as it did when the header button was replaced. Escape already restored focus
+    // because it was written to; choosing an item did not, and neither would the next
+    // caller added. This is the fourth focus fix on this branch and the first one that
+    // is a rule rather than a case: every path that hides a menu now goes through it.
+    const toggle = menu.parentElement.querySelector('[aria-haspopup="menu"]');
+    const heldFocus = menu.contains(document.activeElement);
     menu.hidden = true;
-    menu.parentElement.querySelector('[aria-haspopup="menu"]')?.setAttribute('aria-expanded', 'false');
+    toggle?.setAttribute('aria-expanded', 'false');
+    if (heldFocus && toggle && !toggle.disabled) toggle.focus();
   }
 }
 
@@ -945,7 +956,19 @@ async function run(host, message, action, watch = null, { refresh: doRefresh = t
   // take that cannot be opened, both of which the server then refuses. The failure
   // path did it for every action, not only for Reveal.
   const was = buttons.map((b) => b.disabled);
-  const restore = () => { buttons.forEach((b, i) => { b.disabled = was[i]; }); };
+  // **And which one had focus, because disabling the focused element blurs it.** A
+  // menu item chosen by keyboard closes its menu, which puts focus on the ⋯ toggle -
+  // and this then disables that toggle, so the browser drops focus to the body and the
+  // viewer stops receiving keys. `closeMenus` restoring focus was necessary and not
+  // sufficient: the thing that takes it away is here. Restored after the buttons are,
+  // and only if the node is still in the document and live, since a repaint may have
+  // replaced the whole surface - that case is `openViewer`'s to handle and it does.
+  const hadFocus = buttons.indexOf(document.activeElement);
+  const restore = () => {
+    buttons.forEach((b, i) => { b.disabled = was[i]; });
+    const back = hadFocus >= 0 ? buttons[hadFocus] : null;
+    if (back?.isConnected && !back.disabled) back.focus();
+  };
   for (const b of buttons) b.disabled = true;
   say(message);
   // Polled rather than streamed: the progress is a number that changes slowly and a
@@ -1348,16 +1371,28 @@ viewer.addEventListener('keydown', (e) => {
   if (!viewing) return;
   const shown = shownTakes();
   const here = shown.findIndex((t) => (t.hash ?? t.id) === viewing.key);
+  // **A take can leave the filter while the viewer is holding it open, and the arrows
+  // died when it did.** Downloading under the `remote` tab turns that take into
+  // `both`, and `paint` deliberately keeps the viewer on it by hash - so the open take
+  // is no longer in `shownTakes`, `here` is -1, and both branches below fall through
+  // to nothing. The operator is left on a take they have just acted on with no way to
+  // continue through the rest of the tab.
+  //
+  // Where it *would* sit is the answer, because `shown` is sorted by capture time and
+  // the take still has one: the first entry no newer than it is the position it left.
+  // Up goes to the neighbour before that, down to the entry now occupying it, so a
+  // list that closed over the gap still walks in both directions.
+  const gap = here >= 0 ? -1 : shown.findIndex((t) => t.capturedAt <= viewing.take.capturedAt);
+  const prev = here >= 0 ? here - 1 : (gap === -1 ? shown.length - 1 : gap - 1);
+  const next = here >= 0 ? here + 1 : gap;
   const jump = e.shiftKey ? 10 : 1;
   const keys = {
     ArrowLeft: () => viewing.skim.step(-jump),
     ArrowRight: () => viewing.skim.step(jump),
     Home: () => viewing.skim.setIndex(0),
     End: () => viewing.skim.setIndex(viewing.skim.frames - 1),
-    ArrowUp: () => { if (here > 0) openViewer(shown[here - 1].hash ?? shown[here - 1].id); },
-    ArrowDown: () => {
-      if (here >= 0 && here < shown.length - 1) openViewer(shown[here + 1].hash ?? shown[here + 1].id);
-    },
+    ArrowUp: () => { if (prev >= 0 && prev < shown.length) openViewer(shown[prev].hash ?? shown[prev].id); },
+    ArrowDown: () => { if (next >= 0 && next < shown.length) openViewer(shown[next].hash ?? shown[next].id); },
   };
   const act = keys[e.key];
   if (!act) return;

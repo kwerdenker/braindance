@@ -113,6 +113,29 @@ const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 // property is the refusal and splitting it would make it possible to have two rules
 // about it.
 
+// **The reveal mutation has to break the branch this platform actually runs.** It
+// edited the Darwin entry only, so on Linux or Windows the staged server kept its own
+// unchanged branch, the argv assertion passed, and the control reported zero failures
+// while proving nothing - a falsification control that cannot fire, which is the exact
+// shape this file exists to refuse. Derived from `process.platform` so the anchor is
+// the live line wherever it runs; an unknown platform falls back to Darwin, where the
+// mutation at least refuses to match rather than passing quietly.
+const REVEAL_EDITS = {
+  darwin: [
+    "  darwin: { program: 'open', label: 'Finder', args: (path) => ['-R', path] },",
+    "  darwin: { program: 'open', label: 'Finder', args: () => ['-R'] },",
+  ],
+  linux: [
+    "  linux: { program: 'xdg-open', label: 'the file manager', args: (path) => [dirname(path)] },",
+    "  linux: { program: 'xdg-open', label: 'the file manager', args: () => [] },",
+  ],
+  win32: [
+    "  win32: { program: 'explorer', label: 'Explorer', args: (path) => [`/select,${path}`] },",
+    "  win32: { program: 'explorer', label: 'Explorer', args: () => ['/select,'] },",
+  ],
+};
+const REVEAL_EDIT = REVEAL_EDITS[process.platform] ?? REVEAL_EDITS.darwin;
+
 const MUTATIONS = {
   // The library joins on the filename instead of the hash. Two names for one take
   // become two takes, and the payoff of hash-referencing captures is gone.
@@ -724,10 +747,7 @@ const MUTATIONS = {
   // - a route that answers 200 having done something that is not what it says. This is
   // the row a status code cannot carry, which is why the check reads the argv the
   // program was actually given rather than the answer the route wrote.
-  'reveal-drops-the-path': { file: 'server/library.js', edits: [[
-    "  darwin: { program: 'open', label: 'Finder', args: (path) => ['-R', path] },",
-    "  darwin: { program: 'open', label: 'Finder', args: () => ['-R'] },",
-  ]] },
+  'reveal-drops-the-path': { file: 'server/library.js', edits: [REVEAL_EDIT] },
   // The loopback gate comes off the one route in this program that starts a process,
   // so a browser across the link opens a window on a machine nobody is standing at.
   'reveal-answers-any-caller': { file: 'server/index.js', edits: [[
