@@ -287,6 +287,26 @@
      either column - the cuts, the playhead, the shading - is out of its reach because
      of where it sits rather than because the loop remembers to skip it. */
   .tstack { display: flex; flex-direction: column; flex: none; min-width: 0; }
+  /* Capped at whatever `--tlanes-h` is, so the lanes scroll instead of pushing the
+     strip taller without limit. Every keyed parameter used to add a permanent row and
+     take that height off the stage with no way to get it back.
+
+     `overflow-x` is spelled out because leaving it `visible` beside a non-visible
+     `overflow-y` computes it to `auto` - and a key outside the window carries a `left`
+     of -195%, so the lanes would grow a horizontal scrollbar describing markers that
+     are deliberately off-screen. */
+  #tLanes { max-height: var(--tlanes-h); overflow-y: auto; overflow-x: hidden;
+    scrollbar-width: thin; }
+  /* The rail follows `#tLanes` rather than scrolling itself: one scroller and one
+     mirror, so there is no second gesture that could disagree with the first. */
+  #tRailLanes { max-height: var(--tlanes-h); overflow: hidden; }
+
+  /* The splitter. It sits over the top 5px of the transport bar, which is padding, so
+     it costs no height of its own - a grip that took a row would take it from the
+     lanes it exists to give room to. */
+  .tgrip { position: absolute; top: 0; left: 0; right: 0; height: 5px; z-index: 20;
+    cursor: ns-resize; touch-action: none; }
+  .tgrip:hover, .tgrip.dragging { background: var(--accent-low); }
 
   /* The ruler row keeps the height the strip already had, so a clip with no keys
      is exactly the surface step 4 left behind. Every other row is fixed and adds
@@ -615,6 +635,8 @@
   <div id="hint">drag to orbit · scroll to zoom · right-drag to pan · <b>H</b> hides panel</div>
 
   <section id="timeline" hidden aria-label="Timeline">
+    <div class="tgrip" id="tGrip" role="separator" aria-orientation="horizontal"
+      aria-label="Resize the timeline"></div>
     <!-- Row one: the transport, and what the transport is addressed in. Everything
          here answers "where am I and how fast am I going", including the in/out pair,
          which is where the playhead is allowed to be. -->

@@ -1130,7 +1130,16 @@ function setViewCamera(cam) {
   controls.enabled = cam === freeCamera;
 }
 
+// How many times the drawing buffer has been resized. Read by `editor-check` rather
+// than timed, for the reason the lane counters exist: "the splitter does not resize per
+// pointer event" is a claim about how often this ran, and a stopwatch would pass on a
+// fast machine that ran it every time. A plain `let` beside the function rather than a
+// field on `counters`, which is declared eighteen hundred lines below this and would be
+// in its temporal dead zone on the `resize()` that runs at boot.
+let stageResizes = 0;
+
 function resize() {
+  stageResizes++;
   // The stage is the window less whatever the timeline strip is taking, which is
   // nothing at all while it is hidden. Overlaying it on the image instead would
   // have cost nothing here and hidden the bottom of every frame being graded.
@@ -1224,7 +1233,13 @@ function resize() {
   grade.uniforms.resolution.value.set(buf.x, buf.y);
   uniforms.bufferHeight.value = buf.y;
 }
-addEventListener('resize', resize);
+addEventListener('resize', () => {
+  // The ceiling is a share of the window, so a window that got shorter can put the
+  // strip over it - and a strip taller than its own bound is the state the splitter
+  // exists to make unreachable. Re-applied before the stage is sized against it.
+  applyLaneHeight();
+  resize();
+});
 resize();
 
 function postEnabled() {
@@ -4646,6 +4661,7 @@ const ui = {
   railLanes: document.getElementById('tRailLanes'),
   lanes: document.getElementById('tLanes'),
   ruler: document.getElementById('tRuler'),
+  grip: document.getElementById('tGrip'),
   mini: document.getElementById('tMini'),
   miniRange: document.getElementById('tMiniRange'),
   miniMarks: document.getElementById('tMiniMarks'),
@@ -5166,6 +5182,117 @@ for (const type of ['pointerup', 'pointercancel']) {
     // pays for a pre-roll. The picture visibly changes here, which is the
     // well-understood convention rather than a surprise.
     timeline.seek(programAtPointer(e)).catch(showTimelineError);
+  });
+}
+
+// ------------------------------------------------------------ how tall the strip is
+
+// The least of the window the stage keeps. A splitter that can be dragged until there
+// is no picture left is not a bound on the strip, it is a different way of losing it.
+const MIN_STAGE_SHARE = 0.35;
+// Where the splitter sits before anybody drags it: as tall as the lanes need, up to
+// this. Without a default the strip still grows a permanent row per keyed parameter
+// and takes it off the stage, which is the thing being fixed - the splitter decides
+// where the bound is, it is not the only reason there is one.
+const DEFAULT_LANES_SHARE = 0.35;
+// Client state, like `kinect.lastOpened`: how tall you like the strip is a property of
+// this browser and this screen, not of the clip.
+const LANES_HEIGHT = 'kinect.lanesHeight';
+
+// What the lanes would take if nothing capped them, written by the rebuild.
+let laneStackHeight = 0;
+// What the splitter has been dragged to, or null while nobody has.
+let userLaneHeight = null;
+try {
+  const saved = Number(localStorage.getItem(LANES_HEIGHT));
+  if (Number.isFinite(saved) && saved > 0) userLaneHeight = saved;
+} catch {
+  // Private browsing or storage disabled by policy. The default is a good height.
+}
+
+/** The tallest the lanes may be here, so the stage keeps its share of the window. */
+function laneHeightCeiling() {
+  // `--timeline-h` is the fixed part of the strip - the two bar rows, the ruler bed and
+  // the overview - and it is read off the element rather than repeated here, because a
+  // second copy of it in this file is the mistake `export-check` had already made.
+  const fixed = parseFloat(getComputedStyle(ui.root).getPropertyValue('--timeline-h')) || 0;
+  return Math.max(0, Math.round(innerHeight * (1 - MIN_STAGE_SHARE)) - fixed);
+}
+
+/**
+ * `--tlanes-h`, from the two things that decide it, written in the one place that
+ * writes it.
+ *
+ * The variable had a single writer - the rebuild - and the splitter is a second input
+ * rather than a second writer, which is the distinction that keeps them from drifting.
+ * It also preserves what `--timeline-h` was written for: content still cannot make the
+ * strip taller than the lanes it actually has, and a person dragging it is a different
+ * thing from a readout growing a digit.
+ */
+function applyLaneHeight() {
+  const wanted = userLaneHeight ?? Math.round(innerHeight * DEFAULT_LANES_SHARE);
+  const height = Math.min(laneStackHeight, Math.max(0, Math.min(wanted, laneHeightCeiling())));
+  ui.root.style.setProperty('--tlanes-h', `${height}px`);
+}
+
+// One scroller and one mirror. The rail has `overflow: hidden` so there is no second
+// gesture that could disagree with this one - two synchronised scrollers is two
+// implementations of one position.
+ui.lanes.addEventListener('scroll', () => {
+  ui.railLanes.scrollTop = ui.lanes.scrollTop;
+});
+
+/**
+ * The splitter.
+ *
+ * `resize()` is throttled to one animation frame rather than run per pointer event,
+ * and that is the same measured cost `repositionLanes` exists to avoid: it reallocates
+ * the drawing buffer and the composer's targets. It cannot simply be deferred to the
+ * release either - the strip is growing under a canvas that has not been told, so the
+ * two would overlap for the length of the drag. One per frame is what a smooth drag
+ * needs and is bounded; a pointer stream is neither.
+ */
+let gripDrag = null;
+let gripFrame = 0;
+
+ui.grip.addEventListener('pointerdown', (e) => {
+  ui.grip.setPointerCapture(e.pointerId);
+  ui.grip.classList.add('dragging');
+  gripDrag = {
+    y: e.clientY,
+    from: parseFloat(getComputedStyle(ui.root).getPropertyValue('--tlanes-h')) || 0,
+  };
+});
+
+ui.grip.addEventListener('pointermove', (e) => {
+  if (!gripDrag) return;
+  // Upwards is taller, which is the direction the edge is being dragged.
+  userLaneHeight = Math.max(0, gripDrag.from + (gripDrag.y - e.clientY));
+  applyLaneHeight();
+  if (gripFrame) return;
+  gripFrame = requestAnimationFrame(() => {
+    gripFrame = 0;
+    resize();
+    placeChrome();
+  });
+});
+
+for (const type of ['pointerup', 'pointercancel']) {
+  ui.grip.addEventListener(type, () => {
+    if (!gripDrag) return;
+    gripDrag = null;
+    ui.grip.classList.remove('dragging');
+    if (gripFrame) cancelAnimationFrame(gripFrame);
+    gripFrame = 0;
+    resize();
+    placeChrome();
+    // Stored as what was asked for rather than as what the clamp allowed, so a strip
+    // dragged tall on a big screen is still tall when the window is made big again.
+    try {
+      localStorage.setItem(LANES_HEIGHT, String(userLaneHeight));
+    } catch {
+      // Storage is a convenience here; the drag already worked.
+    }
   });
 }
 
@@ -5732,7 +5859,8 @@ function rebuildLanes() {
     drawLane(lane, row);
   }
 
-  ui.root.style.setProperty('--tlanes-h', `${rows.reduce((n, r) => n + r.height + 1, 0)}px`);
+  laneStackHeight = rows.reduce((n, r) => n + r.height + 1, 0);
+  applyLaneHeight();
   // The strip changed height, so the stage the renderer sizes itself to did too -
   // and so did the canvas the furniture is drawn on, which is sized to the stage.
   resize();
@@ -7839,6 +7967,17 @@ globalThis.__kinect = {
     // where 2.35x is, and the alternative - writing the rate into `value` - would set
     // some other rate and go on asserting happily about it.
     rateSlider: { toValue: sliderFromRate, toRate: rateFromSlider },
+    /** The strip's height and what bounds it, so a check can drive the splitter. */
+    strip: () => ({
+      lanes: parseFloat(getComputedStyle(ui.root).getPropertyValue('--tlanes-h')) || 0,
+      stacked: laneStackHeight,
+      ceiling: laneHeightCeiling(),
+      height: ui.root.getBoundingClientRect().height,
+      scrollTop: ui.lanes.scrollTop,
+      railScrollTop: ui.railLanes.scrollTop,
+      scrollable: ui.lanes.scrollHeight > ui.lanes.clientHeight + 1,
+    }),
+    stageResizes: () => stageResizes,
     /**
      * The window the strip is drawn against, and the mapping both ways through it.
      *

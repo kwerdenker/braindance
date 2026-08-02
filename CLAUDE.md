@@ -231,6 +231,17 @@ reachable was not reachable, and the row asserting the snap went red on a build 
 arithmetic was perfectly correct. The check was right and the feature was unusable, which
 is the more useful direction for a proof tool to fail in. It is +/-3% now, about 3px.
 
+**Two bounds on one number means a probe has to be placed where the one under test is
+the binding one.** The splitter's clamp keeps the stage a third of the window, and
+`--tlanes-h` is `min(stacked, min(asked, ceiling))` - two limits on the same value. The
+arm stacked eight lanes at 280px against a 415px ceiling, so the height was decided by
+the *content* and the row asserting the clamp passed with the clamp deleted:
+`splitter-unclamped` came back NOT CAUGHT with every row green. Fourteen lanes stack
+443px, the ceiling binds, and the same mutation drags the stage to 31.9% and reddens
+that one row. This is the dead-zone rule with the two terms in a `min` rather than in a
+sum, and the tell was in the row's own detail line - it printed a strip height that was
+neither the ceiling nor anywhere near it.
+
 **Place a probe where its answer would be different, not where it is convenient.** A third
 flaw came out of this on step 5: a mutation replacing the pre-roll's window query with the
 tangent it replaced was caught by only one of five probe positions, because four of them sat
@@ -403,6 +414,8 @@ node tools/editor-check.mjs --mutate zoom-about-centre --no-render     # ... and
 node tools/editor-check.mjs --mutate pointer-ignores-view --no-render  # ... and must FAIL
 node tools/editor-check.mjs --mutate marks-ignore-view --no-render     # ... and must FAIL
 node tools/editor-check.mjs --mutate mini-ignores-edges --no-render    # ... and must FAIL
+node tools/editor-check.mjs --mutate splitter-unclamped --no-render    # ... and must FAIL
+node tools/editor-check.mjs --mutate rail-ignores-scroll --no-render   # ... and must FAIL
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated

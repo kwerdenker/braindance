@@ -226,6 +226,28 @@ const MUTATIONS = {
     ]],
   },
 
+  // The splitter loses its clamp, so it can be dragged until the stage is a sliver.
+  // A bound that can be dragged past is not a bound, and this is the one row that says
+  // so - everything else about the splitter goes on working, which is what makes the
+  // clamp row diagnostic rather than a second way of saying "the splitter drags".
+  'splitter-unclamped': {
+    file: 'web/main.js',
+    edits: [[
+      '  const height = Math.min(laneStackHeight, Math.max(0, Math.min(wanted, laneHeightCeiling())));',
+      '  const height = Math.min(laneStackHeight, Math.max(0, wanted));',
+    ]],
+  },
+
+  // The rail stops following the lanes, so every lane is labelled with a neighbour the
+  // moment the strip is short enough to scroll. Reddens exactly the mirror row.
+  'rail-ignores-scroll': {
+    file: 'web/main.js',
+    edits: [[
+      "ui.lanes.addEventListener('scroll', () => {\n  ui.railLanes.scrollTop = ui.lanes.scrollTop;\n});",
+      "ui.lanes.addEventListener('scroll', () => {});",
+    ]],
+  },
+
   // The space bar stops reaching the transport. Everything else about the keyboard
   // stays, so this reddens the transport rows and leaves the stepping and range rows
   // alone - which is what makes it diagnostic of its own term.
@@ -1835,6 +1857,113 @@ try {
     `${framed.startSec.toFixed(2)}s..${framed.endSec.toFixed(2)}s around in 4s / out 9s`);
   await page.locator('#tClearRange').click();
   await page.evaluate('__kinect.editor.view.fit()');
+  await settle();
+
+  // =====================================================================
+  console.log('\n[10] the strip is bounded, and the splitter is what bounds it');
+  // =====================================================================
+  //
+  // Every keyed parameter used to add a permanent row and take that height off the
+  // stage with nothing to give it back - eight lanes is 280px of a 900px window gone,
+  // and the only way to reclaim it was to delete keys.
+  //
+  // Section 6 asserts the strip is exactly the height the stage was sized against, and
+  // it still does. This is the other half of that: the height is now a number a person
+  // sets, and the rows below are about the two bounds on what they can set it to.
+  // **Enough lanes to stack past the ceiling, and that is the arm rather than the
+  // scenery.** Eight came to 280px against a ceiling of 415, so the height was limited
+  // by the content and not by the clamp - and the clamp row below passed on a build
+  // with the clamp removed, because `min(stacked, ...)` was still holding it. A probe
+  // standing where both answers agree, measured rather than reasoned: `splitter-
+  // unclamped` came back NOT CAUGHT at eight lanes and reddens the row at fourteen.
+  // Look parameters only - `spin` was in this list and is tagged `view`, so it took no
+  // lane and the count assertion read one short.
+  const LANED = ['bloom', 'grain', 'scanlines', 'rgbSplit', 'glitch', 'trails', 'rim',
+    'thermal', 'edges', 'scan', 'noise', 'denoise', 'exposure'];
+  await page.evaluate(`__kinect.keyframes.setTracks(${JSON.stringify(
+    Object.fromEntries(LANED.map((n) => [n, [{ t: 1, value: 0.2 }, { t: 5, value: 0.5 }]])),
+  )})`);
+  await settle();
+  const manyLanes = await page.evaluate('__kinect.editor.strip()');
+  check(manyLanes.stacked > manyLanes.ceiling && (await lanes()).length === LANED.length,
+    'enough keyed parameters and the lanes want more height than the stage can spare',
+    `${(await lanes()).length} lanes stacking ${manyLanes.stacked}px against a ${manyLanes.ceiling}px ceiling, `
+    + `strip ${manyLanes.height}px`);
+
+  const gripAt = () => page.locator('#tGrip').boundingBox();
+  const dragGrip = async (by) => {
+    const g = await gripAt();
+    await page.mouse.move(g.x + g.width / 2, g.y + 2);
+    await page.mouse.down();
+    await page.mouse.move(g.x + g.width / 2, g.y + 2 + by, { steps: 6 });
+    await page.mouse.up();
+    await settle();
+    return page.evaluate('__kinect.editor.strip()');
+  };
+
+  const shrunk = await dragGrip(150);
+  check(shrunk.lanes < manyLanes.lanes - 100 && shrunk.height < manyLanes.height - 100,
+    'dragging the splitter down gives the height back to the stage',
+    `lanes ${manyLanes.lanes}px -> ${shrunk.lanes}px, strip ${manyLanes.height}px -> ${shrunk.height}px`);
+  check(shrunk.lanes < shrunk.stacked && shrunk.scrollable,
+    '  and the lanes it no longer has room for scroll rather than being cut off',
+    `${shrunk.lanes}px of ${shrunk.stacked}px stacked, scrollable ${shrunk.scrollable}`);
+
+  await page.evaluate("document.getElementById('tLanes').scrollTop = 60");
+  await new Promise((r) => setTimeout(r, 120));
+  const scrolled = await page.evaluate('__kinect.editor.strip()');
+  check(scrolled.railScrollTop === scrolled.scrollTop && scrolled.scrollTop === 60,
+    '  and the rail follows them, or every lane would be labelled with its neighbour',
+    `lanes at ${scrolled.scrollTop}px, rail at ${scrolled.railScrollTop}px`);
+
+  // The clamp. Dragging to the top of the window must not be a way to lose the picture,
+  // which is the failure a splitter introduces if nothing bounds it.
+  const g = await gripAt();
+  await page.mouse.move(g.x + g.width / 2, g.y + 2);
+  await page.mouse.down();
+  await page.mouse.move(g.x + g.width / 2, 4, { steps: 8 });
+  await page.mouse.up();
+  await settle();
+  const maxed = await page.evaluate('__kinect.editor.strip()');
+  const stageShare = (VIEWPORT.height - maxed.height) / VIEWPORT.height;
+  check(stageShare >= 0.35,
+    '  and dragging it to the top of the window still leaves the stage a third of it',
+    `strip ${maxed.height}px of ${VIEWPORT.height}px leaves the stage ${(stageShare * 100).toFixed(1)}%`);
+  check(maxed.lanes <= maxed.stacked,
+    '  and never taller than the lanes it actually has, so content still cannot grow it',
+    `${maxed.lanes}px against ${maxed.stacked}px stacked`);
+
+  // The cost. `resize()` reallocates the drawing buffer and the composer's targets, so
+  // a drag that ran it per pointer event is the failure `repositionLanes` was split out
+  // to avoid - and Playwright cannot outpace an animation frame, so real mouse moves
+  // measure nothing here. The burst is dispatched inside one task and the counter is
+  // read inside the same one, which is the only place "did not run synchronously" can
+  // be observed. The pointerdown is real, because `setPointerCapture` on a pointer id
+  // that never existed throws.
+  const gd = await gripAt();
+  await page.mouse.move(gd.x + gd.width / 2, gd.y + 2);
+  await page.mouse.down();
+  const burst = await page.evaluate(`(() => {
+    const el = document.getElementById('tGrip');
+    const y0 = ${Math.round(gd.y + 2)};
+    const before = __kinect.editor.stageResizes();
+    for (let i = 1; i <= 40; i++) {
+      el.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, clientX: 100, clientY: y0 - i, bubbles: true }));
+    }
+    return { before, afterSync: __kinect.editor.stageResizes(), lanes: __kinect.editor.strip().lanes };
+  })()`);
+  await page.mouse.up();
+  await settle();
+  const afterFrame = await page.evaluate('__kinect.editor.stageResizes()');
+  check(burst.afterSync === burst.before,
+    'forty splitter moves in one task resize the drawing buffer no times, not forty',
+    `${burst.afterSync - burst.before} resizes during the burst`);
+  check(afterFrame - burst.before <= 3,
+    '  and at most a frame\'s worth once the frame runs, which is what the throttle is for',
+    `${afterFrame - burst.before} resizes in total for 40 moves`);
+
+  // Put it back, so nothing below inherits a strip somebody dragged.
+  await page.evaluate('__kinect.keyframes.setTracks({})');
   await settle();
 
   check(errors.length === 0, 'the page reported no errors while any of this happened',
