@@ -32,6 +32,26 @@
 // - and that exactly one of them equals it - tightness. Containment alone is a
 // one-sided test that a 179 degree frustum passes. Tightness is what makes it a fit.
 //
+// **Four sections asserted against the camera object and none against the picture,
+// and that gap shipped as a bug.** The pose rows below read `freeCamera.position`,
+// which is set several lines before `sensorView` asks for an image - so deleting
+// `requestRepaint()` from it left all 125 assertions green while the editor's picture
+// did not move until the next pointer gesture happened to render it. That is the
+// repo's own rule arriving as a defect: a tool named after a user-facing surface
+// should have at least one arm pointed at that surface. Section 7 is that arm and
+// `no-repaint` is its control.
+//
+// It took two attempts to make the comparison mean anything, and both misses are
+// recorded rather than tidied away, because each was a probe that reported a picture
+// moving when the picture had not moved at all. The chrome overlay redraws the path
+// and the frustum from the new pose on the next animation frame, so a stage compared
+// with it visible says CHANGED against a build that rendered nothing. And the panel
+// is translucent over the picture's left edge, so a comparison clipped to the canvas
+// contains the button's own hover state - which passed the pixel row under
+// `no-repaint` on the highlight of the button being pressed. The region is therefore
+// hit-tested with `elementFromPoint` and shrunk until every probe lands on the
+// canvas, rather than computed from anybody's bounds.
+//
 // **Writing nothing is asserted against the stores, not against the page's word for
 // it.** The click window is watched three ways at once: every non-GET request the
 // page makes, the server's own monotonic write counters per store, and the bodies of
@@ -57,6 +77,7 @@
 //   node tools/sensor-view-check.mjs --mutate sensor-view-keys-camera  # must FAIL
 //   node tools/sensor-view-check.mjs --mutate keyframes-on-every-surface # must FAIL
 //   node tools/sensor-view-check.mjs --mutate extended-always-open     # must FAIL
+//   node tools/sensor-view-check.mjs --mutate no-repaint               # must FAIL
 //
 // Exit 1 means a claim failed. Exit **2** means the harness did not run - a mutation
 // whose anchor text has gone stale, a browser that never came up, or the record arm
@@ -76,7 +97,14 @@
 // that every block the other rules do not name has to be on both surfaces, so a group
 // added later is asked about by existing.
 //
-// **What the mutations catch, measured rather than reasoned.** Clean: 125
+// **What the mutations catch, measured rather than reasoned.** Every count in this
+// paragraph belongs to one rig - the real corpus with a sensor attached - and it was
+// taken **before section 7 existed**, so the same rig should now read eight rows more
+// throughout. That is arithmetic rather than a measurement and the numbers are left at
+// what was actually observed rather than quietly incremented; section 7's own counts,
+// on a different rig, are in the paragraph below.
+//
+// Clean: 125
 // assertions, 0 failed. `fov-hardcoded`: 42 fired, and the split across them is the
 // argument for the synthetic arms rather than a rhetorical one. On arm A - the only
 // intrinsics any take carries - it reddens the two 1:1 sizes and *nothing else*: ten
@@ -96,6 +124,22 @@
 // the toggle is closed again, with the row that says one press reveals them all left
 // green - a rule that has stopped hiding cannot be told from a button that works by
 // looking only at the state after the click.
+//
+// `no-repaint` was measured on a different rig from the numbers above and the method is
+// worth stating rather than folding in: a depth-only synthetic take, one take in the
+// library and no sensor attached, so row 0 fires on the single-take library and the
+// recorder arm reads UNTESTED. On that rig the clean run is 126 assertions with 1 failed
+// - the library row - and `no-repaint` is 4, the same row plus **three, all of them
+// section 7's**: `renders 3 then 3`, the picture unchanged, and the image the press
+// produced differing from a forced seek taken after it. The pose, angle and fit rows are
+// green beside them, which is the whole argument for a seventh section rather than a
+// tighter tolerance somewhere in the first six.
+//
+// **And the specificity was checked in the other direction, because a row that reddens
+// on everything says nothing.** Under `fov-hardcoded` 43 rows fire and section 7 is
+// entirely green; under `sensor-view-keys-camera` 8 fire, all of them in section 4, and
+// section 7 is entirely green again. So these rows answer "did the press reach the
+// screen" rather than "did something change".
 //
 // The instrument's own refusals were mutation-tested too, since a guard nobody has
 // broken on purpose is a guard nobody knows the sensitivity of. Breaking the hello
@@ -255,6 +299,23 @@ const MUTATIONS = {
     edits: [[
       'body:not(.editing) .lookgroup { display: none; }',
       'body:not(.editing) .lookgroup { display: block; }',
+    ]],
+  },
+  // The button stops asking for an image. Everything above it in `sensorView` still
+  // runs, so the camera lands on the sensor exactly as before and every pose, angle
+  // and fit row in this file stays green - which is the entire reason this mutation
+  // exists. It was measured: with `requestRepaint()` deleted the suite passed 125 of
+  // 125 while the editor's picture did not move until the next pointer gesture
+  // rendered it, which is the bug as reported.
+  //
+  // The anchor is the `controls.update()` / `requestRepaint()` pair rather than the
+  // click handler, because `sensor-view-keys-camera` already anchors on the handler
+  // and two mutations sharing one piece of source text both go stale together.
+  'no-repaint': {
+    file: 'web/main.js',
+    edits: [[
+      '  controls.update();\n  requestRepaint();',
+      '  controls.update();',
     ]],
   },
   'sensor-view-keys-camera': {
@@ -467,6 +528,108 @@ const PROBE = `(() => {
     },
 
     settled: () => k.timeline.settled(),
+
+    /**
+     * The overlay off, and answered rather than assumed.
+     *
+     * \`drawChrome\` paints the camera path, its nodes and the program camera's frustum
+     * onto a second canvas sitting exactly over the picture, and it repaints them from
+     * the new pose on the next animation frame whether or not the picture itself moved.
+     * So a stage compared with it visible reports a change against a build that
+     * rendered nothing at all - measured, not feared: the first version of section 7
+     * said CHANGED against \`no-repaint\` for precisely this reason.
+     */
+    hideChrome() {
+      k.keyframes.chrome.set(false);
+      return document.getElementById('chrome')?.hidden === true;
+    },
+
+    /**
+     * The largest part of the picture that nothing is drawn over, and the count that
+     * proves nothing is.
+     *
+     * The canvas's own rectangle is not it. The panel is translucent and sits on top
+     * of the picture's left edge, so a screenshot clipped to the canvas contains the
+     * button being pressed - and \`no-repaint\` passed the pixel row on that button's
+     * own hover state while the picture behind it had not moved at all. This is the
+     * second time the same class caught this section: the first was the chrome
+     * overlay, which \`hideChrome\` deals with.
+     *
+     * So the rect is taken to the right of the panel and then hit-tested on a grid,
+     * because a rect computed from one element's bounds is a claim about that element
+     * rather than about what happens to be over it. \`covered\` is what the arm asserts.
+     */
+    picture() {
+      const canvas = k.renderer.domElement;
+      const r = canvas.getBoundingClientRect();
+      // The grid, and it is the definition rather than a check on one: a rect worked
+      // out from another element's bounds is a claim about that element, and the two
+      // things that have already fooled this section - the chrome overlay and the
+      // panel - were both found by a picture that moved rather than by geometry.
+      const clean = (rect) => {
+        let covered = 0;
+        const over = new Set();
+        for (let i = 0; i <= 4; i++) {
+          for (let j = 0; j <= 4; j++) {
+            const at = document.elementFromPoint(
+              rect.x + (rect.width * i) / 4, rect.y + (rect.height * j) / 4,
+            );
+            if (at !== canvas) {
+              covered++;
+              over.add(at ? (at.id ? '#' + at.id : at.tagName.toLowerCase()) : 'nothing');
+            }
+          }
+        }
+        return { covered, over: [...over].join(' ') };
+      };
+      // Shrunk toward the middle until every probe lands on the canvas, so whatever
+      // the furniture is and wherever it moves to, the region compared is picture.
+      let rect = {
+        x: Math.ceil(r.x) + 1, y: Math.ceil(r.y) + 1,
+        width: Math.floor(r.width) - 2, height: Math.floor(r.height) - 2,
+      };
+      let hits = clean(rect);
+      for (let step = 0; step < 40 && hits.covered > 0 && rect.width > 64 && rect.height > 64; step++) {
+        const dx = Math.max(2, Math.round(rect.width * 0.05));
+        const dy = Math.max(2, Math.round(rect.height * 0.05));
+        rect = { x: rect.x + dx, y: rect.y + dy, width: rect.width - 2 * dx, height: rect.height - 2 * dy };
+        hits = clean(rect);
+      }
+      return { ...rect, covered: hits.covered, over: hits.over };
+    },
+
+    renders: () => k.timeline.counters.renders,
+
+    /**
+     * Spends whatever damping momentum the controls are holding, and says how many
+     * updates it took.
+     *
+     * OrbitControls runs with \`enableDamping\`, so a gesture leaves a residual in
+     * \`sphericalDelta\` that every later \`controls.update()\` spends 7% of - and
+     * \`advanceNavigation\` calls one inside every render. Two renders of one position
+     * therefore disagree while any is left, which would leave the rows below unable to
+     * tell a picture that moved because the button worked from one that moved because
+     * the camera was still coasting. The control row proves the drain worked.
+     */
+    drain() {
+      let last = k.freeCamera.position.clone();
+      for (let i = 0; i < 500; i++) {
+        k.controls.update();
+        if (k.freeCamera.position.distanceTo(last) < 1e-12) return i;
+        last = k.freeCamera.position.clone();
+      }
+      return -1;
+    },
+
+    /**
+     * One render through the transport - the door the orbit's own \`end\` handler uses,
+     * which consults none of the four flags \`requestRepaint\` consults.
+     */
+    async forceSeek() {
+      const t = k.timeline.transport();
+      await t.seek(t.programSec);
+      await k.timeline.settled();
+    },
 
     /**
      * The panel as the browser lays it out, rather than as the markup declares it.
@@ -1242,6 +1405,110 @@ try {
     check(rec.surface === 'record' && ed.surface === 'edit',
       'and each arm is the surface it claims, so neither table is about the other page',
       `${rec.surface} and ${ed.surface}`);
+  }
+
+  // ================================================ 7. the button reaches the picture
+  //
+  // Every section above this one asserts against the camera object, and the camera
+  // object is not what anybody presses the button to see. That gap was open for the
+  // whole life of the feature and it is what this section closes: delete
+  // `requestRepaint()` from `sensorView` and the pose, the angles, the fit and the
+  // writes-nothing rows all stay green while the editor's picture does not move until
+  // the next pointer gesture happens to render it. `no-repaint` is that mutation, and
+  // it is the reason this section exists rather than a hypothetical.
+  //
+  // **Two things make the comparison mean anything, and both were found by measuring
+  // rather than by reading.** The overlay has to be off, because it redraws the
+  // frustum from the new pose on the next animation frame whether or not the picture
+  // did - with it visible, the first version of this section reported CHANGED against
+  // the mutated build. And the damping has to be drained, because `advanceNavigation`
+  // calls `controls.update()` inside every render, so while the controls hold momentum
+  // two renders of one position genuinely differ and a difference proves nothing. The
+  // control row drives exactly that pair and must agree before any row below is read.
+  console.log('\n[7] the press puts the sensor\'s view on the screen, not only on the camera');
+  const pictureRun = await onFreshPage('the picture arm', {}, async ({ page }) => {
+    const overlayHidden = await page.evaluate('globalThis.__sv.hideChrome()');
+    const drainedAfter = await page.evaluate('globalThis.__sv.drain()');
+    const picture = await page.evaluate('globalThis.__sv.picture()');
+    const clip = { x: picture.x, y: picture.y, width: picture.width, height: picture.height };
+
+    // The instrument's own control: two renders of one state, nothing between them.
+    // If these disagree this arm cannot attribute a difference to anything, and the
+    // rows below are about the damping rather than about the button.
+    await page.evaluate('globalThis.__sv.forceSeek()');
+    const ctrlA = await page.screenshot({ clip });
+    await page.evaluate('globalThis.__sv.forceSeek()');
+    const ctrlB = await page.screenshot({ clip });
+
+    // Somewhere that is not the sensor's, so "the picture moved" cannot be satisfied
+    // by a button with nothing to do.
+    const displaced = await page.evaluate('globalThis.__sv.displace({})');
+    // Rendered, and this line is load-bearing rather than tidiness. `displace` writes
+    // the camera and updates the controls but asks for no image - `params.set('spin')`
+    // is tagged `view` and `paramWritten` returns on it - so without a render here
+    // `before` is still the *boot* camera's picture and the row below compares the
+    // default pose to the sensor rather than the displaced one. It would pass today,
+    // because the default sits 1.6m back along the same axis, and it would go vacuous
+    // the day somebody moves the boot pose, which is the silent direction.
+    await page.evaluate('globalThis.__sv.forceSeek()');
+    const before = await page.screenshot({ clip });
+    const rendersBefore = await page.evaluate('globalThis.__sv.renders()');
+
+    // The button, clicked, and then nothing at all - no settle, no seek, no pointer.
+    // A person who presses it and sits still is what the report describes, so the
+    // wait is the whole gesture rather than an await that would do the work for it.
+    await page.click('#camSensor');
+    await page.waitForTimeout(2000);
+    const after = await page.screenshot({ clip });
+    const rendersAfter = await page.evaluate('globalThis.__sv.renders()');
+    const pose = await page.evaluate('globalThis.__sv.pose()');
+
+    // And the tightening row: the image the press produced is already the settled
+    // one. Without this the section would pass a build whose repaint rendered a
+    // stale camera and was corrected by whatever rendered next.
+    await page.evaluate('globalThis.__sv.forceSeek()');
+    const forced = await page.screenshot({ clip });
+
+    return {
+      overlayHidden,
+      drainedAfter,
+      picture,
+      controlAgrees: ctrlA.equals(ctrlB),
+      displaced,
+      pose,
+      rendersBefore,
+      rendersAfter,
+      moved: !before.equals(after),
+      settledAlready: after.equals(forced),
+    };
+  });
+  if (!pictureRun.ok) throw new Error(`the picture arm did not run: ${pictureRun.error}`);
+  {
+    const p = pictureRun.value;
+    // The two conditions this section's comparison rests on, enforced rather than
+    // stated - the failure this repo keeps producing is a tool that names a condition
+    // in its header and does nothing to bring it about.
+    check(p.overlayHidden, 'the chrome overlay is off, so what is compared is the picture and not the annotation',
+      '#chrome hidden');
+    check(p.picture.covered === 0 && p.picture.width > 200 && p.picture.height > 200,
+      'and nothing at all is drawn over the region compared, hit-tested rather than assumed',
+      `${p.picture.width}x${p.picture.height} at ${p.picture.x},${p.picture.y}, `
+      + `${p.picture.covered} of 25 probes covered${p.picture.over ? ` by ${p.picture.over}` : ''}`);
+    check(p.drainedAfter >= 0, 'the controls hold no damping momentum before anything is photographed',
+      p.drainedAfter >= 0 ? `drained in ${p.drainedAfter} updates` : 'still moving after 500 updates');
+    check(p.controlAgrees, 'control: two renders of one state agree, so a difference below is attributable',
+      'forceSeek twice, nothing in between');
+
+    // The claim.
+    check(Math.hypot(...p.displaced.position) > 1 && Math.hypot(...p.pose.position) < DUST,
+      'the press moved the camera off the displaced pose and onto the sensor',
+      `[${p.displaced.position.map((v) => fixed(v, 2)).join(', ')}] to |position| ${Math.hypot(...p.pose.position).toExponential(2)}`);
+    check(p.rendersAfter > p.rendersBefore, 'the press rendered a frame, with no pointer input to do it for the button',
+      `renders ${p.rendersBefore} then ${p.rendersAfter}`);
+    check(p.moved, 'and the picture itself changed',
+      'the uncovered region of the renderer\'s canvas, before and after the click');
+    check(p.settledAlready, 'the image the press produced is the settled one, not one a later render corrected',
+      'identical to a forced seek taken after it');
   }
 
   check(pageErrors.length === 0, 'no page reported an error while any of this happened',
