@@ -1157,20 +1157,36 @@ let stageResizes = 0;
 let transportGen = 0;
 const takeTransport = () => {
   transportGen += 1;
-  // **And a speed gesture that no longer owns the transport is dropped here, at the one
-  // door, rather than checked at each place that could act on it.** Guarding only the
-  // release left the other half open: a slider event arriving after a load has restored a
-  // different document called `applyRate` with no check at all, which writes that
-  // document's cuts from the old gesture's snapshot and leaves its keys - now different
-  // objects - unrescaled while the ruler rescales under them, which is the bug this whole
-  // branch exists to fix, arriving through the back. Two guards would have been two
-  // things to keep in step; there is nothing to check once the gesture is gone, and the
-  // next slider event simply starts a fresh one on the document that is actually open.
-  //
-  // It cannot cancel the gesture that is being started, because `beginRateGesture` calls
-  // this before it has anything to assign.
-  if (rateGesture) rateGesture = null;
+  dropRateGesture();
   return transportGen;
+};
+
+/**
+ * Drops a speed gesture whose document has been replaced underneath it.
+ *
+ * **A gesture holds a snapshot of the document it began in, so anything that replaces
+ * that document from outside the gesture has to say so.** Guarding only the release left
+ * the other half open: a slider event arriving after the swap called `applyRate` with no
+ * check at all, which writes the *old* cuts through `setClipInOut` and leaves the new
+ * document's keys - different objects now - unrescaled while the ruler rescales under
+ * them. That is the bug this whole branch exists to fix, arriving through the back. There
+ * is nothing left to check once the gesture is gone, and the next slider event simply
+ * starts a fresh one on the document that is actually open.
+ *
+ * **This is separate from `takeTransport` because the class is wider than that door, and
+ * finding out cost a round.** Transport ownership and document ownership looked like one
+ * thing while the only replacers were undo and a project load, which take the transport
+ * on their way past. `applyDeliverable` replaces both cuts and the output rate and takes
+ * nothing - so a deliverable chosen from the menu while the thumb was held had its trim
+ * overwritten from the previous one's snapshot, and the export would have written the
+ * wrong range. Folding it into `takeTransport` instead would have bumped the generation a
+ * second time inside `loadProjectNamed`, which reads that number to decide whether to
+ * resume, so the loader would have stopped resuming - one rule, two questions.
+ */
+const dropRateGesture = () => {
+  // It cannot cancel the gesture that is being started: `beginRateGesture` calls
+  // `takeTransport` before it has anything to assign.
+  if (rateGesture) rateGesture = null;
 };
 
 function resize() {
@@ -1890,6 +1906,9 @@ function setActiveDeliverable(deliverable) {
 }
 
 function applyDeliverable(deliverable) {
+  // Before anything is written, because what follows replaces the cuts and the output
+  // rate wholesale - see `dropRateGesture` for why this is not `takeTransport`.
+  dropRateGesture();
   setActiveDeliverable(deliverable);
   setClipInOut({ in: deliverable.in, out: deliverable.out });
   setTargetSize(deliverable.outputSize);

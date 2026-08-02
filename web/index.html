@@ -462,6 +462,14 @@
     background: var(--dim); transform: rotate(45deg); cursor: grab; z-index: 2;
   }
   .tkey::after, .thandle::after { content: ""; position: absolute; inset: -4px; }
+  /* And these two take the vertical axis back off the lane, because they are the only
+     things in it that drag on that axis: a scalar key's *value* and an ease handle's
+     vertical component both come from `clientY`. With the lane's `pan-y` inherited, a
+     mostly-vertical touch drag starting on one of them is claimed by the browser for
+     native scrolling and the pointer sequence is cancelled, so changing a key's value by
+     touch is not slow or awkward - it is impossible. The lane keeps `pan-y` where there
+     is nothing to drag, which is what makes the stack scrollable by touch at all. */
+  .tkey, .thandle { touch-action: none; }
   .tkey:hover { background: var(--ink); }
   .tkey.sel { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-low); }
   .thandle {

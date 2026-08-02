@@ -325,10 +325,28 @@ const MUTATIONS = {
   'takeover-ignored': {
     file: 'web/main.js',
     edits: [
-      ['  if (rateGesture) rateGesture = null;\n  return transportGen;', '  return transportGen;'],
+      ['  dropRateGesture();\n  return transportGen;', '  return transportGen;'],
       ['  const { wasPlaying, applied, rate: began, gen } = rateGesture;',
         '  const { wasPlaying, applied, rate: began } = rateGesture;\n  const gen = transportGen;'],
     ],
+  },
+
+  // The deliverable stops being a document replacement, so a gesture held across one
+  // rescales the trim it began in and writes it back over the one just chosen. Reddens
+  // only the last of the three deliverable rows - the two above it are about the menu
+  // working at all, which this mutation leaves alone.
+  'deliverable-keeps-gesture': {
+    file: 'web/main.js',
+    edits: [['  dropRateGesture();\n  setActiveDeliverable(deliverable);', '  setActiveDeliverable(deliverable);']],
+  },
+
+  // The keys and handles go back to inheriting the lane's `pan-y`, so a vertical touch
+  // drag on one is claimed by the browser for scrolling. Reddens the two rows about them
+  // and leaves the lane's own row green, which is the difference between the surface that
+  // scrolls and the controls that must not.
+  'keys-yield-touch': {
+    file: 'web/index.html',
+    edits: [['  .tkey, .thandle { touch-action: none; }', '  .tkey, .thandle { touch-action: pan-y; }']],
   },
 
   // The wheel goes back to reading its deltas as pixels whatever the browser said they
@@ -1922,6 +1940,131 @@ try {
       `${saved.length} bytes, ${saved.sha256.slice(0, 16)}… against ${bytes.length} bytes, ${serverHash.slice(0, 16)}…`);
   }
 
+  // **A deliverable chosen from the menu replaces the trim, and a speed gesture holds a
+  // snapshot of the trim it began in.** The menu's handler awaits a fetch, so a gesture
+  // can start inside that window and still be live when the new deliverable lands - and
+  // its next slider event then wrote the *previous* deliverable's cuts back through
+  // `setClipInOut`, over the trim the user had just selected. The export takes its range
+  // from there, so the file would have been the wrong length with nothing on screen
+  // saying so.
+  //
+  // Driven through the real `<select>` and its `change` handler rather than through a
+  // hook, because the fetch is where the window is. Two saved deliverables with cuts far
+  // apart, so the row can tell which of them the gesture wrote - and they are deleted
+  // afterwards through the same route that made them.
+  const putDeliverable = (name, body) => page.evaluate(`(async () => {
+    const res = await fetch('/deliverables/' + encodeURIComponent(${JSON.stringify(name)}), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(${JSON.stringify(body)}),
+    });
+    return res.json();
+  })()`);
+
+  await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
+  await page.evaluate(`__kinect.keyframes.setTracks({ bloom: [{ t: 2, value: 0.2 }, { t: 6, value: 0.9 }] })`);
+  await settle();
+  const baseDeliverable = await page.evaluate('({ ...__kinect.library.activeDeliverable() })');
+  await putDeliverable('editor-check-near', { ...baseDeliverable, name: 'editor-check-near', in: 2, out: 8 });
+  await putDeliverable('editor-check-far', { ...baseDeliverable, name: 'editor-check-far', in: 20, out: 40 });
+  await page.evaluate('__kinect.editor.refreshDeliverables?.()');
+  // What the menu looked like before this block touched it. Restored at the end, because
+  // the selected name is drawn in a chip on the two-row bar and a longer one reflows it -
+  // which moves section 8's crop sliders under different pointer coordinates and reddens
+  // its rows as a rendering change. This file already has that scar once, from the nav
+  // probe leaving the panel scrolled, and it is the same failure by a different route.
+  const menuBefore = await page.evaluate(`(() => {
+    const el = document.getElementById('tDeliverable');
+    return { value: el.value, options: [...el.options].map((o) => o.value) };
+  })()`);
+  // And where the playhead was. `setClipInOut` seeks when the new trim excludes it, so
+  // choosing a deliverable at 20s..40s moves it - and section 8 renders its crop rows at
+  // the playhead, so a different frame there is a different depth slab and its numbers
+  // move. They moved: the near-slab row printed 0.337 before this block existed and 0.123
+  // after, on a build whose cropping had not changed at all.
+  const playheadBefore = await page.evaluate('__kinect.timeline.transport().programSec');
+  const pick = async (name) => {
+    await page.evaluate(`(() => {
+      const el = document.getElementById('tDeliverable');
+      if (![...el.options].some((o) => o.value === ${JSON.stringify(name)})) {
+        el.append(new Option(${JSON.stringify(name)}, ${JSON.stringify(name)}));
+      }
+      el.value = ${JSON.stringify(name)};
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await settle();
+    await new Promise((r) => setTimeout(r, 250));
+    return page.evaluate('__kinect.editor.clipRange()');
+  };
+
+  const far = await pick('editor-check-far');
+  check(near(far.in ?? -1, 20, 1e-6) && near(far.out ?? -1, 40, 1e-6),
+    'choosing a deliverable puts its trim on the clip', JSON.stringify(far));
+  // The gesture begins here, holding `far`'s cuts, and the near one lands under it.
+  await page.evaluate(`(() => {
+    const el = document.getElementById('tRate');
+    el.focus();
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    el.value = String(__kinect.editor.rateSlider.toValue(2));
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await settle();
+  const heldRate = await page.evaluate('__kinect.timeline.retime.rate');
+  const swapped = await pick('editor-check-near');
+  // The stored numbers, unscaled: a deliverable's trim is program time and
+  // `applyDeliverable` writes it as it stands rather than into the rate the clip happens
+  // to be in. Asserted rather than assumed, because the first version of this row divided
+  // by the rate and went red against a build doing exactly the right thing.
+  check(near(swapped.in ?? -1, 2, 1e-3) && near(swapped.out ?? -1, 8, 1e-3),
+    '  even while a speed gesture is held, and as the stored program times rather than rescaled',
+    `${JSON.stringify(swapped)} at ${heldRate}x`);
+  // One more slider event, which is the door the release guard never covered.
+  await page.evaluate(`(() => {
+    const el = document.getElementById('tRate');
+    el.value = String(__kinect.editor.rateSlider.toValue(1.25));
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true }));
+  })()`);
+  await settle();
+  const afterSwap = await page.evaluate('__kinect.editor.clipRange()');
+  // A fresh gesture rescales the *near* trim out of the rate the clip is in - 2 and 8
+  // times `heldRate / 1.25`. A gesture that survived the swap would rescale the *far*
+  // one out of the rate it began in, which is 20 and 40 times `1 / 1.25` - a different
+  // number by more than a factor of four, and the far end of the clip rather than the
+  // near one.
+  const wantIn = 2 * (heldRate / 1.25);
+  const wantOut = 8 * (heldRate / 1.25);
+  check(near(afterSwap.in ?? -1, wantIn, 1e-3) && near(afterSwap.out ?? -1, wantOut, 1e-3),
+    '  and the gesture that continues rescales that trim rather than writing the old one back',
+    `${JSON.stringify(afterSwap)}, wanted in ${wantIn.toFixed(4)} out ${wantOut.toFixed(4)}`);
+
+  await focusStage();
+  await page.evaluate(`(async () => {
+    for (const n of ['editor-check-near', 'editor-check-far']) {
+      // The content type is required on every write route, delete included - the origin
+      // rule refuses a request that does not declare one, which is a 200 carrying an
+      // error rather than a network failure, so a cleanup without it fails silently.
+      await fetch('/deliverables/' + n, {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  })()`);
+  await page.evaluate(`(${((before) => {
+    const el = document.getElementById('tDeliverable');
+    for (const o of [...el.options]) if (!before.options.includes(o.value)) o.remove();
+    el.value = before.value;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }).toString()})(${JSON.stringify(menuBefore)})`);
+  await settle();
+  await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
+  await page.evaluate('__kinect.keyframes.setTracks({})');
+  // And the trim, which nothing below resets: leaving it at the near deliverable's range
+  // moved section 8's crop numbers, and those rows read as a rendering change rather than
+  // as a leftover from up here.
+  await page.locator('#tClearRange').click();
+  await page.evaluate(`__kinect.timeline.transport().seek(${playheadBefore})`);
+  await settle();
+
   // =====================================================================
   console.log('\n[8] the crop box crops what it says, where it says');
   // =====================================================================
@@ -2516,6 +2659,11 @@ try {
   // `touch-action` is intersected along it: a `none` on any ancestor between the lane and
   // the scroller defeats a `pan-y` on the lane, silently and while the one rule anybody
   // would read still says the right thing.
+  // A handle only exists for a selected key with a shaped segment either side of it, so
+  // one is selected here rather than the row reading `null` and calling it a failure.
+  // `bloom` is planted at 0.2 -> 0.5 above, which is a segment with a shape to edit.
+  await page.evaluate(`__kinect.editor.select('bloom', 0)`);
+  await settle();
   const touch = await page.evaluate(`(() => {
     const lane = document.querySelector('.tlane');
     if (!lane) return null;
@@ -2523,11 +2671,30 @@ try {
     for (let el = lane; el && el.id !== 'tLanes'; el = el.parentElement) {
       chain.push(\`\${el.tagName.toLowerCase()}\${el.id ? '#' + el.id : ''}=\${getComputedStyle(el).touchAction}\`);
     }
-    return { chain, blocked: chain.filter((c) => /=(none|pan-x)$/.test(c)) };
+    const of = (sel) => {
+      const el = document.querySelector(sel);
+      return el ? getComputedStyle(el).touchAction : null;
+    };
+    return {
+      chain, blocked: chain.filter((c) => /=(none|pan-x)$/.test(c)),
+      key: of('.tlane .tkey'), handle: of('.tlane .thandle'),
+    };
   })()`);
   check(touch !== null && touch.blocked.length === 0,
     '  and a touch swipe can reach them, which no wheel row above can speak for',
     touch === null ? 'no lane to read' : touch.chain.join('  '));
+  // The other side of the same rule, and it has to be here or the row above is an
+  // instruction to break something else. A scalar key's *value* and an ease handle's
+  // vertical component both come from `clientY`, so those two elements need the axis the
+  // lane just gave away - inheriting `pan-y` lets the browser claim a vertical drag on a
+  // key for scrolling and cancel the pointer sequence, which does not make that edit
+  // awkward by touch, it removes it.
+  check(touch !== null && touch.key === 'none',
+    '  while a key keeps both axes, because its value is the vertical one',
+    `key touch-action ${touch?.key}`);
+  check(touch !== null && touch.handle === 'none',
+    '  and so does an ease handle, for the same reason',
+    `handle touch-action ${touch?.handle}`);
 
   // The clamp. Dragging to the top of the window must not be a way to lose the picture,
   // which is the failure a splitter introduces if nothing bounds it.
