@@ -1115,10 +1115,10 @@ async function loadPlaywright() {
 
 /**
  * Playwright drops the page's execution context on this rig, and it is not the
- * code: CLAUDE.md records it as a measured flake, with the server log showing the
- * work it happened during completing normally. Retried on that signature alone and
- * with the retry count printed, because a check that retried real failures would
- * report whichever attempt it liked.
+ * code: `docs/instruments.md` records it as a measured flake, with the server log
+ * showing the work it happened during completing normally. Retried on that signature
+ * alone and with the retry count printed, because a check that retried real failures
+ * would report whichever attempt it liked.
  */
 async function retryOnContextLoss(label, work) {
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -1428,7 +1428,7 @@ async function runChecks() {
   // **This section runs against a replay server, and that is the whole of what it
   // learned.** The first version of it spawned a server with no `--replay` at all,
   // so every arm agreed about a quantity none of them measured - which is the
-  // failure `CLAUDE.md` names in the paragraph immediately above this step's work,
+  // failure `docs/instruments.md` names under "what do my arms agree about",
   // reproduced in a section written after reading it. Two hours is apparently not
   // long enough for a rule to stick, so the example lives here beside the code
   // rather than only in the document: the replay is the one reader that holds a
@@ -3737,8 +3737,8 @@ async function runChecks() {
     // and throws `ERR_INVALID_STATE` at the top level, and the process is gone -
     // measured here at between 300ms and one second after the reader let go. An
     // unguarded poll then throws out of `runChecks` and the run ends with an exit
-    // code and *zero failed assertions*, which is the shape `CLAUDE.md` records as a
-    // crash wearing a catch's status. This turns it back into rows.
+    // code and *zero failed assertions*, which is the shape `docs/instruments.md`
+    // records as a crash wearing a catch's status. This turns it back into rows.
     //
     // **One reading at a fixed delay, and deliberately not a poll-until-it-passes.**
     // A loop that retried until the count came back turned this into a race with the
@@ -4068,7 +4068,7 @@ async function runChecks() {
   // **Measured by the sidecar rather than by a stopwatch.** `buildIndex` writes a
   // `.idx` beside the take, so "the manifest scanned it" leaves a file - which is
   // deterministic where a timing threshold would be a flake, and is the same
-  // observer effect `CLAUDE.md` records from this step's own first draft.
+  // observer effect `docs/instruments.md` records from this step's own first draft.
   console.log('\n[library] listing a library does not scan the take still being written');
   {
     const liveDir = join(WORK, 'while-recording');

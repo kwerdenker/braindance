@@ -180,7 +180,7 @@ Six, and the last two are the ones this list went without for a while, which is
 worth stating rather than quietly fixing: `oracle-drift` is the control for the
 oracle assertion and `stale-prefix` for the artifact assertion, so a list naming
 only the first four taught a four-control sweep of a tool that has six. Both are
-also the two the repo's `CLAUDE.md` names, so the two documents now agree.
+also the two the repo's `docs/proof-tools.md` names, so the two documents agree.
 
 Mutations run against a throwaway copy, so a falsification run never leaves the
 vendored tree altered. `stale-prefix` is the exception to "needs nothing built":

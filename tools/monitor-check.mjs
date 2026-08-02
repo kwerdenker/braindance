@@ -696,8 +696,9 @@ try {
   // those bytes after a client has them, so a viewer that rendered a ÷4 frame as a
   // different scene passed the whole file - and did, for two steps.
   //
-  // It is the shape CLAUDE.md names: an object every observation skips. The monitor's
-  // *picture* is the thing a monitor is, and every arm here was pointed at the take.
+  // It is the shape `docs/instruments.md` names: an object every observation skips.
+  // The monitor's *picture* is the thing a monitor is, and every arm here was pointed
+  // at the take.
   //
   // Two questions, and they are separate. Does an arriving frame reach the whole grid,
   // and does each of its samples land on the ray it was measured on. The first alone
