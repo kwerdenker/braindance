@@ -42,6 +42,21 @@ const ROOT = argv.includes('--root') ? argv[argv.indexOf('--root') + 1] : REPO;
 // either vendored, built or a capture, and none of those are ours to parse.
 const FLOORS = { server: 5, tools: 12, web: 2 };
 
+// **Two different questions, so two different sets, and the difference is the point.**
+// `PARSES` is what `node --check` can be handed and have its answer mean anything - a
+// shell script fed to it fails as a syntax error about JavaScript, which would be a red
+// light wired to the wrong thing. `SHIPPED` is what counts as a tool this repo ships,
+// and it is wider because the questions asked of `tools/` below - is it documented, does
+// its citation resolve - are about the file being ours rather than about it parsing.
+//
+// Named once and used by both because the version where each block spelled its own set
+// out drifted immediately: the documentation block already read `.sh` while the citation
+// scan reused the JavaScript walker, so `pi-registration-ab.sh` was required to be named
+// in CLAUDE.md and then never read for the `docs/` pages it might cite. A tool added in
+// another language next year joins both questions at once by being added here.
+const PARSES = /\.(js|mjs)$/;
+const SHIPPED = /\.(js|mjs|sh)$/;
+
 const check = (file) => {
   try {
     execFileSync(process.execPath, ['--check', file], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -85,19 +100,21 @@ try {
 // shared trees are symlinked back to the main checkout - .gitignore's own header
 // records vendor and node_modules arriving that way - and following one turns a
 // six-second check into a parse of somebody else's library.
-function walk(dir, out = []) {
+// Which files it yields is the caller's question rather than the walker's, so the two
+// sets above stay one decision made in one place.
+function walk(dir, matches, out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.isSymbolicLink()) continue;
     const p = join(dir, entry.name);
-    if (entry.isDirectory()) walk(p, out);
-    else if (entry.name.endsWith('.js') || entry.name.endsWith('.mjs')) out.push(p);
+    if (entry.isDirectory()) walk(p, matches, out);
+    else if (matches.test(entry.name)) out.push(p);
   }
   return out;
 }
 
 let total = 0;
 for (const [name, floor] of Object.entries(FLOORS)) {
-  const files = walk(join(ROOT, name));
+  const files = walk(join(ROOT, name), PARSES);
   total += files.length;
   if (files.length < floor) {
     fail(`${name}/ holds ${files.length} JavaScript files, under the floor of ${floor} - either the tree lost something or this walk stopped finding it`);
@@ -136,7 +153,7 @@ if (!existsSync(DOC)) {
 } else {
   const doc = readFileSync(DOC, 'utf8');
   const shipped = readdirSync(join(ROOT, 'tools'))
-    .filter((f) => /\.(mjs|js|sh)$/.test(f))
+    .filter((f) => SHIPPED.test(f))
     .sort();
   const undocumented = shipped.filter((f) => !doc.includes(f));
   if (shipped.length === 0) {
@@ -145,6 +162,44 @@ if (!existsSync(DOC)) {
     fail(`CLAUDE.md never mentions ${undocumented.join(', ')} - a tool nobody documented is a tool nobody runs`);
   } else {
     console.log(`  tools/  all ${shipped.length} named in CLAUDE.md`);
+  }
+}
+
+// **And every `docs/*.md` anything points at has to exist**, for the same reason and by
+// the same shape as the block above. `CLAUDE.md` was 704 lines and was split into three
+// documents it now sends you to by name, with fourteen comments in `tools/` citing those
+// documents by section - so the disclosure chain is load-bearing and nothing was checking
+// it. Delete one of the three and every citation resolves to nothing while this tool stays
+// green, which is a claim asserted in prose with nothing bringing it about.
+//
+// Enumerated rather than listed: the paths are read out of what actually cites them, so a
+// fourth document added next year is checked by existing and a pointer that outlives its
+// target fails here. The control is `mv docs/instruments.md /tmp` and a run.
+//
+// **Every shipped tool, and not every parseable one.** The first version of this block
+// reused the JavaScript walker, which is the same class of hole it was written to close:
+// `pi-registration-ab.sh` is a documented tool that the scan could not read, so a `docs/`
+// page cited from a shell runbook was covered by an assertion that printed "all N cited
+// pages exist" and had never opened the file. Measured rather than argued - a citation of
+// an absent page appended to that runbook left the check green, and fails here now that
+// the walk asks for `SHIPPED`. That is the control, and running it takes a path this
+// comment deliberately does not spell: the scan reads its own prose, so a filename
+// written here as an example is a citation like any other and fails the run that quotes
+// it. Append the line to the runbook, run, revert.
+{
+  const citing = [join(ROOT, 'CLAUDE.md'), ...walk(join(ROOT, 'tools'), SHIPPED)];
+  const cited = new Set();
+  for (const file of citing) {
+    if (!existsSync(file)) continue;
+    for (const m of readFileSync(file, 'utf8').matchAll(/\bdocs\/[A-Za-z0-9._-]+\.md\b/g)) cited.add(m[0]);
+  }
+  const missing = [...cited].filter((p) => !existsSync(join(ROOT, p))).sort();
+  if (cited.size === 0) {
+    fail('nothing cites a docs/ page, so this assertion passed on nothing - the disclosure chain is gone or this scan is looking in the wrong place');
+  } else if (missing.length) {
+    fail(`${missing.join(', ')} is cited but does not exist - a pointer that outlives its target teaches a document nobody can read`);
+  } else {
+    console.log(`  docs/   all ${cited.size} cited pages exist`);
   }
 }
 

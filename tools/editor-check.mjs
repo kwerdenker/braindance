@@ -12,9 +12,10 @@
 // were all correct, `export-check` drove in/out through `activeDeliverable`, and
 // `paintTimeline` went on writing `style.left` onto two nodes no document contained.
 // **No proof tool in this repo referenced `#tIn`, `#tOut` or `.tcut` at all.** That is
-// `CLAUDE.md`'s "is there an object here that every observation happens to skip", one
-// step further on than the version already recorded there - here the skipped object
-// was not an excluded file but a control the interface tells the user it has.
+// `docs/instruments.md`'s "is there an object here that every observation happens to
+// skip", one step further on than the version already recorded there - here the
+// skipped object was not an excluded file but a control the interface tells the user
+// it has.
 //
 // So the organising rule of this file is two things at once:
 //
@@ -799,7 +800,7 @@ try {
   // reddened its four rows correctly and then died dereferencing a null `#tOut` -
   // which this file reports as DID NOT RUN with exit 2, the code reserved for the
   // harness failing. A mutation that is caught and then crashes reads as a mutation
-  // that was never tested, which is the same confusion `CLAUDE.md` records under
+  // that was never tested, the same confusion `docs/instruments.md` records under
   // "a mutation run that exits non-zero with zero failed assertions did not run",
   // arriving from the other direction. A check has to survive the fault it checks for.
   const markersUsable = boxes.in !== null && boxes.out !== null;
@@ -870,8 +871,8 @@ try {
   //
   // Two positions and two directions, because program and source time agree
   // trivially at program 0 and a single arm cannot tell holding one from holding the
-  // other. `CLAUDE.md` has this failure twice already under "what do my arms agree
-  // about".
+  // other. `docs/instruments.md` has this failure twice already under "what do my
+  // arms agree about".
   const rateArm = async (parkAt, to) => {
     await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
     await page.evaluate(`(() => { const el = document.getElementById('tRate'); el.value = '1'; el.dispatchEvent(new Event('input')); el.dispatchEvent(new Event('change')); })()`);
@@ -1070,8 +1071,8 @@ try {
   // is sampled at 7s, inside 5s..9s, and not at 3s. Sampling at 3s is what this row
   // did first and it failed against a working build: the handle had moved, the curve
   // it shapes had moved, and the probe was sitting in the neighbouring segment where
-  // the answer is the same either way. That is `CLAUDE.md`'s "place a probe where its
-  // answer would be different" arriving one more time.
+  // the answer is the same either way. That is `docs/instruments.md`'s "place a probe
+  // where its answer would be different" arriving one more time.
   //
   // Both samples are kept, which makes the row say more than it used to: the handle
   // shapes its own segment *and leaves its neighbour alone*, which is two claims a

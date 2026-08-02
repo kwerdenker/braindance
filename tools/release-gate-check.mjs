@@ -53,10 +53,10 @@
 // cutoff date, because it was reading the user config. The positive twin below is what
 // makes the date mean something, and it is asserted rather than assumed.
 //
-// Mutation convention, stated because the suite has two and CLAUDE.md records that the
-// disagreement runs the dangerous way: this file follows `vendor-check`. A caught
-// mutation is exit **0** with the assertion count printed, and exit **1** is NOT CAUGHT.
-// Read the count, never the code.
+// Mutation convention, stated because the suite has two and `docs/proof-tools.md`
+// records that the disagreement runs the dangerous way: this file follows
+// `vendor-check`. A caught mutation is exit **0** with the assertion count printed,
+// and exit **1** is NOT CAUGHT. Read the count, never the code.
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
