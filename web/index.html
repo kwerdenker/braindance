@@ -444,7 +444,13 @@
      about the shape between them, which is the half an ease handle edits. Step
      and pose lanes are diamonds only — a boolean has no shape, and a camera move
      is judged in the world rather than here. */
-  .tlane { position: relative; height: 100%; touch-action: none; }
+  /* `pan-y` rather than `none`, and the axis is the whole of it. A lane covers its row
+     and every gesture on it that we want - dragging a key, dragging an ease handle - is
+     horizontal, so handing the vertical axis back to the browser costs nothing and buys
+     the one thing it was blocking: the lane stack scrolls, and with `none` a swipe on a
+     touchscreen could not reach a lane below the fold at all. The scrollbar is not an
+     answer there either, which is what made this unreachable rather than merely awkward. */
+  .tlane { position: relative; height: 100%; touch-action: pan-y; }
   .tlane svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
   /* Both of these carry a transparent `::after` that is bigger than the shape, because
      a rotated square is hit-tested through its transform - the corners of its bounding

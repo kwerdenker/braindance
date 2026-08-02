@@ -317,13 +317,54 @@ const MUTATIONS = {
   // it took, so a takeover it was held across reads as itself. Reddens only the
   // interrupted arm - the uninterrupted one applies identically either way, which is
   // the whole reason that arm is there.
-  'rate-release-reads-now': {
+  // The transport takeover stops reaching the gesture at all: the one door stops
+  // dropping it, and the release goes back to reading the generation at the moment it
+  // runs rather than the one it took. That is the pre-fix build exactly, so it reddens
+  // both halves - the release writing over the new document and resuming it, and the
+  // slider event after the takeover rescaling a snapshot of the old one.
+  'takeover-ignored': {
     file: 'web/main.js',
     edits: [
+      ['  if (rateGesture) rateGesture = null;\n  return transportGen;', '  return transportGen;'],
       ['  const { wasPlaying, applied, rate: began, gen } = rateGesture;',
         '  const { wasPlaying, applied, rate: began } = rateGesture;\n  const gen = transportGen;'],
-      ['  if (gen !== transportGen) { rateGesture = null; return; }\n', ''],
     ],
+  },
+
+  // The wheel goes back to reading its deltas as pixels whatever the browser said they
+  // were. Reddens only the line-mode rows - a pixel-mode notch is unchanged by this,
+  // which is what makes those rows about the unit rather than about zooming.
+  'wheel-ignores-deltamode': {
+    file: 'web/main.js',
+    edits: [[
+      "  const unit = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? LANE_KEY_STEP\n"
+      + "    : e.deltaMode === WheelEvent.DOM_DELTA_PAGE ? Math.max(1, ui.bed.clientHeight)\n"
+      + "      : 1;",
+      '  const unit = 1;',
+    ]],
+  },
+
+  // The keyboard loses the only gesture that moves a window without resizing it, which
+  // is what the overview's pointer-only handlers left it needing. Zoom, fit and frame
+  // stay, so the rows beside it stay green.
+  'pan-keys-unbound': {
+    file: 'web/main.js',
+    edits: [[
+      "    case ',': case '<': e.preventDefault(); if (view.panBy(-0.25)) viewChanged(); return;\n"
+      + "    case '.': case '>': e.preventDefault(); if (view.panBy(0.25)) viewChanged(); return;\n",
+      '',
+    ]],
+  },
+
+  // A lane goes back to swallowing the vertical axis, so a touch swipe cannot reach a
+  // lane below the fold. Reddens only the touch-action row - the wheel rows beside it
+  // are unaffected, which is the difference between the two ways into the same scroller.
+  'lanes-eat-touch': {
+    file: 'web/index.html',
+    edits: [[
+      '.tlane { position: relative; height: 100%; touch-action: pan-y; }',
+      '.tlane { position: relative; height: 100%; touch-action: none; }',
+    ]],
   },
 
   // `change` goes back to ending every gesture, so a held arrow key is one gesture per
@@ -1414,11 +1455,25 @@ try {
   // the rate the document already has, and `t * (began / rate)` off a snapshot taken at
   // `began` is exactly `t` again - a no-op by arithmetic rather than by the fix. What
   // does move is the stack, because a release that thinks it changed something commits.
+  // `keyTimes` is the one term below that can tell a gesture rescaling the document that
+  // is open from one rescaling a snapshot of the document that was. Everything else here
+  // is rate-covariant and cannot: `t * (began / rate)` off a snapshot taken at `began` is
+  // exactly `t` again, so a stale rescale of the *same* document is a no-op by arithmetic
+  // and rate, cuts and undo depth all agree either way - measured, after the first
+  // version of these rows came back green on a mutated build for that reason. What does
+  // not survive is a takeover that *replaces* the key objects, which undo does by
+  // deserialising new ones: the stale snapshot then holds references to orphans and
+  // writes into nothing while the ruler rescales under the live keys.
+  //
+  // Written out here rather than beside the field, because a backtick inside a template
+  // literal ends it - a comment carrying prose about `rate` closed this expression and
+  // the file stopped parsing.
   const snap = () => page.evaluate(`(() => ({
     rate: __kinect.timeline.retime.rate,
     depth: __kinect.keyframes.undo.depth(),
     lanes: JSON.stringify(__kinect.keyframes.lanes()),
     range: JSON.stringify(__kinect.editor.clipRange()),
+    keyTimes: (__kinect.keyframes.project().look.tracks.bloom ?? []).map((k) => k.t.toFixed(3)).join(' '),
   }))()`);
 
   const heldGesture = async ({ interrupt }) => {
@@ -1448,6 +1503,18 @@ try {
     }
     const afterInterrupt = await page.evaluate('__kinect.timeline.retime.rate');
     const before = await snap();
+    // One more slider event after the takeover, which is the half the release guard
+    // never covered: `applyRate` runs per `input` and had nothing to check. The rate is
+    // deliberately a third value, so what lands can be told apart from both the rate the
+    // gesture began in and the rate the undo restored.
+    if (interrupt === 'then-more-input') {
+      await page.evaluate(`(() => {
+        const el = document.getElementById('tRate');
+        el.value = String(__kinect.editor.rateSlider.toValue(0.8));
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`);
+      await settle();
+    }
     await page.evaluate(`document.getElementById('tRate')
       .dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true }))`);
     await settle();
@@ -1502,6 +1569,22 @@ try {
   check(interrupted.playing === false,
     '  and does not resume a take the thing that took the transport had paused',
     `playing ${interrupted.playing}`);
+
+  // And the other half of the same door: a slider event arriving *after* the takeover.
+  // Guarding the release alone left this open, because `applyRate` runs per `input` and
+  // had nothing to check - so the event rescaled a snapshot of a document that was no
+  // longer open. The gesture is dropped at `takeTransport` now, so this event simply
+  // starts a fresh one on the document that is, and the keys move because they are the
+  // keys it is holding.
+  const continued = await heldGesture({ interrupt: 'then-more-input' });
+  check(continued.after.rate === 0.8,
+    '  a slider event after the takeover still moves the speed, rather than going dead',
+    `undo left ${continued.afterInterrupt}x, the event left ${continued.after.rate}x`);
+  const wantTimes = continued.before.keyTimes.split(' ')
+    .map((t) => (Number(t) * (continued.afterInterrupt / 0.8)).toFixed(3)).join(' ');
+  check(continued.after.keyTimes === wantTimes,
+    '  and rescales the keys the open document has, not the ones the old snapshot held',
+    `${continued.before.keyTimes} -> ${continued.after.keyTimes}, wanted ${wantTimes}`);
 
   // Put the document, the stack, the transport and the focus back, so section 5 does not
   // plant its keys into a clip this block left at half speed with a take running under
@@ -2262,6 +2345,68 @@ try {
     '  and the shortcut list says so, which is where anybody would look for it',
     await page.evaluate('__kinect.editor.shortcuts()'));
 
+  // Panning a window of the width you already have, which is the one thing the keyboard
+  // could not do. Zoom, fit and frame all *resize*; moving a narrow window along a long
+  // clip was reachable only by dragging the overview box, and the box and its two edges
+  // are `div` and `i` elements with no tabindex and nothing but pointer handlers - so at
+  // a close zoom there was no keyboard route from one end of the clip to the other.
+  //
+  // The span is asserted alongside the position, because a "pan" that also resized would
+  // move the start and pass a row reading the start alone - and resizing is what every
+  // other key on this surface already does.
+  await page.evaluate('__kinect.editor.view.set(0.4, 0.5)');
+  await settle();
+  const beforePan = await page.evaluate('__kinect.editor.view.window()');
+  await focusStage();
+  await page.keyboard.press('.');
+  await settle();
+  const keyPanned = await page.evaluate('__kinect.editor.view.window()');
+  await page.keyboard.press(',');
+  await settle();
+  const panBack = await page.evaluate('__kinect.editor.view.window()');
+  check(near(keyPanned.startSec - beforePan.startSec, beforePan.spanSec * 0.25, 1e-3),
+    '. pans the window a quarter of itself along the clip',
+    `${beforePan.startSec.toFixed(3)}s -> ${keyPanned.startSec.toFixed(3)}s, a quarter is `
+    + `${(beforePan.spanSec * 0.25).toFixed(3)}s`);
+  check(near(keyPanned.spanSec, beforePan.spanSec, 1e-6),
+    '  without resizing it, which is what every other key on this surface does',
+    `${beforePan.spanSec.toFixed(4)}s -> ${keyPanned.spanSec.toFixed(4)}s`);
+  check(near(panBack.startSec, beforePan.startSec, 1e-3) && near(panBack.spanSec, beforePan.spanSec, 1e-6),
+    '  and , brings it back', `${keyPanned.startSec.toFixed(3)}s -> ${panBack.startSec.toFixed(3)}s`);
+  check((await page.evaluate('__kinect.editor.shortcuts()')).includes(',/. pan it'),
+    '  and the shortcut list says so too', await page.evaluate('__kinect.editor.shortcuts()'));
+
+  // **A wheel notch is not three pixels, and on Firefox that is what it reports.**
+  // `deltaMode` is `DOM_DELTA_LINE` there and on some Linux mice, so a rule dividing by
+  // 100 turned a full notch into 3% of one and the zoom read as a control that does
+  // nothing. Driven as the two arms of the same gesture: one notch in lines against the
+  // same notch already in pixels, which must land in the same place.
+  //
+  // The pixel arm is the control. Without it this is a row about zooming rather than
+  // about the unit, and would go green on a build that ignored the wheel entirely.
+  const wheelArm = (mode, dy) => page.evaluate(`(async () => {
+    __kinect.editor.view.set(0.2, 0.8);
+    const bed = document.getElementById('tBed');
+    const r = bed.getBoundingClientRect();
+    bed.dispatchEvent(new WheelEvent('wheel', {
+      deltaY: ${dy}, deltaMode: ${mode}, bubbles: true, cancelable: true,
+      clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+    }));
+    await __kinect.timeline.settled();
+    return __kinect.editor.view.window();
+  })()`);
+  const inPixels = await wheelArm(0, -66);
+  const inLines = await wheelArm(1, -3);
+  const openSpan = inPixels.duration * 0.6;
+  check(inPixels.spanSec < openSpan * 0.95,
+    'a wheel notch reported in pixels zooms the ruler',
+    `${openSpan.toFixed(3)}s -> ${inPixels.spanSec.toFixed(3)}s`);
+  check(near(inLines.spanSec, inPixels.spanSec, 1e-6),
+    '  and the same notch reported in lines zooms it by exactly as much',
+    `pixels ${inPixels.spanSec.toFixed(4)}s, lines ${inLines.spanSec.toFixed(4)}s`);
+  await page.evaluate('__kinect.editor.view.fit()');
+  await settle();
+
   // The way back, and the way to the edit. Both are keys because a window you can only
   // leave with a wheel is a window somebody gets stuck in.
   await focusStage();
@@ -2360,6 +2505,29 @@ try {
   check(scrolled.railScrollTop === scrolled.scrollTop && scrolled.scrollTop === 60,
     '  and the rail follows them, or every lane would be labelled with its neighbour',
     `lanes at ${scrolled.scrollTop}px, rail at ${scrolled.railScrollTop}px`);
+
+  // And the other way into the same scroller, which the wheel rows cannot speak for. A
+  // lane covers its row and declared `touch-action: none`, so on a touchscreen the
+  // browser could not pan the stack natively and a lane below the fold was unreachable -
+  // the delegated pointer handler returns on anything that is not a key or a handle, so
+  // nothing picked the gesture up either.
+  //
+  // Read up the whole ancestor chain rather than off the lane alone, because
+  // `touch-action` is intersected along it: a `none` on any ancestor between the lane and
+  // the scroller defeats a `pan-y` on the lane, silently and while the one rule anybody
+  // would read still says the right thing.
+  const touch = await page.evaluate(`(() => {
+    const lane = document.querySelector('.tlane');
+    if (!lane) return null;
+    const chain = [];
+    for (let el = lane; el && el.id !== 'tLanes'; el = el.parentElement) {
+      chain.push(\`\${el.tagName.toLowerCase()}\${el.id ? '#' + el.id : ''}=\${getComputedStyle(el).touchAction}\`);
+    }
+    return { chain, blocked: chain.filter((c) => /=(none|pan-x)$/.test(c)) };
+  })()`);
+  check(touch !== null && touch.blocked.length === 0,
+    '  and a touch swipe can reach them, which no wheel row above can speak for',
+    touch === null ? 'no lane to read' : touch.chain.join('  '));
 
   // The clamp. Dragging to the top of the window must not be a way to lose the picture,
   // which is the failure a splitter introduces if nothing bounds it.

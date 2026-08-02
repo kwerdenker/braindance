@@ -1155,7 +1155,23 @@ let stageResizes = 0;
  * ask it is whether the decision it carries is still the current one.
  */
 let transportGen = 0;
-const takeTransport = () => { transportGen += 1; return transportGen; };
+const takeTransport = () => {
+  transportGen += 1;
+  // **And a speed gesture that no longer owns the transport is dropped here, at the one
+  // door, rather than checked at each place that could act on it.** Guarding only the
+  // release left the other half open: a slider event arriving after a load has restored a
+  // different document called `applyRate` with no check at all, which writes that
+  // document's cuts from the old gesture's snapshot and leaves its keys - now different
+  // objects - unrescaled while the ruler rescales under them, which is the bug this whole
+  // branch exists to fix, arriving through the back. Two guards would have been two
+  // things to keep in step; there is nothing to check once the gesture is gone, and the
+  // next slider event simply starts a fresh one on the document that is actually open.
+  //
+  // It cannot cancel the gesture that is being started, because `beginRateGesture` calls
+  // this before it has anything to assign.
+  if (rateGesture) rateGesture = null;
+  return transportGen;
+};
 
 function resize() {
   stageResizes++;
@@ -5441,8 +5457,31 @@ function clipFractionAt(surface, clientX) {
   return surface === ui.mini ? f : view.a + f * (view.b - view.a);
 }
 
+/**
+ * A wheel event's two deltas in pixels, whatever unit the browser chose to report.
+ *
+ * `deltaMode` is `DOM_DELTA_LINE` on Firefox and on some Linux mice, where one notch is
+ * `3` rather than `100` - so a rule dividing by 100 turned a full notch into 3% of one
+ * and the zoom read as a control that does nothing. `DOM_DELTA_PAGE` is rarer still and
+ * is a viewport. Both are converted here rather than at the two places that consume the
+ * deltas, because the second consumer is the pan and it had the same unit bug for the
+ * same reason - a share of the track computed from three "pixels".
+ *
+ * The line height is the strip's own row rather than a constant: `LANE_KEY_STEP` is what
+ * one lane is worth everywhere else in this file, and a wheel notch moving a different
+ * amount from an arrow key on the same surface is the kind of disagreement nothing
+ * records.
+ */
+const wheelPixels = (e) => {
+  const unit = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? LANE_KEY_STEP
+    : e.deltaMode === WheelEvent.DOM_DELTA_PAGE ? Math.max(1, ui.bed.clientHeight)
+      : 1;
+  return { x: e.deltaX * unit, y: e.deltaY * unit };
+};
+
 const onStripWheel = (surface) => (e) => {
   if (!timeline) return;
+  const delta = wheelPixels(e);
   // A wheel that started inside the lane scroller, on the axis that scroller uses,
   // belongs to it rather than to the zoom - so it is left alone entirely, native
   // scrolling and all, rather than being handled here. `#tLanes` is a descendant of
@@ -5459,19 +5498,19 @@ const onStripWheel = (surface) => (e) => {
   //
   // The axis test is the same one the branch below uses, so a horizontal pan over the
   // lanes still pans rather than falling through to the browser.
-  if (Math.abs(e.deltaY) >= Math.abs(e.deltaX)
+  if (Math.abs(delta.y) >= Math.abs(delta.x)
     && ui.lanes.contains(e.target)
     && ui.lanes.scrollHeight > ui.lanes.clientHeight) return;
   e.preventDefault();
   // A trackpad reports both axes at once and a mouse reports one, so the dominant
   // axis decides which gesture this is - reading both would zoom and pan on every
   // diagonal twitch.
-  if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+  if (Math.abs(delta.x) > Math.abs(delta.y)) {
     const width = Math.max(1, (surface === ui.mini ? ui.mini : ui.bed).clientWidth);
-    const d = (e.deltaX / width) * (surface === ui.mini ? 1 : view.b - view.a);
+    const d = (delta.x / width) * (surface === ui.mini ? 1 : view.b - view.a);
     if (!view.set(view.a + d, view.b + d)) return;
   } else {
-    const factor = ZOOM_PER_NOTCH ** (-e.deltaY / 100);
+    const factor = ZOOM_PER_NOTCH ** (-delta.y / 100);
     if (!view.zoomAbout(clipFractionAt(surface, e.clientX), factor)) return;
   }
   viewChanged();
@@ -5623,7 +5662,7 @@ const isTyping = (el) => el instanceof HTMLElement && (TYPING_TAGS.has(el.tagNam
 
 const SHORTCUTS = 'space play/pause · arrows step a frame, with shift a second · '
   + 'home/end · i/o set in/out, with shift jump to them · del removes the selected key · '
-  + 'm marks · +/- zoom the ruler, f fits the clip, z frames in..out · '
+  + 'm marks · +/- zoom the ruler, ,/. pan it, f fits the clip, z frames in..out · '
   + 'cmd-z undoes · h hides the panel';
 
 /**
@@ -5722,6 +5761,22 @@ addEventListener('keydown', (e) => {
       e.preventDefault();
       if (view.zoomAbout(timeline.programSec / view.duration, 1 / ZOOM_PER_NOTCH)) viewChanged();
       return;
+    // Pan the window along the clip, which was the one thing the keyboard could not do.
+    //
+    // Zoom, fit and frame were all here and all of them *change* the window's width;
+    // moving a window of the width you already have was reachable only by dragging the
+    // overview box, and the overview and its two edges are `div` and `i` elements with
+    // no tabindex and nothing but pointer handlers - so on a long clip at a close zoom
+    // there was no keyboard way to get from one end to the other except by widening the
+    // window and narrowing it again somewhere else.
+    //
+    // A quarter of the visible window per press rather than a fixed number of seconds,
+    // for the same reason the wheel zooms by a factor: at a close zoom a second is the
+    // whole screen and at fit-zoom it is invisible, so a constant is the wrong pace at
+    // every zoom but one. `panBy` already existed for this and had no caller, which is
+    // its own small piece of evidence that the gesture was meant to be here.
+    case ',': case '<': e.preventDefault(); if (view.panBy(-0.25)) viewChanged(); return;
+    case '.': case '>': e.preventDefault(); if (view.panBy(0.25)) viewChanged(); return;
     case 'f': case 'F': e.preventDefault(); if (view.fit()) viewChanged(); return;
     case 'z': case 'Z':
       e.preventDefault();
@@ -5801,22 +5856,24 @@ let rateGesture = null;
 
 function beginRateGesture({ fromKey = false } = {}) {
   if (rateGesture || !timeline) return;
+  // Taken before the object exists rather than inside it, so `takeTransport`'s cancel
+  // provably cannot reach this gesture - the ordering is stated here instead of resting
+  // on when a property initialiser happens to run.
+  const gen = takeTransport();
   rateGesture = {
     // Whether a key is holding this open, which decides whether `change` may end it -
     // see the listener wiring below. Read off how the gesture *started*, because the
     // repeats after the first arrive as `input` and would otherwise look like a value
     // written by a script.
     fromKey,
-    // The generation this gesture owns, kept rather than discarded - and the keeping
-    // is the whole point. A gesture is held for as long as a finger or a key is down,
-    // which is long enough for a project fetch started *before* it to land in the
-    // middle of it. `loadProjectNamed` takes the transport and restores a different
-    // document, and a release that read `transportGen` fresh would read the loader's
-    // own generation, find it equal to itself, and pass a check written to catch
-    // exactly this: `applyRate` would then rewrite every key and both cuts of the new
-    // project from `times` - a snapshot of the old one - and resume playback over a
-    // load that had deliberately paused.
-    gen: takeTransport(),
+    // The generation this gesture owns. A gesture is held for as long as a finger or a
+    // key is down, which is long enough for a project fetch started *before* it to land
+    // in the middle of it - and `loadProjectNamed` takes the transport and restores a
+    // different document. `takeTransport` drops the gesture outright when that happens,
+    // so this number is what the *resume* is checked against: the seek below is a
+    // pre-roll, long enough for a second taker to arrive after the release has already
+    // decided the take should be running.
+    gen,
     source: retime.sourceSecAt(timeline.programSec),
     wasPlaying: timeline.playing,
     // The parameterisation the gesture started in. Every program time in the document
@@ -5860,12 +5917,10 @@ function endRateGesture() {
   // A take closed while the slider was held leaves a gesture with nothing to end it
   // against. Dropped rather than applied, because there is no transport to seek.
   if (!timeline) { rateGesture = null; return; }
+  // No branch here for a gesture that lost the transport, because there is no such
+  // gesture to find: `takeTransport` dropped it, and the guard above is what catches it.
+  // A second check here would be a second thing to keep in step with the first.
   const { wasPlaying, applied, rate: began, gen } = rateGesture;
-  // Something else took the transport while this was held, so it took the document
-  // with it. Dropped whole rather than applied without the resume: the snapshot this
-  // gesture would rescale from describes a document that is no longer open, and
-  // whoever took it over has already decided whether the take should be running.
-  if (gen !== transportGen) { rateGesture = null; return; }
   if (!applied) {
     rateGesture = null;
     if (wasPlaying) timeline.play().catch(showTimelineError);
