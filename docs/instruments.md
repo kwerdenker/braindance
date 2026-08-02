@@ -104,6 +104,66 @@ frames, so the foreign bytes survive to the scan. When a mutation is unexpectedl
 inspect the mutated artifact before weakening the assertion; the code change may have undone
 itself rather than escaped the observation.
 
+**And a run that stopped two thirds of the way through is the same lie told quietly.** One
+sweep of nine mutations against the gallery had five runs end at 95, 117, 140 and twice 198 of
+317 assertions, every one of them non-zero, every one with the mutation's own rows already
+correctly red — so read line by line each looked like a catch, and read as a whole a third of
+the suite's claims had not been measured against that build at all. Three causes, and none of
+them was the code under test. `retryOnContextLoss` named `Execution context was destroyed` when
+Playwright says `Resulting promise was garbage collected` for the same renderer going away
+under an outstanding async `evaluate`; a mutation that deletes a control left `page.click` on
+that control timing out for thirty seconds and then throwing; and a probe that renames a take
+was pointed at the take five later rows assert about, so one red row became five and then an
+undefined. **A mutation must redden the rows carrying its claim and leave the run able to
+finish** — give a probe that might succeed its own fixture, guard any drive of a control the
+mutation can remove, and print the assertion total beside the failure count so a run that
+ended early is visible rather than implied.
+
+**A race probe driven through the HTTP route measured the route's own latency and reported
+the rule holding.** `renameTake` checked its target with `stat` and then acted on it, and
+`rename(2)` replaces an existing file without a word — so two requests aiming at one name
+both pass the reading and the second destroys a take. Four simultaneous POSTs against a build
+with that hole came back one winner and three refusals, every loser intact, twice: each
+request scans the whole captures directory before it reaches the rename, dozens of awaits of
+differing durations, and that is enough that the requests are never inside the window
+together. The identical four calls made straight at the function — where the only thing
+between the reading and the act is three `stat`s — clobber immediately: **four fulfilled, no
+rejections, one file left where four takes were.** So the row is a direct call into the
+staged module, not a fetch. **When a probe is about an interval of a few microtasks, every
+await between the caller and it is a widening of the thing being measured**, and a green row
+means the harness could not get close rather than that the interval is closed. The fix under
+it is `link(2)` then `unlink`, which fails EEXIST atomically, with the `stat` kept only for
+the sentence it produces.
+
+**Two gates that agree cannot be tested apart, and one of them will be doing all the work.**
+The rename route refused the take being recorded and so did `renameTake` underneath it, in
+identical words. `library-check` ran all 317 assertions against a build with the route's guard
+deleted and reported the refusal working — 317 assertions, none failed, NOT CAUGHT — because
+the second guard refused instead. This is not defence in depth; it is a rule with nothing
+measuring it, since no mutation can reach one gate without the other covering. The duplicate
+is gone and the check is aimed at the one that decides. **Before writing a second check of the
+same condition, ask which mutation would tell the two apart** — if the answer is none, there
+is one gate and a comment saying where it lives.
+
+**A mutation that zeroes a quantity has not moved it.** `poster-height-in-js` was meant to
+restore the shipped bug where a poster's height was assigned once from a measured width and
+went stale on resize. Written without a `width > 0` guard it froze at the first fit, before
+the grid had laid the tile out, so every poster came back zero-height: the aspect rows failed
+with `Infinity`, the decimation row failed because a canvas of no pixels has no picture to be
+sparser than, and the viewer never drew, which ended the run. Rows saying "something broke"
+where the claim is about *which* quantity moved. This is the converse of the mutation that
+does nothing already recorded above, and it fails the same test — confirm the mutation moved
+the number the check prints, in the direction the bug moved it.
+
+**Check the ports before a measurement run, not the results afterwards.** An earlier attempt
+at the same sweep had eight of nine runs die in section 1 with an `ENOENT` on a
+download-collision filename. A server leaked from a crashed run still held 8210 and 8211, so
+`startServer` connected to *that* rather than to the one it had just spawned, and every run
+was measuring a stale process against a fixture directory it was rebuilding underneath it.
+Eight runs, one failed assertion each, all of them the harness crashing — which is `fails=1`
+wearing a crash again, at sweep scale. The sweep resolves listeners by port and kills them
+before each run now, and prints when it did.
+
 ### A mutation whose only effect is that the page refuses to boot is not a usable mutation
 
 Step 2 replaced a boot invariant that had become a tautology — it looked a panel control up by
@@ -161,6 +221,17 @@ came back 1, because a plant that silently failed leaves the grey behind and the
 reports a dead zone as a measurement. **A tool's own synthetic fixture is not the take the
 program ships with, and a claim about "every arm" has to be read off the arms.**
 
+### Two bounds on one number means a probe has to be placed where the one under test is the binding one
+
+The splitter's clamp keeps the stage a third of the window, and `--tlanes-h` is
+`min(stacked, min(asked, ceiling))` - two limits on the same value. The arm stacked eight
+lanes at 280px against a 415px ceiling, so the height was decided by the *content* and the row
+asserting the clamp passed with the clamp deleted: `splitter-unclamped` came back NOT CAUGHT
+with every row green. Fourteen lanes stack 443px, the ceiling binds, and the same mutation
+drags the stage to 31.9% and reddens that one row. This is the dead-zone rule with the two
+terms in a `min` rather than in a sum, and the tell was in the row's own detail line - it
+printed a strip height that was neither the ceiling nor anywhere near it.
+
 ### Place a probe where its answer would be different, not where it is convenient
 
 A third flaw came out of this on step 5: a mutation replacing the pre-roll's window query
@@ -216,6 +287,71 @@ a gating check teaches people to re-run until green. The fix was to take "closed
 writer's own log rather than from an artifact the reader creates. **Before polling for a
 condition, ask what the polling call itself writes, opens or caches** - anything that lists,
 scans or indexes a directory something else is writing is a candidate.
+
+**A fixture that has never held the shape under test cannot measure it, and the gallery's
+tile heights are the plainest case of that yet.** Every take in `library-check`'s fixture
+carried at most one warning — truncated, or no hello, or under two frames — so a
+uniform-height assertion measured across all of them would have agreed on a build where each
+warning still added a row: one row against one row is the same height. The shape that
+differed was the take that fires several, and it did not exist until it was written.
+Measured on a fixture that has one: 41.19px of spread at every viewport width before, 0.00px
+after. That same take, cut before its first whole frame, then surfaced a defect nothing else
+had: a take whose scan indexes no frames still asked the server for frame 0 and got a 404,
+swallowed by the skim's own catch and visible only as a failed request in the console.
+**Before asserting that a set of things agree, check the fixture contains the one that would
+not.**
+
+**A quantity assigned once in JavaScript from a measured box is right at first paint and
+wrong afterwards, and a check that never resizes cannot see it.** The gallery's poster height
+came from `canvas.parentElement.clientWidth` at the first draw, so a window dragged from 1512
+to 700 left a 332px-wide tile with a 133px poster — 2.496:1 against the 16:9 it draws.
+Measured, not read off the CSS: the rule that produced it also looked like it should hold.
+The box is one `aspect-ratio` declaration now with the canvas taken out of flow, its backing
+store follows through a `ResizeObserver`, and the geometry rows measure at two widths with a
+resize between them because the two ways a tile changed size showed up under different
+conditions — the warnings at every width, the poster only after something resized.
+
+**Arithmetic about where a thing should go is not a measurement of where it went, and a
+proof tool can hold the second where it cannot hold the first.** The gallery's ⋯ menu picks
+its side from the room above and below the button inside the scrolling grid, and the tile in
+the top row had its first item clipped away — the tallest menu, on the take whose three
+warnings most needed reading. Fixing the branch was not enough: a tile in a row below the
+fold has a button the grid is not showing at all, so "the room above it" is a number about a
+position nothing can see and the menu lands wholly outside, which came back as six pixels of
+a 98px menu on the one fixture tile whose menu carries no warnings under it — the shortest
+menu there is, and therefore the one whose overflow a height cap cannot explain. The box is
+measured after placement and shifted by whatever is left over now, and the row asserts
+`inside` rather than asserting the reasoning. **Every assertion about what a menu offers
+passes on a menu nobody can see**, because the items are in the document either way.
+
+**A thing that draws one pixel per sample is dense at one size and threadbare at another.**
+The gallery's viewer is the same projection as its tile at four times the area, and the
+scale follows the height — so the gap between neighbouring depth samples on screen follows
+it too, and a take that reads solid on its 228px tile came up a faint dot screen. The
+spacing is exactly `scale / fx` pixels and not a proxy for it, because the depth cancels out
+of the unprojection, so the sample size is derived rather than tuned. Taken from the
+sensor's own focal length and never the decimated one: dividing by the divisor as well would
+give a coarse remote frame four-times-larger samples and make it look identical to a local
+one, erasing a signal the gallery carries on purpose. Measured: local 76.4 against remote
+22.8, so a decimated skim is still visibly what it is, and the **tile's own poster is
+bit-identical** to what it always drew — same mean, same signature — because the size floors
+at one where the tile already covers.
+
+**And the row that proves it was NOT CAUGHT for a round, because its threshold came from the
+wrong conditions.** The ratio gate was set at 0.25 from a measurement taken at
+devicePixelRatio 2, where the broken build gives 0.07 — and `library-check` runs at 1, where
+the same build gives 0.28. One hundredth of a margin, and the mutation ran the full suite
+reporting nothing wrong while doing exactly what it claimed. This is the fps-floor paragraph
+above arriving in a different instrument: **calibrate a gate at the viewport, the pixel ratio
+and the fixture the check actually runs with**, and record the broken build's value beside
+the threshold so the margin is visible rather than implied.
+
+**`el.id ?? fallback` never reaches the fallback.** The DOM answers an absent id, dataset key
+or attribute with `''` rather than with undefined, so `??` keeps the empty string and `||` is
+the operator that means what was intended. In the gallery's control enumeration this gave
+every tab the key `''`: the sweep reported four controls it could not name and four drivers
+naming nothing, both rows red, neither of them about the page. It looks exactly like a real
+enumeration failure.
 
 ## What do my arms agree about
 
@@ -409,6 +545,16 @@ containing no code. Inside a template literal, name things in plain words. It ha
 time in step 3 of the effects rework, `Unexpected identifier 'rgb'`, at a comment explaining why
 a mix is guarded.
 
+**It arrives under a second message, which is why the retry missed it for a while.**
+`Resulting promise was garbage collected` is the same thing - a pending `page.evaluate` whose
+context went away - and it was seen twice in about ten runs of `export-check`, both times in
+section 4 and both times green on the very next run with the tree unchanged. That is the shape
+that teaches people to re-run a gating check until it passes, so it is retried on the same
+terms rather than left as folklore. The tell for "flake rather than regression" is not the
+message either, since the paragraph above has it arriving from contention as well: it is that
+nothing the failing section tests had changed between the red run and the green one, which is
+a `git diff` rather than a judgement.
+
 **`page.evaluate(fnSourceString, arg)` does not call the function.** Playwright evaluates the
 string as an expression, so the arrow function is created, never invoked, and `undefined` comes
 back - which surfaced three helpers later as a missing shot rather than as a call that did not
@@ -438,6 +584,62 @@ expected 1.0. That is the whole look appearing not to rebase, caused entirely by
 **Each build applies its own graded values**; the one that still has `setMode` is left to.
 Caught by A/B against a worktree at the previous commit, which is the only thing that separates
 "my change broke this" from "this was already red".
+
+**A control whose `value` stops meaning the quantity it is named after retargets every tool
+that writes it, silently and in the passing direction.** The speed slider's travel became
+logarithmic, so `#tRate.value` is a position now and not a rate - and three proof sites wrote a
+rate straight into it. `el.value = '1'` had meant 1x and now means 4x, the top of the range.
+Every assertion downstream would have gone on passing, because holding the source frame is true
+at *any* rate: the arms would have measured 4x while their labels said 1x, and nothing would
+ever have said so. What closes it is not remembering to convert - it is that each site now asks
+the page where a rate lives (`__kinect.editor.rateSlider`) and then **checks the rate that came
+out against the rate that went in**. The conversion alone would have been one more thing to
+keep in step; the assertion is what makes a wrong one loud. Ask this of any control whose scale
+you change, and of any `.value` a tool sets by hand.
+
+**And a detent has to be measured against the control, not chosen as a round number - and
+that mistake was made twice in the same place, the second time by the fix for the first.**
+1.00x snaps because `slopeAt` reports it to the audio gate and 0.9995 reads as retimed. The
+band started at +/-1.5% of rate, which on a travel spanning a factor of 40 is
+`ln(1.015)/ln(40)` of the slider - so the one value the detent existed to make reachable was
+not reachable, and the row asserting the snap went red on a build whose arithmetic was
+perfectly correct.
+
+It was widened to +/-3% and the comment recorded that as "about 3px", **and that number came
+from arithmetic against a ~380px control while the stylesheet ships
+`.tchip input[type=range] { width: 92px }`**. So the real band was 0.74px each side: the fix
+restored the same unusable state it was written to remove, and every row asserting it passed,
+because they all assign `el.value` and none of them touch the rendered control. A band in
+*rate* is not a band in anything a finger can find, so it is `DETENT_PX = 3` now, converted
+against the element as rendered.
+
+The row that finally measures it is worth copying, because the obvious version does not
+work. Sweeping the control a pixel at a time and counting the pixels that land on 1.00x
+reported **8px with the band and 8px without** - a probe answering the same number either way
+measures neither, for two reasons at once: a range input's track is shorter than its box by
+the thumb, so pixel arithmetic from `width` is off by however wide that is, and clicking is
+itself a gesture whose detent arming gets in the way of reading the band off it. Taken apart
+into two separately measured terms - the band in travel, bisected through the page's own
+mapping, and the travel a pixel is worth, taken from two clicks far apart - it reports 76px of
+track inside a 92px box and 2.48px each side, and the mutation reddens it at 0.61px.
+**Whenever a constant is stated in one unit and lived in another, measure both terms
+separately; a single number that comes out the same on both builds is not a measurement.**
+
+**A tool holding its own copy of a layout constant is a copy that goes stale, and it fails
+looking exactly like a regression in the product.** Adding one 22px row to the timeline took
+`--timeline-h` from 148 to 170, and `export-check` carried `TIMELINE_H_GUESS = 148` as the
+height it added to the viewport. So its stage came out 22px short, the editor arm rendered at
+the fitted size while the export beside it wrote 640x400, and the row that went red was "every
+frame that crossed the wire is byte-identical to the editor's own image" - nine of nine
+mismatched, on a build whose export was perfect. The same row had caught the same *shape* once
+before, when the letterbox arrived, and the comment beside it says so.
+
+Bumping the constant would close the instance and leave the class: the next row added to the
+strip breaks it again, identically. `keyframe-check` had the answer already - its
+`CHROME_H_GUESS` is documented as a first guess and the real height is measured after load and
+the viewport corrected - so `openPage` now goes through `setStage`, which measures. **When a
+tool needs a number the page owns, have it ask the page once rather than agree with it in a
+comment.**
 
 **Letterboxing the editor stage moved every pointer coordinate and every buffer-size
 expectation, and four proof tools found out one at a time.** `export-check` needed two separate

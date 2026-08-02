@@ -62,6 +62,15 @@ the retime seam, and the refusal is what surfaced that rather than a silent pass
 something a mutation anchors to, re-anchor it in the same commit and say in the message which
 ones moved.
 
+**`library-check` serves a mutated page at the URL the page is reached by, not at its
+filename.** `web/library.html` has no URL of its own — `server/index.js` 404s any `.html`
+under `web/` on purpose, so a page has exactly one address — and it is served at `/gallery`.
+A route interception written as `**/library.html` therefore matches nothing, the unmutated
+page loads, and the run is recorded as the check having missed a bug it was never shown.
+That is the match-exactly-once failure arriving through the *delivery* rather than through
+the anchor, where nothing refuses it, so the interception refuses a page file it has no URL
+for instead.
+
 ## What each tool needs
 
 **`determinism-check --clock`** refuses a rev whose `main.js` already contains the transport,
@@ -95,11 +104,19 @@ a server that refused every upgrade, or bound to nothing, fails it rather than p
 worth naming beside it rather than a milder one: it is the control for the hole that let a read
 route destroy the take being shot.
 
-**It binds fixed ports** — 8210 and 8211, plus `MAC_PORT + 2/4/5` — so two worktrees running it
-at once do not get an address-in-use error, they get each other's server: one run stat-ed
-`three-warning-take.knct`, a fixture belonging to the other tree, and reported itself as not
-finishing. Pass `--node-port`/`--mac-port` a range nothing else holds. The quieter half of that
-same collision is in `docs/instruments.md`, because it fails in a way that reads as a finding.
+**It binds a span of fixed ports** — `--node-port`, and `--mac-port` through `--mac-port + 16`,
+defaulting to 8210 and 8211..8227. Two worktrees running it at once did not get an
+address-in-use error, they got each other's server: one run stat-ed `three-warning-take.knct`,
+a fixture belonging to the other tree, and reported itself as not finishing. The quieter half
+of that same collision is in `docs/instruments.md`, because it fails in a way that reads as a
+finding — most recently six recorder rows reporting `undefined counted, -1 on disk` when
+`MAC_PORT + 9` belonged to somebody else.
+
+It now **refuses the run rather than discovering this halfway through**: `reservePorts` asks
+the kernel about every port in the span before anything spawns and exits 2 naming what is
+held, `startServer` throws if its own child exits instead of listening, and it refuses a port
+outside the declared span so a section added at `+17` is a failure rather than a hole. Pass
+`--node-port`/`--mac-port` a range nothing else holds.
 
 **`editor-check` enumerates rather than lists, and it exists because the suite tested the model
 and never the control.** The clip in/out markers were detached from the document during boot
@@ -249,3 +266,15 @@ discontinuities:
 Coverage is measurable rather than assumed: `registration-check --mutate filter-never-rejects`
 reports what fraction of pixels the filter actually rejects. The committed corpus's 72 frames
 sit at 6.93%; a first capture of one static-ish scene managed 6.55%.
+
+**`captures/sample.knct` is not in the repository and a synthesised stand-in is not the
+same fixture.** It is gitignored like every other capture, so a fresh clone has none, and
+`library-check` needs one — every take it builds is cut out of it. A synthetic one is enough
+to run the whole suite and it is worth knowing exactly which rows it cannot answer: **a
+sample with no colour block fails the two decimation rows by construction** (`the colour
+block is carried through untouched` and `divisor 4 lands at the ~80KB`), because those
+measure a JPEG the stand-in does not contain, and a sample whose hello carries `startedAt`
+fails the file-date fallback row, because the fixture depends on some takes having no wall
+clock. Neither is a defect in the build. Say which sample a run used when reporting its
+verdict — a run against a stand-in is 317 of 319 by construction, and reporting it as a pass
+or as two failures without naming the fixture is wrong in both directions.

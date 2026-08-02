@@ -94,3 +94,27 @@ export function versionRefusal(what, version) {
         + 'either from a later build or was never one of these - so it is refused rather than guessed at';
   return `${what} is version ${JSON.stringify(version)} and this build reads version ${PROJECT_VERSION}: ${across}`;
 }
+
+/**
+ * What may be a take id, a document name, or anything else this program joins to a
+ * path - and it is here, beside the version, for the same delivery reason.
+ *
+ * It began in `server/library.js` and was moved when the gallery grew a rename box.
+ * A rename that only learns its name was refused after a round trip is a rename that
+ * spells the rule out in an error message; a box that greys its own button says the
+ * same thing before the request. Those are two statements of one rule, and the
+ * failure mode of two copies is not that they disagree loudly - it is that the page
+ * quietly accepts something the server refuses, or refuses something the server would
+ * have taken, and the operator learns which by trying. So there is one regular
+ * expression and both sides import it.
+ *
+ * **The page's copy is a courtesy and never a gate.** `server/library.js` asserts it
+ * on every path it forms, because a request does not have to come from this page at
+ * all - a node's manifest and a `curl` are both callers, and neither ran any
+ * JavaScript this repo wrote.
+ *
+ * The leading character rules out `..` on its own; the rest rules out a separator. An
+ * underscore is allowed so the editor's reserved auto-save name `__working__` is a
+ * valid document name.
+ */
+export const VALID_ID = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;

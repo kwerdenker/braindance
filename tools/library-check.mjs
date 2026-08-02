@@ -63,9 +63,13 @@ import { createHash } from 'node:crypto';
 import { chmodSync, cpSync, mkdirSync, readdirSync, rmSync, symlinkSync, existsSync, readFileSync, writeFileSync, appendFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { createConnection } from 'node:net';
+import { networkInterfaces } from 'node:os';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { MessageParser, TYPE_HELLO, TYPE_FRAME, encodeMessage } from '../server/protocol.js';
+// The shipped argument shape per platform, read rather than restated - see the reveal
+// argv row for what a second copy of it cost.
+import { REVEAL } from '../server/library.js';
 // The format version, imported rather than written down. Every document these tools
 // construct or assert on has to carry the one this build writes, and a literal here
 // is a second copy of it - which is exactly what had to be hand-swept when the
@@ -82,6 +86,19 @@ const REPO = fileURLToPath(new URL('..', import.meta.url));
 const SAMPLE = flag('--capture') ?? join(REPO, 'captures/sample.knct');
 const NODE_PORT = Number(flag('--node-port', '8210'));
 const MAC_PORT = Number(flag('--mac-port', '8211'));
+// **How far above `--mac-port` this suite binds, declared rather than left to be
+// discovered by collision.** Sections spawn their own servers at `MAC_PORT + n` for a
+// scattered set of `n`, and the run instructions used to name only `+2/4/5` while the
+// code had grown as far as `+16`. Two worktrees running this at once therefore did not
+// collide loudly - they shared a server, because `startServer` polled until *something*
+// answered `/library/takes` and a stranger answers that just as well as its own child.
+//
+// Observed rather than predicted: a run on this machine failed six recorder rows with
+// `undefined counted, -1 on disk` because `MAC_PORT + 9` belonged to another worktree,
+// and the failure reads exactly like a finding about the recorder. The span is checked
+// end to end before anything spawns, and `startServer` asserts its port is inside it, so
+// a section added later at `+17` is caught by arithmetic rather than by a wrong reading.
+const PORT_SPAN = 16;
 const MUTATE = flag('--mutate');
 const HEADED = argv.includes('--headed');
 const WORK = flag('--work') ?? join(REPO, '.library-check');
@@ -113,6 +130,29 @@ const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 // ones are served into the browser by route. One namespace, because the safety
 // property is the refusal and splitting it would make it possible to have two rules
 // about it.
+
+// **The reveal mutation has to break the branch this platform actually runs.** It
+// edited the Darwin entry only, so on Linux or Windows the staged server kept its own
+// unchanged branch, the argv assertion passed, and the control reported zero failures
+// while proving nothing - a falsification control that cannot fire, which is the exact
+// shape this file exists to refuse. Derived from `process.platform` so the anchor is
+// the live line wherever it runs; an unknown platform falls back to Darwin, where the
+// mutation at least refuses to match rather than passing quietly.
+const REVEAL_EDITS = {
+  darwin: [
+    "  darwin: { program: 'open', label: 'Finder', args: (path) => ['-R', path] },",
+    "  darwin: { program: 'open', label: 'Finder', args: () => ['-R'] },",
+  ],
+  linux: [
+    "  linux: { program: 'xdg-open', label: 'the file manager', args: (path) => [dirname(path)] },",
+    "  linux: { program: 'xdg-open', label: 'the file manager', args: () => [] },",
+  ],
+  win32: [
+    "  win32: { program: 'explorer', label: 'Explorer', args: (path) => [`/select,${path}`] },",
+    "  win32: { program: 'explorer', label: 'Explorer', args: () => ['/select,'] },",
+  ],
+};
+const REVEAL_EDIT = REVEAL_EDITS[process.platform] ?? REVEAL_EDITS.darwin;
 
 const MUTATIONS = {
   // The library joins on the filename instead of the hash. Two names for one take
@@ -421,12 +461,93 @@ const MUTATIONS = {
     "  { path: '/record/stop', pattern: /^\\/record\\/stop$/, write: { methods: ['POST'], run: serveRecordStop } },",
     "  { path: '/record/stop', pattern: /^\\/record\\/stop$/, read: serveRecordStop },",
   ]] },
+  // **The rebuild that arrow-browsing causes stops moving focus to the replacement.**
+  // The viewer's header button is cloned and swapped on every rebuild, so this removes
+  // the node holding focus and leaves the caret on the body: the second arrow then
+  // reaches nothing and browsing stops after exactly one take, with every pixel on
+  // screen still correct. What must go red is the two-presses row, not the focus row -
+  // the focus row alone would be an assertion about where a caret is, and this file's
+  // rule is to read the consequence.
+  'viewer-drops-focus-on-rebuild': { file: 'web/library.js', edits: [[
+    `  if (focusWas) {
+    const same = findControl(viewer, focusWas);
+    (same && !same.disabled ? same : freshMore).focus();
+  }`,
+    '  void focusWas;',
+  ]] },
+  // **Hiding a menu stops putting focus back on the button that opened it.** Hiding an
+  // ancestor of the focused element drops focus to the body, which inside the viewer
+  // means outside the dialog - so choosing an item by keyboard ends with the arrows
+  // dead. This lived at one caller before it was a rule; the mutation takes the rule
+  // out, which is the only place it now exists.
+  'menu-close-strands-focus': { file: 'web/library.js', edits: [[
+    '    if (heldFocus && toggle && !toggle.disabled) toggle.focus();',
+    '    void heldFocus;',
+  ]] },
+  // **`run` stops putting focus back after the action it held the surface down for.**
+  // Disabling the focused control blurs it, so this is the half `openViewer` cannot
+  // cover - it reads the focus that is live, and by then there is none. Removing it
+  // strands focus on the body after any action pressed from the keyboard.
+  'run-strands-focus': { file: 'web/library.js', edits: [[
+    `    const back = findControl(host, wanted)
+      ?? (host?.isConnected ? host.querySelector('[aria-haspopup="menu"]') : null);`,
+    '    const back = null;',
+  ]] },
+  // **The viewer goes back to deciding for itself, and gets one rule wrong.** This is
+  // the shape that shipped four times: the viewer's action row computed from something
+  // slightly different from the tile's, which is invisible on the takes the two happen
+  // to agree about and wrong on exactly the take in the state nobody drove.
+  //
+  // The rule it drops is the first of the four the review caught: the viewer believing
+  // a take is here when it is only on the node. That surface then offers Open and a live
+  // Delete on footage this machine does not have, with the confirm in front of Delete
+  // reading "This is the only copy" - the most alarming sentence the page can show, on a
+  // button that was never going to do anything.
+  //
+  // **Told as a lie about the take rather than as a second copy of the rule**, because
+  // what has to be falsified is that the two surfaces cannot diverge, and re-deriving
+  // the old duplicated block would test whether I retyped it faithfully.
+  //
+  // Aimed at the viewer's call and not at `availability`: a rule broken inside
+  // `availability` breaks it for both surfaces, which leaves them agreeing. That is a
+  // real bug and a different one, and it is what the per-take rows above already cover.
+  //
+  // `state` rather than `recording`, because the mutation has to move something in the
+  // fixture this row actually walks. There is no take mid-shoot in the grid at that
+  // point - the recorder rows run on their own server - so telling the viewer nothing is
+  // recording changes nothing, and the row would have stayed green against a build with
+  // the surfaces genuinely split. There is a node-only take, so this one moves.
+  'viewer-decides-for-itself': { file: 'web/library.js', edits: [[
+    '  paintActs(acts, take, hostOf);',
+    "  paintActs(acts, { ...take, state: 'local' }, hostOf);",
+  ]] },
   // Marks for a take that is not here, which created its sidecar in the captures
   // directory out of a caller's own JSON.
-  'marks-without-a-take': { file: 'server/index.js', edits: [[
-    '  if (!takeIsHere(path)) {\n    sendJson(res, { error: `no take ${id} here, so there is nothing to mark` }, 404);\n    return;\n  }',
-    '  /* mutation: any id may have marks */',
-  ]] },
+  //
+  // **Two edits now, because there are two things enforcing this and removing one
+  // leaves the other refusing.** The route grew a second check when marks were made to
+  // survive a rename: it takes the capture's inode before awaiting the body and
+  // compares it after, so a take that vanished - or was replaced by a different take
+  // renamed into the freed id - is refused. That check also happens to cover the take
+  // that was never there at all, since `sameTake(null, null)` is false.
+  //
+  // Removing only the 404 branch therefore does not produce the shape this mutation is
+  // named for. It produces a 409 and no sidecar, and the row would still go red -
+  // purely because its message no longer matches `nothing to mark|no take`. That is a
+  // catch on the wording of an error rather than on the behaviour, which is the kind of
+  // green-for-the-wrong-reason this file exists to refuse. Both gates come out, so what
+  // is under test is the claim - a take that is not here gets no marks - against a
+  // build with nothing left to enforce it. Both rows then fail: the refusal is gone and
+  // `nosuchtake.marks.jsonl` is on disk.
+  //
+  // `const wasThere` stays, or the identity check below it is a ReferenceError and the
+  // route crashes - which reads as a catch while proving only that a mutation broke the
+  // build.
+  'marks-without-a-take': { file: 'server/index.js', edits: [
+    ['  const wasThere = takeIdentity(path);\n  if (wasThere === null) {\n    sendJson(res, { error: `no take ${id} here, so there is nothing to mark` }, 404);\n    return;\n  }',
+      '  const wasThere = takeIdentity(path);'],
+    ['  if (!sameTake(wasThere, takeIdentity(path))) {', '  if (false) {'],
+  ] },
   // The document store restamps the version instead of checking it, so a project
   // from a build this one is not lands looking like one this build wrote.
   'store-restamps-version': { file: 'server/library.js', edits: [[
@@ -596,6 +717,182 @@ const MUTATIONS = {
     'const DIVISOR = { local: 1, both: 1, remote: 4 };',
     'const DIVISOR = { local: 1, both: 1, remote: 1 };',
   ]] },
+
+  // ---- the tiles' geometry, one mutation per way a tile used to change size
+  //
+  // Both of these are the shipped bug put back rather than an invented one, and they
+  // are two mutations rather than one because they moved different quantities: the
+  // warnings moved a tile's *height* against its neighbours at every width, and the
+  // poster's box moved its *ratio* only after a resize. A single mutation covering
+  // both would leave a row unable to say which had broken.
+
+  // The warnings go back under the poster as text, one row each - which is where they
+  // were, and why `no-hello-take` stood 41.19px taller than a take with none at every
+  // viewport width measured. The badges stay, so this moves the height and nothing
+  // else: a mutation that also blanked the poster would redden rows about the picture
+  // and the verdict would be about the mutation rather than about the check.
+  'tile-height-follows-content': { file: 'web/library.js', edits: [[
+    '  paintFlags(tile.querySelector(\'.flags\'), take);',
+    `  paintFlags(tile.querySelector('.flags'), take);
+  for (const w of warningsOf(take)) {
+    const row = document.createElement('div');
+    row.className = 'facts';
+    row.style.height = 'auto';
+    row.textContent = w.why;
+    tile.querySelector('.meta').appendChild(row);
+  }`,
+  ]] },
+  // The poster's height goes back into JavaScript, assigned once from the width it
+  // measured on the first fit. Right at first paint and stale after every resize,
+  // which is what a window dragged from 1512 to 700 measured at 2.496:1.
+  //
+  // **The `w > 0` guard is what makes this the shipped bug rather than a different
+  // one, and the first version without it was worse than useless.** `fit` runs once
+  // before the grid has laid the tile out, where the width is 0 - so the poster froze
+  // at zero height, every ratio came back `Infinity`, the decimation row went red
+  // because a canvas of no pixels has no picture to be sparser than, and the viewer
+  // never drew a frame, which ended the run. That is a mutation whose rows say
+  // "something broke" where the claim is about *which* quantity moved: the height was
+  // right at first paint and drifted afterwards, and only the second half is the bug.
+  'poster-height-in-js': { file: 'web/library.js', edits: [[
+    `  const fit = () => {
+    const r = surface.getBoundingClientRect();`,
+    `  const fit = () => {
+    if (!surface.dataset.frozen && surface.getBoundingClientRect().width > 0) {
+      surface.dataset.frozen = '1';
+      surface.style.aspectRatio = 'auto';
+      surface.style.height = \`\${Math.round(surface.getBoundingClientRect().width * 9 / 16)}px\`;
+    }
+    const r = surface.getBoundingClientRect();`,
+  ]] },
+  // A depth sample goes back to covering exactly one pixel however large the canvas
+  // is, which is what the viewer drew before it was looked at: the projection scales
+  // with the height, so the samples spread and the same take that reads solid on its
+  // tile came up a faint dot screen. Measured at this check's own viewport and device
+  // pixel ratio: the stage falls to 0.28 of the tile's mean against 1.00, with the
+  // *tile's* poster bit-identical either way, which is why this fails the ratio row
+  // and leaves every other picture row alone.
+  //
+  // **It was NOT CAUGHT for one round and the reason is worth keeping**: the row's
+  // threshold had been set from a measurement at devicePixelRatio 2, where the broken
+  // build gives 0.07, and this runs at 1, where it gives 0.28 - one hundredth of a
+  // margin above a 0.25 gate. The mutation was doing exactly what it claimed and the
+  // check could not see it.
+  'viewer-splat-one': { file: 'web/library.js', edits: [[
+    '  const splat = Math.max(1, Math.round(scale / fxFull));',
+    '  const splat = 1;',
+  ]] },
+  // The way out of the gallery goes away again, which is the state it shipped in: the
+  // only exits were Open, which leaves for the editor, and a browser back button the
+  // node's touch panel does not have.
+  //
+  // **Re-anchored when this branch met `main`.** The way out was a `.back` anchor of
+  // this page's own until #2 landed `surfacenav` on every surface; merging them kept
+  // both, two elements carrying `id="toMenu"`, and the chips won. A mutation is a
+  // piece of source text, so the old anchor stopped matching the moment that markup
+  // went - and an anchor that matches nothing refuses, which reads as a caught
+  // mutation to anything checking only the exit code.
+  'gallery-has-no-way-back': { file: 'web/library.html', edits: [[
+    '    <a id="toMenu" href="/">menu</a>',
+    '    <!-- mutation: no way back -->',
+  ]] },
+  // **The falsification control for the enumeration**, and the only mutation here
+  // that is not a bug being put back. A menu item nobody has taught this file to
+  // drive has to be a failure rather than a control that quietly went unswept, or
+  // "every control the gallery renders was tested" is a sentence this tool writes
+  // about itself with nothing enforcing it. It is the shape `editor-check` already
+  // needed for the same claim about the editor's controls.
+  //
+  // Planted **disabled**, and that is aim rather than timidity: `controls()` reads
+  // every item the page renders whether or not it is pressable, so a disabled plant
+  // exercises the enumeration exactly as well - and an enabled one also reddened "every
+  // item in the menu is disabled while the take is recording", which is a true
+  // statement about the plant and a neighbouring claim to the one under test.
+  'plant-unswept-menu-item': { file: 'web/library.js', edits: [[
+    "      item: 'reclaim',",
+    `      item: 'planted',
+      label: 'Planted item',
+      enabled: false,
+      why: 'planted by library-check',
+      run: () => {},
+    },
+    {
+      item: 'reclaim',`,
+  ]] },
+
+  // ---- rename, one mutation per thing the rename has to get right
+  //
+  // The hash gate and the marks are separate rows for the reason the grade terms are
+  // in `export-check`: a cumulative row cannot say which term broke, and these two
+  // fail differently - one lets a stale request through, the other loses what somebody
+  // pressed in the room.
+  'rename-ignores-hash': { file: 'server/library.js', edits: [[
+    '  if (index.hash !== hash) {',
+    '  if (false) {',
+  ]] },
+  // The marks log is left behind at the old name, where nothing lists it and nothing
+  // will ever look for it again - the take arrives at its new name with no marks and
+  // no error.
+  'rename-orphans-marks': { file: 'server/library.js', edits: [[
+    '  const marksMoved = await linkInto(marksPathFor(from), marksPathFor(target));',
+    '  const marksMoved = false;',
+  ]] },
+  // The rename goes back to `rename(2)`, which replaces an existing file without a
+  // word - so the collision check above it becomes check-then-act and two requests
+  // aiming at one name both pass it. The sequential rows still pass, because the
+  // reading is still true when it is acted on; the race row is the one that goes red.
+  //
+  // Two edits, and the second is not optional: `rename` has already moved the file, so
+  // leaving the `unlink(from)` in place fails with ENOENT and the rollback beneath it
+  // unlinks the *target* - destroying the take on every rename, which would redden
+  // half the section for a reason that has nothing to do with the race. The mutated
+  // build has to be the plausible wrong one, not a broken one.
+  'rename-clobbers-under-a-race': {
+    file: 'server/library.js',
+    edits: [
+      [
+        '    if (!await linkInto(from, target)) throw new Error(`${id} is no longer in ${root}`);',
+        '    await rename(from, target);',
+      ],
+      ['    await unlink(from);', '    /* mutation: rename moved it already */'],
+    ],
+  },
+  // The take being recorded becomes renameable, which is the failure that cannot be
+  // seen from the rename's own answer: `scanTakes` decides which take is open by
+  // comparing paths, so the renamed one stops matching and every `/library/*` request
+  // starts a full read plus sha256 of a file the recorder is still writing.
+  //
+  // **Aimed at `renameTake` and not at the route, and the first aim is worth
+  // recording because it was NOT CAUGHT.** The route carried a second copy of this
+  // test in identical words, so deleting one of the two moved nothing observable: 317
+  // assertions, none failed, against a build with a guard removed - which reads as the
+  // refusal working and was the other guard doing the refusing. The duplicate is gone
+  // and this points at the one that decides.
+  //
+  // **Two rows fire and the second is the one carrying the claim.** The message row
+  // goes red because the refusal that comes back instead is the hash gate - a take
+  // mid-write advertises no hash, so nothing can name one - and the sidecar row goes
+  // red because reaching that gate at all means `cachedIndex` has scanned the file the
+  // recorder has open and left a `.idx` beside it. The scan is the harm; the message
+  // is how it announces itself.
+  'rename-during-a-shoot': { file: 'server/library.js', edits: [[
+    '  if (recordingPath !== null && resolve(from) === resolve(recordingPath)) {',
+    '  if (false) {',
+  ]] },
+
+  // ---- reveal
+  //
+  // The path is dropped from the arguments, so the file manager is started on nothing
+  // - a route that answers 200 having done something that is not what it says. This is
+  // the row a status code cannot carry, which is why the check reads the argv the
+  // program was actually given rather than the answer the route wrote.
+  'reveal-drops-the-path': { file: 'server/library.js', edits: [REVEAL_EDIT] },
+  // The loopback gate comes off the one route in this program that starts a process,
+  // so a browser across the link opens a window on a machine nobody is standing at.
+  'reveal-answers-any-caller': { file: 'server/index.js', edits: [[
+    '  if (!isLoopback(req)) {\n    const { label } = revealSupport();',
+    '  if (false) {\n    const { label } = revealSupport();',
+  ]] },
 };
 
 function mutatedSource(name) {
@@ -743,6 +1040,15 @@ function buildFixture() {
   writeTake(macCaps, 'no-hello-take', { frames: 6, withHello: false });
   writeTake(macCaps, 'one-frame-take', { frames: 1 });
   writeBadLengthTake(macCaps, 'bad-length-take');
+  // **Three warnings at once, which is the tile the height rows need and none of the
+  // takes above is.** Every fixture take carries at most one - truncated, or no
+  // hello, or under two frames - so a uniform-height assertion measured across them
+  // alone would agree on a build where each warning still added a row, because one
+  // row against one row is the same height. The shape that used to differ is the take
+  // that fires several, and until this existed the check could not stand in front of
+  // it. Same reading as step 6's aspect ratio: a set of arms that agree about a
+  // quantity cannot measure it however many of them there are.
+  writeTake(macCaps, 'three-warning-take', { frames: 1, withHello: false, truncate: true });
 
   // Mark counts the tile renders differently: none, exactly one, and several - plus
   // a mark at source zero and a mark past the end of the footage, which are the two
@@ -811,16 +1117,61 @@ function stageServer() {
 
 const servers = [];
 
+/** Whether something already holds a port, asked of the kernel rather than of a fetch. */
+const portHeld = (port) => new Promise((done) => {
+  const sock = createConnection({ host: '127.0.0.1', port });
+  const settle = (held) => { sock.destroy(); done(held); };
+  sock.on('connect', () => settle(true));
+  sock.on('error', () => settle(false));
+  setTimeout(() => settle(false), 400);
+});
+
+/**
+ * Refuses the run when any port this suite will bind is already taken.
+ *
+ * Up front and for the whole span, because the alternative is discovering it in section
+ * 9 with the previous eight sections' claims already printed - and discovering it as a
+ * wrong answer rather than as an error, since a stranger on the port answers the health
+ * check. Exit 2 rather than 1: this is the suite declining to run, not a claim failing.
+ */
+async function reservePorts() {
+  const wanted = [NODE_PORT, ...Array.from({ length: PORT_SPAN + 1 }, (_, i) => MAC_PORT + i)];
+  const held = [];
+  for (const port of new Set(wanted)) if (await portHeld(port)) held.push(port);
+  if (held.length === 0) return;
+  console.error(`[library] refusing to run: ${held.join(', ')} already ${held.length === 1 ? 'has' : 'have'} a listener.`);
+  console.error(`[library] this suite binds ${NODE_PORT} and ${MAC_PORT}..${MAC_PORT + PORT_SPAN}, all of which have to be free.`);
+  console.error('[library] another worktree is the usual cause - pass --node-port and --mac-port a range nothing else holds.');
+  process.exit(2);
+}
+
 async function startServer(root, args, port) {
+  // A port outside the declared span would not have been checked by `reservePorts`, so
+  // it is the one thing that could still attach to a stranger. Caught here rather than
+  // trusted, which is what makes adding a section at `+17` a failure instead of a
+  // silent hole.
+  if (port !== NODE_PORT && (port < MAC_PORT || port > MAC_PORT + PORT_SPAN)) {
+    throw new Error(`port ${port} is outside the reserved span ${MAC_PORT}..${MAC_PORT + PORT_SPAN}: `
+      + 'raise PORT_SPAN and the note beside it, or this server is one nothing checked was free');
+  }
   const child = spawn(process.execPath, [join(root, 'server/index.js'), '--port', String(port), ...args], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const log = [];
   child.stdout.on('data', (c) => log.push(c.toString()));
   child.stderr.on('data', (c) => log.push(c.toString()));
+  // **Our own child failing is a different answer from nothing listening yet.** Without
+  // this the loop below polls on after an `EADDRINUSE` exit until something else
+  // answers, and then returns that something else's URL.
+  let exited = null;
+  child.on('exit', (code, signal) => { exited = signal ?? code; });
   servers.push({ child, log, port });
   for (let i = 0; i < 200; i++) {
     await new Promise((done) => { setTimeout(done, 100); });
+    if (exited !== null) {
+      throw new Error(`the server this run spawned on ${port} exited (${exited}) instead of listening, `
+        + `so anything answering there is not ours:\n${log.join('')}`);
+    }
     try {
       const res = await fetch(`http://localhost:${port}/library/takes`);
       if (res.ok) return `http://localhost:${port}`;
@@ -1000,8 +1351,25 @@ async function retryOnContextLoss(label, work) {
     try {
       return await work();
     } catch (err) {
-      if (!/Execution context was destroyed/.test(String(err)) || attempt === 3) throw err;
-      console.log(`  ...  ${label}: execution context lost, retrying (attempt ${attempt + 1} of 3)`);
+      // **Two messages, because the renderer going away here arrives under both.**
+      // `Execution context was destroyed` was the one this was written for, and
+      // `Resulting promise was garbage collected` is what Playwright says when the
+      // page is torn down while an `await page.evaluate` of an async function is
+      // outstanding - which is this call, since it awaits a fetch inside the page.
+      // Measured on one sweep of nine mutation runs: five died here, all five on the
+      // second message, all five with the mutation's own rows already correctly red.
+      // A run that ends at 198 of 317 assertions has left a third of its claims
+      // untested while exiting non-zero, which reads as a mutation caught rather than
+      // as a harness that stopped - the failure mode this file's own header warns
+      // about, arriving through the retry's pattern instead of through an anchor.
+      //
+      // Both are renderer lifetime rather than anything under test: neither can be
+      // produced by a wrong answer, only by the page ceasing to exist. A retry that
+      // covered a real failure would report whichever attempt it liked, which is why
+      // this stays two exact strings rather than becoming a catch-all.
+      const lost = /Execution context was destroyed|Resulting promise was garbage collected/.test(String(err));
+      if (!lost || attempt === 3) throw err;
+      console.log(`  ...  ${label}: the page went away, retrying (attempt ${attempt + 1} of 3)`);
     }
   }
   throw new Error('unreachable');
@@ -1023,10 +1391,23 @@ async function openPage(browser, url, viewport = { width: 1100, height: 760 }) {
   page.on('pageerror', (err) => errors.push(String(err)));
   page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
   if (pageMutation) {
-    const target = pageMutation.file.slice('web/'.length);
-    await page.route(`**/${target}`, (route) => route.fulfill({
-      status: 200, contentType: 'text/javascript; charset=utf-8', body: pageMutation.body,
+    // **A page is reached at the URL `PAGES` names it by, not at its filename**, which
+    // is a rule `server/index.js` enforces by 404ing any `.html` under `web/` - so a
+    // mutation of `library.html` intercepted at `**/library.html` would match nothing,
+    // the unmutated page would load, and the run would be recorded as the check having
+    // missed a bug it was never shown. That is the failure the match-exactly-once rule
+    // exists for one layer up, arriving through the delivery instead of the anchor.
+    const file = pageMutation.file.slice('web/'.length);
+    const html = file.endsWith('.html');
+    const target = html ? '/gallery' : `/${file}`;
+    await page.route(`**${target}`, (route) => route.fulfill({
+      status: 200,
+      contentType: html ? 'text/html; charset=utf-8' : 'text/javascript; charset=utf-8',
+      body: pageMutation.body,
     }));
+    if (html && file !== 'library.html') {
+      throw new Error(`no URL is known for web/${file}: only library.html is served, at /gallery`);
+    }
   }
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   return { page, errors };
@@ -1036,6 +1417,7 @@ async function openPage(browser, url, viewport = { width: 1100, height: 760 }) {
 
 console.log(`[library] ${MUTATE ? `MUTATED: ${MUTATE} (${mutation.file})` : 'unmutated tree'}`);
 
+await reservePorts();
 const { nodeCaps, macCaps } = buildFixture();
 const root = stageServer();
 const nodeUrl = await startServer(root, ['--captures', nodeCaps, '--name', 'pi-01',
@@ -1748,6 +2130,488 @@ async function runChecks() {
     check(localConfirm.goDisabled === false && /only copy/.test(localConfirm.warn),
       'while a take that really is the last copy still warns and still offers the button',
       localConfirm.warn.slice(0, 70));
+    // **And the disabled one looks disabled**, which every row above this passes
+    // without. `dialog .row .act.confirm` is three classes and an element where
+    // `.act:disabled` is one class and a pseudo-class, so the accent won on
+    // specificity and both dialogs drew a lit, pressable-looking button beside the
+    // sentence explaining why pressing it would be refused. Functionally disabled the
+    // whole time - which is precisely why nothing caught it, since every assertion
+    // here was about `disabled` being true and it was.
+    check(bothConfirm.goPaint !== localConfirm.goPaint,
+      'and it is painted as disabled rather than merely being disabled, which no assertion on the property can see',
+      `refused: ${bothConfirm.goPaint} against offered: ${localConfirm.goPaint}`);
+
+    // ---- 6a. the way out
+    //
+    // **The gallery shipped with none.** Open leaves for the editor, Download and
+    // Delete stay here, and the browser's own back button is not on the node's touch
+    // panel - so a kiosk that had reached the gallery had reached the end of the
+    // program. An anchor rather than a button, and the row asserts the tag as well as
+    // the destination: a button that assigns `location.href` is a place only the page
+    // knows about, where an `<a href>` is a URL a browser can show, open in a second
+    // tab and go back from.
+    const back = await page.evaluate(`(() => {
+      const a = document.getElementById('toMenu');
+      return a ? { tag: a.tagName, href: a.getAttribute('href'), text: a.textContent.trim() } : null;
+    })()`);
+    check(back?.tag === 'A' && back.href === '/',
+      'the gallery has a way back to the menu, and it is a real URL rather than a button that navigates',
+      JSON.stringify(back));
+    // And it goes where it says. Asserted by following it, because a href is a claim
+    // and the menu answering is the fact - the same reading the confirm rows above
+    // get, where the dialog's copy is checked against what the server actually does.
+    //
+    // **Skipped, with the row still counted, when there is no anchor to follow.** The
+    // mutation that removes the way back reddens the row above and then leaves this
+    // one clicking a selector that will never exist - thirty seconds of Playwright
+    // timeout and then a throw that ends the whole run at 95 of 317 assertions. A
+    // mutation is supposed to redden the rows that carry its claim and let every other
+    // claim still be measured; a mutation that stops the run is one whose blast radius
+    // is the tool.
+    if (back) {
+      await page.click('#toMenu');
+      await page.waitForFunction('globalThis.__menu !== undefined', null, { timeout: 20000 });
+      check(new URL(page.url()).pathname === '/', 'and following it arrives at the menu',
+        `${page.url()} defines __menu`);
+    } else {
+      check(false, 'and following it arrives at the menu', 'there is no anchor to follow');
+    }
+    // Back to the gallery whichever branch ran, so every row below this starts from
+    // one state rather than from whichever page the mutation happened to leave open.
+    await page.goto(galleryPage(macUrl), { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 });
+
+    // **The other chip says where you are, and the thing to assert about it is that
+    // it does not go anywhere.** `surfacenav` arrived on this page from `main`, which
+    // put the same two chips in the same corner of every surface, and the sweep below
+    // caught it immediately: a control the gallery renders that nothing in this file
+    // drove. The claim it carries is not navigation - it is that the current surface
+    // is marked as current and is inert, so a tap on it cannot reload the page the
+    // operator is already looking at. An `href` here would be exactly that reload,
+    // which is why its absence is the assertion rather than an oversight.
+    const hereChip = await page.evaluate(`(() => {
+      const a = document.getElementById('toLibrary');
+      return a ? { tag: a.tagName, href: a.getAttribute('href'), current: a.getAttribute('aria-current') } : null;
+    })()`);
+    check(hereChip?.current === 'page' && hereChip.href === null,
+      'the gallery chip marks this surface as the current one and does not navigate',
+      JSON.stringify(hereChip));
+    if (hereChip) {
+      const wasAt = page.url();
+      await page.click('#toLibrary');
+      await new Promise((done) => { setTimeout(done, 300); });
+      check(page.url() === wasAt && await page.evaluate('globalThis.__library !== undefined'),
+        'and pressing it leaves the operator on the gallery rather than reloading it',
+        `${page.url()}`);
+    } else {
+      check(false, 'and pressing it leaves the operator on the gallery rather than reloading it', 'there is no chip');
+    }
+
+    // Back to a known state again, for the same reason as above: the click above is
+    // one state rather than from whichever page the mutation happened to leave open.
+    await page.goto(galleryPage(macUrl), { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 });
+    await page.evaluate('globalThis.__library.drawn(document.querySelector(".tile").dataset.hash)');
+
+    // ---- 6b. every tile is the same size
+    //
+    // **Measured off `getBoundingClientRect`, never off the CSS.** The rule the
+    // poster's height used to come from also looked like it should hold - it was a
+    // width measured at first paint, correct then and 2.496:1 against the 16:9 it
+    // draws after a window went from 1512 to 700. What a proof tool can read is the
+    // box the browser produced.
+    //
+    // Two widths and a resize between them, because the two ways a tile changed size
+    // showed up under different conditions: the warnings moved a tile's height
+    // against its neighbours at every width, and the poster's box only drifted once
+    // something had resized. A single-width arm measured before any resize passes on
+    // a build carrying the second bug, which is the shape of hole step 6 recorded -
+    // arms that agree about a quantity cannot measure it.
+    const geometryAt = async (width) => {
+      await page.setViewportSize({ width, height: 900 });
+      // Two frames, so the grid has reflowed its columns and the ResizeObserver has
+      // followed the boxes before anything is read.
+      await page.evaluate('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
+      return page.evaluate('globalThis.__library.geometry()');
+    };
+    const spreadOf = (boxes, of) => Math.max(...boxes.map(of)) - Math.min(...boxes.map(of));
+    const overlapsIn = (boxes) => boxes.filter((b) => boxes.some(
+      (o) => o !== b && o.top < b.bottom - 0.5 && o.bottom > b.top + 0.5 && Math.abs(o.top - b.top) > 0.5,
+    ));
+    for (const width of [1512, 900]) {
+      const boxes = await geometryAt(width);
+      const flagged = boxes.filter((b) => ['three-warning-take', 'truncated-take', 'no-hello-take'].includes(b.id));
+      check(flagged.length === 3,
+        `the three shapes that used to differ in height are on screen at ${width}px`,
+        flagged.map((b) => b.id).join(' '));
+      check(spreadOf(boxes, (b) => b.height) < 0.5,
+        `every tile is the same height at ${width}px, warnings and all`,
+        `${boxes.length} tiles, spread ${spreadOf(boxes, (b) => b.height).toFixed(2)}px, `
+        + `min ${Math.min(...boxes.map((b) => b.height)).toFixed(2)}`);
+      check(boxes.every((b) => Math.abs(b.posterRatio - 16 / 9) < 0.02),
+        `and every poster is 16:9 at ${width}px, which is the frame an export produces`,
+        boxes.map((b) => b.posterRatio.toFixed(3)).join(' '));
+      // The two ways a fixed-height row lies about what it holds. A row that wrapped
+      // is a tile that grew; a row whose content overflows drew less than it has, and
+      // the second is why the warnings are badges over the poster rather than text in
+      // a row that would have had to clip them.
+      check(boxes.every((b) => !b.factsOverflow && !b.actsWrapped),
+        `no fact row is clipped and no action row has wrapped at ${width}px`,
+        boxes.filter((b) => b.factsOverflow || b.actsWrapped).map((b) => b.id).join(' ') || 'all clear');
+      check(overlapsIn(boxes).length === 0,
+        `and no two rows overlap at ${width}px, which is what an intrinsic height nobody could rely on produced`,
+        overlapsIn(boxes).map((b) => b.id).join(' ') || `${new Set(boxes.map((b) => Math.round(b.top))).size} rows`);
+    }
+    // The backing store followed the box rather than being assigned once. Read as
+    // pixels rather than as a ratio, because a canvas whose store never moved still
+    // reports the CSS box it is stretched over - the numbers that go stale are these.
+    const wide = await geometryAt(1512);
+    const narrow = await geometryAt(900);
+    check(wide[0].canvasPixels.w !== narrow[0].canvasPixels.w,
+      'a resize moves the canvas backing store, so the picture is drawn at the size it is shown at',
+      `${wide[0].canvasPixels.w}x${wide[0].canvasPixels.h} then ${narrow[0].canvasPixels.w}x${narrow[0].canvasPixels.h}`);
+    await geometryAt(1100);
+
+    // ---- 6c. the contextual menu
+    //
+    // Rendered into every tile hidden rather than built on the first press, which is
+    // what lets the enumeration below read it out of the document. Opened by tap and
+    // never by hover, because the panel this runs on has no pointer at all - the same
+    // rule the action buttons have always been held to.
+    const clipHash2 = one('local-clip').hash;
+    const opened = await page.evaluate(`globalThis.__library.openMenu(${JSON.stringify(clipHash2)})`);
+    check(opened.open === true, 'the ⋯ on a tile opens a menu on a tap',
+      opened.items.map((i) => `${i.item}${i.disabled ? '(off)' : ''}`).join(' '));
+    check(opened.items.some((i) => i.item === 'rename' && !i.disabled)
+      && opened.items.some((i) => i.item === 'reveal' && !i.disabled),
+      'a local take offers rename and reveal');
+    check(opened.items.some((i) => i.item === 'reclaim' && i.disabled),
+      'and offers reclaim disabled rather than absent, because a control that vanishes reads as the page being broken');
+    const bothMenu = await page.evaluate(`globalThis.__library.openMenu(${JSON.stringify(bothHash)})`);
+    check(bothMenu.items.some((i) => i.item === 'reclaim' && !i.disabled),
+      'while a take in two places offers it for real - the positive twin, without which the row above passes on a menu disabled everywhere');
+    const remoteHash2 = tiles.find((t) => t.state === 'remote').hash;
+    const remoteMenu = await page.evaluate(`globalThis.__library.openMenu(${JSON.stringify(remoteHash2)})`);
+    check(remoteMenu.items.filter((i) => ['rename', 'reveal'].includes(i.item)).every((i) => i.disabled),
+      'a take that is only on the node offers neither: this side renames no files over there and has no file here to show',
+      remoteMenu.items.map((i) => `${i.item}=${i.disabled}`).join(' '));
+    // The sentences the poster's badges are short for. In the menu because a tap
+    // reaches it and a hover does not, which is the whole reason the warnings could
+    // not simply become tooltips when they came out of the layout.
+    const warnMenu = await page.evaluate(`globalThis.__library.openMenu(${JSON.stringify(one('three-warning-take').hash)})`);
+    const warnTile = one('three-warning-take');
+    check(eq([...warnTile.flags].sort(), ['no-hello', 'short', 'truncated']),
+      'a take with three warnings carries all three as badges over its poster', warnTile.flags.join(' '));
+    check(/sensor hello/.test(warnMenu.note) && /no whole frame/.test(warnMenu.note) && /mid-frame/.test(warnMenu.note),
+      'and the sentence behind each one is in the menu, where a finger can reach it',
+      warnMenu.note.replace(/\n/g, ' | ').slice(0, 130));
+    // **And the menu is on screen, which every row above this passes without.** The
+    // items are in the document whether or not anything can be read, so "the menu
+    // offers rename" and "the sentence is in the menu" are both true of a menu the
+    // scroll container has cut the top off - which is what the three-warning tile had,
+    // its first item clipped away because it is in the top row and the menu opened
+    // upward into the grid's edge. The tallest menu on the tile most in need of it.
+    const menuBoxes = [];
+    for (const t of tiles) {
+      const m = await page.evaluate(`globalThis.__library.openMenu(${JSON.stringify(t.hash)})`);
+      if (!m.inside) {
+        menuBoxes.push(`${t.id}(${t.state}) ${m.clipped.above > 0 ? `${m.clipped.above}px above` : `${m.clipped.below}px below`}`
+          + ` of ${m.clipped.height}px, room ${m.room.above}/${m.room.below}, ${m.placed}`);
+      }
+      await page.mouse.click(4, 4);
+    }
+    check(menuBoxes.length === 0,
+      'and every tile\'s menu opens inside the grid rather than under its edge, whichever row the tile is in',
+      menuBoxes.join('; ') || `${tiles.length} tiles, every menu fully on screen`);
+    // Zero frames and one frame are different facts, and the badge distinguishes
+    // them. A take cut before its first whole frame draws nothing at all - the skim
+    // never asks for a frame it does not have, which is how the 404 that surfaced
+    // this was found - where a single-frame take has one and draws it.
+    check(warnTile.flags.includes('short') && /no frames/.test(warnMenu.note.match(/^.*no frames.*$/m)?.[0] ?? ''),
+      'and a take with no whole frame says so rather than saying it has fewer than two',
+      warnMenu.note.split('\n').find((l) => /frame/.test(l)) ?? '');
+    const oneFrameTile = one('one-frame-take');
+    check(oneFrameTile.flags.includes('short'),
+      'while the one-frame take still carries the badge, so the row above is about the wording rather than about the badge going away',
+      oneFrameTile.flags.join(' '));
+    await page.mouse.click(4, 4);
+    check(await page.evaluate('globalThis.__library.menuOpen()') === 0,
+      'a tap anywhere else closes it');
+
+    // ---- 6d. the viewer
+    //
+    // A 228px tile is enough to recognise a take and not enough to look at one, so
+    // the grid answers "which take" and this answers "what is in it". Driven through
+    // the poster the way an operator opens it rather than through the function that
+    // opens it, because a tap that scrubs and a tap that opens are told apart by four
+    // pixels of travel and that is exactly the sort of rule a direct call walks past.
+    const posterBox = await page.evaluate(`(() => {
+      const sel = '.tile[data-hash="' + CSS.escape(${JSON.stringify(clipHash2)}) + '"] .skim';
+      const r = document.querySelector(sel).getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`);
+    await page.mouse.click(posterBox.x, posterBox.y);
+    await page.evaluate('globalThis.__library.viewer.drawn(1)');
+    const shown = await page.evaluate('globalThis.__library.viewer.state()');
+    check(await page.evaluate('globalThis.__library.viewer.isOpen()') === true,
+      'a tap on a tile\'s poster opens that take large', `${shown?.id}, ${shown?.frames} frames`);
+    check(shown.stage.width > 700 && Math.abs(shown.stage.ratio - 16 / 9) < 0.02,
+      'and the stage is materially bigger than a tile and the same 16:9',
+      `${Math.round(shown.stage.width)}px at ${shown.stage.ratio.toFixed(3)}`);
+    const vFirst = await page.evaluate('globalThis.__library.viewer.picture()');
+    check(vFirst.mean > 1, 'it draws a frame of the take rather than an empty canvas',
+      `mean ${vFirst.mean.toFixed(1)}`);
+    // **A magnification of the tile and not a sparser copy of it.** Two adjacent depth
+    // samples land `scale / fx` pixels apart on screen, and the scale follows the
+    // canvas height - so one pixel each is dense at a 228px tile and threadbare four
+    // times larger, and the viewer's first build drew the same take as a faint dot
+    // screen. The ratio against the tile rather than a level, so the row survives a
+    // fixture with a different scene in it.
+    //
+    // **The threshold is 0.7 and the first one was 0.25, which the broken build
+    // cleared.** It was set from a measurement taken at devicePixelRatio 2, where a
+    // one-pixel sample gives 0.07 - and this runs at 1, where the same build gives
+    // 0.28. So the gate was calibrated on conditions that are not the run's and was
+    // passed marginally by the run that matters, which this repo has recorded once
+    // already about an fps floor. Measured here, at the ratio and the viewport this
+    // check actually uses: 0.28 with a fixed one-pixel sample against 1.00 with the
+    // sample sized from the spacing, and the tile's own poster bit-identical across
+    // both - same mean, same signature - because the size floors at one where the tile
+    // already covers.
+    const tileMean = (await page.evaluate(`globalThis.__library.poster(${JSON.stringify(clipHash2)})`)).mean;
+    check(vFirst.mean > tileMean * 0.7,
+      'and it is a magnification of the tile rather than a sparser copy of it - the sample size follows the canvas',
+      `tile ${tileMean.toFixed(1)}, stage ${vFirst.mean.toFixed(1)}, ratio ${(vFirst.mean / tileMean).toFixed(2)} (broken build measures 0.28 here)`);
+
+    // **A frame and not a fraction of the duration.** This is why `createSkim` counts
+    // in indices: a viewer stepping by a percentage lands between two frames and
+    // rounds to whichever is nearer, so pressing right twice can show one picture
+    // twice - which reads as a stuck viewer and is a rounding rule.
+    const drawsBefore = await page.evaluate('globalThis.__library.viewer.draws()');
+    await page.evaluate('globalThis.__library.viewer.key("ArrowRight")');
+    await page.evaluate(`globalThis.__library.viewer.drawn(${drawsBefore + 1})`);
+    const stepped = await page.evaluate('globalThis.__library.viewer.state()');
+    check(stepped.index === shown.index + 1, 'an arrow key steps exactly one frame',
+      `${shown.index} -> ${stepped.index} of ${stepped.frames}`);
+    await page.evaluate('globalThis.__library.viewer.key("ArrowRight", true)');
+    await page.evaluate(`globalThis.__library.viewer.drawn(${drawsBefore + 2})`);
+    const jumped = await page.evaluate('globalThis.__library.viewer.state()');
+    check(jumped.index === stepped.index + 10, 'and shift steps ten',
+      `${stepped.index} -> ${jumped.index}`);
+    await page.evaluate('globalThis.__library.viewer.key("End")');
+    await page.evaluate(`globalThis.__library.viewer.drawn(${drawsBefore + 3})`);
+    const atEnd = await page.evaluate('globalThis.__library.viewer.state()');
+    const vLast = await page.evaluate('globalThis.__library.viewer.picture()');
+    check(atEnd.index === atEnd.frames - 1, 'end goes to the last frame the take has',
+      `${atEnd.index} of ${atEnd.frames}`);
+    // Read off the canvas, because a readout that moved while the picture did not is
+    // exactly what a state-only assertion passes - the same reason the tile's skim row
+    // above compares signatures rather than positions.
+    check(vLast.signature !== vFirst.signature,
+      'and the picture on the stage is a different frame, not a readout that moved on its own',
+      `${vFirst.signature} then ${vLast.signature}, means ${vFirst.mean.toFixed(2)} and ${vLast.mean.toFixed(2)}`);
+    await page.evaluate('globalThis.__library.viewer.clickMark(0)');
+    await page.evaluate(`globalThis.__library.viewer.drawn(${drawsBefore + 4})`);
+    const atMark = await page.evaluate('globalThis.__library.viewer.state()');
+    check(atMark.index !== atEnd.index && atMark.marks.length === 4,
+      'a mark on the viewer\'s bar is a control rather than a decoration: pressing one seeks to it',
+      `${atEnd.index} -> ${atMark.index}, ${atMark.marks.length} marks`);
+    // Between takes without going back to the grid, which is what makes this a way of
+    // browsing footage rather than a detail sheet.
+    const drawsAtMark = await page.evaluate('globalThis.__library.viewer.draws()');
+    await page.evaluate('globalThis.__library.viewer.key("ArrowDown")');
+    await page.evaluate(`globalThis.__library.viewer.drawn(${drawsAtMark + 1})`);
+    const nextTake = await page.evaluate('globalThis.__library.viewer.state()');
+    check(nextTake.id !== atMark.id && await page.evaluate('globalThis.__library.viewer.isOpen()') === true,
+      'and down moves to the next take without closing', `${atMark.id} -> ${nextTake.id}`);
+    await page.keyboard.press('Escape');
+    check(await page.evaluate('globalThis.__library.viewer.isOpen()') === false,
+      'escape closes it, which is the dialog element\'s own behaviour rather than a second rule');
+
+    // ---- 6d-ii. the two surfaces offer one take one set of things to do
+    //
+    // **The class behind four separate findings, closed here rather than one instance
+    // at a time.** The tile and the viewer used to decide independently what a take
+    // allowed, in two blocks that read almost identically, and they drifted four times:
+    // Delete live on the viewer for a node-only take, the `VALID_ID` name rule known to
+    // one surface and not the other, Download offered on a take still being recorded,
+    // and Download surviving a reclaim. Each was fixed as an instance and the next one
+    // arrived on the following round.
+    //
+    // What made it structural is that arrow-browsing reaches takes *without* going
+    // through `buildTile`, so the viewer sees takes no tile was ever built for and any
+    // rule living in the tile was a rule the viewer had never been told. The page now
+    // has one `availability(take)` that both surfaces render, and this asserts the
+    // consequence rather than the implementation: for **every take in the listing**, the
+    // two surfaces agree on the actions, on which are disabled, and on the sentences the
+    // menu gives for the disabled ones.
+    //
+    // Every take rather than a chosen one, because the disagreements were all about a
+    // take in some particular state - being recorded, only on the node, named outside
+    // the rule - and a row that picked one take would be a row that happened to pick the
+    // agreeing case. The fixture deliberately holds all of those.
+    {
+      const listed = await page.evaluate('globalThis.__library.tiles()');
+      check(listed.length >= 3, 'the grid holds several takes, so the comparison below has range',
+        `${listed.length} tiles: ${listed.map((t) => t.state).join(' ')}`);
+      const disagreed = [];
+      for (const tile of listed) {
+        await page.evaluate(`globalThis.__library.viewer.open(${JSON.stringify(tile.hash ?? tile.id)})`);
+        // **Re-opened until it holds rather than waited on for a guessed interval.**
+        // `close` on a dialog is dispatched as a queued task, so an open in the very
+        // next turn can be torn down by the handler it beat and `state()` reads null.
+        // That is a race in this loop rather than anything about the take - it showed up
+        // as one tile in nine "not opening" on a run whose previous run had agreed on
+        // all nine, and a fixed delay only moved how often. Retrying names the cause: if
+        // a second open with a turn in between still reads null, something is actually
+        // wrong with that take rather than with the timing.
+        let seen = null;
+        for (let attempt = 0; attempt < 3 && seen === null; attempt++) {
+          await new Promise((r) => setTimeout(r, 120));
+          seen = await page.evaluate('globalThis.__library.viewer.state()');
+          if (seen === null) {
+            await page.evaluate(`globalThis.__library.viewer.open(${JSON.stringify(tile.hash ?? tile.id)})`);
+          }
+        }
+        if (seen === null) { disagreed.push(`${tile.id}: the viewer would not open on it`); continue; }
+        const sameActs = JSON.stringify(tile.acts.filter((a) => a.label !== '⋯'))
+          === JSON.stringify((seen.acts ?? []).filter((a) => a.label !== '⋯'));
+        if (!sameActs) {
+          disagreed.push(`${tile.id}: tile ${JSON.stringify(tile.acts)} vs viewer ${JSON.stringify(seen.acts)}`);
+        }
+        const menuOf = (m) => JSON.stringify((m ?? []).map((i) => [i.item, i.disabled, i.why]));
+        if (menuOf(tile.menu) !== menuOf(seen.menu)) {
+          disagreed.push(`${tile.id}: menu ${menuOf(tile.menu)} vs ${menuOf(seen.menu)}`);
+        }
+      }
+      check(disagreed.length === 0,
+        'every take is offered the same actions, the same disabling and the same reasons on both surfaces',
+        disagreed.length ? disagreed[0].slice(0, 150) : `${listed.length} takes agree`);
+      await page.evaluate('globalThis.__library.viewer.close()');
+    }
+
+    // ---- 6d-iii. the viewer stays reachable from a keyboard across its own rebuilds
+    //
+    // **Five findings on this branch were one property, and it had no durable control
+    // until here.** The viewer rebuilds itself constantly - `#vActs` is emptied and
+    // refilled and the ⋯ is cloned on every repaint - and each rebuild is a chance to
+    // destroy the node holding focus. When that happens the caret falls to the body,
+    // the viewer's keydown handler stops receiving anything, and browsing dies silently
+    // after exactly one step. Silently is the problem: every pixel on screen still looks
+    // right, so nothing short of pressing a second key can tell.
+    //
+    // The rows below press the second key. Each drives a different way of rebuilding,
+    // because the ways are genuinely different mechanisms and each was fixed separately:
+    // an arrow (the rebuild arrives with focus live), and a menu selection (the menu is
+    // hidden first, which blurs whatever was inside it). What they share is the reading
+    // taken afterwards, which is never "is focus somewhere plausible" but "does the next
+    // key still do its job" - a state assertion would pass against focus parked on a
+    // disabled button.
+    //
+    // Keys go to `document.activeElement` rather than to the dialog. Dispatching at the
+    // dialog delivers them however focus is arranged, so an arm walking takes with the
+    // arrows passed against a build a person could not have walked - the check was
+    // measuring its own dispatch.
+    {
+      // **Opened at the top of the grid, because two presses need somewhere to go.**
+      // Aiming this at a named fixture is how the first version failed: the grid sorts
+      // newest first, the take it picked sat second from the bottom, and the second
+      // arrow had nothing below it to move to. The row then read as focus being broken
+      // while the build was fine - a mis-aimed row and a finding are indistinguishable
+      // from the failure text, which is why this reads the order off the page instead.
+      const walkable = await page.evaluate('globalThis.__library.tiles()');
+      check(walkable.length >= 3, 'the grid has takes below the first, so two arrows have room',
+        `${walkable.length} tiles`);
+      await page.evaluate(`globalThis.__library.viewer.open(${JSON.stringify(walkable[0].hash ?? walkable[0].id)})`);
+      await page.evaluate('globalThis.__library.viewer.drawn(1)');
+      check(await page.evaluate('globalThis.__library.viewer.focusInside()') === true,
+        'a viewer opened from the page puts focus inside itself, which is where a key has to land',
+        await page.evaluate("document.activeElement?.dataset?.act ?? document.activeElement?.id ?? document.activeElement?.tagName"));
+
+      // An arrow rebuilds the header for the next take, which removes the very node the
+      // focus was on. Two presses rather than one: the first is what breaks focus and
+      // the second is what notices.
+      const firstId = (await page.evaluate('globalThis.__library.viewer.state()'))?.id;
+      await page.evaluate('globalThis.__library.viewer.key("ArrowDown")');
+      await new Promise((r) => setTimeout(r, 600));
+      const secondId = (await page.evaluate('globalThis.__library.viewer.state()'))?.id;
+      check(await page.evaluate('globalThis.__library.viewer.focusInside()') === true,
+        'and focus is still inside it after the rebuild an arrow causes', `${firstId} -> ${secondId}`);
+      await page.evaluate('globalThis.__library.viewer.key("ArrowDown")');
+      await new Promise((r) => setTimeout(r, 600));
+      const thirdId = (await page.evaluate('globalThis.__library.viewer.state()'))?.id;
+      check(thirdId !== secondId && secondId !== firstId,
+        'so a second arrow moves a second take, which is the reading a focus check cannot fake',
+        `${firstId} -> ${secondId} -> ${thirdId}`);
+
+      // Choosing a menu item hides the menu, and hiding an ancestor of the focused
+      // element drops focus to the body. Reveal on purpose: it neither repaints nor
+      // opens a dialog, so nothing else would put focus back and any path that did
+      // would hide what this row is about.
+      //
+      // Back to the top first, so the arrow at the end of this has room for the same
+      // reason the pair above does.
+      await page.evaluate(`globalThis.__library.viewer.open(${JSON.stringify(walkable[0].hash ?? walkable[0].id)})`);
+      await new Promise((r) => setTimeout(r, 400));
+      await page.evaluate("document.getElementById('vMore').click()");
+      const item = await page.evaluate(`(() => {
+        const b = [...document.querySelectorAll('#viewer .mi')].find((x) => x.dataset.item === 'reveal' && !x.disabled);
+        if (!b) return null;
+        b.focus();
+        return document.activeElement?.dataset?.item ?? null;
+      })()`);
+      check(item === 'reveal', 'a viewer menu item can hold focus before it is chosen', String(item));
+      await page.evaluate("[...document.querySelectorAll('#viewer .mi')].find((b) => b.dataset.item === 'reveal')?.click()");
+      await new Promise((r) => setTimeout(r, 900));
+      check(await page.evaluate('globalThis.__library.viewer.focusInside()') === true,
+        'and focus is back inside the viewer once the menu it was in closes',
+        await page.evaluate("document.activeElement?.tagName + ':' + (document.activeElement?.dataset?.act ?? document.activeElement?.id ?? '')"));
+      const beforeArrow = (await page.evaluate('globalThis.__library.viewer.state()'))?.id;
+      await page.evaluate('globalThis.__library.viewer.key("ArrowDown")');
+      await new Promise((r) => setTimeout(r, 500));
+      check((await page.evaluate('globalThis.__library.viewer.state()'))?.id !== beforeArrow,
+        'so the arrows still reach the viewer after a menu selection', `from ${beforeArrow}`);
+      await page.evaluate('globalThis.__library.viewer.close()');
+    }
+
+    // ---- 6e. every control the gallery renders is one this file drives
+    //
+    // **Enumerated rather than listed**, which is the shape `editor-check` needed
+    // after the clip in/out markers spent a feature's whole life detached from the
+    // document with every proof tool passing: no tool referenced them, so nothing
+    // looked. A list of the controls a reviewer happened to poke tests those
+    // controls; a sweep that requires a driver for every control the page renders
+    // tests the rule, and a control added later is asked about by existing.
+    //
+    // **Read with the viewer open on a take that has marks**, because half of these
+    // controls are the viewer's and the mark ticks are the viewer's only control that
+    // exists per take rather than per page. Enumerating after Escape - or on the take
+    // the arrow key had landed on, which has none - reports `mark` as a driver naming
+    // nothing, which is the reverse row firing for a reason that has nothing to do
+    // with the page. So the surface is put back into the state the claim is about.
+    await page.evaluate(`globalThis.__library.viewer.open(${JSON.stringify(clipHash2)})`);
+    await page.evaluate('globalThis.__library.viewer.drawn(1)');
+    const DRIVERS = new Set([
+      'toMenu', 'toLibrary', 'all', 'local', 'remote', 'both',
+      'open', 'download', 'delete', 'more',
+      'rename', 'reveal', 'reclaim',
+      'vMore', 'vClose', 'mark',
+      'cCancel', 'cGo', 'rCancel', 'rGo', 'rName',
+    ]);
+    const rendered = await page.evaluate('globalThis.__library.controls()');
+    const unswept = rendered.filter((c) => !DRIVERS.has(c.key));
+    check(unswept.length === 0,
+      `every interactive control the gallery renders has a driver in this file (${rendered.length} controls)`,
+      unswept.length ? `no driver for ${[...new Set(unswept.map((c) => `${c.where}:${c.key}`))].join(' ')}`
+        : [...new Set(rendered.map((c) => c.key))].join(' '));
+    // And the other direction, which the row above cannot answer: a driver naming a
+    // control that has gone is a test of nothing, reported as coverage.
+    const present = new Set(rendered.map((c) => c.key));
+    const missing = [...DRIVERS].filter((k) => !present.has(k));
+    check(missing.length === 0,
+      'and every control this file names is one the gallery still renders',
+      missing.join(' ') || `${present.size} distinct controls on screen`);
+    await page.evaluate('globalThis.__library.viewer.close()');
 
     check(errors.length === 0, 'the gallery raises no page errors', errors.slice(0, 2).join(' | '));
     await page.close();
@@ -1771,6 +2635,291 @@ async function runChecks() {
       String(filtered));
     check(errors.length === 0, 'and an empty library raises no page errors', errors.slice(0, 2).join(' | '));
     await page.close();
+  }
+
+  // ------------------------------ 6f. renaming a take, and showing it where it lives
+  //
+  // **Its own captures directory and its own server, because this section moves
+  // files.** Every other arm here reads the shared fixture, and a rename inside it
+  // would leave later sections asserting about takes under names they do not use -
+  // a proof tool whose arms depend on the order they happen to run in is one that
+  // reports whichever ordering it was last run in.
+  //
+  // Renaming is the only operation in the program that changes a take's identity to
+  // anything that goes by name, and the reason it is safe to offer is that nothing
+  // here does: projects reference footage by content hash, the two-machine
+  // reconciliation joins on the hash, and the menu resumes on the hash. So the
+  // central row is not that the file moved - it is that the hash did not.
+  console.log('\n[library] a take can be renamed, and a rename moves a label rather than a reference');
+  {
+    const renameDir = join(WORK, 'renaming');
+    rmSync(renameDir, { recursive: true, force: true });
+    mkdirSync(renameDir, { recursive: true });
+    writeTake(renameDir, 'before-the-rename', { frames: 8, startedAt: Date.UTC(2026, 6, 20, 11, 0) });
+    writeTake(renameDir, 'already-taken', { frames: 4 });
+    // **A take of its own for the stale-listing probe, because the probe's whole point
+    // is that it might succeed.** Driven at `before-the-rename` it did, under
+    // `rename-ignores-hash`: the take went to a third name and every row after it
+    // asserted about an id that no longer existed, so one mutation reddened five rows
+    // and then ended the run 177 assertions early. A control whose failure takes its
+    // neighbours with it cannot say what it caught.
+    writeTake(renameDir, 'stale-listing-take', { frames: 5 });
+    writeFileSync(join(renameDir, 'before-the-rename.marks.jsonl'),
+      markLine({ id: 'r1', sourceMs: 40, label: 'the moment', at: 1000 }));
+
+    // The stand-in file manager. `--reveal-with` substitutes the program and leaves
+    // the platform's argument shape alone, so what this records is the argv Finder
+    // would have been handed - which is the only reading that can tell a route that
+    // opened the take from one that answered 200 having opened nothing.
+    const revealLog = join(WORK, 'reveal-argv.log');
+    const fakeOpener = join(WORK, 'fake-file-manager.sh');
+    writeFileSync(fakeOpener, `#!/bin/sh\nprintf '%s\\n' "$@" >> ${JSON.stringify(revealLog)}\n`);
+    chmodSync(fakeOpener, 0o755);
+    const argvSeen = () => (existsSync(revealLog) ? readFileSync(revealLog, 'utf8').trim().split('\n') : []);
+
+    const renameUrl = await startServer(root, [
+      '--captures', renameDir, '--name', 'renaming', '--reveal-with', fakeOpener,
+      '--projects', join(WORK, 'rename-projects'), '--presets', join(WORK, 'rename-presets'),
+    ], MAC_PORT + 14);
+
+    const listed = async (id) => (await getJson(`${renameUrl}/library/takes`)).takes.find((t) => t.id === id);
+    const before = await listed('before-the-rename');
+    const idxBefore = statSync(join(renameDir, 'before-the-rename.idx'));
+
+    // A request built against a listing that has gone stale. Refused, and - the half a
+    // status code cannot carry - nothing moved.
+    const stale = await post(`${renameUrl}/library/rename/stale-listing-take`,
+      { hash: `sha256:${'0'.repeat(64)}`, to: 'renamed-on-a-stale-listing' });
+    check(/the library moved underneath/.test(stale.error ?? ''),
+      'a rename naming a hash the take no longer has is refused', (stale.error ?? 'ACCEPTED').slice(0, 60));
+    check(existsSync(join(renameDir, 'stale-listing-take.knct'))
+      && !existsSync(join(renameDir, 'renamed-on-a-stale-listing.knct')),
+      'and nothing moved, which is the half of that refusal a status code cannot say',
+      readdirSync(renameDir).sort().join(' '));
+
+    const bad = await post(`${renameUrl}/library/rename/before-the-rename`,
+      { hash: before.hash, to: '../outside' });
+    check(/cannot be a take name/.test(bad.error ?? ''),
+      'a name that is not a name is refused rather than joined to a path',
+      (bad.error ?? 'ACCEPTED').slice(0, 60));
+    const taken = await post(`${renameUrl}/library/rename/before-the-rename`,
+      { hash: before.hash, to: 'already-taken' });
+    const victim = statSync(join(renameDir, 'already-taken.knct'));
+    check(/is taken/.test(taken.error ?? ''),
+      'a name another take is already using is refused rather than renamed over',
+      (taken.error ?? 'ACCEPTED').slice(0, 60));
+    check(victim.size === statSync(join(renameDir, 'already-taken.knct')).size,
+      'and the take that was in the way is still there');
+
+    // **The same refusal under a race, which the row above cannot reach.** The
+    // collision check reads the target and then acts on it, and `rename(2)` replaces
+    // an existing file without a word - so two requests aiming at one name both pass
+    // the reading and the second destroys a take. Two tabs is enough. The rows above
+    // only ever drove them one after another, where the reading is still true when it
+    // is acted on, and every one of them keeps passing on a build with the hole in it.
+    //
+    // **Driven against `renameTake` directly, because through the route it does not
+    // reproduce and a row that cannot fail is not a row.** Four simultaneous POSTs
+    // were tried first and a build using `rename(2)` passed them: each request scans
+    // the whole captures directory before it reaches the rename, which is dozens of
+    // awaits of different durations, and that is enough to keep the requests from ever
+    // being inside the window together. So the HTTP arm measured the scan's timing and
+    // reported it as the collision rule holding. The same four calls made straight at
+    // the function - where the only thing between the reading and the act is three
+    // `stat`s - clobber immediately: **four fulfilled, no rejections, and one file left
+    // where four takes were.**
+    //
+    // Imported from the *staged* tree rather than from `../server/library.js`, or the
+    // mutation would be applied to a copy this row never loads and every mutated run
+    // would test the good code.
+    const staged = await import(pathToFileURL(join(root, 'server/library.js')).href);
+    const raceDir = join(WORK, 'rename-race');
+    rmSync(raceDir, { recursive: true, force: true });
+    mkdirSync(raceDir, { recursive: true });
+    const racers = ['racer-one', 'racer-two', 'racer-three', 'racer-four'];
+    // Different lengths, so they are four takes rather than four copies - a rename
+    // that overwrote one with an identical one would lose nothing and prove nothing.
+    for (const [i, id] of racers.entries()) writeTake(raceDir, id, { frames: 3 + i });
+    const racerHashes = [];
+    for (const id of racers) racerHashes.push(await staged.hashFile(join(raceDir, `${id}.knct`)));
+    const answers = await Promise.allSettled(racers.map((id, i) => staged.renameTake(
+      raceDir, id, 'the-contested-name', { hash: racerHashes[i] },
+    )));
+    const won = answers.filter((r) => r.status === 'fulfilled');
+    const lost = answers.filter((r) => r.status === 'rejected');
+    check(won.length === 1 && lost.length === racers.length - 1,
+      `${racers.length} renames onto one name at once: exactly one wins and the rest are refused by the kernel rather than by a reading taken a moment earlier`,
+      `${won.length} accepted, ${lost.length} refused - ${String(lost[0]?.reason?.message ?? '').slice(0, 60)}`);
+    // The half a status code cannot say, and the only one that is about footage: every
+    // loser's take is still on disk under the name it had.
+    const survivors = readdirSync(raceDir).filter((f) => /^racer-.*\.knct$/.test(f));
+    check(survivors.length === racers.length - 1 && existsSync(join(raceDir, 'the-contested-name.knct')),
+      'and every one that lost still has its footage under its own name, which is what a silent overwrite takes away',
+      `${survivors.length} of ${racers.length - 1} survived: ${survivors.join(' ') || 'nothing'}`);
+
+    // The rename itself, with the extension typed - somebody who types `.knct` means
+    // the take rather than a file called `x.knct.knct`.
+    const done = await post(`${renameUrl}/library/rename/before-the-rename`,
+      { hash: before.hash, to: 'after-the-rename.knct' });
+    check(done.id === 'after-the-rename',
+      'a typed extension is taken off rather than refused, because it is the same name',
+      JSON.stringify(done.id));
+    const after = await listed('after-the-rename');
+    check(after !== undefined && !(await listed('before-the-rename')),
+      'the take is listed under its new name and not its old one');
+    // **The row this whole feature rests on.** A rename that changed the hash would
+    // orphan every project built on the take while looking like it worked, because a
+    // project resolves its footage by hash and would simply find nothing.
+    check(after.hash === before.hash && after.frames === before.frames,
+      'and its content hash is unchanged, so every project built on it still finds its footage',
+      `${before.hash.slice(0, 20)}… ${before.frames} frames, still ${after.hash.slice(0, 20)}…`);
+    check(after.marks.length === 1 && after.marks[0].label === 'the moment',
+      'the marks came with it - the one artifact here nobody can regenerate, since it is what somebody pressed in the room',
+      JSON.stringify(after.marks.map((m) => m.label)));
+    check(!existsSync(join(renameDir, 'before-the-rename.marks.jsonl')),
+      'and nothing is left at the old name for a later take to find beside it',
+      readdirSync(renameDir).sort().join(' '));
+    // Measured rather than assumed: the sidecar validates on the capture's size and
+    // modification time, both of which `rename` preserves, so a moved index is a scan
+    // that did not happen. A fresh sidecar would carry a new modification time.
+    const idxAfter = statSync(join(renameDir, 'after-the-rename.idx'));
+    check(idxAfter.mtimeMs === idxBefore.mtimeMs && idxAfter.size === idxBefore.size,
+      'the index moved with it rather than being rebuilt, which is a full read of the take not taken',
+      `${idxBefore.size} bytes at ${idxBefore.mtimeMs}, still ${idxAfter.size} at ${idxAfter.mtimeMs}`);
+
+    // ---- reveal
+    //
+    // The one route in this program that starts a process, so what it is asked is
+    // read off the program's own argv rather than off the answer the route wrote.
+    const revealed = await post(`${renameUrl}/library/reveal/after-the-rename`);
+    check(revealed.path === join(renameDir, 'after-the-rename.knct'),
+      'reveal answers with the take\'s own path under the captures directory',
+      String(revealed.path ?? revealed.error));
+    // **What counts as the right argv is the platform's own shape, not the bare
+    // path.** `revealTake` hands Finder `-R <path>`, `xdg-open` the *containing
+    // directory* because no `-R` equivalent exists across the desktops it fronts, and
+    // Explorer a single `/select,<path>`. Requiring the bare `.knct` path in the argv
+    // therefore asserted the Darwin branch on every platform: the unmutated check
+    // failed on Linux and Windows against a correct implementation, and
+    // `reveal-drops-the-path` edits only the Darwin branch so it changed nothing
+    // there either - a row that was red for the wrong reason next to a mutation that
+    // could not go red at all.
+    //
+    // Derived from `revealSupport`'s own table rather than restated here, because a
+    // second copy of the argument shape is the drift this repo keeps refusing.
+    const takePath = join(renameDir, 'after-the-rename.knct');
+    const wanted = REVEAL[process.platform]?.args(takePath) ?? [takePath];
+    const sawWanted = () => wanted.every((arg) => argvSeen().includes(arg));
+    for (let i = 0; i < 40 && !sawWanted(); i++) {
+      await new Promise((r) => { setTimeout(r, 50); });
+    }
+    check(sawWanted(),
+      'and the file manager really was started on that file - the argv it received, not the status it answered',
+      `${process.platform} wants ${JSON.stringify(wanted)}, saw ${JSON.stringify(argvSeen())}`);
+    const ghost = await post(`${renameUrl}/library/reveal/no-such-take`);
+    check(/not on this machine/.test(ghost.error ?? ''),
+      'a take that is not here reveals nothing rather than starting a file manager on a path that does not exist',
+      (ghost.error ?? 'ACCEPTED').slice(0, 60));
+
+    // **A browser across the link is refused, and proving it needs a second address
+    // to arrive on.** `isLoopback` reads the peer off the socket, so the only way to
+    // exercise it is genuinely to connect from somewhere else - which is what
+    // `guard-check` already requires a non-internal IPv4 for. Where the machine has
+    // none, this is recorded as unproven rather than passed: "not tested here" and
+    // "tested and fine" are different answers.
+    const lan = Object.values(networkInterfaces()).flat()
+      .find((i) => i && i.family === 'IPv4' && !i.internal)?.address ?? null;
+    if (!lan) {
+      skipped.push('the reveal refusal for a caller that is not on this machine');
+      console.log('  ...   no non-internal IPv4 here, so the reveal-from-elsewhere refusal was not exercised');
+    } else {
+      const openUrl = await startServer(root, [
+        '--captures', renameDir, '--name', 'renaming', '--host', '0.0.0.0', '--reveal-with', fakeOpener,
+        '--projects', join(WORK, 'rename-projects'), '--presets', join(WORK, 'rename-presets'),
+      ], MAC_PORT + 15);
+      const port = new URL(openUrl).port;
+      const beforeElsewhere = argvSeen().length;
+      const elsewhere = await post(`http://${lan}:${port}/library/reveal/after-the-rename`);
+      check(/nobody is standing at|not the machine this browser is on/.test(elsewhere.error ?? ''),
+        'a browser that is not on this machine is refused, because the window would open where nobody is looking',
+        (elsewhere.error ?? 'ACCEPTED').slice(0, 70));
+      // The refusal is a decision rather than a status on something that already
+      // happened - the same reading the GET of /record/stop gets in section 7.
+      await new Promise((r) => { setTimeout(r, 300); });
+      check(argvSeen().length === beforeElsewhere,
+        'and no file manager was started, which is the half of the refusal a 409 cannot say',
+        `${beforeElsewhere} arguments logged before, ${argvSeen().length} after`);
+      // The positive twin on the same server: loopback still works, so the row above
+      // is about who asked rather than about a route that had simply been switched off.
+      const stillHere = await post(`${openUrl}/library/reveal/after-the-rename`);
+      check(stillHere.path === join(renameDir, 'after-the-rename.knct'),
+        'while the same server still reveals for a browser on this machine',
+        String(stillHere.path ?? stillHere.error));
+      // The page agrees with the server about which of those it is looking at, which
+      // is what greys the menu item out rather than letting it be pressed and refused.
+      const fromElsewhere = await getJson(`http://${lan}:${port}/library/all`);
+      const fromHere = await getJson(`${openUrl}/library/all`);
+      check(fromElsewhere.reveal?.available === false && fromHere.reveal?.available === true,
+        'and the listing tells the page which of the two it is, per request, so the menu item can say why before it is pressed',
+        `${JSON.stringify(fromElsewhere.reveal?.why ?? null).slice(0, 60)} against available`);
+      for (const p of servers.filter((sv) => sv.port === MAC_PORT + 15)) p.child.kill('SIGKILL');
+    }
+
+    // ---- the take being shot is not renameable, and that is not a nicety
+    //
+    // `scanTakes` decides which take is open by comparing paths against
+    // `recorder.openPath`, so a renamed one stops matching: `describeTake` drops out
+    // of the unscanned branch and every `/library/*` request starts a full read plus
+    // sha256 of a file the recorder is still writing to, on the disk it is writing to.
+    // That is the contention section 11 exists to keep closed, reached by a door the
+    // rename's own answer cannot show - so the row is the sidecar, which is the same
+    // tell section 11 and the route sweep both use.
+    const shootDir = join(WORK, 'rename-shooting');
+    rmSync(shootDir, { recursive: true, force: true });
+    mkdirSync(shootDir, { recursive: true });
+    const shootUrl = await startServer(root, [
+      '--captures', shootDir, '--name', 'rename-shooting', '--record', '--no-color',
+      '--projects', join(WORK, 'rename-shoot-projects'), '--presets', join(WORK, 'rename-shoot-presets'),
+      '--grabber', `${join(REPO, 'tools/fake-grabber.mjs')} --source ${SAMPLE} --fps 40`,
+    ], MAC_PORT + 16);
+    let shooting = null;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => { setTimeout(r, 250); });
+      shooting = await getJson(`${shootUrl}/record/state`);
+      if (shooting.recording) break;
+    }
+    check(shooting?.recording === true, 'a take is open, which is what makes the next rows about behaviour',
+      String(shooting?.takeId));
+    const openTake = (await getJson(`${shootUrl}/library/takes`)).takes.find((t) => t.id === shooting.takeId);
+    const refused = await post(`${shootUrl}/library/rename/${shooting.takeId}`,
+      { hash: openTake?.hash, to: 'renamed-mid-shoot' });
+    check(/being recorded right now/.test(refused.error ?? ''),
+      'the take being recorded refuses to be renamed', (refused.error ?? 'ACCEPTED').slice(0, 60));
+    check(existsSync(join(shootDir, `${shooting.takeId}.knct`))
+      && !existsSync(join(shootDir, 'renamed-mid-shoot.knct')),
+      'and it is still at the name the recorder has open', readdirSync(shootDir).sort().join(' '));
+    // Read after the manifest has been asked again, because the scan this guards
+    // against happens inside a listing rather than inside the rename.
+    await fetch(`${shootUrl}/library/all`).catch(() => {});
+    check(!existsSync(join(shootDir, `${shooting.takeId}.idx`)),
+      'and the manifest still describes it without scanning it - no sidecar, which is what a full read of a growing take would leave',
+      readdirSync(shootDir).sort().join(' '));
+    // **And reveal is refused on it too, which is the least obvious of the three.**
+    // Nothing about revealing writes - it stats a file and starts a window - so it
+    // reads as harmless and the page had it enabled on a tile whose every other
+    // control was off. What it hands over is the path, to a program that will size,
+    // index and preview whatever it is pointed at, against the disk the recorder is
+    // writing to. Found by the row above it in this file rather than by reading.
+    const revealOpen = await post(`${shootUrl}/library/reveal/${shooting.takeId}`);
+    check(/being recorded right now/.test(revealOpen.error ?? ''),
+      'and so does showing it in a file manager, which would point one at the disk the recorder is writing to',
+      (revealOpen.error ?? 'ACCEPTED').slice(0, 70));
+    const stopped = await post(`${shootUrl}/record/stop`);
+    check(!stopped.error && Number.isFinite(stopped.stopped?.frames),
+      'and the take it refused to rename closes as one continuous stream',
+      stopped.error ? String(stopped.error).slice(0, 80) : `${stopped.stopped?.frames} frames`);
+    for (const p of servers.filter((sv) => sv.port === MAC_PORT + 16)) p.child.kill('SIGKILL');
+    for (const p of servers.filter((sv) => sv.port === MAC_PORT + 14)) p.child.kill('SIGKILL');
   }
 
   // ------------------------------------------------ 7. the project round-trips
@@ -3530,7 +4679,12 @@ async function runChecks() {
         return {
           id: el.dataset.id,
           text: el.querySelector('.meta').textContent,
-          acts: [...el.querySelectorAll('.act')].map((b) => ({ label: b.textContent, disabled: b.disabled })),
+          acts: [...el.querySelectorAll('.acts .act')].map((b) => ({
+            label: b.textContent, disabled: b.disabled, opensMenu: b.getAttribute('aria-haspopup') === 'menu',
+          })),
+          menu: [...el.querySelectorAll('.menu .mi')].map((b) => ({ item: b.dataset.item, disabled: b.disabled })),
+          note: el.querySelector('.mnote').textContent,
+          flags: [...el.querySelectorAll('.skim .flag')].map((f) => f.dataset.flag),
         };
       })()`);
       check(tile?.id === open.takeId, 'the take being recorded has a tile of its own', String(tile?.id));
@@ -3538,9 +4692,23 @@ async function runChecks() {
         'and it renders no NaN, no null and no undefined where a scan\'s numbers would have gone',
         (tile?.text ?? '').replace(/\s+/g, ' ').slice(0, 110));
       check(/recording now/.test(tile?.text ?? ''), 'it says it is recording rather than showing zeros');
-      check((tile?.acts ?? []).length > 0 && tile.acts.every((a) => a.disabled),
+      // **Every control that would change something is disabled, and the one that
+      // only explains is not.** That split is the row rather than a weakening of it:
+      // the sentence saying why nothing can be done to a take mid-shoot lives in the
+      // ⋯ menu, and a panel with no hover has nowhere else to read it - so disabling
+      // the ⋯ as well would take the explanation off the surface that needs it most.
+      // The two rows below are what makes that a claim rather than an exemption: the
+      // menu opens, and everything inside it is off.
+      const acting = (tile?.acts ?? []).filter((a) => !a.opensMenu);
+      check(acting.length > 0 && acting.every((a) => a.disabled),
         'and every action on it is present and disabled - the library runs on a touch panel, where a control that vanishes reads as a broken page',
         JSON.stringify(tile?.acts));
+      check((tile?.menu ?? []).length > 0 && tile.menu.every((m) => m.disabled),
+        'the ⋯ still opens, and every item in it is disabled too, so nothing about the take can be acted on',
+        JSON.stringify(tile?.menu));
+      check(/still being written/.test(tile?.note ?? '') && (tile?.flags ?? []).includes('recording'),
+        'with the reason on the poster as a badge and spelled out in the menu, which is a tap rather than a hover',
+        (tile?.note ?? '').slice(0, 80));
       check(errors.length === 0, 'the gallery raises no page errors while a take is being written',
         errors.slice(0, 2).join(' | '));
       await page.close();

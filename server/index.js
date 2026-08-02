@@ -12,9 +12,9 @@ import { MessageParser, encodeMessage, TYPE_HELLO, TYPE_FRAME } from './protocol
 import { openCapture, withCapture, captureIdFor, openCaptureCount, decimatePayload } from './capture.js';
 import { handleExportSocket, MAX_FRAME_BYTES } from './export.js';
 import {
-  VALID_ID, DocumentStore, NodeLink, PROJECT_VERSION, appendMarks, downloadTake, downloadsInFlight,
-  hashFile, markWriteCount, readMarkLog, readMarks, reconcile, remaining, removeTake, resolveMarks,
-  scanTakes,
+  VALID_ID, DocumentStore, NodeLink, PROJECT_VERSION, appendMarks, downloadTake,
+  downloadsInFlight, hashFile, markWriteCount, readMarkLog, readMarks, reconcile, remaining,
+  removeTake, renameTake, resolveMarks, revealSupport, revealTake, scanTakes,
 } from './library.js';
 import { Recorder } from './recorder.js';
 import { JobStore } from './jobs.js';
@@ -141,6 +141,14 @@ const [GRABBER_BIN, ...GRABBER_ARGS] = (flag('--grabber') ?? '').split(' ').filt
 // directories. On a real node and a real Mac this is the default either way.
 const CAPTURES_DIR = resolve(flag('--captures', join(ROOT, 'captures')));
 const EXPORTS_DIR = join(ROOT, 'exports');
+
+// The program `POST /library/reveal/:id` starts, when it is not the platform's own.
+// It substitutes the program and nothing else - the arguments stay the shape the
+// platform's file manager takes - so a proof tool can point this at a script that
+// records its argv and be measuring the arguments Finder would have been given,
+// rather than a second code path that exists to be measured. `library-check` is the
+// caller; on an operator's machine this is never passed.
+const REVEAL_WITH = flag('--reveal-with', null);
 
 // A bare startsWith would also match a sibling like `web-private`, so the
 // separator has to be part of the comparison.
@@ -402,10 +410,28 @@ function serveTakeFile(req, res, [id]) {
 // an earlier one, and a deletion is a tombstone. That is also the whole of the
 // two-machine merge - concatenate and resolve - so there is one rule here rather
 // than one for editing and one for syncing.
+/**
+ * Which capture is at a path, as an identity rather than a yes.
+ *
+ * **`dev` and `ino` rather than the path, because the path is what changes.** A rename
+ * frees the old id, and nothing stops a later take being renamed into it - so "a take
+ * is here" is true again afterwards while being a *different* take. Anything that
+ * checks a path, waits, and then acts on it has to compare what it found the second
+ * time against what it found the first, and only the inode says that. Two numbers off a
+ * stat this code was already paying for, rather than a hash read.
+ */
+const takeIdentity = (path) => {
+  try {
+    const st = statSync(path ?? '');
+    return { dev: st.dev, ino: st.ino };
+  } catch {
+    return null;
+  }
+};
+const sameTake = (a, b) => a !== null && b !== null && a.dev === b.dev && a.ino === b.ino;
 const takeIsHere = (path) => {
   try {
-    statSync(path ?? '');
-    return true;
+    return takeIdentity(path) !== null;
   } catch {
     return false;
   }
@@ -429,11 +455,37 @@ async function serveMarkWrite(req, res, [id]) {
   // up to four megabytes a request and tombstones that would delete real marks the
   // moment a take of that name ever existed. Marks hang off a take, so the take is
   // the thing that has to exist first.
-  if (!takeIsHere(path)) {
+  const wasThere = takeIdentity(path);
+  if (wasThere === null) {
     sendJson(res, { error: `no take ${id} here, so there is nothing to mark` }, 404);
     return;
   }
   const body = await readBody(req);
+  // **Asked again, and asked which take rather than whether one is there.** The check
+  // above happens before this await, and this await is a body of up to four megabytes
+  // arriving over a room's wifi - so the gap between deciding the take exists and
+  // appending to it is however long the client takes to send, not a few microtasks. A
+  // rename landing in that gap moves the sidecar to the new name and this append then
+  // recreates the old one, which the renamed take never reads: the response says the
+  // mark was saved and it is gone.
+  //
+  // Comparing the inode rather than re-asking `takeIsHere`, because a rename frees the
+  // old id and a later take can be renamed into it. Presence alone is true again in
+  // that case, against different footage, and the marks would attach to it - the marks
+  // resolve cleanly onto frames that exist, so nothing downstream can notice. That is
+  // the corruption this is actually for; the lost annotation is the milder half.
+  //
+  // This narrows the window rather than closing it: a rename can still land between
+  // this line and the append below. That remainder is microtask-sized instead of
+  // transfer-sized, and closing it properly means addressing marks by content hash the
+  // way the rest of the program addresses footage, which is issue #10.
+  if (!sameTake(wasThere, takeIdentity(path))) {
+    sendJson(res, {
+      error: `${id} changed underneath this request - it was renamed or replaced while the marks `
+        + 'were being sent, and they have not been written to anything',
+    }, 409);
+    return;
+  }
   const now = Date.now();
   const records = (body.marks ?? []).map((m) => ({
     ...m,
@@ -526,6 +578,40 @@ const localTakes = () => scanTakes(CAPTURES_DIR, recorder.openPath);
  * Wi-Fi link look like an operator who deleted everything - and the tile that then
  * offered a Delete on the last copy would be offering it on the wrong belief.
  */
+/**
+ * Whether the caller of *this request* could usefully be shown a file manager, and
+ * why not when it could not.
+ *
+ * **Per request rather than per server, because the answer is about the socket.**
+ * `POST /library/reveal/:id` opens a window on the machine running this process, which
+ * is the machine the operator is standing at exactly when the browser is on it. A
+ * gallery served to a laptop across the room would otherwise offer a menu item whose
+ * whole effect happens somewhere nobody is looking - and the honest way to present a
+ * control that cannot work is to show it saying why, not to hide it, which is the same
+ * reading the disabled Open on an unopenable take already gets.
+ *
+ * `isLoopback` is the socket's peer as the kernel reports it, so nothing the client
+ * sends can move this answer - but read its comment for what the answer is worth: a
+ * browser reaching this server through the SSH tunnel `SECURITY.md` recommends arrives
+ * on loopback and is offered Reveal, and the window then opens on the host rather than
+ * where that operator is sitting. Deliberate, since building the tunnel is a stronger
+ * act of authorisation than this program asks of anybody else.
+ */
+function revealAvailability(req) {
+  const { supported, label } = revealSupport();
+  if (!supported) {
+    return { available: false, label: null, why: `no file manager is known for ${process.platform}` };
+  }
+  if (!isLoopback(req)) {
+    return {
+      available: false,
+      label,
+      why: `${label} would open on ${HERE_NAME}, which is not the machine this browser is on`,
+    };
+  }
+  return { available: true, label, why: null };
+}
+
 async function serveLibrary(req, res) {
   const here = await localTakes();
   const there = node ? await node.takes() : null;
@@ -537,7 +623,94 @@ async function serveLibrary(req, res) {
     unreadable: here.unreadable,
     storage: await remaining(CAPTURES_DIR, recordingRate()),
     recording: recorder.state,
+    reveal: revealAvailability(req),
   });
+}
+
+/**
+ * Renaming a take, which is a label moving and never footage moving.
+ *
+ * **A take that is only on the node is refused rather than renamed over there.** The
+ * link is deliberately one-directional about footage: this side asks for a manifest, a
+ * marks log and bytes, and the one thing it may ask the node to *do* is drop a copy it
+ * has verified survives here. Renaming somebody else's file on a machine nobody is
+ * standing at is a different decision from renaming one here, and it is not this
+ * button's. That refusal is here because only this module knows a node exists.
+ *
+ * **The take being recorded is refused one layer down and not here**, and that is
+ * worth stating because this function had a second copy of that test for one round.
+ * Both refused, in identical words - and the second copy is what made the mutation
+ * that removes one of them move nothing: `library-check` ran all 317 assertions
+ * against a build with the route's guard deleted and reported the refusal working,
+ * because the other guard was still refusing. Two gates that agree are not defence in
+ * depth when neither can be tested apart from the other; they are a rule with no
+ * measurement behind it. It lives in `renameTake` because that is the function that
+ * forms the path, which is where this file already puts `VALID_ID`.
+ */
+async function serveRename(req, res, [id]) {
+  const body = await readBody(req);
+  const here = await localTakes();
+  const mine = here.takes.find((t) => t.id === id);
+  if (!mine) {
+    sendJson(res, { error: `${id} is not on this machine, so there is nothing here to rename` }, 404);
+    return;
+  }
+  try {
+    const done = await renameTake(CAPTURES_DIR, id, body.to, {
+      hash: body.hash,
+      recordingPath: recorder.openPath,
+    });
+    sendJson(res, done);
+  } catch (err) {
+    sendJson(res, { error: err.message }, 409);
+  }
+}
+
+/**
+ * Showing a take where it lives, in the platform's own file manager.
+ *
+ * **Two gates, and they answer different questions.** `requireMutation` has already
+ * asked whether this request came from this program's own page - it is registered as a
+ * `write` for that reason, since a route that starts a process is a route that changes
+ * something even though no byte of the library moves. What is left for here is whether
+ * the window would open where the person asking is: `isLoopback` reads the peer address
+ * off the socket, which the client cannot dictate, and a browser across the link gets
+ * the same 409 the gallery's menu item is already greyed out with.
+ */
+async function serveReveal(req, res, [id]) {
+  if (!isLoopback(req)) {
+    const { label } = revealSupport();
+    sendJson(res, {
+      error: `${label ?? 'the file manager'} would open on ${HERE_NAME}, which is not the machine this `
+        + 'browser is on: refusing to open a window nobody is standing at',
+    }, 409);
+    return;
+  }
+  const here = await localTakes();
+  const mine = here.takes.find((t) => t.id === id);
+  if (!mine) {
+    sendJson(res, { error: `${id} is not on this machine, so there is no file here to show` }, 404);
+    return;
+  }
+  // **The take being recorded is refused, and this is the least obvious of the three
+  // refusals in this file.** Nothing about revealing writes: it stats a file and
+  // starts a window. What it hands over is the *path*, to a program whose job is to
+  // size, index and preview whatever it is pointed at - against the disk the recorder
+  // is writing to, which is precisely the contention `describeTake` refuses to cause
+  // by not scanning the open take. The gallery greys the menu item for the same
+  // reason; this is the gate, because a request does not have to come from that page.
+  if (mine.recording) {
+    sendJson(res, {
+      error: `${id} is being recorded right now: a file manager pointed at it would stat, index and `
+        + 'preview the file the recorder is writing to, which is disk the take needs',
+    }, 409);
+    return;
+  }
+  try {
+    sendJson(res, await revealTake(CAPTURES_DIR, id, { program: REVEAL_WITH }));
+  } catch (err) {
+    sendJson(res, { error: err.message }, 409);
+  }
 }
 
 /**
@@ -1150,6 +1323,14 @@ const ROUTES = [
   { path: '/library/delete/:id', pattern: /^\/library\/delete\/([^/]+)$/, write: { methods: ['POST'], run: (req, res, args) => serveRemoval(req, res, args, 'delete') } },
   { path: '/library/reclaim/:id', pattern: /^\/library\/reclaim\/([^/]+)$/, write: { methods: ['POST'], run: (req, res, args) => serveRemoval(req, res, args, 'reclaim') } },
   { path: '/library/sync-marks/:id', pattern: /^\/library\/sync-marks\/([^/]+)$/, write: { methods: ['POST'], run: serveMarkSync } },
+  { path: '/library/rename/:id', pattern: /^\/library\/rename\/([^/]+)$/, write: { methods: ['POST'], run: serveRename } },
+  // Registered as a `write` although no byte of the library moves, because what this
+  // table's `write` slot actually declares is "this route makes something happen", and
+  // a route that starts a process on the operator's machine is the clearest case of
+  // that there is. Registering it as a read to reflect that the captures directory is
+  // untouched would put the one process-spawning route in the program outside the
+  // origin and content-type gate every other consequence stands behind.
+  { path: '/library/reveal/:id', pattern: /^\/library\/reveal\/([^/]+)$/, write: { methods: ['POST'], run: serveReveal } },
 
   // ---- documents
   { path: '/projects', pattern: /^\/projects\/?$/, read: (req, res) => listDocuments(res, PROJECTS) },
@@ -1496,6 +1677,24 @@ const monitors = new WeakMap();
 // Whether this socket's frames leave the machine. `remoteAddress` is the peer as the
 // kernel sees it, so it cannot be spoofed by anything the client sends - which
 // matters, because this decides whether the record refusal applies.
+//
+// **What it answers is "this connection arrived on loopback", which is not the same
+// sentence as "this browser is on this machine", and the difference is a deployment
+// this project recommends.** `SECURITY.md` tells an operator crossing an untrusted
+// network to use an SSH tunnel or WireGuard with the server still bound to loopback on
+// the far side - and a forwarded port terminates on this host, so the request genuinely
+// arrives from `127.0.0.1` while the person is somewhere else entirely. Every caller
+// below therefore reads as slightly stronger than it is: a tunnelled browser is treated
+// as local, gets the full monitor rate, and can open a Finder window on a machine
+// nobody is standing at.
+//
+// That is the recommended setup working rather than a hole in it. The operator who
+// builds the tunnel is the party the gate exists to identify, and they have
+// authenticated to the host to build it - which is more than this program asks of a
+// genuinely local browser, since it asks nothing. So the gate is left alone and the
+// claim is corrected instead: **loopback here means the connection, and the operator
+// decides who reaches loopback.** Anything stronger needs a credential, and this
+// program deliberately has none - see `SECURITY.md` for that decision and its cost.
 const isLoopback = (req) => {
   const a = req.socket.remoteAddress ?? '';
   return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';

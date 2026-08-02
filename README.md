@@ -145,8 +145,36 @@ genuinely different takes under one name, and writing one over the other to sati
 a naming convention would destroy footage. Takes can be pulled down, and a copy can
 be reclaimed on the node after the local one is re-hashed.
 
-![The gallery: three take cards with depth thumbnails, each carrying its size, frame
-count, content hash and whether it is local, on the node, or both.](media/gallery.png)
+![The gallery: three take cards of identical size with depth thumbnails, the first
+carrying three marks on its scrub bar, each showing its size, frame count and date
+above an Open, a Delete and a three-dot menu, with a way back to the menu in the
+header.](media/gallery.png)
+
+Its surface is a grid of same-sized tiles you can skim with a pointer or a finger, and
+a tap on a poster opens that take large — a scrubbable viewer with the take's marks on
+its bar, arrow keys that step a frame at a time, and up and down to move between takes
+without going back to the grid. Every tile carries the same three controls, and the
+third is a ⋯ menu holding the actions that do not belong on a 228px tile: **rename**,
+**show in the file manager**, and **reclaim on the node**. Warnings — truncated, no
+sensor hello, no whole frame, still recording — are badges over the poster with the
+sentence behind each one in that menu, because the node's panel has no hover and a
+warning in a tooltip there is a warning nobody reads.
+
+Two of those are worth stating plainly. **Renaming moves a label and never a
+reference**: a project records the take it was built on as `{id, hash}` and the loader
+compares only the hash — refusing to open an edit against footage it was not authored
+against — so a rename takes the capture, its marks and its index to a new name and
+every project built on it still opens. The same is true of the two-machine
+reconciliation and of the menu's resume, both of which match on hash and carry the id
+only to say what was written down. Two renames aimed at one name at the same moment
+are refused by the kernel rather than by a reading taken a moment earlier, so the
+loser keeps its footage. **Showing a
+take in the file manager is the only route in the program that starts a process**, so
+it is registered as a mutating route behind the same origin and content-type gate as
+everything else that has a consequence, it is refused unless the browser is on the
+machine running the server — the window would otherwise open where nobody is standing —
+and it is refused for the take being recorded, because a file manager pointed at a file
+stats, indexes and previews it, against the disk the recorder is writing to.
 
 **The editor** is where a take becomes a shot. The camera is keyframed through the
 recorded volume on its own track, the look is keyframed on others, and a retime
@@ -186,7 +214,17 @@ Three consequences worth knowing before changing anything near it:
   curve to stay monotonic — so a hold or a reverse breaks it outright.
 - **The virtual camera keeps its own pace when the footage slows**, which is the
   creative point rather than a side effect: the whole idea is re-photographing a take,
-  and a photographer's movement is independent of what they are filming.
+  and a photographer's movement is independent of what they are filming. **This is about
+  the retime *curve*, not about the speed control**, and the difference is worth stating
+  because a reviewer read it as forbidding what the speed control does. A ramp or a hold
+  changes how fast the footage runs and leaves the program length alone, so a camera key
+  at program 10s stays at program 10s and the move keeps its duration while the take
+  slows underneath it - that is the sentence above, and it is what keying in program time
+  buys. The speed control is a different operation: it changes the clip's output length,
+  so every program time in the document has to be reparameterised or the content simply
+  falls off the end. Every track goes across together there, camera included, which is
+  why `reparameteriseProgramTime` walks the camera track and why `editor-check` asserts
+  that it does.
 - **`fade` and `wake` stay in source time anyway**, because they drive surface memory,
   which advances per source frame. Converting them would mean dividing by the local
   retime slope, which is zero at a hold, so every trail would snap off exactly where a
@@ -215,6 +253,13 @@ vertical, which is what dragging on the picture already does.
 The crop faces and the region stay in sensor metres through all of it. They are tested before
 the model matrix, so a box shrunk onto a subject stays on that subject when the room is levelled
 underneath it, and `level-check` holds that as a bit-identity rather than as a comment.
+
+The timeline's ruler shows a *window* of the clip rather than all of it, because a
+fifteen-minute take drawn across one screen puts a keyframe against gradations forty
+times coarser than the thing being placed. Scroll over the strip to zoom about the
+pointer, `+`/`-` to zoom about the playhead, `,`/`.` to pan it, `F` to fit the whole clip
+and `Z` to frame the trimmed range. The overview underneath is always the whole clip:
+drag its box to pan, drag an edge to zoom, click anywhere to go there.
 
 Five readings of the take, split on the panel into what colours a point and what is then
 made of it. Each is a weight from 0 to 1 rather than a choice, so they mix.

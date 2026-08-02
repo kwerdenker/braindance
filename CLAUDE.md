@@ -110,6 +110,21 @@ node tools/export-check.mjs --url http://localhost:8080   # step 6: resolution, 
 node tools/export-check.mjs --mutate pointsize-absolute   # ... and must FAIL mutated
 node tools/library-check.mjs                              # step 7: library, recorder, routes
 node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL
+node tools/library-check.mjs --mutate tile-height-follows-content  # ... the gallery's geometry
+node tools/library-check.mjs --mutate poster-height-in-js          # ... and its poster's box
+node tools/library-check.mjs --mutate viewer-splat-one             # ... and the viewer's density
+node tools/library-check.mjs --mutate gallery-has-no-way-back      # ... the way out
+node tools/library-check.mjs --mutate plant-unswept-menu-item      # ... every control has a driver
+node tools/library-check.mjs --mutate rename-ignores-hash          # ... rename, one term per mutation
+node tools/library-check.mjs --mutate rename-orphans-marks         # ...
+node tools/library-check.mjs --mutate rename-during-a-shoot        # ...
+node tools/library-check.mjs --mutate rename-clobbers-under-a-race  # ... and two at once
+node tools/library-check.mjs --mutate viewer-decides-for-itself    # ... one take, one set of actions, whichever surface
+node tools/library-check.mjs --mutate viewer-drops-focus-on-rebuild # ... the arrows survive the rebuild they cause
+node tools/library-check.mjs --mutate menu-close-strands-focus     # ... and a menu selection
+node tools/library-check.mjs --mutate run-strands-focus            # ... and an action that held the surface down
+node tools/library-check.mjs --mutate reveal-drops-the-path        # ... what the file manager was told
+node tools/library-check.mjs --mutate reveal-answers-any-caller    # ... and who may start a process
 node tools/library-check.mjs --mutate write-overwrites-builtin # ... and must FAIL
 node tools/library-check.mjs --mutate list-swallows-unreadable # ... and must FAIL
 node tools/library-check.mjs --mutate open-take-swallows-library # ... and must FAIL
@@ -121,6 +136,33 @@ node tools/editor-check.mjs --mutate import-skips-normalise --no-render # ... an
 node tools/editor-check.mjs --mutate import-saves-before-validating --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate panel-row-skips-parameter --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate nav-at-the-foot --no-render       # ... and must FAIL
+node tools/editor-check.mjs --mutate rate-holds-cuts --no-render       # ... and must FAIL
+node tools/editor-check.mjs --mutate rate-holds-keys --no-render       # ... and must FAIL
+node tools/editor-check.mjs --mutate undo-skips-cuts --no-render       # ... and must FAIL
+node tools/editor-check.mjs --mutate zoom-about-centre --no-render     # ... and must FAIL
+node tools/editor-check.mjs --mutate pointer-ignores-view --no-render  # ... and must FAIL
+node tools/editor-check.mjs --mutate marks-ignore-view --no-render     # ... and must FAIL
+node tools/editor-check.mjs --mutate mini-ignores-edges --no-render    # ... and must FAIL
+node tools/editor-check.mjs --mutate splitter-unclamped --no-render    # ... and must FAIL
+node tools/editor-check.mjs --mutate rail-ignores-scroll --no-render   # ... and must FAIL
+node tools/editor-check.mjs --mutate splitter-forgets --no-render      # ... and must FAIL
+node tools/editor-check.mjs --mutate mini-wheel-uses-ruler --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate shortcuts-ignore-consumed --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate rate-ends-on-change --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate takeover-ignored --no-render      # ... and must FAIL
+node tools/editor-check.mjs --mutate wheel-ignores-deltamode --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate pan-keys-unbound --no-render      # ... and must FAIL
+node tools/editor-check.mjs --mutate lanes-eat-touch --no-render       # ... and must FAIL
+node tools/editor-check.mjs --mutate keys-yield-touch --no-render      # ... and must FAIL
+node tools/editor-check.mjs --mutate deliverable-keeps-gesture --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate window-clamp-ratchets --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate detent-eats-loaded-rate --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate anchor-floors-to-frame --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate keyup-ends-any-gesture --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate pause-keeps-resume --no-render   # ... and must FAIL
+node tools/editor-check.mjs --mutate bounds-compare-off-grid --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate detent-in-rate-units --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate zoom-pans-at-the-clamp --no-render # ... and must FAIL
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated
@@ -146,10 +188,13 @@ node tools/jobs-check.mjs --mutate claim-ignores-renderer # ... and must FAIL mu
 `level-check` needs neither a sensor nor a capture — it plants analytic planes straight into
 the depth texture, which is what lets it grade the plane fit against a normal it chose.
 
-**`library-check` binds fixed ports** — 8210, 8211 and `MAC_PORT + 2/4/5` — so two worktrees
-running it at once do not collide, they get each other's server. Pass `--node-port` and
-`--mac-port` a range nothing else holds, and check `pgrep -f "tools/.*-check.mjs"` before any
-run, because on this machine another agent's is the normal state.
+**`library-check` binds a span of fixed ports** — `--node-port`, and `--mac-port` through
+`--mac-port + 16`, which default to 8210 and 8211..8227. It checks the whole span before it
+spawns anything and **exits 2 naming what is held**, because the old failure was silent: two
+worktrees running at once did not collide, they shared a server, and the suite asserted
+against the other tree's fixture. Pass a range nothing else holds, and check
+`pgrep -f "tools/.*-check.mjs"` first, because on this machine another agent's run is the
+normal state.
 
 The two below need no server, and `registration-check` needs no sensor either - it runs on a
 corpus of `Registration::apply` inputs dumped by `grabber --dump-corpus`.

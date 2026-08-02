@@ -13,6 +13,10 @@ captures
 exports
 projects
 presets
+# Deliverables are the same kind of runtime document store as the two above and were
+# simply missed. `editor-check` writes two into it now, so the omission would have put an
+# untracked directory in everybody's `git status` the first time the suite ran.
+deliverables
 .library-check
 # The staged tree monitor-check builds and deletes. It only survives a run that
 # threw, which is exactly when it is worth looking at and never worth committing.
