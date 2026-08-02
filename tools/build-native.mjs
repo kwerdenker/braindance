@@ -47,16 +47,29 @@ if (argv.includes('--help') || argv.includes('-h')) {
 // through silently, so the wrong guess is a refusal rather than a slow build. An untested
 // third preset would still be a configuration this repo ships without having run it, so
 // the README's two are what this offers until somebody measures the third.
+//
+// `backend` is the pipeline token the built grabber must report back, and it is the whole
+// reason the probe below is an assertion rather than a print. `ENABLE_OPENGL=ON` is a
+// request, not a requirement: libfreenect2's own CMakeLists answers a missing GLFW3 or
+// OpenGL with `HAVE_OpenGL no` and carries on, so the configure succeeds, the build
+// succeeds, and what installs into vendor/prefix is a CPU-only library. The Pi is where
+// that lands, because the Debian dependency line below installs libusb and turbojpeg and
+// nothing that provides GLFW - the documented path produced the roughly half-rate CPU
+// depth processor and this script said OK over it.
 const PRESETS = {
   macos: {
     cmake: ['-DENABLE_OPENCL=ON', '-DENABLE_OPENGL=OFF'],
     // OpenGL is off deliberately rather than incidentally: it drives libfreenect2's own
     // viewer, which nothing here uses, and it is the most deprecated path on the platform.
     why: 'depth on OpenCL, OpenGL off (it only drives libfreenect2\'s own viewer)',
+    backend: 'cl',
+    missing: 'OpenCL is a system framework here, so a build without it means the configure did not see it - check vendor/build/CMakeCache.txt',
   },
   linux: {
     cmake: ['-DENABLE_OPENCL=OFF', '-DENABLE_OPENGL=ON'],
     why: 'depth on OpenGL, OpenCL off (the Pi\'s V3D has no OpenCL)',
+    backend: 'gl',
+    missing: 'sudo apt install libglfw3-dev libgl1-mesa-dev, then re-run with --clean',
   },
 };
 
@@ -147,7 +160,24 @@ if (argv.includes('--clean')) {
 try {
   run('cmake', ['-S', 'third_party/libfreenect2', '-B', 'vendor/build', ...vendorFlags]);
   run('cmake', ['--build', 'vendor/build', '--target', 'install', `-j${JOBS}`]);
-  run('cmake', ['-S', 'native', '-B', 'native/build']);
+  // **`FREENECT2_ROOT` is passed rather than defaulted, because a cache entry outlives the
+  // run that set it.** native/CMakeLists.txt declares it `CACHE PATH` with vendor/prefix as
+  // its default, and a default only applies to a cache that does not already hold the key -
+  // so anybody who once configured this tree with the documented `-DFREENECT2_ROOT=` override
+  // (the Pi's ~/freenect2 is the one in the README) keeps that path on every later configure
+  // that does not name one. This command would then build the vendored library, install it,
+  // verify it, and link the grabber against the other prefix entirely - and the `--help` probe
+  // below would still pass, because the rpath points at whichever libdir was found and an
+  // external libfreenect2 0.2 runs the same. Reporting success about a library it did not
+  // build is precisely the stale-prefix failure `vendor-check --mutate stale-prefix` exists
+  // for, arriving through the build rather than through the check.
+  //
+  // Naming it here is half the fix and the smaller half: `find_library` caches its answer,
+  // so passing the root moves the hint and leaves the resolved path where it was.
+  // native/CMakeLists.txt drops the resolved pair whenever the root changes, which is what
+  // makes this argument do anything - measured, because the first version of this line was
+  // written on its own and the grabber's rpath did not move.
+  run('cmake', ['-S', 'native', '-B', 'native/build', `-DFREENECT2_ROOT=${VENDOR_PREFIX}`]);
   run('cmake', ['--build', 'native/build', `-j${JOBS}`]);
 } catch {
   // execFileSync already put the compiler's own output on this terminal, so repeating the
@@ -187,5 +217,20 @@ if (probe.status !== 0) {
 // checked it merged the two streams with `2>&1`.
 const offers = /this build offers ([a-z ]+)/.exec(`${probe.stderr}${probe.stdout}`)?.[1]?.trim();
 console.log(`[build-native] grabber runs and reports depth pipelines: ${offers ?? 'unknown'}`);
+
+// **And the answer is checked rather than printed**, which for one commit it was not - the
+// string was read out of the binary for exactly the reason that makes it worth reading,
+// then logged beside an unconditional OK. Every build offers `cpu`, so the only thing that
+// line distinguishes is a build that lost the backend the preset asked for, and that is
+// the build it reported as fine.
+//
+// `offers` unparseable fails here rather than passing as `unknown`, on the reading the
+// proof tools use throughout: a claim that could not be tested is not a claim that held.
+const { backend, missing } = PRESETS[preset];
+if (!offers || !offers.split(/\s+/).includes(backend)) {
+  console.error(`[build-native] FAILED - the ${preset} preset asks for ${backend} depth, and this build offers ${offers ? `only ${offers}` : 'a set this script could not read'}`);
+  console.error(`the library configured without it and fell back to cpu, which runs at roughly half rate: ${missing}`);
+  process.exit(1);
+}
 console.log(`[build-native] OK - ${GRABBER}`);
 console.log('[build-native] node tools/vendor-check.mjs proves the tree is upstream v0.2.1 plus the declared edits');

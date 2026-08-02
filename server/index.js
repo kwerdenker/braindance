@@ -1957,10 +1957,30 @@ function startLive() {
     broadcastText(JSON.stringify({ camera }));
 
     if (needsRestart) {
-      console.log(`[server] colour camera ${camera.color ? 'on' : 'off'} - restarting grabber`);
-      restarting = true;
-      attempt = 0;
-      stopGrabber();
+      // **`restarting` is a claim about an exit that is coming, so it is only armed when
+      // there is a child whose exit it describes.** With none - the window between a
+      // failed spawn nulling `child` and the backoff's timer firing, which on a machine
+      // where the binary is missing is most of the time - `stopGrabber` returns on the
+      // spot, no exit is ever emitted, and the flag stays set for the life of the
+      // process. What eventually reads it is the *next* grabber's exit, after a clean
+      // handshake and however many minutes of good footage: that exit is a real failure,
+      // and the restart branch takes it, returns before `scheduleRetry`, and so leaves
+      // the sensor status reading `live` with nothing running while the backoff skips a
+      // step. One toggle at the wrong moment, one silently mishandled failure later.
+      //
+      // Nothing is lost by not arming it. The setting itself reaches the grabber through
+      // `buildArgs` on the spawn the backoff has already scheduled, which is the same
+      // door it goes through on a restart. `attempt` stays where it is for a reason of
+      // its own: with no child there is no requested restart to excuse, the pending
+      // retry is a genuine backoff step, and zeroing it would restart the table - so a
+      // sensorless editing station whose colour toggle gets touched now and then would
+      // never reach `absent`, which is the one conclusion that machine needs.
+      console.log(`[server] colour camera ${camera.color ? 'on' : 'off'} - ${child ? 'restarting grabber' : 'takes effect on the next spawn'}`);
+      if (child) {
+        restarting = true;
+        attempt = 0;
+        stopGrabber();
+      }
       return;
     }
     // Colour off means there is no exposure to set, but the flag is still worth

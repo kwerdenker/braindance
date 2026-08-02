@@ -326,8 +326,15 @@ Install the dependencies first:
 
 ```bash
 brew install libusb jpeg-turbo cmake                       # macOS
-sudo apt install libusb-1.0-0-dev libturbojpeg0-dev cmake  # Debian / Raspberry Pi OS
+sudo apt install libusb-1.0-0-dev libturbojpeg0-dev cmake \
+                 libglfw3-dev libgl1-mesa-dev              # Debian / Raspberry Pi OS
 ```
+
+The two GL packages are on the Debian line and not the macOS one because the `linux`
+preset builds depth on OpenGL, and libfreenect2 treats a missing GLFW as a reason to
+build without it rather than a reason to stop — so this line lacking them produced a
+CPU-only library and a build that reported success over it. The build now refuses that
+outcome, but the refusal is a worse way to find out than installing them here.
 
 Then build both:
 
