@@ -479,7 +479,17 @@ const PROBE = `(() => {
      */
     panel() {
       const vis = (el) => !!el && el.checkVisibility({ checkVisibilityCSS: true });
-      const blocks = [...document.querySelectorAll('#panel > .group, #panel > .btnrow')].map((el) => ({
+      // The child combinator is doing real work and has to stay: a \`.btnrow\` also
+      // lives inside half the groups, and a descendant selector would list those as
+      // blocks of the panel. So when the scrolling column became \`#panelBody\` under a
+      // head that does not scroll, this had to follow it - and \`.surfacenav\` is named
+      // beside them because the nav moved into that head. Dropping it from the list
+      // would have taken it out of the closing row below, which is what asserts every
+      // block nothing else names is on both surfaces: the nav would have stopped being
+      // covered here by disappearing rather than by failing.
+      const blocks = [...document.querySelectorAll(
+        '#panelBody > .group, #panelBody > .btnrow, #panelHead .surfacenav',
+      )].map((el) => ({
         // The id where there is one, the group's own heading where there is not.
         // A heading that gets reworded fails the naming row loudly, which is the
         // right answer: this file was written the week the panel was regrouped.

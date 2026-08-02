@@ -4,6 +4,9 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Kinect v2 · library</title>
+<!-- Before the page's own rules on purpose: nav.css owns how the chips look and the
+     page owns where they sit, so a placement rule here has to win the tie. -->
+<link rel="stylesheet" href="/nav.css" />
 <style>
   /* The system defined in web/index.html, restated in this file's own names the
      way the viewer restates it - two copies of a palette is two things to keep in
@@ -41,18 +44,20 @@
   .head .sum { color: var(--dim); font-size: 9px; font-variant-numeric: tabular-nums; }
   .head .sum b { color: var(--ink); font-weight: 500; }
 
-  /* The way out, and it is an anchor rather than a button for the reason the menu's
-     own tiles are: a real URL is something a browser can show in its status bar,
-     open in a second tab and go back from, where a button that assigns
-     `location.href` is a destination only the page knows. The gallery had no way
-     back to the menu at all - the only exits were Open, which leaves for the
-     editor, and the browser's own back button, which does not exist on the node's
-     touch panel. */
-  .back { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px;
-    border: 1px solid var(--line-2); border-radius: 4px; background: var(--paper-2);
-    color: var(--dim); text-decoration: none; font-size: 9px; letter-spacing: 0.14em;
-    text-transform: uppercase; white-space: nowrap; }
-  .back:hover { color: var(--ink); border-color: var(--line-3); background: var(--paper-3); }
+  /* **The way out is `nav.css`'s two chips and not a rule of this page's own.** This
+     branch grew a bespoke `.back` anchor for the same reason #2 grew `surfacenav` -
+     the gallery had no way back to the menu at all, and the only exits were Open,
+     which leaves for the editor, and the browser's own back button, which does not
+     exist on the node's touch panel. Both landed, and merging them kept both: two
+     anchors carrying `id="toMenu"`, which is invalid, and which makes
+     `getElementById` answer with whichever came first while the operator looks at two
+     ways out side by side.
+
+     The chips win because the claim they make is the wider one - the way out of every
+     surface in the same corner, which is worth more than any argument about this
+     page's own corner - and because they say where you *are* as well as where you can
+     go. The reasoning the `.back` rule carried is not lost: it is an anchor with a
+     real URL rather than a button that assigns `location.href`, and so are these. */
 
   /* Which machine you are on. The library spans both, so "here" has to be named or
      the local/node column is unreadable. */
@@ -317,18 +322,28 @@
 
   @media (max-width: 560px) {
     .grid { grid-template-columns: minmax(0, 1fr); }
+    /* `.where` takes a row of its own here and gives up the auto margin that was
+       right-aligning it, which would leave the nav starting a third row at the left
+       edge - so the nav takes the margin over, and top-right stays top-right. */
     .where { margin-left: 0; width: 100%; }
     .vfoot .vacts { margin-left: 0; }
+    .surfacenav { margin-left: auto; }
   }
 </style>
 </head>
 <body>
 
 <header class="head">
-  <a class="back" id="toMenu" href="/">&larr; Menu</a>
   <h1>Library</h1>
   <div class="sum" id="sum">reading…</div>
   <div class="where" id="where"></div>
+  <!-- The same two chips as the editor's sidebar head and the menu's, in the same
+       order and the same corner. This page had no way back to the menu at all before
+       it, which is the half of "hidden at the bottom of a sidebar" that was worse. -->
+  <nav class="surfacenav" id="navRow" aria-label="Surfaces">
+    <a id="toMenu" href="/">menu</a>
+    <a id="toLibrary" aria-current="page">gallery</a>
+  </nav>
 </header>
 
 <div class="tabs" id="tabs">

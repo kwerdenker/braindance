@@ -620,9 +620,16 @@ const MUTATIONS = {
   // The way out of the gallery goes away again, which is the state it shipped in: the
   // only exits were Open, which leaves for the editor, and a browser back button the
   // node's touch panel does not have.
+  //
+  // **Re-anchored when this branch met `main`.** The way out was a `.back` anchor of
+  // this page's own until #2 landed `surfacenav` on every surface; merging them kept
+  // both, two elements carrying `id="toMenu"`, and the chips won. A mutation is a
+  // piece of source text, so the old anchor stopped matching the moment that markup
+  // went - and an anchor that matches nothing refuses, which reads as a caught
+  // mutation to anything checking only the exit code.
   'gallery-has-no-way-back': { file: 'web/library.html', edits: [[
-    '  <a class="back" id="toMenu" href="/">&larr; Menu</a>',
-    '  <!-- mutation: no way back -->',
+    '    <a id="toMenu" href="/">menu</a>',
+    '    <!-- mutation: no way back -->',
   ]] },
   // **The falsification control for the enumeration**, and the only mutation here
   // that is not a bug being put back. A menu item nobody has taught this file to
@@ -1939,6 +1946,37 @@ async function runChecks() {
     // one state rather than from whichever page the mutation happened to leave open.
     await page.goto(galleryPage(macUrl), { waitUntil: 'domcontentloaded' });
     await page.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 });
+
+    // **The other chip says where you are, and the thing to assert about it is that
+    // it does not go anywhere.** `surfacenav` arrived on this page from `main`, which
+    // put the same two chips in the same corner of every surface, and the sweep below
+    // caught it immediately: a control the gallery renders that nothing in this file
+    // drove. The claim it carries is not navigation - it is that the current surface
+    // is marked as current and is inert, so a tap on it cannot reload the page the
+    // operator is already looking at. An `href` here would be exactly that reload,
+    // which is why its absence is the assertion rather than an oversight.
+    const hereChip = await page.evaluate(`(() => {
+      const a = document.getElementById('toLibrary');
+      return a ? { tag: a.tagName, href: a.getAttribute('href'), current: a.getAttribute('aria-current') } : null;
+    })()`);
+    check(hereChip?.current === 'page' && hereChip.href === null,
+      'the gallery chip marks this surface as the current one and does not navigate',
+      JSON.stringify(hereChip));
+    if (hereChip) {
+      const wasAt = page.url();
+      await page.click('#toLibrary');
+      await new Promise((done) => { setTimeout(done, 300); });
+      check(page.url() === wasAt && await page.evaluate('globalThis.__library !== undefined'),
+        'and pressing it leaves the operator on the gallery rather than reloading it',
+        `${page.url()}`);
+    } else {
+      check(false, 'and pressing it leaves the operator on the gallery rather than reloading it', 'there is no chip');
+    }
+
+    // Back to a known state again, for the same reason as above: the click above is
+    // one state rather than from whichever page the mutation happened to leave open.
+    await page.goto(galleryPage(macUrl), { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 });
     await page.evaluate('globalThis.__library.drawn(document.querySelector(".tile").dataset.hash)');
 
     // ---- 6b. every tile is the same size
@@ -2174,7 +2212,7 @@ async function runChecks() {
     await page.evaluate(`globalThis.__library.viewer.open(${JSON.stringify(clipHash2)})`);
     await page.evaluate('globalThis.__library.viewer.drawn(1)');
     const DRIVERS = new Set([
-      'toMenu', 'all', 'local', 'remote', 'both',
+      'toMenu', 'toLibrary', 'all', 'local', 'remote', 'both',
       'open', 'download', 'delete', 'more',
       'rename', 'reveal', 'reclaim',
       'vMore', 'vClose', 'mark',
