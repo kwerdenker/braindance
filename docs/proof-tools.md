@@ -12,14 +12,16 @@ For the method behind the suite, see `docs/instruments.md`.
 the disagreement runs the dangerous way, so read the assertion count and never the code.**
 Counted rather than recalled:
 
-- **Five exit non-zero on a catch and say `NOT CAUGHT` when they miss**: `guard-check`,
-  `jobs-check`, `editor-check`, `monitor-check`, `sensor-view-check`.
+- **Six exit non-zero on a catch and say `NOT CAUGHT` when they miss**: `guard-check`,
+  `jobs-check`, `editor-check`, `monitor-check`, `sensor-view-check`, `level-check`.
 - **Three invert it**: `vendor-check`, `registration-check` and `registry-check`, where caught
   is exit **0** with `caught, as required (N assertions fired)` and exit **1** is `NOT CAUGHT`.
   Anything gating on "non-zero means caught" reads a genuine miss by these three as a catch.
-  `registry-check` joined this group rather than the first deliberately, because it is the only
-  one of the twelve where all three outcomes have their own code: it exits **2** with `DID NOT
-  RUN` on a crash, on the same reading `registration-check` reserves 2 for. That is not
+  `registry-check` joined this group rather than the first deliberately, because all three of
+  its outcomes have their own code: it exits **2** with `DID NOT RUN` on a crash, on the same
+  reading `registration-check` reserves 2 for. `level-check` separates the same three and lands
+  in the first group instead, so the three-way split and the sign of a catch are independent
+  choices rather than one decision — which is the whole reason this section exists. That is not
   hypothetical — two of its four mutations reddened their intended row and *then* died on
   Playwright's `Target page, context or browser has been closed`, and without the crash handler
   each would have exited non-zero having asserted the right thing for the wrong reason.
@@ -48,11 +50,11 @@ same way. The convention was reached independently several times and it is one r
 `--mutate <name>` serves a deliberately broken `main.js` into the running server, or for the
 two vendoring tools rebuilds a deliberately broken source tree.
 
-**Twelve tools carry mutations** — editor, export, guard, jobs, keyframe, library, monitor,
-registration, registry, sensor-view, timeline and vendor — and all of them refuse a mutation
-whose text they cannot find exactly once, because a replacement that silently matched nothing
-would run the unmutated page and be recorded as the check having missed a bug it was never
-shown.
+**Thirteen tools carry mutations** — editor, export, guard, jobs, keyframe, level, library,
+monitor, registration, registry, sensor-view, timeline and vendor — and all of them refuse a
+mutation whose text they cannot find exactly once, because a replacement that silently matched
+nothing would run the unmutated page and be recorded as the check having missed a bug it was
+never shown.
 
 **A mutation is a piece of source text, so a mutation stops matching the moment the code it
 names is edited** — three of `timeline-check`'s nine had to be re-anchored when step 5 rewrote
@@ -130,6 +132,28 @@ builds from upstream's own registration.cpp, rather than a doctored copy of ours
 FAIL. **What is still source-only is the sub-9 fix**, whose `& 0x1ff` compiles to an immediate
 and leaves nothing in the binary to look for; the tool says so rather than implying it covers
 both. Exit 2 where no prefix exists.
+
+**`level-check` needs no sensor and no capture, and that is a claim about what it can grade
+rather than a convenience.** It writes analytic planes — `z = c / (u . n)` along each pixel's
+own ray — straight into the depth texture, so it knows the normal of every surface it plants
+and can mark the plane fit against the answer. A fixture take would have given it a surface
+nobody knows the normal of, and the fit would then only ever have been asserted against itself.
+
+Two of its rows are worth knowing about before editing it. **The bit-identity in section 2 is
+the whole crop claim**: rotating the world and the camera by the same quaternion is a no-op, so
+the two pictures must hash the same, which is only true while the crop and the region are
+tested on the undisplaced sensor-space position. It carries its own anti-vacuity row — leaving
+the camera behind *must* change the picture — because otherwise a build that ignored the
+parameters entirely satisfies the identity by drawing the same thing twice. **And surface A is
+deliberately blind to `level-order-swapped`**: it leans along one axis, its roll comes out zero,
+and `Rx * Rz` and `Rz * Rx` are then the same rotation. B and C catch it. The blind arm stays,
+because a sweep where every arm reddens cannot say which property is load-bearing.
+
+Its `LEVEL_TOLERANCE` is a bound and not a fitted number: snapping two angles to the sliders'
+half-degree step leaves about 0.0062 radians in the worst case, the gate is 0.012, the clean
+run's worst arm sits at 0.0035 and `level-order-swapped` misses by 0.19. An earlier 0.02 let
+surface C through by 0.0005 — green or red depending on the machine — which is the shape
+`docs/instruments.md` warns about under gates that pass for a neighbouring reason.
 
 **`registration-check` builds both sides every run** - a pristine upstream prefix and ours -
 because a stale oracle `.dylib` turns the whole thing into a build compared against itself and

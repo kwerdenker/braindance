@@ -1,0 +1,599 @@
+#!/usr/bin/env node
+// Levelling: the room is rotated into its own frame, and everything downstream of the
+// rotation comes level with it.
+//
+// A sensor is a thing somebody bolted to something and nothing measures the angle it
+// ended up at - libfreenect2's device API offers two sets of camera intrinsics and no
+// accelerometer - so a cloud from a dashboard mount arrives canted with no gravity
+// vector anywhere to straighten it by. `tilt` and `roll` are a human saying which way
+// is up, and they turn the cloud rather than the camera. That choice is what this tool
+// is mostly about, because it is the choice with consequences: rotating the world
+// levels the turntable, the top-down, auto-orbit's axis and the exported frame at
+// once, and every one of those is a separate way for the feature to be half-built.
+//
+// **Five claims, and two of them are invariants rather than behaviours.**
+//
+//  1. The world actually turns. A picture at a non-zero cant differs from the picture
+//     at none. Dull, and it is here because every other section is a comparison that
+//     a build ignoring the parameters entirely would satisfy by drawing the same
+//     thing twice. `tilt-ignored` is its control and it exists to catch this file
+//     passing itself.
+//  2. **The crop and the region stay in sensor metres.** They are tested on the
+//     undisplaced position in the vertex shader, before the model matrix, so a box
+//     shrunk onto a subject stays on that subject when the room is levelled under it.
+//     Asserted as an identity rather than by reading the shader: rotating the world
+//     and the camera by the same quaternion is a no-op, so the two pictures have to
+//     be **bit-identical**. Move the crop test to the far side of the rotation and
+//     the surviving set changes, which no camera move can undo - `crop-follows-tilt`.
+//  3. The top-down is a top-down of the room and not a slanted section of it. This
+//     was the second visible symptom of the same bug and it had no check at all: the
+//     inset drew the sensor's own axes, so the box in the corner of a canted take was
+//     labelled TOP-DOWN and was not one. Measured two-sided - a plane levelled flat
+//     has a fat plan and the same plane stood on its edge has a thin one - because a
+//     one-sided "it changed" row passes on any change at all.
+//  4. **The sensor view stays literal.** It means exactly what the sensor shot, so it
+//     has to be posed in the sensor's frame rather than the levelled one: its picture
+//     at any cant is the same picture it gives at none. That is what forces the free
+//     camera's up onto the sensor's, which is why navigation's controls are rebuilt
+//     rather than written to - see `setNavigationUp` in `web/main.js`.
+//  5. **"Level to centre" reads the geometry.** Three planted surfaces with three
+//     different normals must produce three different and individually correct
+//     answers. One arm would not do: a button that wrote zeros is right about a
+//     level room, and a button that read the pair in the wrong order is right about
+//     every surface that leans only one way. `level-writes-zero` and
+//     `level-order-swapped` are the two controls, and the third arm leans both ways
+//     precisely so the order has a consequence.
+//
+// **The frames are planted, so this needs no sensor and no capture.** The depth
+// texture is written directly with an analytic plane - `z = c / (u . n)` along each
+// pixel's own ray - which is what lets section 5 know the answer it is grading. A
+// fixture take would have given a surface nobody knows the normal of, and the fit
+// would then only ever have been asserted against itself.
+//
+//   node tools/level-check.mjs
+//   node tools/level-check.mjs --mutate tilt-ignored             # must FAIL
+//   node tools/level-check.mjs --mutate crop-follows-tilt        # must FAIL
+//   node tools/level-check.mjs --mutate plan-ignores-tilt        # must FAIL
+//   node tools/level-check.mjs --mutate sensor-view-ignores-tilt # must FAIL
+//   node tools/level-check.mjs --mutate level-writes-zero        # must FAIL
+//   node tools/level-check.mjs --mutate level-order-swapped      # must FAIL
+//
+// It spawns its own server and needs none running. `--port` takes one nothing else
+// holds; the default is not in any other tool's range, but two worktrees running this
+// at once still collide and get each other's server, which is `library-check`'s
+// lesson written down again. A GPU browser is required outright rather than optional:
+// every claim here is about a picture, so there is no useful subset to run without
+// one, and a missing playwright exits **2** - untested is not passed.
+import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+const argv = process.argv.slice(2);
+const flag = (name, dflt = null) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : dflt);
+const PORT = Number(flag('--port', '8377'));
+const MUTATE = flag('--mutate');
+const WORK = join(REPO, '.level-check');
+const RECORDER_URL = `http://127.0.0.1:${PORT}/record`;
+
+// --- mutations -------------------------------------------------------------
+// Each names source text and must match exactly once. A replacement matching nothing
+// would run an unmutated build and be recorded as this check having missed a bug it
+// was never shown.
+const MUTATIONS = {
+  // The parameters are accepted, stored, drawn on their sliders - and never reach the
+  // cloud. This is the whole feature absent behind a working panel, and it is the
+  // control for section 1 rather than for any of the comparisons, because every
+  // comparison below is satisfied by a build that draws the same picture twice.
+  'tilt-ignored': { file: 'web/main.js', edits: [[
+    '  cloud.quaternion.copy(worldTilt);',
+    '  cloud.quaternion.identity();',
+  ]] },
+  // The crop moves to the far side of the levelling: the six faces stop being a place
+  // in the room and become a place relative to however the room is currently turned.
+  // Section 2's identity is what sees it - the surviving set changes, and no camera
+  // move can put a discarded point back.
+  'crop-follows-tilt': { file: 'web/main.js', edits: [[
+    '  if (pos.x < cropL || pos.x > cropR || pos.y < cropB || pos.y > cropT) {',
+    '  vec3 cropAt = (modelMatrix * vec4(pos, 1.0)).xyz;\n'
+    + '  if (cropAt.x < cropL || cropAt.x > cropR || cropAt.y < cropB || cropAt.y > cropT) {',
+  ]] },
+  // The picture levels and the box in the corner does not, which is exactly the state
+  // this feature was built to end. Nothing outside section 3 can see it.
+  'plan-ignores-tilt': { file: 'web/main.js', edits: [[
+    '      planVec.set(wx, -((row + 0.5 - cy) / fy) * z, -z).applyQuaternion(worldTilt);',
+    '      planVec.set(wx, -((row + 0.5 - cy) / fy) * z, -z);',
+  ]] },
+  // The sensor view keeps navigation's own pole and its own axis, so on a levelled
+  // take the one button that means "exactly what the sensor shot" shows a rolled
+  // picture through a frustum fitted to an unrolled one. The fov rows in
+  // `sensor-view-check` cannot see this: the angles it reports are unchanged.
+  'sensor-view-ignores-tilt': { file: 'web/main.js', edits: [[
+    '  setNavigationUp(new THREE.Vector3(0, 1, 0).applyQuaternion(worldTilt));\n'
+    + '  controls.target.set(0, 0, -SENSOR_VIEW_DISTANCE).applyQuaternion(worldTilt);',
+    '  controls.target.set(0, 0, -SENSOR_VIEW_DISTANCE);',
+  ]] },
+  // The button reports success and writes a level room. Plausible on any take that
+  // was nearly level to start with, which is why section 5 plants surfaces that are
+  // not.
+  'level-writes-zero': { file: 'web/main.js', edits: [[
+    '  params.set(\'roll\', roll);\n  params.set(\'tilt\', tilt);',
+    '  params.set(\'roll\', 0);\n  params.set(\'tilt\', 0);',
+  ]] },
+  // The pair is composed the other way round, `Rz(roll) * Rx(tilt)`. Every surface
+  // that leans along one axis alone is levelled correctly by both orders, so this is
+  // invisible to two of section 5's three arms by construction - and the third leans
+  // both ways for exactly that reason.
+  'level-order-swapped': { file: 'web/main.js', edits: [[
+    "const tiltEuler = new THREE.Euler(0, 0, 0, 'XYZ');",
+    "const tiltEuler = new THREE.Euler(0, 0, 0, 'ZYX');",
+  ]] },
+};
+if (MUTATE && !MUTATIONS[MUTATE]) {
+  console.error(`unknown mutation ${MUTATE} - have ${Object.keys(MUTATIONS).join(', ')}`);
+  process.exit(2);
+}
+
+// --- the staged tree -------------------------------------------------------
+// A mutation applied in place and restored afterwards leaves a mutated working tree
+// behind any crash, which is the one state a proof tool must never produce. `web/` is
+// copied rather than linked for the same reason: through a symlink every mutation
+// here would rewrite the repo's own source.
+rmSync(WORK, { recursive: true, force: true });
+mkdirSync(WORK, { recursive: true });
+for (const dir of ['server', 'tools', 'web']) cpSync(join(REPO, dir), join(WORK, dir), { recursive: true });
+for (const name of ['node_modules', 'vendor', 'captures']) {
+  const from = join(REPO, name);
+  if (existsSync(from)) symlinkSync(from, join(WORK, name));
+}
+if (MUTATE) {
+  const spec = MUTATIONS[MUTATE];
+  const path = join(WORK, spec.file);
+  let source = readFileSync(path, 'utf8');
+  for (const [from, to] of spec.edits) {
+    const hits = source.split(from).length - 1;
+    if (hits !== 1) {
+      console.error(`mutation ${MUTATE} matched ${hits} times in ${spec.file}, expected exactly 1 - refusing to run an unmutated build`);
+      process.exit(2);
+    }
+    source = source.replace(from, to);
+  }
+  writeFileSync(path, source);
+}
+
+// --- harness ---------------------------------------------------------------
+let checked = 0;
+let failed = 0;
+// A claim that could not be tested here at all, which is a third answer and not a
+// quiet pass.
+let untested = null;
+// A run that threw rather than a claim that failed. Kept apart from `failed` so the
+// verdict cannot count its own timeout as a mutation being caught.
+let crashed = null;
+const ok = (label, pass, detail = '') => {
+  checked++;
+  if (!pass) failed++;
+  console.log(`  ${pass ? 'PASS' : 'FAIL'}  ${label}${detail ? `  ${detail}` : ''}`);
+};
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const servers = [];
+const start = () => new Promise((resolve, reject) => {
+  const child = spawn(process.execPath, [join(WORK, 'server/index.js'), '--port', String(PORT)], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  servers.push(child);
+  const log = [];
+  const onData = (c) => {
+    log.push(c.toString());
+    if (log.join('').includes('viewer on')) setTimeout(resolve, 200);
+  };
+  child.stdout.on('data', onData);
+  child.stderr.on('data', onData);
+  setTimeout(() => reject(new Error(`server never came up:\n${log.join('')}`)), 15000);
+});
+const stopAll = async () => {
+  for (const c of servers) c.kill('SIGKILL');
+  servers.length = 0;
+  await wait(150);
+};
+
+// The three surfaces every section plants. Each is a unit normal in sensor metres and
+// the depth at which its centre ray crosses. **A is deliberately blind to the order
+// the pair composes in**: it leans along one axis only, so its roll comes out at zero
+// and `Rx * Rz` and `Rz * Rx` are the same rotation. B and C lean both ways and are
+// the two that can see `level-order-swapped`. The blind arm is kept rather than
+// replaced, because a set of arms that all see a mutation says nothing about which
+// property is load-bearing - and the file says which is which here rather than
+// leaving it to be rediscovered from a confusing sweep.
+const SURFACES = [
+  { name: 'A, tipped away from the sensor and not rolled', n: [0, 0.3, -1], z: 2.0 },
+  { name: 'B, rolled in its bracket as well', n: [0.45, 0.89, -0.35], z: 2.2 },
+  { name: 'C, leaning hard along both axes at once', n: [0.6, 0.6, -0.53], z: 2.0 },
+];
+
+// How far off the vertical a levelled normal is allowed to land, as the length of its
+// horizontal component. Snapping two angles to the sliders' half-degree step can leave
+// about 0.0062 radians behind in the worst case, so this is a shade over twice the
+// quantisation and is a bound rather than a number chosen to fit: the clean run's worst
+// arm sits at 0.0035 and the mutation it has to catch misses by 0.19. An earlier
+// version at 0.02 let surface C through `level-order-swapped` by 0.0005, which is a row
+// that would have gone green or red depending on the machine.
+const LEVEL_TOLERANCE = 0.012;
+
+const hash = (buf) => createHash('sha256').update(buf).digest('hex').slice(0, 16);
+
+console.log(`[level] ${MUTATE ? `MUTATED: ${MUTATE} (${MUTATIONS[MUTATE].file})` : 'unmutated tree'}\n`);
+
+try {
+  let chromium;
+  try {
+    ({ chromium } = await import(join(REPO, 'node_modules/playwright/index.mjs')));
+  } catch {
+    untested = 'playwright is not installed, and every claim here is about a picture';
+    throw new Error(untested);
+  }
+
+  await start();
+  const browser = await chromium.launch();
+  const page = await browser.newPage({ viewport: { width: 1100, height: 760 } });
+  const pageErrors = [];
+  page.on('pageerror', (e) => pageErrors.push(String(e)));
+  await page.goto(RECORDER_URL, { waitUntil: 'networkidle' });
+  await page.waitForFunction('Boolean(globalThis.__kinect)', null, { timeout: 20000 });
+
+  // The panel overlaps the picture's left edge and its own hover state is a change in
+  // the region a comparison would read - `sensor-view-check` records a run that passed
+  // a repaint row on a button highlight. Taken out of the document rather than
+  // hit-tested around, because nothing here needs to press anything on it.
+  await page.evaluate(() => { document.getElementById('panel').style.display = 'none'; });
+
+  /**
+   * Plants an analytic plane over the whole depth image and settles the picture.
+   *
+   * The look is flattened first and that is not tidiness. Fade, wake and noise are
+   * temporal, so a picture compared against another picture would be comparing two
+   * moments of an accumulator rather than two geometries, and the identity in section
+   * 2 would be false for a reason that has nothing to do with levelling.
+   */
+  const plant = (surface) => page.evaluate(([n0, zc]) => {
+    const k = globalThis.__kinect;
+    for (const [name, value] of Object.entries({
+      fade: 0, wake: 0, noise: 0, additive: false, spin: false, denoise: false,
+    })) k.params.set(name, value);
+    const DW = 512;
+    const DH = 424;
+    const fx = k.uniforms.focal.value.x;
+    const fy = k.uniforms.focal.value.y;
+    const cx = k.uniforms.center.value.x;
+    const cy = k.uniforms.center.value.y;
+    const len = Math.hypot(n0[0], n0[1], n0[2]);
+    const n = n0.map((v) => v / len);
+    // `c` is fixed by where the centre ray is wanted, so every surface lands at a
+    // sane depth whatever way it leans.
+    const c = zc * -n[2];
+    const data = k.uniforms.depthCurr.value.image.data;
+    data.fill(0);
+    for (let row = 0; row < DH; row++) {
+      for (let col = 0; col < DW; col++) {
+        const ux = (col + 0.5 - cx) / fx;
+        const uy = -(row + 0.5 - cy) / fy;
+        const den = ux * n[0] + uy * n[1] - n[2];
+        if (Math.abs(den) < 1e-6) continue;
+        const z = c / den;
+        // The renderer's own depth gate, so a planted sample that would be discarded
+        // is never written in the first place.
+        if (!(z >= k.uniforms.nearClip.value && z <= k.uniforms.farClip.value)) continue;
+        data[row * DW + col] = Math.round(z * 1000);
+      }
+    }
+    k.uniforms.depthCurr.value.needsUpdate = true;
+    k.resetAccumulators();
+    return n;
+  }, [surface.n, surface.z]);
+
+  const setTilt = (tilt, roll) => page.evaluate(([t, r]) => {
+    const k = globalThis.__kinect;
+    k.params.set('tilt', t);
+    k.params.set('roll', r);
+    return { tilt: k.params.get('tilt'), roll: k.params.get('roll'), q: k.worldTilt() };
+  }, [tilt, roll]);
+
+  /**
+   * The rendered frame, and only the rendered frame.
+   *
+   * Two shots with a gap, and they have to agree before either is used. A picture that
+   * is still moving makes every comparison below meaningless in the direction that
+   * reads as a pass - two arms that differ get called a difference, when what happened
+   * is that the accumulators had not settled.
+   */
+  const picture = async () => {
+    await page.evaluate(() => globalThis.__kinect.keyframes.chrome.set(false));
+    await wait(260);
+    const first = await page.locator('#stage').screenshot();
+    await wait(160);
+    const second = await page.locator('#stage').screenshot();
+    return { hash: hash(second), stable: Buffer.compare(first, second) === 0 };
+  };
+
+  // --- 1. the world turns ---------------------------------------------------
+  console.log('1. the parameters reach the cloud');
+  await plant(SURFACES[2]);
+  await setTilt(0, 0);
+  const flat = await picture();
+  ok('a picture of a planted surface is stable enough to compare', flat.stable);
+  await setTilt(18, -24);
+  const canted = await picture();
+  ok('and cants when the two parameters move', flat.hash !== canted.hash,
+    `${flat.hash} then ${canted.hash}`);
+
+  // --- 2. the crop is a place in the room -----------------------------------
+  console.log('\n2. the crop and the region stay in sensor metres');
+  // A box that actually bites. Left open, every point survives either way round and
+  // the identity below is true for a build with no crop at all.
+  await page.evaluate(() => {
+    const k = globalThis.__kinect;
+    k.params.set('left', -0.4);
+    k.params.set('right', 0.5);
+    k.params.set('bottom', -0.35);
+    k.params.set('top', 0.45);
+  });
+  /** Poses the program camera, optionally carried by the world's own rotation. */
+  const poseProgram = (carry) => page.evaluate((withTilt) => {
+    const k = globalThis.__kinect;
+    const cam = k.programCamera;
+    cam.up.set(0, 1, 0);
+    cam.position.set(0.35, 0.45, 1.5);
+    cam.lookAt(0, 0, -2);
+    const position = cam.position.clone();
+    const quaternion = cam.quaternion.clone();
+    if (withTilt) {
+      const q = cam.quaternion.clone().fromArray(k.worldTilt());
+      position.applyQuaternion(q);
+      quaternion.premultiply(q);
+    }
+    k.params.set('camera', { position: position.toArray(), quaternion: quaternion.toArray(), fov: 50 });
+    k.setViewCamera(k.programCamera);
+  }, carry);
+
+  await setTilt(0, 0);
+  await poseProgram(false);
+  const still = await picture();
+  ok('the same surface through a fixed pose is stable', still.stable);
+  await setTilt(22, 31);
+  await poseProgram(true);
+  const carried = await picture();
+  ok('turning the world and the camera by the same rotation changes nothing at all',
+    still.hash === carried.hash, `${still.hash} then ${carried.hash}`);
+  // Without this row the identity above is satisfied by a build where the camera is
+  // not carried either - two pictures that are the same because nothing moved.
+  await poseProgram(false);
+  const notCarried = await picture();
+  ok('and leaving the camera behind does change it, so the identity is not vacuous',
+    still.hash !== notCarried.hash, `${still.hash} then ${notCarried.hash}`);
+  await page.evaluate(() => {
+    const k = globalThis.__kinect;
+    k.setViewCamera(k.freeCamera);
+    k.params.reset(['left', 'right', 'bottom', 'top']);
+  });
+
+  // --- 3. the top-down is a top-down of the room ----------------------------
+  console.log('\n3. the top-down draws the levelled frame');
+  /**
+   * The plan cloud's own bounding box in the inset, in pixels.
+   *
+   * Filtered by colour rather than by area: the path and the frustum are drawn in the
+   * same box in teal and orange, and a bounding box that swallowed either would be
+   * measuring the furniture. The cloud is the only near-neutral thing in there.
+   */
+  // Read off the overlay's own backing store rather than out of a screenshot: it is a
+  // 2D canvas, so the pixels are there for the asking, and going through a PNG would
+  // have added a decoder this repo does not otherwise depend on.
+  const planExtent = async () => {
+    await page.evaluate(() => globalThis.__kinect.keyframes.chrome.set(true));
+    await wait(220);
+    return page.evaluate(() => {
+      const canvas = document.getElementById('chrome');
+      const r = globalThis.__kinect.keyframes.chrome.inset();
+      // The overlay is drawn through a device-pixel-ratio transform, so the inset's
+      // CSS rectangle has to be taken back into the buffer's own scale.
+      const scale = canvas.width / r.stage.w;
+      const x0 = Math.round(r.x * scale);
+      const y0 = Math.round(r.y * scale);
+      const w = Math.round(r.w * scale);
+      const h = Math.round(r.h * scale);
+      const px = canvas.getContext('2d').getImageData(x0, y0, w, h).data;
+      let minX = Infinity; let maxX = -Infinity; let minY = Infinity; let maxY = -Infinity; let n = 0;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const i = (y * w + x) * 4;
+          const red = px[i]; const green = px[i + 1]; const blue = px[i + 2];
+          if (px[i + 3] < 40) continue;
+          // Bright and near-neutral. The plan cloud is drawn at (232, 236, 241), the
+          // path in teal and the frustum in orange, and a box that swallowed either of
+          // those would be measuring the furniture.
+          if (red < 90 || Math.abs(red - green) > 26 || Math.abs(green - blue) > 26) continue;
+          n++;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+      return n === 0 ? { n: 0 } : { n, w: maxX - minX + 1, h: maxY - minY + 1, scale };
+    });
+  };
+
+  // Back to no cant before planting, or the surface is levelled from wherever the
+  // previous section left the room and the crosshair is looking at nothing.
+  await setTilt(0, 0);
+  await plant(SURFACES[1]);
+  const level = await page.evaluate(() => globalThis.__kinect.levelToCentre());
+  ok('the planted surface can be levelled on', level.ok === true, level.reason ?? '');
+  if (level.ok) {
+    const flatPlan = await planExtent();
+    ok('a surface levelled flat covers the top-down in two directions',
+      flatPlan.n > 200 && Math.min(flatPlan.w, flatPlan.h) > 8,
+      `${flatPlan.n} plan points, ${flatPlan.w}x${flatPlan.h}px`);
+    // A further quarter turn about x stands the same surface on its edge: whatever was
+    // carried onto +Y goes to -Z, which is horizontal, so its top-down collapses to a
+    // line. Two-sided on purpose - the fat reading alone passes on a plan that ignores
+    // the levelling entirely, because a canted plane fills a box too.
+    await setTilt(level.tilt - 90, level.roll);
+    const edgePlan = await planExtent();
+    const flatMinor = Math.min(flatPlan.w, flatPlan.h);
+    const edgeMinor = Math.min(edgePlan.w ?? 0, edgePlan.h ?? 0);
+    ok('and standing it on its edge collapses that box to a line',
+      edgePlan.n > 0 && edgeMinor * 3 < flatMinor,
+      `${flatMinor}px across flat, ${edgeMinor}px on edge`);
+  }
+  await page.evaluate(() => globalThis.__kinect.keyframes.chrome.set(false));
+
+  // --- 4. the sensor view stays literal -------------------------------------
+  console.log('\n4. the sensor view is posed in the sensor frame');
+  await plant(SURFACES[2]);
+  await setTilt(0, 0);
+  await page.evaluate(() => globalThis.__kinect.sensorView());
+  const sensorFlat = await picture();
+  ok('the sensor view of a planted surface is stable', sensorFlat.stable);
+  await setTilt(26, -37);
+  await page.evaluate(() => globalThis.__kinect.sensorView());
+  const sensorCanted = await picture();
+  ok('and is the same picture at any cant, because it means what the sensor shot',
+    sensorFlat.hash === sensorCanted.hash, `${sensorFlat.hash} then ${sensorCanted.hash}`);
+  const restored = await page.evaluate(() => {
+    const k = globalThis.__kinect;
+    const sensorUp = k.freeCamera.up.toArray();
+    k.params.set('tilt', 4);
+    return { sensorUp, afterLevelling: k.freeCamera.up.toArray() };
+  });
+  ok('the sensor view takes navigation onto the sensor pole',
+    Math.abs(restored.sensorUp[1] - 1) > 1e-3, restored.sensorUp.map((v) => v.toFixed(3)).join(', '));
+  ok('and touching either levelling parameter puts the pole back on the room',
+    Math.abs(restored.afterLevelling[1] - 1) < 1e-9,
+    restored.afterLevelling.map((v) => v.toFixed(3)).join(', '));
+
+  // --- 5. level to centre reads the geometry --------------------------------
+  console.log('\n5. level to centre derives the pair from the surface');
+  const answers = [];
+  for (const surface of SURFACES) {
+    await setTilt(0, 0);
+    const planted = await plant(surface);
+    const result = await page.evaluate(() => globalThis.__kinect.levelToCentre());
+    if (!result.ok) {
+      ok(`surface ${surface.name} could be levelled on`, false, result.reason);
+      continue;
+    }
+    // Where the planted normal ends up under the pair the button wrote, computed from
+    // the quaternion the page is carrying rather than recomposed here from the two
+    // angles - recomposing would agree with the implementation by construction and
+    // could never see the order being read backwards.
+    const landed = await page.evaluate((n) => {
+      const k = globalThis.__kinect;
+      const v = k.freeCamera.position.clone().fromArray(n);
+      const q = k.freeCamera.quaternion.clone().fromArray(k.worldTilt());
+      return v.applyQuaternion(q).toArray();
+    }, planted);
+    answers.push({ surface, result, landed });
+    ok(`surface ${surface.name}: the pair it wrote carries that surface's normal onto the vertical`,
+      Math.hypot(landed[0], landed[2]) < LEVEL_TOLERANCE,
+      `lands at ${landed.map((v) => v.toFixed(4)).join(', ')}, wrote tilt ${result.tilt} roll ${result.roll}`);
+  }
+  const pairs = answers.map((a) => `${a.result.tilt}/${a.result.roll}`);
+  // The rule this repo keeps relearning: a set of arms that agree about a quantity
+  // cannot measure it however many of them there are.
+  ok('and the three surfaces are three different answers rather than one constant',
+    new Set(pairs).size === answers.length, pairs.join(', '));
+  ok('the fit reports how flat the surface it read actually was',
+    answers.every((a) => Number.isFinite(a.result.rms) && a.result.samples >= 32),
+    answers.map((a) => `${a.result.samples} samples at ${(a.result.rms * 1000).toFixed(2)}mm`).join(', '));
+
+  // **Through the button and not through the hook**, and that is the whole reason this
+  // row exists rather than being one more call like the three above. `editor-check`
+  // names this tool as `camLevel`'s driver, and a driver that reached past the control
+  // into the function behind it would be the exact failure that file was written
+  // about: the suite testing the model while the control it is named after was never
+  // pressed, which is how the in and out markers spent their whole life detached from
+  // the document with every proof tool green.
+  await setTilt(0, 0);
+  await plant(SURFACES[1]);
+  await page.evaluate(() => { document.getElementById('panel').style.display = ''; });
+  await page.locator('#camLevel').click();
+  const pressed = await page.evaluate(() => {
+    const k = globalThis.__kinect;
+    const state = {
+      tilt: k.params.get('tilt'),
+      roll: k.params.get('roll'),
+      note: document.getElementById('levelNote').textContent,
+      slider: document.getElementById('tilt').value,
+    };
+    document.getElementById('panel').style.display = 'none';
+    return state;
+  });
+  ok('pressing the control itself levels the room, not only calling what it calls',
+    pressed.tilt !== 0 || pressed.roll !== 0, `tilt ${pressed.tilt} roll ${pressed.roll}`);
+  ok('and the slider beside it follows, because the panel is a view on the registry',
+    Number(pressed.slider) === pressed.tilt, `slider reads ${pressed.slider}`);
+  ok('and the press says what it read rather than only that it worked',
+    /samples/.test(pressed.note), pressed.note);
+
+  // --- 6. which side of the document boundary it falls on --------------------
+  console.log('\n6. the cant is the take\'s and the pole is the viewer\'s');
+  const boundary = await page.evaluate(() => {
+    const k = globalThis.__kinect;
+    k.params.set('tilt', 12.5);
+    k.params.set('roll', -6);
+    const document = k.params.values();
+    const view = k.params.values(k.params.names('view'));
+    return {
+      inDocument: 'tilt' in document && 'roll' in document,
+      values: [document.tilt, document.roll],
+      leakedToView: 'tilt' in view || 'roll' in view,
+      tags: [k.params.spec('tilt').tag, k.params.spec('roll').tag],
+      ranges: [k.params.spec('tilt'), k.params.spec('roll')].map((s) => [s.min, s.max]),
+    };
+  });
+  ok('both are document state, so a project carries the cant it was levelled at',
+    boundary.inDocument && !boundary.leakedToView, `${boundary.values.join(', ')} tagged ${boundary.tags.join('/')}`);
+  // The plane fit's two `atan2`s cannot leave these, so the button can never write a
+  // value its own slider would clamp - which would be a silent disagreement between
+  // the two ways of saying the same thing.
+  ok('and the sliders reach everywhere the plane fit can land',
+    boundary.ranges[0][0] <= -90 && boundary.ranges[0][1] >= 90
+    && boundary.ranges[1][0] <= -180 && boundary.ranges[1][1] >= 180,
+    JSON.stringify(boundary.ranges));
+  ok('the page reported no error through any of it', pageErrors.length === 0,
+    pageErrors.slice(0, 2).join(' | '));
+
+  await browser.close();
+} catch (err) {
+  crashed = err;
+  console.log(`\n  FAIL  the run did not finish: ${err.message}`);
+} finally {
+  await stopAll();
+  rmSync(WORK, { recursive: true, force: true });
+}
+
+console.log(`\n[level] ${checked} assertions, ${failed} failed`);
+if (crashed && !untested) {
+  console.log(`[level] DID NOT RUN - ${crashed.message}. Nothing here is a finding: re-run it.`);
+  process.exit(2);
+}
+if (untested) {
+  console.log(`[level] UNTESTED - ${untested}.`);
+  process.exit(2);
+}
+if (MUTATE) {
+  // Exit code alone cannot tell a caught mutation from a tool that crashed before
+  // asserting anything, and this repo has been bitten by exactly that twice.
+  if (failed === 0) { console.log('[level] NOT CAUGHT - the check passed a build it should have rejected'); process.exit(1); }
+  console.log(`[level] caught, as required (${failed} assertion${failed === 1 ? '' : 's'} fired)`);
+  process.exit(1);
+}
+if (failed) { console.log('[level] FAIL'); process.exit(1); }
+console.log('[level] PASS');
+process.exit(0);

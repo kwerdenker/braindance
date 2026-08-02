@@ -336,8 +336,32 @@ const LANDING = {
   denoise: 'k.uniforms.denoise.value',
   edgeTol: 'k.uniforms.edgeTol.value',
   renderScale: 'k.renderer.getContext().drawingBufferWidth',
+  // The two levelling angles share one landing site, because a rotation is what they
+  // are between them. `worldTilt()` answers off the cloud's own quaternion rather than
+  // off the value the pair composes into, so this row is "the rotation reached the
+  // object the renderer draws" rather than "the arithmetic was done". Rounded because
+  // the comparison is a `JSON.stringify` equality and the expectation below rebuilds
+  // the quaternion in a different order of operations - a ULP apart is not a finding.
+  tilt: 'k.worldTilt().map((v) => Number(v.toFixed(9)))',
+  roll: 'k.worldTilt().map((v) => Number(v.toFixed(9)))',
   camera: '[...k.programCamera.position.toArray(), ...k.programCamera.quaternion.toArray(), k.programCamera.fov]',
 };
+
+/**
+ * The quaternion `tilt` and `roll` have to compose into: `Rx(tilt) * Rz(roll)`.
+ *
+ * Written out here rather than read back from the page on purpose. This is the one
+ * place outside `web/main.js` that states the order, so the pair being composed the
+ * other way round fails this row - where a tool that asked the page what order it used
+ * would agree with the implementation by construction and could never see it.
+ */
+function levellingQuaternion(tiltDeg, rollDeg) {
+  const t = (tiltDeg * (Math.PI / 180)) / 2;
+  const r = (rollDeg * (Math.PI / 180)) / 2;
+  const st = Math.sin(t); const ct = Math.cos(t);
+  const sr = Math.sin(r); const cr = Math.cos(r);
+  return [st * cr, -st * sr, ct * sr, ct * cr].map((v) => Number(v.toFixed(9)));
+}
 
 // What that landing site must read, given the value the registry was handed. The
 // ones taking `all` are the parameters that share a side effect with another.
@@ -402,6 +426,11 @@ const EXPECT = {
   edgeTol: (v) => v,
   // three floors width * pixelRatio, and the context runs at deviceScaleFactor 1.
   renderScale: (v) => Math.floor(VIEW.width * (v / 100)),
+  // Both read the whole pair, because both land on the same rotation: a `tilt` set on
+  // its own has to compose with whatever `roll` currently is, which the one-at-a-time
+  // sweep leaves at its default and the all-at-once pass does not.
+  tilt: (v, all) => levellingQuaternion(v, all.roll),
+  roll: (v, all) => levellingQuaternion(all.tilt, v),
   camera: (v) => [...v.position, ...v.quaternion, v.fov],
 };
 
@@ -412,6 +441,14 @@ const SCRAMBLE = {
   opacity: 0.62,
   exposure: 2.05,
   additive: true,
+  // Both non-zero and both off the other's axis, because the drop-one sweep reverts one
+  // at a time: a scrambled set that levelled along a single axis would leave the other
+  // parameter with nothing to undo, and it would land in the no-pixel bucket looking
+  // like a parameter that does nothing. Off the half-degree grid's round numbers for
+  // the same reason every other value here is - a step the slider can express, but not
+  // one a hardcoded constant would plausibly be.
+  tilt: 13.5,
+  roll: -21.5,
   near: 0.35,
   far: 4.2,
   // The four lateral faces, placed against the same fixture the region is placed
@@ -808,6 +845,14 @@ const GOLDEN_ABSENT = new Set([
   // renders. That equality is the row above, and it is the reason this arm still means
   // something with four more parameters in it.
   'left', 'right', 'bottom', 'top',
+  // The two levelling angles, excused on exactly the crop faces' terms and for exactly
+  // their reason: the pinned revision has no such control, and the default is the
+  // identity rotation, so a build that levels the room by nothing renders what a build
+  // that cannot level it at all renders. That equality is what the row above is
+  // asserting, and it is why this arm still means something with two more parameters
+  // in it. Whether they reach the pixels when they are *not* zero is section 9's
+  // question, and the drop-one sweep there answers it.
+  'tilt', 'roll',
   // Not registry parameters at all - the monitor's stream controls, which arrived with
   // step 9 and carry their own bounds in the markup. They are in this set for the same
   // reason as the rest: the earlier revision has no such control, so there is nothing

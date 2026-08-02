@@ -97,11 +97,67 @@ const programCamera = new THREE.PerspectiveCamera(PROGRAM_FOV, innerWidth / inne
 // one object with the controls switched off.
 let viewCamera = freeCamera;
 
-const controls = new OrbitControls(freeCamera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.07;
-controls.autoRotateSpeed = 0.6;
-controls.target.copy(ORBIT_TARGET);
+// The room's vertical, which is what +Y means once the levelling below has done its
+// job. Before it, +Y is up in the sensor's bracket and the turntable spins about a
+// pole the footage does not have.
+const WORLD_UP = new THREE.Vector3(0, 1, 0);
+
+// The rotation the levelling parameters put on the cloud, kept as a value because
+// four separate things have to ask what it is: the sensor view, the top-down, the
+// plane fit that writes it, and the proof tool that reads it back.
+const worldTilt = new THREE.Quaternion();
+
+// Not a constant, and that is the one surprising thing about navigation here.
+// OrbitControls resolves its orbit axis from `object.up` **in the constructor** and
+// never looks again - `_quat` in `three/examples/jsm/controls/OrbitControls.js`,
+// applied every `update()` and recomputed by nothing - so writing a new up onto the
+// camera half-applies: `lookAt` picks the roll up immediately while the azimuth axis
+// keeps spinning about the old pole. That reads as damping gone wrong rather than as
+// a wrong axis, which is exactly the kind of bug that survives a review. Rebuilding
+// the object is the honest fix; reaching in and assigning `_quat` is not, because it
+// is a private that can be renamed by a patch release with nothing to catch it.
+let controls;
+
+// Listeners are registered here rather than on the object, because the object does
+// not survive a change of up. Everything the old one carried is copied across, so a
+// rebuild is invisible apart from one frame of damping.
+const navListeners = [];
+
+function buildControls() {
+  const previous = controls;
+  controls = new OrbitControls(freeCamera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.07;
+  controls.autoRotateSpeed = 0.6;
+  if (previous) {
+    controls.target.copy(previous.target);
+    controls.autoRotate = previous.autoRotate;
+    controls.enabled = previous.enabled;
+    previous.dispose();
+  } else {
+    controls.target.copy(ORBIT_TARGET);
+  }
+  for (const [type, listener] of navListeners) controls.addEventListener(type, listener);
+}
+
+function onNav(type, listener) {
+  navListeners.push([type, listener]);
+  controls.addEventListener(type, listener);
+}
+
+/**
+ * The pole the turntable spins about. One variable with two writers that want
+ * opposite things: levelling wants the room's vertical, and the sensor view wants
+ * the sensor's own, because a picture claiming to be exactly what the sensor shot
+ * cannot be quietly rolled upright first.
+ */
+function setNavigationUp(up) {
+  if (freeCamera.up.equals(up)) return;
+  freeCamera.up.copy(up);
+  buildControls();
+}
+
+buildControls();
 
 // Orienting is done on a camera-shaped scratch object rather than on a bare
 // Object3D, because three points cameras and lights down -Z and everything else
@@ -943,6 +999,54 @@ const material = new THREE.ShaderMaterial({
 const cloud = new THREE.Points(geometry, material);
 scene.add(cloud);
 
+// ------------------------------------------------------------ levelling the world
+
+// A sensor is a thing somebody bolted to something, and nothing measures the angle it
+// ended up at: libfreenect2's device API offers the two sets of camera intrinsics and
+// no accelerometer, so a cloud shot from a dashboard mount arrives canted and there is
+// no gravity vector anywhere to straighten it by. A human has to say which way is up.
+//
+// That angle is a fact about the take rather than about whoever is looking at it, so
+// it lives in the document beside the crop and not on the camera - which is also what
+// makes it one fix rather than four. Rotating the cloud levels the turntable, the
+// top-down, auto-orbit's axis and the exported frame at once, where a camera that
+// merely rolled itself would leave the other three canted and give keyed poses a roll
+// to interpolate against defaults that have none.
+//
+// Two angles and not three. `roll` turns the picture in its frame, which is what a
+// sensor rotated in its bracket does, and `tilt` pitches the room, which is what a
+// sensor aimed downward does. The third would be yaw about the room's vertical, and
+// that is not levelling at all - it is what dragging on the picture already does, so a
+// slider for it would be a second way to say one thing.
+//
+// **The order is stated because the pair does not commute.** `Rx(tilt) * Rz(roll)`,
+// which is three's own `XYZ` Euler with the middle angle left at zero. Read the other
+// way round, neither slider does one visible thing any more: each starts moving the
+// room along two axes at once and the panel stops being usable by eye.
+//
+// What deliberately does *not* move with it: the crop faces and the region are tested
+// on the undisplaced sensor-space position in the vertex shader, before the model
+// matrix, so a box shrunk onto a subject stays shrunk onto that subject when the room
+// is levelled underneath it. `level-check` holds that invariant by rotating the world
+// and the camera together and demanding the picture not change at all.
+const worldTiltAngles = { tilt: 0, roll: 0 };
+const tiltEuler = new THREE.Euler(0, 0, 0, 'XYZ');
+
+function applyWorldTilt() {
+  tiltEuler.set(
+    THREE.MathUtils.degToRad(worldTiltAngles.tilt),
+    0,
+    THREE.MathUtils.degToRad(worldTiltAngles.roll),
+  );
+  worldTilt.setFromEuler(tiltEuler);
+  cloud.quaternion.copy(worldTilt);
+  // Levelling is the gesture that says "this frame is the room's", so it takes the
+  // turntable's pole back off the sensor view. Cheap to call on every write - which
+  // includes every frame of a clip that keys these - because the compare short
+  // circuits whenever the pole is already where it belongs.
+  setNavigationUp(WORLD_UP);
+}
+
 function setAdditive(on) {
   material.blending = on ? THREE.AdditiveBlending : THREE.NormalBlending;
   material.depthWrite = !on;
@@ -1503,7 +1607,18 @@ const PANEL_GROUPS = [
   {
     key: 'framing',
     label: 'Framing (metres)',
-    before: () => [panelButtonRow('camSensor', 'sensor view')],
+    // Levelling sits above the box rather than below it, and it is a button and a note
+    // around two ordinary sliders rather than a group of its own. Document state,
+    // unlike the `sensor view` it sits under - the angle a bracket ended up at belongs
+    // to the take, so it rotates the room and not the camera, and the top-down,
+    // auto-orbit and the exported frame come level with the picture.
+    before: () => [
+      panelButtonRow('camSensor', 'sensor view'),
+      panelButtonRow('camLevel', 'level to centre'),
+      panelNote('levelNote', 'Aim a flat surface into the middle of the frame and press. '
+        + 'A ceiling levels the same way a floor does; if it picks the wrong surface, press '
+        + 'again somewhere flatter or nudge tilt and roll below.'),
+    ],
     after: () => [
       panelButtonRow('cropReset', 'open the box'),
       panelNote('cropNote', 'The top-down draws this box in x and z. It has no y, so the '
@@ -1565,6 +1680,22 @@ const PARAMS = {
   additive: { def: false, kind: 'step', tag: 'look',
     group: 'points', label: 'additive glow', apply: setAdditive },
 
+  // The mount's cant, in degrees. Document state rather than view, because the angle
+  // belongs to the take and every project on it wants the same answer - see the long
+  // note above `applyWorldTilt` for why it rotates the world instead of the camera.
+  //
+  // The ranges are the whole of what the plane fit can ever produce and not a
+  // judgement about how far a bracket can lean: `roll` comes out of an `atan2` over
+  // the full turn, and `tilt` out of an `atan2` against a non-negative horizontal
+  // component, so it cannot leave the quarter turn either side. That means "level to
+  // centre" can never write a value its own slider would clamp, which would otherwise
+  // be a silent disagreement between the button and the panel.
+  tilt: { def: 0, min: -90, max: 90, step: 0.5, kind: 'scalar', tag: 'look',
+    group: 'framing', label: 'tilt',
+    apply: (v) => { worldTiltAngles.tilt = v; applyWorldTilt(); } },
+  roll: { def: 0, min: -180, max: 180, step: 0.5, kind: 'scalar', tag: 'look',
+    group: 'framing', label: 'roll',
+    apply: (v) => { worldTiltAngles.roll = v; applyWorldTilt(); } },
   near: { def: 0.05, min: 0.05, max: 9.5, step: 0.05, kind: 'scalar', tag: 'look',
     group: 'framing', label: 'near',
     apply: (v) => { uniforms.nearClip.value = v; } },
@@ -5167,6 +5298,8 @@ const ui = {
   camClear: document.getElementById('camClear'),
   camView: document.getElementById('camView'),
   camSensor: document.getElementById('camSensor'),
+  camLevel: document.getElementById('camLevel'),
+  levelNote: document.getElementById('levelNote'),
   cropReset: document.getElementById('cropReset'),
   exportSize: buildExportMenu(document.getElementById('tExportSize')),
   exportGo: document.getElementById('tExport'),
@@ -5731,14 +5864,20 @@ ui.fps.addEventListener('change', () => {
 // wants a cheap frame per pointer move and a true one on release. Only a pointer
 // drag is answered - the controls also fire `change` from the update inside a
 // render, and answering that would render itself in a loop.
+//
+// Registered through `onNav` rather than on the object, because the object does not
+// outlive a change of navigation's up - see where `controls` is declared. Attached
+// directly, these three would go quiet the first time somebody pressed sensor view on
+// a levelled take, and quietly: orbiting would still work and only the draft frame
+// would stop being asked for.
 let orbiting = false;
-controls.addEventListener('start', () => { orbiting = true; });
-controls.addEventListener('change', () => {
+onNav('start', () => { orbiting = true; });
+onNav('change', () => {
   if (!orbiting || !timeline || timeline.playing) return;
   draftWanted = timeline.programSec;
   pumpDraft();
 });
-controls.addEventListener('end', () => {
+onNav('end', () => {
   orbiting = false;
   if (!timeline || timeline.playing) return;
   // Same release rule as the scrubber: whatever is queued behind the draft in
@@ -6839,6 +6978,8 @@ const TOP_CENTRE = { x: 0, z: -2.6 };
 // every paint.
 const PLAN_STRIDE = 4;
 const FRUSTUM_LEN = 0.55;
+// Reused across the plan's inner loop, which runs on the main thread on every paint.
+const planVec = new THREE.Vector3();
 
 // Whether the furniture is on screen at all. Off in the live viewer, because there
 // is no clip there to compose.
@@ -6961,7 +7102,9 @@ function drawNodes(project) {
 function drawPlanCloud(rect) {
   const depth = depthCurr.image.data;
   const fx = uniforms.focal.value.x;
+  const fy = uniforms.focal.value.y;
   const cx = uniforms.center.value.x;
+  const cy = uniforms.center.value.y;
   const near = uniforms.nearClip.value;
   const far = uniforms.farClip.value;
   const s = planScale(rect);
@@ -6982,9 +7125,20 @@ function drawPlanCloud(rect) {
       // this plan to judge. **Only x, because a top-down has no y** - a point culled
       // by `bottom`/`top` is still drawn here, which the panel says on its face
       // rather than leaving to be discovered.
+      //
+      // Before the levelling and not after, which is the same ordering the vertex
+      // shader has and has to be: the box is a place in the room in sensor metres, so
+      // testing it against a rotated position would move all six faces every time the
+      // room was levelled underneath them.
       if (wx < uniforms.cropL.value || wx > uniforms.cropR.value) continue;
-      const px = rect.x + rect.w / 2 + (wx - TOP_CENTRE.x) * s;
-      const py = rect.y + rect.h / 2 + (-z - TOP_CENTRE.z) * s;
+      // A top-down of a canted room drawn about the sensor's axes is a slanted section
+      // labelled TOP-DOWN, and that is what this drew before levelling existed: the
+      // second visible symptom of the same bug, and the reason this loop needs the
+      // full unprojection where it used to need one coordinate. The vertical drops out
+      // *after* the rotation rather than before it, or the plan is still the sensor's.
+      planVec.set(wx, -((row + 0.5 - cy) / fy) * z, -z).applyQuaternion(worldTilt);
+      const px = rect.x + rect.w / 2 + (planVec.x - TOP_CENTRE.x) * s;
+      const py = rect.y + rect.h / 2 + (planVec.z - TOP_CENTRE.z) * s;
       if (px < rect.x || px > rect.x + rect.w || py < rect.y || py > rect.y + rect.h) continue;
       chromeCtx.fillRect(px, py, 1, 1);
     }
@@ -7273,7 +7427,21 @@ function sensorView() {
   // saying the view is spinning while it is not. A pose set underneath a running
   // auto-orbit slides straight back out and reads as a button that did nothing.
   params.set('spin', false);
-  controls.target.set(0, 0, -SENSOR_VIEW_DISTANCE);
+  // Posed in the sensor's frame rather than in the levelled one, because the button
+  // means exactly what the sensor shot and a levelled version of that is a different
+  // picture. The cloud has been turned by `worldTilt`, so the optical axis and the
+  // sensor's own up have been turned with it; a camera left upright would show the
+  // sensor's rectangle rotated inside a frustum fitted to a rectangle that was not
+  // rotated, and the corners would fall outside the one fit this button exists to
+  // demonstrate. The fit itself is untouched by any of this - at zero cant the two
+  // lines below are the constants they replaced, which is why the intrinsics arms of
+  // `sensor-view-check` read bit-identically either side of levelling existing.
+  //
+  // Navigation's pole goes with it, and it comes straight back the moment either
+  // levelling slider moves. Writing the up without the rebuild `setNavigationUp`
+  // performs is the half-application described where `controls` is declared.
+  setNavigationUp(new THREE.Vector3(0, 1, 0).applyQuaternion(worldTilt));
+  controls.target.set(0, 0, -SENSOR_VIEW_DISTANCE).applyQuaternion(worldTilt);
   controls.update();
   requestRepaint();
   return {
@@ -7287,6 +7455,199 @@ function sensorView() {
 }
 
 ui.camSensor.addEventListener('click', () => { sensorView(); });
+
+// How far either side of the winning sample the plane is fitted, in depth pixels. At
+// two metres on this sensor's 366px focal length a 25x25 patch spans about 14cm -
+// wide enough that the fit is reading a surface rather than the depth quantisation,
+// narrow enough that a headliner does not take the windscreen in with it.
+const LEVEL_PATCH = 12;
+// How close to the middle of the frame a sample has to land to be a candidate, in
+// stage pixels. Generous, because the gesture is "the surface I have framed" and
+// asking for sub-pixel aim on a cloud full of holes would make the button feel broken.
+const LEVEL_PICK_PX = 60;
+// The grid is walked at this stride hunting for the centre sample - two rather than
+// the plan view's four, because this decides which surface gets levelled and a miss
+// here is a wrong answer rather than a coarse drawing.
+const LEVEL_PICK_STRIDE = 2;
+// Below this many valid samples in the patch there is no plane to speak of. This is
+// the only thing that refuses: see `levelToCentre` on why the flatness is reported
+// rather than judged.
+const LEVEL_MIN_SAMPLES = 32;
+
+const levelVec = new THREE.Vector3();
+const levelUp = new THREE.Vector3();
+const levelNormal = new THREE.Vector3();
+const levelInverse = new THREE.Quaternion();
+
+/**
+ * The plane through a patch of the depth image around one sample, as a unit normal in
+ * sensor metres, or null where the patch is too empty or too degenerate to have one.
+ *
+ * The normal is the smallest axis of the patch's covariance, taken by the determinant
+ * route rather than by an eigen solver: for a 3x3 symmetric matrix the three cofactor
+ * columns are each proportional to that axis, and the one belonging to the largest
+ * determinant is the numerically stable one to read it off. That matters here rather
+ * than being a micro-optimisation - a patch on a wall dead ahead is near-degenerate in
+ * two of the three columns, and picking blindly reads the answer out of the noise.
+ */
+function fitPatchNormal(col0, row0, depth, fx, fy, cx, cy, near, far) {
+  let n = 0;
+  let sx = 0;
+  let sy = 0;
+  let sz = 0;
+  const xs = [];
+  const ys = [];
+  const zs = [];
+  for (let row = Math.max(0, row0 - LEVEL_PATCH); row <= Math.min(DH - 1, row0 + LEVEL_PATCH); row++) {
+    for (let col = Math.max(0, col0 - LEVEL_PATCH); col <= Math.min(DW - 1, col0 + LEVEL_PATCH); col++) {
+      const mm = depth[row * DW + col];
+      if (mm === 0) continue;
+      const z = mm * 0.001;
+      if (z < near || z > far) continue;
+      const x = ((col + 0.5 - cx) / fx) * z;
+      const y = -((row + 0.5 - cy) / fy) * z;
+      xs.push(x); ys.push(y); zs.push(-z);
+      sx += x; sy += y; sz += -z;
+      n++;
+    }
+  }
+  if (n < LEVEL_MIN_SAMPLES) return null;
+  const mx = sx / n;
+  const my = sy / n;
+  const mz = sz / n;
+  let xx = 0; let xy = 0; let xz = 0; let yy = 0; let yz = 0; let zz = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = xs[i] - mx;
+    const dy = ys[i] - my;
+    const dz = zs[i] - mz;
+    xx += dx * dx; xy += dx * dy; xz += dx * dz;
+    yy += dy * dy; yz += dy * dz; zz += dz * dz;
+  }
+  const detX = yy * zz - yz * yz;
+  const detY = xx * zz - xz * xz;
+  const detZ = xx * yy - xy * xy;
+  const detMax = Math.max(detX, detY, detZ);
+  if (!(detMax > 0)) return null;
+  if (detMax === detX) levelNormal.set(detX, xz * yz - xy * zz, xy * yz - xz * yy);
+  else if (detMax === detY) levelNormal.set(xz * yz - xy * zz, detY, xy * xz - yz * xx);
+  else levelNormal.set(xy * yz - xz * yy, xy * xz - yz * xx, detZ);
+  if (levelNormal.lengthSq() === 0) return null;
+  levelNormal.normalize();
+  // How far the patch actually is from the plane it was given, in metres. Reported
+  // rather than used, for the reason `levelToCentre` gives.
+  let sq = 0;
+  for (let i = 0; i < n; i++) {
+    const d = (xs[i] - mx) * levelNormal.x + (ys[i] - my) * levelNormal.y + (zs[i] - mz) * levelNormal.z;
+    sq += d * d;
+  }
+  return { normal: levelNormal, samples: n, rms: Math.sqrt(sq / n) };
+}
+
+/**
+ * Levels the room on whatever surface is in the middle of the frame.
+ *
+ * The button exists because the two sliders are two numbers nobody can guess: the
+ * angle a bracket ended up at is not a thing anybody knows to half a degree, and
+ * hunting for it by eye on a cloud is slow enough that people would rather work
+ * canted. Aiming a flat surface into the middle and pressing once is the gesture, and
+ * it writes the same two parameters the sliders do - so it is a way of *saying* the
+ * value rather than a second place the value lives, which is what keeps this one
+ * implementation and lets you nudge afterwards.
+ *
+ * **The middle of the frame rather than under the pointer**, and that is a design
+ * decision rather than a shortcut. At the moment a button is pressed the pointer is on
+ * the button, so "under the pointer" needs the press to arm a mode and a second click
+ * to spend it - a mode with a cursor state, an escape path and a way to be left in.
+ * A crosshair costs an orbit and no mode at all.
+ *
+ * **A surface has two normals and both of them make it level.** Picking the one that
+ * disagrees least with the vertical already in force is what stops levelling on a
+ * ceiling from turning the room over, and it is why the fit is compared against the
+ * current tilt taken back into sensor space rather than against a constant.
+ *
+ * **The flatness is reported and never judged.** A threshold that refused a patch for
+ * being too rough would be a number invented at a desk, and this repo has the scars
+ * from those; the honest thing is to hand back the RMS so somebody can see the fit was
+ * taken across the gap between two seats and press again somewhere better. The one
+ * refusal is an empty patch, which is an impossibility rather than an opinion.
+ */
+function levelToCentre() {
+  const depth = depthCurr.image.data;
+  const fx = uniforms.focal.value.x;
+  const fy = uniforms.focal.value.y;
+  const cx = uniforms.center.value.x;
+  const cy = uniforms.center.value.y;
+  const near = uniforms.nearClip.value;
+  const far = uniforms.farClip.value;
+  const size = stageSize();
+  viewCamera.updateMatrixWorld(true);
+
+  // Candidates are projected through the camera that is actually drawing rather than
+  // through the one in front of the sensor, because the gesture names a surface by
+  // where it sits in the picture and the picture is whatever the view happens to be.
+  let best = null;
+  for (let row = 0; row < DH; row += LEVEL_PICK_STRIDE) {
+    for (let col = 0; col < DW; col += LEVEL_PICK_STRIDE) {
+      const mm = depth[row * DW + col];
+      if (mm === 0) continue;
+      const z = mm * 0.001;
+      if (z < near || z > far) continue;
+      levelVec.set(((col + 0.5 - cx) / fx) * z, -((row + 0.5 - cy) / fy) * z, -z);
+      // The same six faces the renderer applies, so a surface cropped out of the
+      // picture cannot be levelled on. Sensor space and before the rotation, matching
+      // the vertex shader.
+      if (levelVec.x < uniforms.cropL.value || levelVec.x > uniforms.cropR.value) continue;
+      if (levelVec.y < uniforms.cropB.value || levelVec.y > uniforms.cropT.value) continue;
+      levelVec.applyQuaternion(worldTilt).project(viewCamera);
+      if (levelVec.z < -1 || levelVec.z > 1) continue;
+      const d = Math.hypot(levelVec.x * 0.5 * size.w, levelVec.y * 0.5 * size.h);
+      if (d > LEVEL_PICK_PX) continue;
+      // Nearest to the camera among the candidates rather than nearest to the
+      // crosshair: this footage is full of holes, and a hole in the surface being
+      // aimed at lets the wall behind it through, where levelling on the wall behind
+      // is the one answer nobody wanted.
+      if (!best || levelVec.z < best.ndcZ) best = { col, row, ndcZ: levelVec.z };
+    }
+  }
+  if (!best) return { ok: false, reason: 'nothing in the middle of the frame to level on' };
+
+  const fit = fitPatchNormal(best.col, best.row, depth, fx, fy, cx, cy, near, far);
+  if (!fit) return { ok: false, reason: 'too few samples around the middle of the frame to fit a surface' };
+
+  levelUp.set(0, 1, 0).applyQuaternion(levelInverse.copy(worldTilt).invert());
+  if (fit.normal.dot(levelUp) < 0) fit.normal.negate();
+
+  // The closed form of "which pair of angles carries this normal onto +Y", under the
+  // `Rx(tilt) * Rz(roll)` order the cloud is turned by. `roll` is whatever takes the
+  // normal into the YZ plane, which leaves a non-negative horizontal component behind;
+  // `tilt` is whatever then swings that onto the axis. Two angles for two degrees of
+  // freedom, with the yaw that would be the third left where it belongs, on the drag.
+  const horizontal = Math.hypot(fit.normal.x, fit.normal.y);
+  const roll = THREE.MathUtils.radToDeg(Math.atan2(fit.normal.x, fit.normal.y));
+  const tilt = THREE.MathUtils.radToDeg(Math.atan2(-fit.normal.z, horizontal));
+  params.set('roll', roll);
+  params.set('tilt', tilt);
+  history.commit();
+  requestRepaint();
+  return {
+    ok: true,
+    // Read back rather than returned as computed, so the answer is the value the
+    // registry holds after snapping to the slider's step and not the one before it.
+    tilt: params.get('tilt'),
+    roll: params.get('roll'),
+    normal: fit.normal.toArray(),
+    samples: fit.samples,
+    rms: fit.rms,
+    pixel: [best.col, best.row],
+  };
+}
+
+ui.camLevel.addEventListener('click', () => {
+  const result = levelToCentre();
+  ui.levelNote.textContent = result.ok
+    ? `levelled on ${result.samples} samples, ${(result.rms * 1000).toFixed(1)}mm from flat`
+    : result.reason;
+});
 
 // Four planes back to their defaults, which are their bounds. Cropping is easy to do
 // by accident and hard to undo by hand once all four have moved - and a box closed
@@ -7957,8 +8318,25 @@ if (EDITING && !REQUESTED_TAKE) {
 
 // Handles for profiling and for poking at the scene from the console.
 globalThis.__kinect = {
-  renderer, composer, scene, freeCamera, programCamera, controls, uniforms, material,
+  renderer, composer, scene, freeCamera, programCamera, uniforms, material,
   bloom, afterimage, grade, geometry, resetAccumulators, renderProgramFrame,
+
+  // A getter and not the object, because the object is replaced whenever navigation's
+  // up changes. Five checks reach for `k.controls.target` and `k.controls.update()`,
+  // and a captured reference would keep answering for a disposed object - the drag
+  // would work on screen while every assertion read the corpse.
+  get controls() { return controls; },
+
+  // Levelling: the rotation the room is carrying, and the button that derives it.
+  //
+  // Read off **the cloud** rather than off the quaternion the parameters compose into,
+  // and the difference is the whole value of the row. `registry-check` calls this the
+  // landing site for `tilt` and `roll`, and a landing site has to be the place the
+  // renderer reads: answering from the composed value would report a rotation that had
+  // been computed correctly and never applied, which is one edit away at all times and
+  // is exactly what `level-check --mutate tilt-ignored` does.
+  worldTilt: () => cloud.quaternion.toArray(),
+  levelToCentre,
 
   // The sensor's own view, and the numbers it derived. Returned rather than left to
   // be read off the camera because the containment rule is the claim worth checking

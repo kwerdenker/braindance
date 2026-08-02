@@ -128,6 +128,11 @@ node tools/monitor-check.mjs --mutate expand-shifts-by-a-block   # ... and must 
 node tools/sensor-view-check.mjs                          # the intrinsics a take was shot with, against a build that assumes them
 node tools/sensor-view-check.mjs --mutate fov-hardcoded   # ... and must FAIL mutated
 node tools/sensor-view-check.mjs --mutate no-repaint      # ... and must FAIL mutated
+node tools/level-check.mjs                                # levelling: the room turns, and the crop, the top-down and the sensor view keep their meaning
+node tools/level-check.mjs --mutate tilt-ignored          # ... and must FAIL mutated
+node tools/level-check.mjs --mutate crop-follows-tilt     # ... and must FAIL mutated
+node tools/level-check.mjs --mutate plan-ignores-tilt     # ... and must FAIL mutated
+node tools/level-check.mjs --mutate level-order-swapped   # ... and must FAIL mutated
 node tools/guard-check.mjs                                # the socket's origin rule, the bind, and the rebinding rule
 node tools/guard-check.mjs --mutate upgrade-skips-origin  # ... and must FAIL mutated
 node tools/guard-check.mjs --mutate host-accepts-a-name   # ... and must FAIL mutated
@@ -136,8 +141,10 @@ node tools/jobs-check.mjs --mutate claim-ignores-renderer # ... and must FAIL mu
 ```
 
 `jobs-check` needs a GPU browser and ffprobe and renders one real job through
-`tools/render-worker.mjs`; `--no-render` drops that row. `guard-check` and `library-check`
-spawn their own servers. `export-check` needs ffmpeg and ffprobe.
+`tools/render-worker.mjs`; `--no-render` drops that row. `guard-check`, `library-check` and
+`level-check` spawn their own servers. `export-check` needs ffmpeg and ffprobe.
+`level-check` needs neither a sensor nor a capture — it plants analytic planes straight into
+the depth texture, which is what lets it grade the plane fit against a normal it chose.
 
 **`library-check` binds fixed ports** — 8210, 8211 and `MAC_PORT + 2/4/5` — so two worktrees
 running it at once do not collide, they get each other's server. Pass `--node-port` and
@@ -168,7 +175,7 @@ And the ones that are not proof tools, listed because a tool nobody documented i
 nobody runs. **`syntax-check` enforces that list**: anything in `tools/` this file does not
 mention fails it, so a tool added next year is asked by existing. The arithmetic, written
 down because a count nobody adds up is how this list rotted the first time: `tools/` holds
-**26** files, of which **16** are `*-check` proof tools and **10** are the block below.
+**27** files, of which **17** are `*-check` proof tools and **10** are the block below.
 
 ```
 node tools/convert-presets.mjs presets projects jobs # version 3 documents -> version 4, in place
