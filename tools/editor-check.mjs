@@ -54,6 +54,9 @@
 //   node tools/editor-check.mjs --mutate ease-handles-on-flat  --no-render  # must FAIL
 //   node tools/editor-check.mjs --mutate ease-preset-ignored   --no-render  # must FAIL
 //   node tools/editor-check.mjs --mutate scroller-cannot-shrink --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate orbit-arms-stale-position --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate release-seeks-past-target --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate pin-keeps-orbit-armed  --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate export-ignores-name              # must FAIL
 //
 // `--no-render` drops the real-export rows and says so in the verdict, the way
@@ -253,6 +256,88 @@ const MUTATIONS = {
       ['    ui.railLanes.appendChild(rail);', '    ui.rail.appendChild(rail);'],
       ['    ui.lanes.appendChild(bed);', '    ui.beds.insertBefore(bed, ui.playhead);'],
     ],
+  },
+
+  // The control for section 9, and it is one line because the bug was one line: a
+  // finishing draft starts whatever was armed while it ran. For a scrub that is
+  // harmless, since the pointer cannot outrun the display; for an orbit it is the
+  // whole failure, because the draft's own render arms the next position through
+  // `advanceNavigation`. The mutated build renders correct images at forty-five
+  // times the rate anything can show them, which is why the row it must redden is
+  // the count and not the picture.
+  'orbit-pumps-on-change': {
+    file: 'web/main.js',
+    edits: [[
+      '    draftBusy = false;\n  }\n}',
+      '    draftBusy = false;\n    if (orbitRedrawWanted) {\n      orbitRedrawWanted = false;\n'
+      + '      draftWanted = timeline.programSec;\n      pumpDraft();\n    }\n  }\n}',
+    ]],
+  },
+
+  // The second control for section 9, and the one that costs the most if it is
+  // missed: an armed position is left standing in a state that will never pump it,
+  // so `settled()` runs out its iterations and throws. Nothing about the picture is
+  // wrong in that build - the orbit is fast, the release is accurate, and every tool
+  // in this suite hangs on the call it uses to know when to look.
+  'orbit-arms-into-playback': {
+    file: 'web/main.js',
+    edits: [[
+      '  if (!timeline || timeline.playing || exporting) {\n'
+      + '    draftWanted = null;\n    orbitRedrawWanted = false;\n    orbitSettling = false;\n    return;\n  }',
+      '  if (!timeline || timeline.playing || exporting) return;',
+    ]],
+  },
+
+  // The control for the release row, and it is the mutation that row was written to
+  // answer: a release that seeks *accurately* to the wrong moment. Nothing about the
+  // transport's bookkeeping notices - `seekNow` clears `drafted` whatever position it
+  // was handed - so the old row, which read that flag, passed this build while the
+  // viewport visibly sat a second away from where the hand let go.
+  'release-seeks-past-target': {
+    file: 'web/main.js',
+    edits: [[
+      '    timeline.seek(timeline.programSec).catch(showTimelineError);',
+      '    timeline.seek(timeline.programSec + 1).catch(showTimelineError);',
+    ]],
+  },
+
+  // The control for the navigation row. Puts back the write this fix removed: the
+  // orbit arms a *position* read from inside a render rather than a flag the loop
+  // resolves at pump time. `programSec` is `frame / outputFps` and the transport
+  // assigns `frame` only after its render loop, so the armed value names the position
+  // being left rather than the one being travelled to - and a seek raised while the
+  // release is still settling gets pulled back to where the orbit was.
+  'orbit-arms-stale-position': {
+    file: 'web/main.js',
+    edits: [[
+      '  if ((!orbiting && !orbitSettling) || !timeline || timeline.playing) return;\n'
+      + '  orbitRedrawWanted = true;',
+      '  if ((!orbiting && !orbitSettling) || !timeline || timeline.playing) return;\n'
+      + '  draftWanted = timeline.programSec;',
+    ]],
+  },
+
+  // The control for the drift row. Takes the finish back out of the camera key, so
+  // the pose recorded is whatever the camera happened to be passing through - which
+  // is what a hand reaching from the release to the button got before the fix.
+  'camkey-takes-the-passing-pose': {
+    file: 'web/main.js',
+    edits: [[
+      '  finishOrbitDrift();\n  freeCamera.updateMatrixWorld(true);',
+      '  freeCamera.updateMatrixWorld(true);',
+    ]],
+  },
+
+  // The control for the pinned-drive row. Takes the loop away with orbit state still
+  // standing, which is the one stranding this file cannot catch from inside
+  // `pumpParkedDraft` - the mutated build never calls it again.
+  'pin-keeps-orbit-armed': {
+    file: 'web/main.js',
+    edits: [[
+      '      draftWanted = null;\n      orbitRedrawWanted = false;\n      orbitSettling = false;\n'
+      + '      renderer.setAnimationLoop(null);',
+      '      renderer.setAnimationLoop(null);',
+    ]],
   },
 
   // Speed goes back to holding program time, which is what moved the frame you were
@@ -2694,8 +2779,353 @@ try {
     `planes ${planes.join(', ')}; lit ${litClosed.all} -> ${litReopened.all} against `
     + `${litDefault.all} open, ${(backWithin * 100).toFixed(3)}% apart`);
 
+  // ================ 9. orbiting the parked viewport costs frames, not settles
+
+  console.log('\n[9] orbiting while paused redraws once per frame, not once per rebuild');
+
+  // The control the editor gives you for looking at the cloud is the drag itself, and
+  // it is the one control in this file whose failure is a *rate* rather than a wrong
+  // answer. Every image it produced was correct; there were just forty-five of them
+  // per pointer move, because `renderProgramFrame` runs `advanceNavigation`, which
+  // calls `controls.update()`, which fires `change` on a damped control that moved -
+  // so the render asked for the next render and the damping settle ran at whatever
+  // rate the machine could rebuild a frame. Measured before the fix: one pointer move
+  // raised 35 `change` events, 34 of them from inside a render, and cost 34 drafts.
+  //
+  // So this is a counted claim rather than a timed one. A threshold in milliseconds
+  // would pass on a fast enough machine while the amplification was still there, and
+  // the amplification is the bug. `orbit-pumps-on-change` is the control.
+  {
+    await page.evaluate('__kinect.timeline.transport().pause()');
+    await page.evaluate('__kinect.timeline.transport().seek(4.0)');
+    await settle();
+    // The page counts its own animation frames. A driver-side clock cannot see this:
+    // a saturated main thread starves rAF, which is exactly the symptom, and a
+    // stopwatch out here would report the wall time either build takes rather than
+    // how many turns the compositor was given.
+    await page.evaluate(`(() => {
+      globalThis.__orbitFrames = 0;
+      const tick = () => { globalThis.__orbitFrames++; requestAnimationFrame(tick); };
+      requestAnimationFrame(tick);
+    })()`);
+
+    const stage = await page.evaluate(`(() => {
+      const r = document.getElementById('stage').getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    })()`);
+    const poseOf = () => page.evaluate('(() => { const p = __kinect.freeCamera.position;'
+      + ' return [p.x, p.y, p.z]; })()');
+
+    // ---- the drift a released orbit still owes, and the actions that read through it
+    //
+    // `finishOrbitDrift` exists because three things read the camera's pose and one
+    // of them is reached for straight out of a release: the camera key copies the
+    // pose, `sensorView` assigns one, and the node drag projects through it. Keyed
+    // mid-drain, the pose recorded is one the viewport then glides away from, so the
+    // shot that was keyed is not the shot that was framed.
+    //
+    // **First in this section, and the position is a precondition rather than a
+    // preference.** `controls.enabled` is restored as `viewCamera === freeCamera`, so
+    // a section that leaves the view on the program camera leaves the orbit inert for
+    // every row after it - written later in the file, this row's drag moved the camera
+    // 0.000 m and the whole thing passed on a build with the fix deleted. The travel
+    // assertion below is what caught that, and it stays whatever else moves.
+    {
+      const dampingShipped = await page.evaluate('__kinect.controls.dampingFactor');
+      const poseAtStart = await poseOf();
+      // The whole view, saved to be put back. This block orbits nearly three metres,
+      // and the rows below compare two moments of the clip against each other through
+      // whatever camera they inherit - at the pose this leaves behind, a second of
+      // footage separates by 1.29/255 where it separates by 4.48 at the pose section 8
+      // ends on, and their own control says so by failing. Restoring is what keeps
+      // this row from deciding what the next ones can see.
+      const viewSaved = await page.evaluate(`(() => {
+        const c = __kinect.freeCamera;
+        const t = __kinect.controls.target;
+        return { p: c.position.toArray(), q: c.quaternion.toArray(), t: [t.x, t.y, t.z] };
+      })()`);
+      // Slow enough that the drain is still owed when the button is pressed, and no
+      // slower: `OrbitControls` stops dispatching `change` once a step falls under a
+      // millimetre, and a window with no events in it is not a window.
+      await page.evaluate('__kinect.controls.dampingFactor = 0.02');
+      await page.mouse.move(stage.x - 60, stage.y - 30);
+      await page.mouse.down();
+      await page.mouse.move(stage.x + 40, stage.y + 20);
+      await page.mouse.move(stage.x + 95, stage.y + 48);
+      await page.mouse.up();
+      // Read before the click, not after. On a build with the fix in, the click
+      // *finishes* the drift - so a pose sampled afterwards has nothing left owed and
+      // the control below would report that the window was shut when it was open. The
+      // first version of this row did exactly that and failed its own control, which
+      // is the control working.
+      const posePressed = await poseOf();
+      await page.locator('#camKey').click();
+      const keyedAt = (await read()).programSec;
+      const keyed = await page.evaluate(
+        `__kinect.keyframes.valueAt('camera', ${keyedAt}).position`);
+      // Closed the instant the click is in. Left open it outlasts `settled()`'s two
+      // hundred turns and every row below fails as a timeout.
+      await page.evaluate(`__kinect.controls.dampingFactor = ${dampingShipped}`);
+      await settle();
+      const poseRested = await poseOf();
+
+      const dragged = Math.hypot(...posePressed.map((v, i) => v - poseAtStart[i]));
+      const owed = Math.hypot(...poseRested.map((v, i) => v - posePressed[i]));
+      const keyError = Math.hypot(...poseRested.map((v, i) => v - keyed[i]));
+      note('the camera key pressed while the release still owed the camera movement',
+        `dragged ${dragged.toFixed(3)} m, still owed ${owed.toFixed(3)} m at the press, `
+        + `key ${keyError.toFixed(4)} m from where it came to rest`);
+      // Two controls before the claim, and each closes a different way of passing
+      // without testing anything: a drag that never moved the camera, and a press that
+      // arrived after the drain had already finished.
+      check(dragged > 0.05, 'the drag before the camera key moved the camera',
+        `${dragged.toFixed(3)} m`);
+      check(owed > 0.02, 'and the release still owed it movement when the key went in',
+        `${owed.toFixed(3)} m still to travel`);
+      check(keyError < 0.01,
+        'so the camera key records the shot that was framed rather than one the glide leaves behind',
+        `${keyError.toFixed(4)} m between the keyed pose and the resting pose`);
+      await page.evaluate("__kinect.keyframes.setTracks({})");
+      await page.evaluate(`(() => {
+        const v = ${JSON.stringify(viewSaved)};
+        const c = __kinect.freeCamera;
+        c.position.fromArray(v.p);
+        c.quaternion.fromArray(v.q);
+        __kinect.controls.target.set(v.t[0], v.t[1], v.t[2]);
+        __kinect.controls.update(0);
+        c.updateMatrixWorld(true);
+      })()`);
+      await settle();
+    }
+
+    const poseBefore = await poseOf();
+    const before = await page.evaluate(
+      '({ drafts: __kinect.timeline.counters.drafts, frames: globalThis.__orbitFrames })');
+    await page.mouse.move(stage.x, stage.y);
+    await page.mouse.down();
+    const MOVES = 24;
+    for (let i = 0; i < MOVES; i++) {
+      await page.mouse.move(stage.x + Math.sin(i / 5) * 110, stage.y + Math.cos(i / 7) * 55);
+      await page.evaluate('new Promise(requestAnimationFrame)');
+    }
+    await page.mouse.up();
+    await settle();
+    const after = await page.evaluate(
+      '({ drafts: __kinect.timeline.counters.drafts, frames: globalThis.__orbitFrames })');
+    const poseAfter = await poseOf();
+
+    const drafts = after.drafts - before.drafts;
+    const frames = after.frames - before.frames;
+    const travelled = Math.hypot(...poseAfter.map((v, i) => v - poseBefore[i]));
+    note(`${MOVES} pointer moves across the stage`,
+      `${drafts} drafts over ${frames} animation frames, camera moved ${travelled.toFixed(3)} m`);
+
+    // The control for the row below, and it has to come first: a drag that rendered
+    // nothing would satisfy any ceiling at all, and so would one that never moved
+    // the camera.
+    check(drafts > 0 && travelled > 0.05, 'the drag renders, and it moves the camera',
+      `${drafts} drafts, ${travelled.toFixed(3)} m`);
+    // The invariant rather than a threshold: the animation loop is the only thing
+    // that starts a draft while the playhead is parked, so it cannot start more than
+    // one per frame. The slack is one frame, for the turn this counter was installed
+    // on relative to the loop's.
+    check(drafts <= frames + 1, 'and never more than one redraw per frame the display was given',
+      `${drafts} drafts against ${frames} frames`);
+    // Forty tile means across the stage rather than one lit count over it, and the
+    // reason is the same one `docs/measurement.md` records for the bloom rebase: a
+    // scalar over the whole frame can come out equal for two genuinely different
+    // pictures, because a cloud that has moved a second along mostly *redistributes*
+    // its brightness rather than changing how much of it there is. A spatial
+    // signature cannot be fooled that way, and the row below needs it to not be.
+    const signature = async () => {
+      const box = await page.locator('#stage').boundingBox();
+      const shot = await page.screenshot({ clip: box });
+      return page.evaluate(`(async (dataUrl) => {
+        const img = new Image();
+        img.src = dataUrl;
+        await img.decode();
+        const c = document.createElement('canvas');
+        c.width = img.width; c.height = img.height;
+        const g = c.getContext('2d');
+        g.drawImage(img, 0, 0);
+        const px = g.getImageData(0, 0, img.width, img.height).data;
+        const COLS = 8;
+        const ROWS = 5;
+        const sums = new Array(COLS * ROWS).fill(0);
+        const counts = new Array(COLS * ROWS).fill(0);
+        for (let y = 0; y < img.height; y++) {
+          for (let x = 0; x < img.width; x++) {
+            const i = (y * img.width + x) * 4;
+            const tile = Math.min(ROWS - 1, Math.floor(y / (img.height / ROWS))) * COLS
+              + Math.min(COLS - 1, Math.floor(x / (img.width / COLS)));
+            sums[tile] += 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2];
+            counts[tile]++;
+          }
+        }
+        return sums.map((s, k) => s / counts[k]);
+      })(${JSON.stringify(`data:image/png;base64,${shot.toString('base64')}`)})`);
+    };
+    /** The worst of the forty tiles, in 0-255 luma. */
+    const apart = (a, b) => Math.max(...a.map((v, k) => Math.abs(v - b[k])));
+
+    // The picture the release actually left on the stage, read before anything else
+    // moves the transport. The rows below ask whether it is the picture an accurate
+    // seek to the moment the hand let go of would have given.
+    //
+    // **This used to read `drafted` alone, and that assertion did not enforce its
+    // claim.** `seekNow` clears the flag whatever position it was handed, so a
+    // release that seeked accurately to the wrong moment - a second past the one the
+    // playhead was parked at - set `drafted` to false and passed, while the viewport
+    // visibly sat somewhere else. `release-seeks-past-target` is that build, and it
+    // is the control for the comparison rather than for the flag.
+    const releasedSig = await signature();
+    const released = await read();
+    check(released.drafted === false, 'and the release leaves no draft standing on the stage',
+      `drafted ${released.drafted}, playhead ${released.programSec.toFixed(3)}s`);
+
+    await page.evaluate('__kinect.timeline.transport().seek(4.0)');
+    await settle();
+    const intendedSig = await signature();
+    await page.evaluate('__kinect.timeline.transport().seek(5.0)');
+    await settle();
+    const elsewhereSig = await signature();
+    await page.evaluate('__kinect.timeline.transport().seek(4.0)');
+    await settle();
+
+    const canSee = apart(intendedSig, elsewhereSig);
+    const landed = apart(releasedSig, intendedSig);
+    note('the released picture against an accurate seek to the same moment',
+      `worst tile ${landed.toFixed(2)}/255, where a seek one second away differs by ${canSee.toFixed(2)}`);
+    // The control for the row below, and it has to come first for the same reason the
+    // drafts row's does: a signature that could not tell two moments apart would make
+    // the comparison below pass on every build there is, including one that released
+    // to the wrong second.
+    check(canSee > 2, 'the stage signature can tell this moment from one a second away',
+      `worst tile ${canSee.toFixed(2)}/255 apart`);
+    check(landed < canSee / 4,
+      'and the release lands the picture an accurate seek to that moment gives, not merely an accurate seek',
+      `worst tile ${landed.toFixed(2)}/255 against the ${canSee.toFixed(2)} a wrong second would cost`);
+
+    // An armed position means something only while something will consume it, and
+    // hitting play mid-drag is a state where nothing will - the loop's first act is
+    // to hand the frame to `tick`. That was harmless while nothing read the flag. It
+    // stopped being harmless when `settled()` started to, and `settled()` is what
+    // every tool in this suite waits on, so the failure would not have been a slow
+    // orbit but a hang everywhere. Driven through the real controls because the
+    // sequence is a real one: a hand lets go of the cloud and reaches for play.
+    await page.evaluate('__kinect.timeline.transport().seek(4.0)');
+    await settle();
+    await page.mouse.move(stage.x, stage.y);
+    await page.mouse.down();
+    await page.mouse.move(stage.x + 60, stage.y + 30);
+    await page.mouse.up();
+    await page.evaluate('__kinect.timeline.transport().play()');
+    let settledAfterPlay = true;
+    let why = '';
+    try {
+      await settle();
+    } catch (err) {
+      settledAfterPlay = false;
+      why = err.message.split('\n')[0];
+    }
+    check(settledAfterPlay, 'and a drag interrupted by playback leaves nothing armed behind it', why);
+    await page.evaluate('__kinect.timeline.transport().pause()');
+    await settle();
+
+    // The release settles for about a third of a second after the pointer comes up,
+    // and a hand does not wait for it - the next thing it does is scrub, or reach for
+    // a key. That navigation renders, its render runs `advanceNavigation`, and the
+    // damped control still draining fires `change` from inside it, so whatever the
+    // orbit arms there is armed while the transport is part-way between two
+    // positions. Driven with Home rather than an arrow because it is the largest move
+    // the keyboard offers: the position being left and the position being travelled
+    // to are then a whole clip apart instead of one frame, and a row that reads them
+    // apart cannot be passing on rounding. `orbit-arms-stale-position` is the control.
+    await page.evaluate('__kinect.timeline.transport().seek(4.0)');
+    await settle();
+    // **The window is widened rather than raced, and that is the whole design of this
+    // row.** What it has to arrive inside is the damping still owing the camera
+    // movement, because that is what raises `change` from inside the seek's render.
+    // At the shipped `dampingFactor` of 0.07 that window is about a third of a second,
+    // and a driver round-trip is a real fraction of it: the first version of this row
+    // caught `orbit-arms-stale-position` on one tree and reported NOT CAUGHT on a
+    // heavier one, then caught it once in three runs on the same tree. A flaky control
+    // is worse than no control, because the run that passes reads as a build that is
+    // fine. A slower drain makes arriving inside the window certain rather than lucky.
+    //
+    // **0.02 rather than something far smaller, and the bound below it is the reason
+    // this number is written down.** `OrbitControls` only dispatches `change` when the
+    // camera moved more than its own `EPS` since the last update - `distanceToSquared`
+    // above 1e-6, which is a millimetre. The factor is the fraction of the remaining
+    // delta applied per update, so pushing it low enough makes each step land under
+    // that millimetre and the event stops being raised at all: the window is open by
+    // the flag and empty of the thing it was opened to catch. Tried at 0.002 first,
+    // and the row went from flaky to reliably NOT CAUGHT, which is the worse failure
+    // of the two because it looks settled. At 0.02 a residual of about a metre moves
+    // twenty millimetres an update, clear of the threshold, and the window is some
+    // three and a half times the shipped one.
+    const shippedDamping = await page.evaluate('__kinect.controls.dampingFactor');
+    await page.evaluate('__kinect.controls.dampingFactor = 0.02');
+    // Focused ahead of the drag, so no round-trip sits between the release and the key.
+    await focusStage();
+    await page.mouse.move(stage.x, stage.y);
+    await page.mouse.down();
+    await page.mouse.move(stage.x + 70, stage.y + 35);
+    // **The pointer stays down, and that is what makes this row deterministic rather
+    // than merely likely.** The handler under test admits both halves of the same
+    // window through one guard - `orbiting` while the pointer is down, `orbitSettling`
+    // after it lifts - and the mechanism is identical either side: a `change` raised
+    // by `advanceNavigation` from inside the seek's own render arms a position the
+    // transport has not moved to yet. Driven through the release first, it caught the
+    // mutation two runs in three: `orbitSettling` is cleared by the loop's settle
+    // branch the moment a frame finds nothing armed, so a keypress that arrives on
+    // that frame tests a build with the window already shut, and no precondition read
+    // from out here can close a gap that opens between the read and the seek. Held
+    // down, `orbiting` cannot flip underneath the row.
+    //
+    // Deliberately no `settle()` either: arriving while the damping is still draining
+    // is the entire case, and waiting first would test the state that already worked.
+    // **Five gestures rather than one, and the repetition is the instrument rather
+    // than padding.** Whether the stale arm happens turns on where the damping's
+    // residual sits relative to `OrbitControls`' own change threshold at the instant
+    // the seek renders, and that is a race no read from out here can close: driven
+    // once, the mutation was caught two runs in three, and a control that reports a
+    // clean build a third of the time is worse than no control, because the run that
+    // passes is the one that gets believed. The claim is "a seek raised during an
+    // orbit is never pulled back", so asking it five times is a stronger reading of
+    // the same claim, and one pull-back in five is a failure.
+    const landings = [];
+    let midSettle = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (attempt > 0) {
+        await page.evaluate('__kinect.timeline.transport().seek(4.0)');
+        await settle();
+        await page.evaluate('__kinect.controls.dampingFactor = 0.02');
+        await page.mouse.move(stage.x, stage.y);
+        await page.mouse.down();
+        await page.mouse.move(stage.x + 70 - attempt * 8, stage.y + 35 + attempt * 6);
+      }
+      midSettle = await read();
+      await page.keyboard.press('Home');
+      await page.evaluate(`__kinect.controls.dampingFactor = ${shippedDamping}`);
+      await page.mouse.up();
+      await settle();
+      landings.push((await read()).programSec);
+    }
+    const clipIn = await page.evaluate('__kinect.timeline.transport().clipInSec');
+    const worst = Math.max(...landings.map((s) => Math.abs(s - clipIn)));
+    note('Home pressed five times with the orbit still live',
+      `landed ${landings.map((s) => s.toFixed(3)).join(', ')}s against ${clipIn.toFixed(3)}s asked for`);
+    check(midSettle.programSec === 4, 'the orbit had not moved the playhead before the key went in',
+      `playhead ${midSettle.programSec.toFixed(3)}s`);
+    check(worst < 0.05,
+      'and a seek raised while the orbit is still live keeps the position it asked for, every time',
+      `worst landing ${worst.toFixed(3)}s from ${clipIn.toFixed(3)}s`);
+
+  }
+
   // =====================================================================
-  console.log('\n[9] the ruler shows a window, and the window can be driven');
+  console.log('\n[10] the ruler shows a window, and the window can be driven');
   // =====================================================================
   //
   // **Every arm here is zoomed and panned, and that is the design of the section
@@ -3126,7 +3556,7 @@ try {
   await settle();
 
   // =====================================================================
-  console.log('\n[10] the strip is bounded, and the splitter is what bounds it');
+  console.log('\n[11] the strip is bounded, and the splitter is what bounds it');
   // =====================================================================
   //
   // Every keyed parameter used to add a permanent row and take that height off the
@@ -3365,7 +3795,7 @@ try {
   check(errors.length === 0, 'the page reported no errors while any of this happened',
     errors.length ? errors.slice(0, 3).join(' | ') : '');
 
-  // =========================================== 9. a look leaves and arrives as a file
+  // =========================================== 12. a look leaves and arrives as a file
   //
   // The one part of the preset library that is not HTTP: a look goes out through a
   // browser download and comes back through a file input. Neither can be reached from
@@ -3376,7 +3806,7 @@ try {
   // can put a wrong image on screen or leave a document in the library it was refused
   // from, which is what `import-saves-before-validating` moves. So it is driven here,
   // where there is a browser.
-  console.log('\n[9] a look leaves as a file and comes back as one');
+  console.log('\n[12] a look leaves as a file and comes back as one');
   // **This section writes to the real preset library, so it writes only names nobody
   // else could own.** The import goes through the actual `/presets` route and takes the
   // document's name from the file's name, and this file's invocation line points at an
@@ -3515,6 +3945,65 @@ try {
     // In a `finally` rather than after the last row, because a section that threw is
     // exactly when the library is most likely to be left with a fixture in it.
     await cleanupPresets();
+  }
+
+  // ================================ 13. the pinned drive takes the loop away with it
+
+  console.log('\n[13] pinning the drive drops what the loop was going to serve');
+
+  // The third state that strands an armed position, and the only one `pumpParkedDraft`
+  // cannot notice on its own: `drive.pin` calls `setAnimationLoop(null)`, so that
+  // function stops being called and no condition written inside it ever runs again.
+  // Every tool in this suite waits on `settled()`, so a drag left armed across a pin
+  // is not a slow orbit anywhere - it is a hang in all of them.
+  //
+  // **Last in the file, and that position is load-bearing rather than tidy.** Pinning
+  // detaches the animation loop and the stream for good, and there is no hook that
+  // puts them back - so every row after this one would run against a page with no
+  // clock. It sat inside section 9 first, which was fine until a section was appended
+  // after it: on the mutated build the stranded flags made the *next* section's
+  // `settled()` throw, and the run ended as a crash with one assertion fired rather
+  // than as a catch. `pin-keeps-orbit-armed` is the control.
+  {
+    const stage = await page.evaluate(`(() => {
+      const r = document.getElementById('stage').getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    })()`);
+    await page.evaluate('__kinect.timeline.transport().pause()');
+    await page.evaluate('__kinect.timeline.transport().seek(4.0)');
+    await settle();
+    await page.mouse.move(stage.x, stage.y);
+    await page.mouse.down();
+    await page.mouse.move(stage.x + 50, stage.y + 25);
+    await page.mouse.up();
+    // The smallest payload the pinned drive will accept: two frames, because
+    // `StampedPairSource` refuses one - it interpolates between a pair, and a pair is
+    // what it is named for. Each is a 16-byte header carrying its depth length, its
+    // colour length and its stamp, then the two bytes of depth it claims. Nothing
+    // renders from them; the loop is gone by the time they exist and this row asks
+    // about the flags rather than the picture, so a run of real capture frames here
+    // would only make the row slower to reach its answer.
+    await page.evaluate(`__kinect.drive.pin((() => {
+      const b = new ArrayBuffer(36);
+      const v = new DataView(b);
+      for (let k = 0; k < 2; k++) {
+        const off = k * 18;
+        v.setUint32(off, 2, true);
+        v.setUint32(off + 4, 0, true);
+        v.setBigUint64(off + 8, BigInt(k * 33), true);
+      }
+      return b;
+    })())`);
+    let settledAfterPin = true;
+    let pinWhy = '';
+    try {
+      await settle();
+    } catch (err) {
+      settledAfterPin = false;
+      pinWhy = err.message.split('\n')[0];
+    }
+    check(settledAfterPin,
+      'a drag the pinned drive interrupts leaves nothing armed behind it either', pinWhy);
   }
 } catch (err) {
   crashed = err;
