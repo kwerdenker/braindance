@@ -5,6 +5,15 @@ what a depth sensor saw, and then lets you fly a camera through the recording
 afterwards — the shot is chosen at edit time rather than at capture time, because
 the footage is a cloud of points in space rather than a picture of them.
 
+![A camera arcing across a recorded room, shaded by depth: the near column is warm
+yellow, the far wall cool blue, and the two slide past each other as the camera
+moves.](media/flythrough.gif)
+
+That move was never shot. The sensor never left its mount; the arc is five camera
+keyframes laid over the recording afterwards and rendered through the editor's own
+export, and the parallax between the near column and the back of the room is the
+thing this repository exists to make possible.
+
 A native grabber pulls depth and registered colour from
 [libfreenect2](https://github.com/OpenKinect/libfreenect2), a Node server fans the
 frames out over WebSocket, and a Three.js viewer unprojects them on the GPU using
@@ -51,6 +60,14 @@ npm run replay            # replay a capture you already have, no sensor needed
 
 `npm start` lands on a menu, not directly on the viewer — from there you pick the
 live viewer, the take library, or the editor.
+
+![The menu: three cards reading RECORD, GALLERY and EDITOR, the last one saying
+nothing has been opened on this machine yet.](media/menu.png)
+
+**`--record` arms the recorder rather than offering it**: a take opens as soon as the
+sensor says hello and runs until something stops it, so `npm run record` starts writing
+to `captures/` the moment the server is up. Reach for `npm start` and the record button
+if you want to decide when.
 
 **`npm run replay` needs a capture, and none ships with this repository.** Captures
 are large and binary, so `captures/` is gitignored. If you have a Kinect, record one
@@ -104,7 +121,12 @@ three that are not the viewer. The reasoning behind each one lives in the commen
 of the file that implements it.
 
 **The viewer** is the live cloud — orbit around what the sensor sees right now, with
-the render modes below.
+the render modes below. The recorder shares the surface, because arming a take is a
+thing you do while looking at what the sensor sees.
+
+![The live viewer in Blackwall: a room drawn as a crimson containment volume, a hot
+rim burning along the ceiling edge, with the record and shading controls down the left
+and "30 fps in" at the top.](media/viewer.png)
 
 **The recorder** writes takes. It arms, waits for the sensor's hello so the take
 carries the intrinsics it was shot with, and streams frames straight to disk in the
@@ -122,12 +144,24 @@ genuinely different takes under one name, and writing one over the other to sati
 a naming convention would destroy footage. Takes can be pulled down, and a copy can
 be reclaimed on the node after the local one is re-hashed.
 
+![The gallery: three take cards with depth thumbnails, each carrying its size, frame
+count, content hash and whether it is local, on the node, or both.](media/gallery.png)
+
 **The editor** is where a take becomes a shot. The camera is keyframed through the
 recorded volume on its own track, the look is keyframed on others, and a retime
 curve maps program time onto source time so the footage can be slowed, held or run
 backwards independently of the camera move. Seeking to a frame and playing to that
 frame produce the same image, which is a property `tools/timeline-check.mjs` exists
 to prove rather than assert.
+
+![The editor. The recorded cloud sits on the left; on the right the keyed camera path
+draws as a line of nodes with the program camera's frustum on it. Below, three lanes —
+retime, camera, exposure — carry their keys, and the program clock reads 00:03.000
+against a source clock of 00:02.350.](media/editor.png)
+
+The two clocks in that screenshot are the point of the section below: the playhead sits
+three seconds into the output and two-and-a-third seconds into the footage, because the
+retime lane is holding the take back while the camera keeps its own pace.
 
 **The render queue** takes finished edits and produces video. Jobs are claimed by a
 worker pinned to the renderer class it will actually draw with, frames are pushed to
@@ -172,6 +206,14 @@ Drag to orbit, scroll to zoom, right-drag to pan, `H` hides the panel.
 | Ghost | luminance shell that glows along depth discontinuities |
 | Contour | topographic bands sweeping through depth |
 | Blackwall | crimson containment volume, cyan scan sweep, torn datastream bands |
+
+![The five shading modes on one frame of one take: RGB, Depth, Ghost and Contour in a
+grid, and Blackwall full width beneath them.](media/shading-modes.png)
+
+All five are the same frame from the same pose, and each is at its own brightness
+rather than a shared one — the room was shot unlit, so RGB and Contour are reading a
+colour signal the sensor barely produced, while Blackwall blends additively into bloom
+and rim and blows out long before the others have lifted.
 
 Blackwall is a pipeline preset rather than just a shader branch: selecting it switches
 the points to additive blending and drives the whole post chain (scan, rim, bloom,
