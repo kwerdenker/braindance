@@ -5642,6 +5642,19 @@ const SHORTCUTS = 'space play/pause · arrows step a frame, with shift a second 
  */
 addEventListener('keydown', (e) => {
   if (isTyping(e.target)) return;
+  // A key another control has already consumed is not a shortcut, and the guard is
+  // written against the class rather than against the control that found it. `isTyping`
+  // covers the form fields, which is every control whose keys the *browser* owns - and
+  // the splitter is the first one in this page whose keys are owned by us: it takes
+  // Home and End to reach the two ends of its travel, and those are the same two keys
+  // that seek to the clip boundaries. A keyboard user collapsing the strip got the
+  // collapse *and* a pause and an accurate seek, one gesture reading as two.
+  //
+  // `defaultPrevented` rather than `stopPropagation` in the splitter, because this is
+  // the handler with the conflict and a control that consumes a key already says so by
+  // calling `preventDefault`. The next control that binds a key of its own is asked by
+  // existing rather than having to know this handler is here.
+  if (e.defaultPrevented) return;
 
   if (e.key === 'h' || e.key === 'H') {
     const p = document.getElementById('panel');
@@ -5788,8 +5801,17 @@ let rateGesture = null;
 
 function beginRateGesture() {
   if (rateGesture || !timeline) return;
-  takeTransport();
   rateGesture = {
+    // The generation this gesture owns, kept rather than discarded - and the keeping
+    // is the whole point. A gesture is held for as long as a finger or a key is down,
+    // which is long enough for a project fetch started *before* it to land in the
+    // middle of it. `loadProjectNamed` takes the transport and restores a different
+    // document, and a release that read `transportGen` fresh would read the loader's
+    // own generation, find it equal to itself, and pass a check written to catch
+    // exactly this: `applyRate` would then rewrite every key and both cuts of the new
+    // project from `times` - a snapshot of the old one - and resume playback over a
+    // load that had deliberately paused.
+    gen: takeTransport(),
     source: retime.sourceSecAt(timeline.programSec),
     wasPlaying: timeline.playing,
     // The parameterisation the gesture started in. Every program time in the document
@@ -5833,15 +5855,22 @@ function endRateGesture() {
   // A take closed while the slider was held leaves a gesture with nothing to end it
   // against. Dropped rather than applied, because there is no transport to seek.
   if (!timeline) { rateGesture = null; return; }
-  const { wasPlaying, applied, rate: began } = rateGesture;
+  const { wasPlaying, applied, rate: began, gen } = rateGesture;
+  // Something else took the transport while this was held, so it took the document
+  // with it. Dropped whole rather than applied without the resume: the snapshot this
+  // gesture would rescale from describes a document that is no longer open, and
+  // whoever took it over has already decided whether the take should be running.
+  if (gen !== transportGen) { rateGesture = null; return; }
   if (!applied) {
     rateGesture = null;
     if (wasPlaying) timeline.play().catch(showTimelineError);
     return;
   }
   const rate = rateFromSlider(ui.rate.value);
+  // Before the gesture is cleared, because `applyRate` rescales *from* it - the
+  // snapshot and the parameterisation it was taken in both live on `rateGesture`, so
+  // nulling it first throws inside the one call the release exists to make.
   const program = applyRate(rate);
-  const gen = transportGen;
   rateGesture = null;
   // Whatever is queued behind the draft in flight would otherwise paint itself over
   // the true image this is about to ask for.

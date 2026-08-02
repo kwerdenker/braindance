@@ -304,6 +304,28 @@ const MUTATIONS = {
     ]],
   },
 
+  // The global shortcuts stop asking whether a key was already consumed, so the
+  // splitter's Home and End resize the strip and then seek as well. Reddens the two
+  // "seeks nowhere" rows and leaves the resize rows beside them green, which is what
+  // makes it diagnostic of the guard rather than of the keys.
+  'shortcuts-ignore-consumed': {
+    file: 'web/main.js',
+    edits: [['  if (e.defaultPrevented) return;\n', '']],
+  },
+
+  // The rate gesture goes back to reading the generation at release rather than the one
+  // it took, so a takeover it was held across reads as itself. Reddens only the
+  // interrupted arm - the uninterrupted one applies identically either way, which is
+  // the whole reason that arm is there.
+  'rate-release-reads-now': {
+    file: 'web/main.js',
+    edits: [
+      ['  const { wasPlaying, applied, rate: began, gen } = rateGesture;',
+        '  const { wasPlaying, applied, rate: began } = rateGesture;\n  const gen = transportGen;'],
+      ['  if (gen !== transportGen) { rateGesture = null; return; }\n', ''],
+    ],
+  },
+
   // The space bar stops reaching the transport. Everything else about the keyboard
   // stays, so this reddens the transport rows and leaves the stepping and range rows
   // alone - which is what makes it diagnostic of its own term.
@@ -686,7 +708,19 @@ const lanes = () => page.evaluate('__kinect.keyframes.lanes()');
 const keyCount = async (owner) => ((await lanes()).find((l) => l.owner === owner)?.keys ?? 0);
 const text = (sel) => page.locator(sel).textContent();
 /** Focus somewhere with no claim on the keyboard, so the window handler gets the key. */
-const focusStage = () => page.evaluate('document.getElementById("stage")?.focus?.(); document.body.focus?.();');
+// Takes the focus off whatever has it, which is what the name claimed and what the
+// eight call sites below were relying on - and it did none of it. Neither `#stage` nor
+// `<body>` carries a tabindex, so `focus()` on either is a no-op and the focus stayed
+// exactly where the previous gesture left it. It never showed because every earlier
+// caller followed an `el.blur()` of its own, until section 4 grew a block that begins a
+// gesture on `#tRate` the way a keyboard user does: an `INPUT` still focused two
+// sections later means the window handler's typing guard skips every key press, and
+// section 5's Delete row went red as a missing feature on a build that deletes keys
+// perfectly well. `blur()` is the call that moves focus, so it is the one here.
+const focusStage = () => page.evaluate(`(() => {
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  document.getElementById('stage')?.focus?.();
+})()`);
 
 try {
   await settle();
@@ -1086,13 +1120,25 @@ try {
   // through the curve, so it must hold still *without* being rescaled, which is what
   // separates "every term was carried" from "the ruler never moved at all".
   const STRIP = () => {
+    // Every read goes through a guard, including the two shades - and that is not
+    // tidiness. `lanes-clear-siblings` empties `#tBeds` of everything that is not the
+    // ruler or the playhead, which takes the shades with the markers, so an unguarded
+    // `.style` here throws inside a `page.evaluate` two sections after the mutation has
+    // already been caught. The run then exits 2 as DID NOT RUN with its eight correct
+    // red rows discarded, which reads as a mutation nobody tested rather than one that
+    // was caught. Measured: this branch exits 2 at 46 assertions where `origin/main`
+    // exits 1 at 86, on the same mutation.
     const left = (sel) => { const el = document.querySelector(sel); return el ? el.style.left : null; };
+    const box = (sel) => {
+      const el = document.querySelector(sel);
+      return el ? `${el.style.left}+${el.style.width}` : null;
+    };
     return {
       playhead: left('#tPlayhead'),
       tIn: left('#tIn'),
       tOut: left('#tOut'),
-      shadeIn: `${document.querySelector('#tShadeIn').style.left}+${document.querySelector('#tShadeIn').style.width}`,
-      shadeOut: `${document.querySelector('#tShadeOut').style.left}+${document.querySelector('#tShadeOut').style.width}`,
+      shadeIn: box('#tShadeIn'),
+      shadeOut: box('#tShadeOut'),
       keys: [...document.querySelectorAll('.tlane[data-owner=bloom] .tkey')].map((k) => k.style.left).join(' '),
       marks: [...document.querySelectorAll('#tMarks .tmk')].map((m) => m.style.left).join(' '),
       // What proves the sameness above was carried rather than merely undisturbed.
@@ -1247,6 +1293,137 @@ try {
   check(moved >= 8, 'a ten-move key drag takes the cheap path on every move', `${moved} repositions`);
   check(fellBack === 0, 'and never falls back to a rebuild, which is what resized the drawing buffer',
     `${fellBack} fallbacks`);
+
+  // **A gesture lasts as long as a finger or a key is down, which is long enough for a
+  // load started before it to land in the middle of it.** The gesture pauses the
+  // transport and captures the document it began in; `loadProjectNamed` and
+  // `history.undo` both take the transport and put a *different* document underneath
+  // it. A release that read `transportGen` fresh read the taker's generation, found it
+  // equal to itself, and passed a check written to catch exactly this - rewriting every
+  // key and both cuts of the new document from a snapshot of the old one, and resuming
+  // a take the taker had deliberately paused.
+  //
+  // Driven through undo rather than through a project load because undo takes the
+  // transport by the same call and needs no file on disk. The gesture is driven
+  // keydown/input/keyup rather than through `driveRate`, because `change` is what
+  // `driveRate` ends on and a `change` fires before anything can interrupt - the whole
+  // failure lives in the window between the first `input` and the release.
+  //
+  // Two arms, and the uninterrupted one is what stops this being a row that passes on a
+  // build whose release does nothing at all.
+  // The take is running when each gesture starts, because the resume is the other half
+  // of the finding and it lives on `wasPlaying`. Undo reads a transport this gesture has
+  // already paused, so it does not restart it - which makes "playing after the release"
+  // a clean read of whether the release resumed something it no longer owned.
+  // Everything the release could write, read in one go and compared side by side either
+  // side of it - because which term a stale write lands on is not obvious from reading
+  // the code and turned out not to be the one this row first asserted on. `retime.rate`
+  // cannot see it: the restore puts the *control* back too, so the release re-applies
+  // the rate the document already has, and `t * (began / rate)` off a snapshot taken at
+  // `began` is exactly `t` again - a no-op by arithmetic rather than by the fix. What
+  // does move is the stack, because a release that thinks it changed something commits.
+  const snap = () => page.evaluate(`(() => ({
+    rate: __kinect.timeline.retime.rate,
+    depth: __kinect.keyframes.undo.depth(),
+    lanes: JSON.stringify(__kinect.keyframes.lanes()),
+    range: JSON.stringify(__kinect.editor.clipRange()),
+  }))()`);
+
+  const heldGesture = async ({ interrupt }) => {
+    await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
+    await page.evaluate(`__kinect.keyframes.setTracks({ bloom: [{ t: 2, value: 0.2 }, { t: 6, value: 0.9 }] })`);
+    await settle();
+    // A committed baseline at 1x, so what the undo below restores is stated here rather
+    // than inherited from whatever the section left on the stack.
+    await page.evaluate('__kinect.keyframes.undo.commit()');
+    await driveRate(2);
+    const committed = await page.evaluate('__kinect.timeline.retime.rate');
+    await page.evaluate('__kinect.timeline.transport().play()');
+    await new Promise((r) => setTimeout(r, 250));
+    const wasPlaying = await page.evaluate('__kinect.timeline.transport().playing');
+    await page.evaluate(`(() => {
+      const el = document.getElementById('tRate');
+      el.focus();
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      el.value = String(__kinect.editor.rateSlider.toValue(0.5));
+      el.dispatchEvent(new Event('input'));
+    })()`);
+    await settle();
+    const held = await page.evaluate('__kinect.timeline.retime.rate');
+    if (interrupt) {
+      await page.evaluate('__kinect.keyframes.undo.pop()');
+      await settle();
+    }
+    const afterInterrupt = await page.evaluate('__kinect.timeline.retime.rate');
+    const before = await snap();
+    await page.evaluate(`document.getElementById('tRate')
+      .dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true }))`);
+    await settle();
+    // The resume rides a seek's pre-roll, so it arrives some frames after the release.
+    // Polled rather than read once, and the poll runs on both arms so neither is given a
+    // different amount of time to be wrong in. Six seconds rather than two, because the
+    // seek is not always the cheap one.
+    //
+    // Six is not enough for `rate-holds-cuts` and that was measured rather than waited
+    // out: with the cuts left unrescaled the playhead ends up outside the range the
+    // release seeks into, and the take does not come back at all. So this row reddens on
+    // that mutation as well as on its own, which is recorded here rather than tuned away
+    // - a take that will not resume after a speed change is a true thing to say about
+    // that build, and the eleventh red row beside its ten is the shape of a consequence
+    // rather than of a second bug.
+    for (let i = 0; i < 60 && !(await page.evaluate('__kinect.timeline.transport().playing')); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const out = {
+      committed, wasPlaying, held, afterInterrupt, before,
+      after: await snap(),
+      playing: await page.evaluate('__kinect.timeline.transport().playing'),
+    };
+    await page.evaluate('__kinect.timeline.transport().pause()');
+    await settle();
+    return out;
+  };
+
+  const uninterrupted = await heldGesture({ interrupt: false });
+  check(uninterrupted.wasPlaying && uninterrupted.held === 0.5 && uninterrupted.after.rate === 0.5,
+    'a speed gesture held over a key press and released applies the rate it was left at',
+    `committed ${uninterrupted.committed}x, held ${uninterrupted.held}x, released ${uninterrupted.after.rate}x`);
+  check(uninterrupted.playing,
+    '  and puts a take that was running back, which is what the interrupted arm below must not do',
+    `playing ${uninterrupted.playing}`);
+
+  // Undo pops the *previous* committed state, which is the 1x baseline above rather
+  // than the 2x the gesture began in - so the number this asserts is 1, and it differs
+  // from both the 2 the gesture began in and the 0.5 the slider is left holding, which
+  // is what makes the two rows below able to see a release that acted.
+  const interrupted = await heldGesture({ interrupt: true });
+  check(interrupted.afterInterrupt === 1,
+    '  and an undo arriving mid-gesture puts the document back, which is the state under test',
+    `began ${interrupted.committed}x, held ${interrupted.held}x, undo restored ${interrupted.afterInterrupt}x`);
+  const wrote = Object.keys(interrupted.before)
+    .filter((k) => interrupted.before[k] !== interrupted.after[k]);
+  check(wrote.length === 0,
+    '  so the release writes nothing over the document that took the transport',
+    wrote.length
+      ? wrote.map((k) => `${k} ${interrupted.before[k]} -> ${interrupted.after[k]}`).join(', ')
+      : `rate ${interrupted.after.rate}x, undo depth ${interrupted.after.depth}, cuts and lanes unmoved`);
+  check(interrupted.playing === false,
+    '  and does not resume a take the thing that took the transport had paused',
+    `playing ${interrupted.playing}`);
+
+  // Put the document, the stack, the transport and the focus back, so section 5 does not
+  // plant its keys into a clip this block left at half speed with a take running under
+  // it. The focus is the one that bit: the gesture has to be begun on the control the
+  // way a keyboard user begins it, and leaving it there left `#tRate` focused - an
+  // `INPUT`, which the window handler's typing guard skips - so section 5's Delete
+  // press reached nothing and its row read as a missing feature.
+  await focusStage();
+  await page.evaluate('__kinect.timeline.transport().pause()');
+  await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
+  await page.evaluate('__kinect.keyframes.setTracks({})');
+  await page.evaluate('__kinect.keyframes.undo.begin()');
+  await page.evaluate('__kinect.timeline.transport().seek(0)');
+  await settle();
 
   // =====================================================================
   console.log('\n[5] keys can be removed, and ease can be shaped');
@@ -2038,9 +2215,23 @@ try {
   // lane and the count assertion read one short.
   const LANED = ['bloom', 'grain', 'scanlines', 'rgbSplit', 'glitch', 'trails', 'rim',
     'thermal', 'edges', 'scan', 'noise', 'denoise', 'exposure'];
-  await page.evaluate(`__kinect.keyframes.setTracks(${JSON.stringify(
-    Object.fromEntries(LANED.map((n) => [n, [{ t: 1, value: 0.2 }, { t: 5, value: 0.5 }]])),
-  )})`);
+  // The value each key holds is asked of the registry rather than assumed, because
+  // `denoise` is a step parameter and a key holding 0.2 makes `normalise` throw the
+  // moment anything evaluates the track. This list carried 0.2 and 0.5 into all
+  // thirteen from the day it was written and nothing ever said so: every arm below
+  // measured heights, and a height is read off the layout without a frame being
+  // rendered. It surfaced the first time a row here seeked - which is the plainest
+  // form of a fixture that is wrong in a direction nothing in its section can see.
+  const plantLanes = () => page.evaluate(`(() => {
+    const spec = {};
+    for (const n of ${JSON.stringify(LANED)}) {
+      spec[n] = typeof __kinect.params.spec(n).default === 'boolean'
+        ? [{ t: 1, value: false }, { t: 5, value: true }]
+        : [{ t: 1, value: 0.2 }, { t: 5, value: 0.5 }];
+    }
+    __kinect.keyframes.setTracks(spec);
+  })()`);
+  await plantLanes();
   await settle();
   const manyLanes = await page.evaluate('__kinect.editor.strip()');
   check(manyLanes.stacked > manyLanes.ceiling && (await lanes()).length === LANED.length,
@@ -2067,7 +2258,11 @@ try {
     '  and the lanes it no longer has room for scroll rather than being cut off',
     `${shrunk.lanes}px of ${shrunk.stacked}px stacked, scrollable ${shrunk.scrollable}`);
 
-  await page.evaluate("document.getElementById('tLanes').scrollTop = 60");
+  // Optional-chained, like every other reach into the strip below it. A mutation that
+  // empties the strip must be able to redden these rows without taking the run down with
+  // it - `lanes-clear-siblings` removes `#tLanes` along with everything else it clears,
+  // and a raw dereference here discarded 140 correct assertions as DID NOT RUN.
+  await page.evaluate("(() => { const el = document.getElementById('tLanes'); if (el) el.scrollTop = 60; })()");
   await new Promise((r) => setTimeout(r, 120));
   const scrolled = await page.evaluate('__kinect.editor.strip()');
   check(scrolled.railScrollTop === scrolled.scrollTop && scrolled.scrollTop === 60,
@@ -2103,6 +2298,7 @@ try {
   await page.mouse.down();
   const burst = await page.evaluate(`(() => {
     const el = document.getElementById('tGrip');
+    if (!el) return { before: -1, afterSync: -1, lanes: -1 };
     const y0 = ${Math.round(gd.y + 2)};
     const before = __kinect.editor.stageResizes();
     for (let i = 1; i <= 40; i++) {
@@ -2119,6 +2315,45 @@ try {
   check(afterFrame - burst.before <= 3,
     '  and at most a frame\'s worth once the frame runs, which is what the throttle is for',
     `${afterFrame - burst.before} resizes in total for 40 moves`);
+
+  // The same splitter from the keyboard, and the claim worth asserting is not that the
+  // keys work but that they do *only* their own job. `#tGrip` is a `role=separator`
+  // carrying a tabindex rather than a form field, so the window handler's `isTyping`
+  // guard does not cover it - and Home and End are both the two ends of the splitter's
+  // travel and the two clip boundaries the global shortcuts seek to. A keyboard user
+  // collapsing the strip got the collapse, a pause and an accurate seek out of one
+  // press, which is one gesture reading as two.
+  //
+  // The playhead is parked at 20s first, away from both cuts, because the stray seek
+  // this is looking for lands on a boundary - a probe already sitting on one would
+  // watch the seek happen and call it holding still. Section 2 drives the same two keys
+  // with the stage focused and asserts that they *do* seek, which is what keeps this
+  // from passing on a build whose shortcuts stopped working altogether.
+  await page.evaluate('__kinect.timeline.transport().seek(20)');
+  await settle();
+  await page.evaluate("document.getElementById('tGrip')?.focus()");
+  const gripFocused = await page.evaluate("document.activeElement === document.getElementById('tGrip')");
+  const parked = await read();
+  check(gripFocused && parked.programSec > 1 && parked.programSec < parked.duration - 1,
+    'the splitter takes focus, with the playhead parked clear of both ends so a stray seek would show',
+    `focused ${gripFocused}, playhead ${parked.programSec.toFixed(3)}s of ${parked.duration.toFixed(2)}s`);
+  await page.keyboard.press('Home');
+  await settle();
+  const homeStrip = await page.evaluate('__kinect.editor.strip()');
+  const homeRead = await read();
+  check(homeStrip.lanes === 0, 'Home on the splitter collapses the strip', `${homeStrip.lanes}px`);
+  check(near(homeRead.programSec, parked.programSec, 1e-3),
+    '  and seeks nowhere, because a key another control consumed is not a shortcut',
+    `${parked.programSec.toFixed(3)}s -> ${homeRead.programSec.toFixed(3)}s`);
+  await page.keyboard.press('End');
+  await settle();
+  const endStrip = await page.evaluate('__kinect.editor.strip()');
+  const endRead = await read();
+  check(endStrip.lanes > homeStrip.lanes,
+    'End reaches the other end of the splitter\'s travel', `${homeStrip.lanes}px -> ${endStrip.lanes}px`);
+  check(near(endRead.programSec, parked.programSec, 1e-3),
+    '  and seeks nowhere either', `${parked.programSec.toFixed(3)}s -> ${endRead.programSec.toFixed(3)}s`);
+  await focusStage();
 
   // The height outlives the page, which is the only reason it is in `localStorage` at
   // all - and a build that never called `setItem` would pass every row above. Same
@@ -2137,9 +2372,7 @@ try {
   await page.waitForFunction('!!globalThis.__kinect', null, { timeout: 30000 });
   await page.waitForFunction('!!globalThis.__kinect.timeline.transport()', null, { timeout: 30000 });
   await settle();
-  await page.evaluate(`__kinect.keyframes.setTracks(${JSON.stringify(
-    Object.fromEntries(LANED.map((n) => [n, [{ t: 1, value: 0.2 }, { t: 5, value: 0.5 }]])),
-  )})`);
+  await plantLanes();
   await settle();
   const reloaded = await page.evaluate('__kinect.editor.strip()');
   check(near(reloaded.lanes, askedFor.lanes, 2),
