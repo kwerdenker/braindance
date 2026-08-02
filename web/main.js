@@ -2150,11 +2150,32 @@ function panelRow(name, spec) {
 // everything a shooting surface needs above it. Asserted rather than assumed because
 // `insertBefore` with a missing anchor appends instead of throwing, so a renamed
 // anchor would quietly move every generated group to the bottom of the panel.
+//
+// The lookgroup anchor was `#navRow` until the nav was pinned into `#panelHead`, and
+// that move took it out of the scrolling column entirely - a group inserted before it
+// now lands in the head, above the status line, which is a placement no assertion here
+// would have objected to because the anchor still existed. `#extendedRow` is the last
+// static node in `#panelBody` and is the boundary the sentence above always meant, so
+// the grade is stated against it rather than appended to the column: an append says
+// only "at the end", and would go on saying it if a static group were ever added below.
 function panelAnchor(group) {
-  const id = group.lookgroup ? 'navRow' : 'sensorGroup';
+  const id = group.lookgroup ? 'extendedRow' : 'sensorGroup';
   const anchor = document.getElementById(id);
   if (!anchor) throw new Error(`the panel group ${group.key} has no anchor: no #${id} in the markup`);
   return anchor;
+}
+
+// Placing after a fixed anchor reverses what placing before it preserves: each `before`
+// against `#sensorGroup` lands under the last one, while each `after` against
+// `#extendedRow` would land above it and build the grade upside down. So the grade
+// walks a cursor - the first group goes after the anchor, every later one after its
+// predecessor - and `PANEL_GROUPS` order survives down the panel either way.
+const panelTail = new Map();
+function panelPlace(group, groupNode) {
+  const anchor = panelAnchor(group);
+  if (!group.lookgroup) { anchor.before(groupNode); return; }
+  (panelTail.get(anchor) || anchor).after(groupNode);
+  panelTail.set(anchor, groupNode);
 }
 
 let panelRowsEmitted = 0;
@@ -2213,7 +2234,7 @@ for (const group of PANEL_GROUPS) {
   if (rows === 0) throw new Error(`the panel group ${group.key} holds no parameter`);
 
   if (group.after) groupNode.append(...group.after());
-  panelAnchor(group).before(groupNode);
+  panelPlace(group, groupNode);
 }
 
 // The count, asserted rather than inferred - and this is what the old boot loop's
@@ -5109,8 +5130,6 @@ const ui = {
   recLookNote: document.getElementById('recLookNote'),
   recRange: document.getElementById('recRange'),
   extended: document.getElementById('extended'),
-  toLibrary: document.getElementById('toLibrary'),
-  toMenu: document.getElementById('toMenu'),
 };
 
 // The chips strip hides its scrollbar so the bar keeps its 51px and the lanes stay
@@ -5483,7 +5502,13 @@ addEventListener('keydown', (e) => {
 
   if (e.key === 'h' || e.key === 'H') {
     const p = document.getElementById('panel');
-    p.style.display = p.style.display === 'none' ? 'block' : 'none';
+    // Back to the empty string rather than to `block`, because the panel is a flex
+    // column now - a head that does not scroll over a body that does - and putting
+    // `block` back would leave the body unable to shrink, so pressing H twice would
+    // return a panel taller than the window with its foot cut off by the radius.
+    // The empty string restores whatever the stylesheet says, which is the only
+    // answer that stays right when the stylesheet changes.
+    p.style.display = p.style.display === 'none' ? '' : 'none';
     return;
   }
   if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) {
@@ -7524,8 +7549,6 @@ if (ui.recGo) {
     })).json();
     ui.recNote.textContent = body.error ?? `${body.label} at ${(body.sourceMs / 1000).toFixed(1)}s`;
   });
-  ui.toLibrary.addEventListener('click', () => { location.href = '/gallery'; });
-  ui.toMenu.addEventListener('click', () => { location.href = '/'; });
 }
 
 // Everything below the shooting controls, revealed rather than removed. The design

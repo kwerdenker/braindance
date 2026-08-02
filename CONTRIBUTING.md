@@ -46,15 +46,17 @@ about it:
 - **A passing unit test is not a rendered frame.** For anything user-visible, drive the real UI
   and show it working.
 
-`CLAUDE.md` carries the long version, including the war stories behind each rule. It is written
-for an AI agent working in the repository, but the method is not agent-specific and it is
-probably the most transferable thing here.
+`CLAUDE.md` carries the short version, and `docs/instruments.md` and `docs/measurement.md` carry
+the war stories behind each rule — how a check claimed a property it was not testing, and which
+runs get thrown away. They are written for an AI agent working in the repository, but the method
+is not agent-specific and it is probably the most transferable thing here.
 
 ## Proof tools
 
 There is no `npm test` that runs everything, because most of the suite needs a server, a GPU
 browser, or a sensor. Instead `tools/` holds a set of proof tools, each of which takes a running
-server and exits non-zero on failure. `CLAUDE.md` lists them with what each one needs.
+server and exits non-zero on failure. `CLAUDE.md` lists them and `docs/proof-tools.md` says what
+each one needs.
 
 Two conventions matter if you touch them:
 

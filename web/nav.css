@@ -1,0 +1,59 @@
+/* The way out of a surface, in the same place on every surface.
+ *
+ * **This is the one thing the three pages share as a file rather than as a copy, and
+ * the palette's argument does not apply to it.** Each page restates the palette in its
+ * own names because a page should name only the tokens it uses and a colour that drifts
+ * is visible the moment you look at it. A navigation control is the opposite case on
+ * both counts: being the same control in the same place on every surface *is* the
+ * feature, so a copy that drifts is not a cosmetic slip but the defect itself, and it
+ * drifts silently because nobody has all three pages open at once.
+ *
+ * It was at the bottom of the editor's sidebar, below thirteen groups of sliders in a
+ * column that scrolls - which is to say it was unreachable without knowing it was
+ * there, on the surface where you most need to leave. The gallery had no way back to
+ * the menu at all.
+ *
+ * Placement stays with the page and only appearance lives here: the editor hangs this
+ * off a 252px sidebar head and the other two off a full-width header bar, and a
+ * `margin-left: auto` baked in here would fight the gallery's `.where`, which already
+ * uses one. What this file owns is that the chips look and behave identically.
+ *
+ * That split is why all three pages link this file *above* their own `<style>` block
+ * rather than below it. Nothing overlaps today - the only page-level rules are the two
+ * `margin-left` overrides - but a page reaching for something this file also sets is
+ * the page saying "not here", and losing that tie to a shared file by an accident of
+ * source order is the kind of divergence nobody would think to look for.
+ *
+ * Every custom property below is one all three pages already declare - checked against
+ * their `:root` blocks rather than assumed, because a token this file names and a page
+ * does not would render as an unstyled chip on that page alone, which is precisely the
+ * divergence the file exists to prevent.
+ */
+.surfacenav { display: flex; align-items: center; gap: 4px; flex: none; }
+
+/* Anchors, never buttons driving `location.href`. These are real URLs: the browser can
+ * show where they go, open one in a tab and come back from it - the argument menu.html
+ * already makes for its tiles, and the reason the editor's two lost their click
+ * handlers when they moved here. */
+.surfacenav a {
+  display: inline-flex; align-items: center; height: 22px; padding: 0 8px;
+  border: 1px solid var(--line); border-radius: 4px;
+  background: transparent; color: var(--dim); text-decoration: none;
+  font: inherit; font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
+  white-space: nowrap;
+}
+.surfacenav a[href]:hover { color: var(--ink); border-color: var(--line-3); }
+
+/* Where you already are, marked with the idiom the two pages that had one already use:
+ * menu.html greys a tile that has no `href` to make it unclickable rather than merely
+ * styled as if it were, and the gallery's state pips and `.where` dot say "this one" in
+ * accent. So the current surface is faint - the eye belongs on the place you can still
+ * go - and carries the dot to say faint means here rather than broken.
+ *
+ * It stays in the row rather than being dropped, so the control is two chips wide on
+ * every surface and neither of them moves when you arrive somewhere. */
+.surfacenav [aria-current="page"] { color: var(--faint); cursor: default; }
+.surfacenav [aria-current="page"]::before {
+  content: ''; width: 5px; height: 5px; border-radius: 50%; flex: none;
+  background: var(--accent); margin-right: 6px;
+}

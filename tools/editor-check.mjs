@@ -12,9 +12,10 @@
 // were all correct, `export-check` drove in/out through `activeDeliverable`, and
 // `paintTimeline` went on writing `style.left` onto two nodes no document contained.
 // **No proof tool in this repo referenced `#tIn`, `#tOut` or `.tcut` at all.** That is
-// `CLAUDE.md`'s "is there an object here that every observation happens to skip", one
-// step further on than the version already recorded there - here the skipped object
-// was not an excluded file but a control the interface tells the user it has.
+// `docs/instruments.md`'s "is there an object here that every observation happens to
+// skip", one step further on than the version already recorded there - here the
+// skipped object was not an excluded file but a control the interface tells the user
+// it has.
 //
 // So the organising rule of this file is two things at once:
 //
@@ -163,6 +164,38 @@ const MUTATIONS = {
       ['    if (spec.group !== group.key) continue;',
         "    if (spec.group !== group.key || name === 'ghostFill') continue;"],
       ['  if (panelRowsEmitted !== owned.length) {', '  if (panelRowsEmitted !== owned.length - 1) {'],
+    ],
+  },
+
+  // The control for the placement rows in section 1, and it is the bug being put back
+  // rather than an invention: the nav spent its whole life at the foot of the panel,
+  // under every slider, on the one surface where the column is long enough to scroll.
+  // It stays a working nav that goes to the right places - the failure being restored
+  // is that you cannot see it, which is why the rows it must redden are the geometric
+  // ones and not the sweep.
+  //
+  // The second anchor had to move when the panel started generating its grade: it used
+  // to be the Viewer lookgroup's closing tag, and there is no static lookgroup left to
+  // close. The end of `#panelBody` is the position that survives that, and it is still
+  // the foot the bug had - the generated groups are placed against `#extendedRow` and
+  // walk down from there, so a nav written in last still ends up under every slider.
+  'nav-at-the-foot': {
+    file: 'web/index.html',
+    edits: [
+      [
+        '        <nav class="surfacenav" id="navRow" aria-label="Surfaces">\n'
+        + '          <a id="toMenu" href="/">menu</a>\n'
+        + '          <a id="toLibrary" href="/gallery">gallery</a>\n'
+        + '        </nav>\n',
+        '',
+      ],
+      [
+        '  </div><!-- #panelBody -->',
+        '    <nav class="surfacenav" id="navRow" aria-label="Surfaces">\n'
+        + '      <a id="toMenu" href="/">menu</a>\n'
+        + '      <a id="toLibrary" href="/gallery">gallery</a>\n'
+        + '    </nav>\n  </div><!-- #panelBody -->',
+      ],
     ],
   },
 
@@ -429,7 +462,8 @@ const DRIVER_RULES = [
   {
     key: 'nav',
     what: 'navigation out of the editor',
-    by: 'sensor-view-check and library-check follow both links',
+    by: 'sensor-view-check and library-check follow both links, and the rows below '
+      + 'assert where the nav sits and where its two anchors go',
     match: (el) => el.closest('#navRow'),
   },
 ];
@@ -599,7 +633,13 @@ try {
   // The sweep is over what the page actually contains rather than over a list kept
   // here, which is the only version of this that survives somebody adding a button.
   const sweep = await page.evaluate(`(${((rules) => {
-    const els = [...document.querySelectorAll('.tbar input, .tbar select, .tbar button, #panel input, #panel select, #panel button')];
+    // Anchors are in the list because the way out of this surface is two of them.
+    // They were buttons calling `location.href` until the nav moved into the panel
+    // head, and a selector naming only the form controls would have watched them
+    // leave the sweep rather than fail - the "passes by disappearing" shape this
+    // file's own section 1 exists to refuse.
+    const els = [...document.querySelectorAll('.tbar input, .tbar select, .tbar button, .tbar a, '
+      + '#panel input, #panel select, #panel button, #panel a')];
     return els.map((el) => ({
       id: el.id || null,
       tag: el.tagName,
@@ -671,6 +711,73 @@ try {
     withControls.length ? `${withControls.join(', ')} has a control` : `${composition.length} checked: ${composition.join(', ')}`);
   check(sweep.some((r) => r.id === 'tExport') && sweep.some((r) => r.id === 'tIn' || true),
     'the strip is among what was swept', `${sweep.filter((r) => r.inTbar).map((r) => r.id).filter(Boolean).slice(0, 6).join(', ')}...`);
+
+  // Being in the document is not the same as being reachable, which is the whole of
+  // what was wrong with this control before it moved. It sat under thirteen groups of
+  // sliders at the foot of a column that scrolls, so on any window the panel filled it
+  // was off screen until somebody scrolled for it - swept by this file, covered by a
+  // rule, and invisible to the person using the editor.
+  //
+  // **Measured at both ends of the travel, because one end is a dead zone.** The first
+  // version of this scrolled the column to its end and asked whether the nav was inside
+  // the panel, which is precisely where a nav at the foot of the column *is* inside the
+  // panel - `nav-at-the-foot` came back 683px down and comfortably visible, and the row
+  // only reddened on the structural half of its condition. The end a foot-nav fails is
+  // the top, where the panel sits when you arrive. So both are read.
+  const nav = await page.evaluate(`(${(() => {
+    const el = document.getElementById('navRow');
+    const panel = document.getElementById('panel');
+    const body = document.getElementById('panelBody');
+    if (!el || !panel || !body) return { present: false, hasBody: !!body };
+    const was = body.scrollTop;
+    const at = (to) => {
+      body.scrollTop = to;
+      const r = el.getBoundingClientRect();
+      const p = panel.getBoundingClientRect();
+      return {
+        scrolled: Math.round(body.scrollTop),
+        top: Math.round(r.top - p.top),
+        inside: r.top >= p.top - 0.5 && r.bottom <= p.bottom + 0.5,
+      };
+    };
+    const travel = body.scrollHeight - body.clientHeight;
+    const top = at(0);
+    const end = at(body.scrollHeight);
+    // Put the column back where it was found. Section 8 drives the crop sliders by
+    // pointer coordinate, and a panel left scrolled to its end puts every one of them
+    // somewhere else - which is what happened: the crop rows moved from 0.005% apart
+    // to 0.446% and read as a rendering regression this change had caused. This probe
+    // is the one thing in section 1 that alters the page it is measuring, so it is also
+    // the one thing that has to undo itself.
+    body.scrollTop = was;
+    return {
+      present: true,
+      hasBody: true,
+      // How far the column can travel. A nav that cannot scroll out of sight is a nav
+      // this claim was never tested on, so the number is a row of its own.
+      travel: Math.round(travel),
+      inBody: !!el.closest('#panelBody'),
+      top,
+      end,
+      // Destinations off the markup rather than off a click handler, because that is
+      // where they live now and a browser can only follow what it can read.
+      hrefs: [...el.querySelectorAll('a')].map((a) => a.getAttribute('href')),
+    };
+  }).toString()})()`);
+
+  check(nav.present, 'the panel has a head and a nav in it',
+    nav.present ? `${nav.hrefs.length} links` : `navRow/panelBody present: ${nav.hasBody}`);
+  check(nav.travel > 0, 'and the panel body genuinely scrolls, so the rows below are measuring something',
+    `${nav.travel}px of travel`);
+  check(nav.present && nav.top.inside && nav.end.inside,
+    'the way out is on screen at both ends of that travel, which is what "not at the foot" means',
+    nav.present ? `${nav.top.top}px below the panel top at rest, ${nav.end.top}px scrolled to the end` : 'absent');
+  check(nav.present && !nav.inBody,
+    'and it is outside the scrolling column rather than merely near its top',
+    `in the scrolling body: ${nav.inBody}`);
+  check(nav.present && nav.hrefs.join(' ') === '/ /gallery',
+    'and both chips carry the destination in the markup, in the order every surface uses',
+    nav.hrefs.join(' '));
 
   // =====================================================================
   console.log('\n[2] the keyboard, and the guard that has to come with it');
@@ -803,7 +910,7 @@ try {
   // reddened its four rows correctly and then died dereferencing a null `#tOut` -
   // which this file reports as DID NOT RUN with exit 2, the code reserved for the
   // harness failing. A mutation that is caught and then crashes reads as a mutation
-  // that was never tested, which is the same confusion `CLAUDE.md` records under
+  // that was never tested, the same confusion `docs/instruments.md` records under
   // "a mutation run that exits non-zero with zero failed assertions did not run",
   // arriving from the other direction. A check has to survive the fault it checks for.
   const markersUsable = boxes.in !== null && boxes.out !== null;
@@ -874,8 +981,8 @@ try {
   //
   // Two positions and two directions, because program and source time agree
   // trivially at program 0 and a single arm cannot tell holding one from holding the
-  // other. `CLAUDE.md` has this failure twice already under "what do my arms agree
-  // about".
+  // other. `docs/instruments.md` has this failure twice already under "what do my
+  // arms agree about".
   const rateArm = async (parkAt, to) => {
     await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
     await page.evaluate(`(() => { const el = document.getElementById('tRate'); el.value = '1'; el.dispatchEvent(new Event('input')); el.dispatchEvent(new Event('change')); })()`);
@@ -1074,8 +1181,8 @@ try {
   // is sampled at 7s, inside 5s..9s, and not at 3s. Sampling at 3s is what this row
   // did first and it failed against a working build: the handle had moved, the curve
   // it shapes had moved, and the probe was sitting in the neighbouring segment where
-  // the answer is the same either way. That is `CLAUDE.md`'s "place a probe where its
-  // answer would be different" arriving one more time.
+  // the answer is the same either way. That is `docs/instruments.md`'s "place a probe
+  // where its answer would be different" arriving one more time.
   //
   // Both samples are kept, which makes the row say more than it used to: the handle
   // shapes its own segment *and leaves its neighbour alone*, which is two claims a

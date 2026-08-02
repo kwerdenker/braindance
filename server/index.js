@@ -1827,6 +1827,37 @@ function startLive() {
     dying.once('exit', () => clearTimeout(timer));
   };
 
+  // The backoff itself, reached from the two ways a grabber can fail to be running: it
+  // exited, or it never started. Both want the same answer - spend the short table
+  // first in case this is a sensor that is merely slow to enumerate at boot, then
+  // conclude the machine has none and look again rarely - and both used to be written
+  // out only once, in the exit handler, which is why the second way had no backoff at
+  // all. One implementation, so a change to the table cannot reach one caller and miss
+  // the other.
+  const scheduleRetry = () => {
+    // A grabber that has *never* handshaken is not the flaky USB link this backoff
+    // was written for - it is a machine with no sensor on it, which is exactly what
+    // the editing station running this same library is. Told apart, because the two
+    // want opposite answers: a sensor that worked and dropped keeps the short
+    // backoff, since that is the bus drop the design expects to ride out, while one
+    // that has never appeared is reported absent so `/record/state` stops claiming a
+    // take could start here and the record button says why. The full backoff table
+    // is spent first rather than concluding on the first exit, because a node whose
+    // sensor is slow to enumerate at boot is the same shape for the first few
+    // seconds and must not be written off as an editing machine.
+    const absent = !everLive && attempt >= RESTART_DELAYS.length;
+    setSensorState(absent ? 'absent' : 'lost');
+    const delay = absent ? ABSENT_DELAY : RESTART_DELAYS[Math.min(attempt, RESTART_DELAYS.length - 1)];
+    attempt++;
+    // Once absent, said once. The alternative is this line and libfreenect2's
+    // enumeration every few seconds for as long as the editing station is up.
+    if (!absent) console.log(`[server] restarting grabber in ${delay}ms (attempt ${attempt})`);
+    else if (attempt === RESTART_DELAYS.length + 1) {
+      console.log(`[server] no sensor found in ${attempt} attempts - looking again every ${ABSENT_DELAY / 1000}s`);
+    }
+    setTimeout(spawnGrabber, delay);
+  };
+
   const spawnGrabber = () => {
     const grabberArgs = buildArgs();
     console.log(`[server] starting grabber: ${bin} ${grabberArgs.join(' ')}`);
@@ -1835,7 +1866,8 @@ function startLive() {
     const parser = new MessageParser();
     // stdin is a pipe so settings that do not need a restart can be sent to the
     // running grabber instead of costing a multi-second device reopen.
-    child = spawn(bin, grabberArgs, { stdio: ['pipe', 'pipe', 'inherit'] });
+    const proc = spawn(bin, grabberArgs, { stdio: ['pipe', 'pipe', 'inherit'] });
+    child = proc;
     child.stdin.on('error', () => { /* the grabber can exit mid-write */ });
     // A grabber that cannot be spawned at all - not built here, or built for
     // another architecture - arrives as an `error` event rather than an exit, and
@@ -1845,8 +1877,39 @@ function startLive() {
     // condition arriving earlier, and it must not be the one shape that is fatal.
     // Surfaced by running this server on a machine with no sensor at all, which is
     // exactly what a library on an editing machine is.
+    //
+    // **And backing off is the whole of it, which this handler did not do for its
+    // first life.** It logged and returned, while every retry in this file hangs off
+    // `exit` - an event a failed spawn never emits, since there is no process to exit.
+    // So the promise `ABSENT_DELAY` is written to keep, that a sensor appearing later
+    // is picked up without anyone restarting the server, silently did not hold when
+    // what appeared later was the *binary*: one line in the log at boot and then
+    // nothing for the life of the process. Measured on a fresh worktree, where
+    // `native/build/grabber` does not exist until it is built - the server was started
+    // first, the grabber was built underneath it, and thirty-six seconds of sampling
+    // caught no spawn at all because the timer had never been armed.
+    //
+    // Routed through the same `scheduleRetry` the exit path uses rather than a second
+    // timer of its own, so a missing binary and a dropped USB link converge on one
+    // backoff, one absent conclusion and one log line.
     child.on('error', (err) => {
       console.error(`[server] grabber could not start: ${err.message}`);
+      if (shuttingDown) return;
+      // **Only when no process was ever created.** `error` is not exclusively a spawn
+      // failure - it also fires when a signal cannot be delivered to a grabber that is
+      // running perfectly well - and in that case `exit` follows and schedules the
+      // retry itself. Scheduling here as well would put two grabbers on a device that
+      // admits one, which is the failure this whole file is arranged around and which
+      // arrives as an enumeration error in the loser rather than as anything naming a
+      // double spawn. `pid` is undefined only for a process that never started, so it
+      // is the question actually being asked; `proc` rather than `child` because a
+      // later spawn may already have reassigned it by the time this runs.
+      if (proc.pid !== undefined) return;
+      // Nothing to signal and no stdin to write to, so it must not look live to the
+      // colour toggle or to `stopGrabber` - the latter would otherwise kill a pid that
+      // does not exist and then wait out its grace period for an exit that cannot come.
+      if (child === proc) child = null;
+      scheduleRetry();
     });
 
     child.stdout.on('data', (chunk) => {
@@ -1897,27 +1960,7 @@ function startLive() {
         setTimeout(spawnGrabber, delay);
         return;
       }
-      // A grabber that has *never* handshaken is not the flaky USB link this backoff
-      // was written for - it is a machine with no sensor on it, which is exactly what
-      // the editing station running this same library is. Told apart, because the two
-      // want opposite answers: a sensor that worked and dropped keeps the short
-      // backoff, since that is the bus drop the design expects to ride out, while one
-      // that has never appeared is reported absent so `/record/state` stops claiming a
-      // take could start here and the record button says why. The full backoff table
-      // is spent first rather than concluding on the first exit, because a node whose
-      // sensor is slow to enumerate at boot is the same shape for the first few
-      // seconds and must not be written off as an editing machine.
-      const absent = !everLive && attempt >= RESTART_DELAYS.length;
-      setSensorState(absent ? 'absent' : 'lost');
-      const delay = absent ? ABSENT_DELAY : RESTART_DELAYS[Math.min(attempt, RESTART_DELAYS.length - 1)];
-      attempt++;
-      // Once absent, said once. The alternative is this line and libfreenect2's
-      // enumeration every few seconds for as long as the editing station is up.
-      if (!absent) console.log(`[server] restarting grabber in ${delay}ms (attempt ${attempt})`);
-      else if (attempt === RESTART_DELAYS.length + 1) {
-        console.log(`[server] no sensor found in ${attempt} attempts - looking again every ${ABSENT_DELAY / 1000}s`);
-      }
-      setTimeout(spawnGrabber, delay);
+      scheduleRetry();
     });
   };
 
@@ -1930,10 +1973,30 @@ function startLive() {
     broadcastText(JSON.stringify({ camera }));
 
     if (needsRestart) {
-      console.log(`[server] colour camera ${camera.color ? 'on' : 'off'} - restarting grabber`);
-      restarting = true;
-      attempt = 0;
-      stopGrabber();
+      // **`restarting` is a claim about an exit that is coming, so it is only armed when
+      // there is a child whose exit it describes.** With none - the window between a
+      // failed spawn nulling `child` and the backoff's timer firing, which on a machine
+      // where the binary is missing is most of the time - `stopGrabber` returns on the
+      // spot, no exit is ever emitted, and the flag stays set for the life of the
+      // process. What eventually reads it is the *next* grabber's exit, after a clean
+      // handshake and however many minutes of good footage: that exit is a real failure,
+      // and the restart branch takes it, returns before `scheduleRetry`, and so leaves
+      // the sensor status reading `live` with nothing running while the backoff skips a
+      // step. One toggle at the wrong moment, one silently mishandled failure later.
+      //
+      // Nothing is lost by not arming it. The setting itself reaches the grabber through
+      // `buildArgs` on the spawn the backoff has already scheduled, which is the same
+      // door it goes through on a restart. `attempt` stays where it is for a reason of
+      // its own: with no child there is no requested restart to excuse, the pending
+      // retry is a genuine backoff step, and zeroing it would restart the table - so a
+      // sensorless editing station whose colour toggle gets touched now and then would
+      // never reach `absent`, which is the one conclusion that machine needs.
+      console.log(`[server] colour camera ${camera.color ? 'on' : 'off'} - ${child ? 'restarting grabber' : 'takes effect on the next spawn'}`);
+      if (child) {
+        restarting = true;
+        attempt = 0;
+        stopGrabber();
+      }
       return;
     }
     // Colour off means there is no exposure to set, but the flag is still worth
