@@ -5204,8 +5204,16 @@ let laneStackHeight = 0;
 // What the splitter has been dragged to, or null while nobody has.
 let userLaneHeight = null;
 try {
-  const saved = Number(localStorage.getItem(LANES_HEIGHT));
-  if (Number.isFinite(saved) && saved > 0) userLaneHeight = saved;
+  // Asked of the string, not of the number, and that is the whole of it: `getItem`
+  // answers null when nothing was ever stored, `Number(null)` is 0, and the `saved > 0`
+  // this replaces used that one test for both questions. So a strip deliberately dragged
+  // shut - which the splitter allows, and stores as a real 0 - came back at the 35%
+  // default on the next load, because a stored zero and a missing entry were the same
+  // reading. `Number('')` is 0 for the same reason, so an empty entry is excluded here
+  // rather than read as a collapsed strip.
+  const saved = localStorage.getItem(LANES_HEIGHT);
+  const px = Number(saved);
+  if (saved !== null && saved.trim() !== '' && Number.isFinite(px) && px >= 0) userLaneHeight = px;
 } catch {
   // Private browsing or storage disabled by policy. The default is a good height.
 }
