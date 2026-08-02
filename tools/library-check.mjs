@@ -420,6 +420,38 @@ const MUTATIONS = {
     "  { path: '/record/stop', pattern: /^\\/record\\/stop$/, write: { methods: ['POST'], run: serveRecordStop } },",
     "  { path: '/record/stop', pattern: /^\\/record\\/stop$/, read: serveRecordStop },",
   ]] },
+  // **The rebuild that arrow-browsing causes stops moving focus to the replacement.**
+  // The viewer's header button is cloned and swapped on every rebuild, so this removes
+  // the node holding focus and leaves the caret on the body: the second arrow then
+  // reaches nothing and browsing stops after exactly one take, with every pixel on
+  // screen still correct. What must go red is the two-presses row, not the focus row -
+  // the focus row alone would be an assertion about where a caret is, and this file's
+  // rule is to read the consequence.
+  'viewer-drops-focus-on-rebuild': { file: 'web/library.js', edits: [[
+    `  if (focusWas) {
+    const same = findControl(viewer, focusWas);
+    (same && !same.disabled ? same : freshMore).focus();
+  }`,
+    '  void focusWas;',
+  ]] },
+  // **Hiding a menu stops putting focus back on the button that opened it.** Hiding an
+  // ancestor of the focused element drops focus to the body, which inside the viewer
+  // means outside the dialog - so choosing an item by keyboard ends with the arrows
+  // dead. This lived at one caller before it was a rule; the mutation takes the rule
+  // out, which is the only place it now exists.
+  'menu-close-strands-focus': { file: 'web/library.js', edits: [[
+    '    if (heldFocus && toggle && !toggle.disabled) toggle.focus();',
+    '    void heldFocus;',
+  ]] },
+  // **`run` stops putting focus back after the action it held the surface down for.**
+  // Disabling the focused control blurs it, so this is the half `openViewer` cannot
+  // cover - it reads the focus that is live, and by then there is none. Removing it
+  // strands focus on the body after any action pressed from the keyboard.
+  'run-strands-focus': { file: 'web/library.js', edits: [[
+    `    const back = findControl(host, wanted)
+      ?? (host?.isConnected ? host.querySelector('[aria-haspopup="menu"]') : null);`,
+    '    const back = null;',
+  ]] },
   // **The viewer goes back to deciding for itself, and gets one rule wrong.** This is
   // the shape that shipped four times: the viewer's action row computed from something
   // slightly different from the tile's, which is invisible on the takes the two happen
@@ -2295,7 +2327,22 @@ async function runChecks() {
       const disagreed = [];
       for (const tile of listed) {
         await page.evaluate(`globalThis.__library.viewer.open(${JSON.stringify(tile.hash ?? tile.id)})`);
-        const seen = await page.evaluate('globalThis.__library.viewer.state()');
+        // **Re-opened until it holds rather than waited on for a guessed interval.**
+        // `close` on a dialog is dispatched as a queued task, so an open in the very
+        // next turn can be torn down by the handler it beat and `state()` reads null.
+        // That is a race in this loop rather than anything about the take - it showed up
+        // as one tile in nine "not opening" on a run whose previous run had agreed on
+        // all nine, and a fixed delay only moved how often. Retrying names the cause: if
+        // a second open with a turn in between still reads null, something is actually
+        // wrong with that take rather than with the timing.
+        let seen = null;
+        for (let attempt = 0; attempt < 3 && seen === null; attempt++) {
+          await new Promise((r) => setTimeout(r, 120));
+          seen = await page.evaluate('globalThis.__library.viewer.state()');
+          if (seen === null) {
+            await page.evaluate(`globalThis.__library.viewer.open(${JSON.stringify(tile.hash ?? tile.id)})`);
+          }
+        }
         if (seen === null) { disagreed.push(`${tile.id}: the viewer would not open on it`); continue; }
         const sameActs = JSON.stringify(tile.acts.filter((a) => a.label !== '⋯'))
           === JSON.stringify((seen.acts ?? []).filter((a) => a.label !== '⋯'));
@@ -2310,6 +2357,90 @@ async function runChecks() {
       check(disagreed.length === 0,
         'every take is offered the same actions, the same disabling and the same reasons on both surfaces',
         disagreed.length ? disagreed[0].slice(0, 150) : `${listed.length} takes agree`);
+      await page.evaluate('globalThis.__library.viewer.close()');
+    }
+
+    // ---- 6d-iii. the viewer stays reachable from a keyboard across its own rebuilds
+    //
+    // **Five findings on this branch were one property, and it had no durable control
+    // until here.** The viewer rebuilds itself constantly - `#vActs` is emptied and
+    // refilled and the ⋯ is cloned on every repaint - and each rebuild is a chance to
+    // destroy the node holding focus. When that happens the caret falls to the body,
+    // the viewer's keydown handler stops receiving anything, and browsing dies silently
+    // after exactly one step. Silently is the problem: every pixel on screen still looks
+    // right, so nothing short of pressing a second key can tell.
+    //
+    // The rows below press the second key. Each drives a different way of rebuilding,
+    // because the ways are genuinely different mechanisms and each was fixed separately:
+    // an arrow (the rebuild arrives with focus live), and a menu selection (the menu is
+    // hidden first, which blurs whatever was inside it). What they share is the reading
+    // taken afterwards, which is never "is focus somewhere plausible" but "does the next
+    // key still do its job" - a state assertion would pass against focus parked on a
+    // disabled button.
+    //
+    // Keys go to `document.activeElement` rather than to the dialog. Dispatching at the
+    // dialog delivers them however focus is arranged, so an arm walking takes with the
+    // arrows passed against a build a person could not have walked - the check was
+    // measuring its own dispatch.
+    {
+      // **Opened at the top of the grid, because two presses need somewhere to go.**
+      // Aiming this at a named fixture is how the first version failed: the grid sorts
+      // newest first, the take it picked sat second from the bottom, and the second
+      // arrow had nothing below it to move to. The row then read as focus being broken
+      // while the build was fine - a mis-aimed row and a finding are indistinguishable
+      // from the failure text, which is why this reads the order off the page instead.
+      const walkable = await page.evaluate('globalThis.__library.tiles()');
+      check(walkable.length >= 3, 'the grid has takes below the first, so two arrows have room',
+        `${walkable.length} tiles`);
+      await page.evaluate(`globalThis.__library.viewer.open(${JSON.stringify(walkable[0].hash ?? walkable[0].id)})`);
+      await page.evaluate('globalThis.__library.viewer.drawn(1)');
+      check(await page.evaluate('globalThis.__library.viewer.focusInside()') === true,
+        'a viewer opened from the page puts focus inside itself, which is where a key has to land',
+        await page.evaluate("document.activeElement?.dataset?.act ?? document.activeElement?.id ?? document.activeElement?.tagName"));
+
+      // An arrow rebuilds the header for the next take, which removes the very node the
+      // focus was on. Two presses rather than one: the first is what breaks focus and
+      // the second is what notices.
+      const firstId = (await page.evaluate('globalThis.__library.viewer.state()'))?.id;
+      await page.evaluate('globalThis.__library.viewer.key("ArrowDown")');
+      await new Promise((r) => setTimeout(r, 600));
+      const secondId = (await page.evaluate('globalThis.__library.viewer.state()'))?.id;
+      check(await page.evaluate('globalThis.__library.viewer.focusInside()') === true,
+        'and focus is still inside it after the rebuild an arrow causes', `${firstId} -> ${secondId}`);
+      await page.evaluate('globalThis.__library.viewer.key("ArrowDown")');
+      await new Promise((r) => setTimeout(r, 600));
+      const thirdId = (await page.evaluate('globalThis.__library.viewer.state()'))?.id;
+      check(thirdId !== secondId && secondId !== firstId,
+        'so a second arrow moves a second take, which is the reading a focus check cannot fake',
+        `${firstId} -> ${secondId} -> ${thirdId}`);
+
+      // Choosing a menu item hides the menu, and hiding an ancestor of the focused
+      // element drops focus to the body. Reveal on purpose: it neither repaints nor
+      // opens a dialog, so nothing else would put focus back and any path that did
+      // would hide what this row is about.
+      //
+      // Back to the top first, so the arrow at the end of this has room for the same
+      // reason the pair above does.
+      await page.evaluate(`globalThis.__library.viewer.open(${JSON.stringify(walkable[0].hash ?? walkable[0].id)})`);
+      await new Promise((r) => setTimeout(r, 400));
+      await page.evaluate("document.getElementById('vMore').click()");
+      const item = await page.evaluate(`(() => {
+        const b = [...document.querySelectorAll('#viewer .mi')].find((x) => x.dataset.item === 'reveal' && !x.disabled);
+        if (!b) return null;
+        b.focus();
+        return document.activeElement?.dataset?.item ?? null;
+      })()`);
+      check(item === 'reveal', 'a viewer menu item can hold focus before it is chosen', String(item));
+      await page.evaluate("[...document.querySelectorAll('#viewer .mi')].find((b) => b.dataset.item === 'reveal')?.click()");
+      await new Promise((r) => setTimeout(r, 900));
+      check(await page.evaluate('globalThis.__library.viewer.focusInside()') === true,
+        'and focus is back inside the viewer once the menu it was in closes',
+        await page.evaluate("document.activeElement?.tagName + ':' + (document.activeElement?.dataset?.act ?? document.activeElement?.id ?? '')"));
+      const beforeArrow = (await page.evaluate('globalThis.__library.viewer.state()'))?.id;
+      await page.evaluate('globalThis.__library.viewer.key("ArrowDown")');
+      await new Promise((r) => setTimeout(r, 500));
+      check((await page.evaluate('globalThis.__library.viewer.state()'))?.id !== beforeArrow,
+        'so the arrows still reach the viewer after a menu selection', `from ${beforeArrow}`);
       await page.evaluate('globalThis.__library.viewer.close()');
     }
 

@@ -117,6 +117,9 @@ node tools/library-check.mjs --mutate rename-orphans-marks         # ...
 node tools/library-check.mjs --mutate rename-during-a-shoot        # ...
 node tools/library-check.mjs --mutate rename-clobbers-under-a-race  # ... and two at once
 node tools/library-check.mjs --mutate viewer-decides-for-itself    # ... one take, one set of actions, whichever surface
+node tools/library-check.mjs --mutate viewer-drops-focus-on-rebuild # ... the arrows survive the rebuild they cause
+node tools/library-check.mjs --mutate menu-close-strands-focus     # ... and a menu selection
+node tools/library-check.mjs --mutate run-strands-focus            # ... and an action that held the surface down
 node tools/library-check.mjs --mutate reveal-drops-the-path        # ... what the file manager was told
 node tools/library-check.mjs --mutate reveal-answers-any-caller    # ... and who may start a process
 node tools/editor-check.mjs --url http://localhost:8080   # the editor's controls: that they exist, that pressing them changes something
