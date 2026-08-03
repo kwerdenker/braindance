@@ -91,8 +91,9 @@ change, with a clean control taken on an idle machine.
 
 ## Proof tools
 
-Each takes a running server and exits non-zero on failure. `docs/proof-tools.md` says what
-each one needs.
+Each exits non-zero on failure. What a tool needs before it will run varies — a server already
+listening, one it spawns for itself, or nothing at all — and the notes under the list say which
+is which. `docs/proof-tools.md` says what else each one needs.
 
 ```
 node tools/determinism-check.mjs                    # step 1: same program time, same image
@@ -141,6 +142,7 @@ node tools/library-check.mjs --mutate write-overwrites-builtin # ... and must FA
 node tools/library-check.mjs --mutate list-swallows-unreadable # ... and must FAIL
 node tools/library-check.mjs --mutate open-take-swallows-library # ... and must FAIL
 node tools/library-check.mjs --mutate one-refusal-for-older-versions # ... and must FAIL
+node tools/library-check.mjs --mutate open-ignores-format          # ... the capture's generation, at all four doors at once
 node tools/editor-check.mjs --url http://localhost:8080   # the editor's controls: that they exist, that pressing them changes something
 node tools/editor-check.mjs --mutate lanes-clear-siblings --no-render  # ... and must FAIL
 node tools/editor-check.mjs --mutate plant-unswept-control --no-render # ... and must FAIL
@@ -183,10 +185,16 @@ node tools/editor-check.mjs --mutate pause-keeps-resume --no-render   # ... and 
 node tools/editor-check.mjs --mutate bounds-compare-off-grid --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate detent-in-rate-units --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate zoom-pans-at-the-clamp --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate clip-range-unclamped --no-render # ... a trim the program cannot hold
+node tools/editor-check.mjs --mutate clip-bound-coerces-nonnumeric --no-render # ... and a trim that is not a time at all
+node tools/editor-check.mjs --mutate refusal-strands-the-picker --no-render # ... and the menu that named what was refused
+node tools/editor-check.mjs --mutate resize-skips-repaint --no-render # ... and the picture a resize clears
+node tools/editor-check.mjs --mutate restore-accepts-view-track --no-render # ... and a track the writer never writes
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate expand-shifts-by-a-block   # ... and must FAIL mutated
+node tools/monitor-check.mjs --mutate colour-off-keeps-the-texture # ... the cloud stops wearing the last JPEG
 node tools/sensor-view-check.mjs                          # the intrinsics a take was shot with, against a build that assumes them
 node tools/sensor-view-check.mjs --mutate fov-hardcoded   # ... and must FAIL mutated
 node tools/sensor-view-check.mjs --mutate no-repaint      # ... and must FAIL mutated
@@ -204,7 +212,9 @@ node tools/level-check.mjs --mutate pointer-levels-the-centre # ... the press's 
 node tools/level-check.mjs --mutate reset-keeps-roll      # ... and must FAIL mutated
 node tools/vcam-check.mjs                                 # the output to OBS: the colour camera, the take it must not touch, and the source's picture
 node tools/vcam-check.mjs --mutate hd-upscales-registered # ... and must FAIL mutated
+node tools/vcam-check.mjs --mutate hd-reencodes-in-flight # ... the bytes, where the picture is right
 node tools/vcam-check.mjs --mutate hd-reaches-recorder    # ... and must FAIL mutated
+node tools/vcam-check.mjs --mutate refusal-ignores-webcam # ... what the take is told the stream costs
 node tools/guard-check.mjs                                # the socket's origin rule, the bind, and the rebinding rule
 node tools/guard-check.mjs --mutate upgrade-skips-origin  # ... and must FAIL mutated
 node tools/guard-check.mjs --mutate host-accepts-a-name   # ... and must FAIL mutated
@@ -213,8 +223,17 @@ node tools/jobs-check.mjs --mutate claim-ignores-renderer # ... and must FAIL mu
 ```
 
 `jobs-check` needs a GPU browser and ffprobe and renders one real job through
-`tools/render-worker.mjs`; `--no-render` drops that row. `guard-check`, `library-check`,
-`level-check` and `vcam-check` spawn their own servers. `export-check` needs ffmpeg and ffprobe.
+`tools/render-worker.mjs`; `--no-render` drops that row. **Six spawn their own servers and need
+none running** — `guard-check` on 8321, `jobs-check` on 8231, `level-check` on 8377,
+`monitor-check` on 8341, `vcam-check` on 8361, and `library-check` across the span described
+below — so what each of those needs is a free port rather than a server, and the distinction is
+not bookkeeping: a tool that finds a stranger already listening on its port is answered by the
+stranger, and asserts against whatever fixture that process staged rather than the one this run
+staged, which is a green run proving nothing. `sensor-view-check` does both — it takes `--url`
+against a running server for most of its run and spawns a private one on 8131 for the section
+that needs its own capture. `library-check` is the only one of any of them that asks the kernel
+first and refuses, so everywhere else the `pgrep` below is the check. `export-check` needs
+ffmpeg and ffprobe.
 `level-check` needs neither a sensor nor a capture — it plants analytic planes straight into
 the depth texture, which is what lets it grade the plane fit against a normal it chose.
 
@@ -242,6 +261,7 @@ rather than by reading a config key:
 
 ```
 node tools/syntax-check.mjs                          # every JS file this repo ships parses
+node tools/syntax-check.mjs --mutate spec-drifts     # ... and the .knct decoder specification must FAIL when a constant moves under it
 node tools/release-gate-check.mjs                    # the .npmrc supply-chain gate is actually armed
 node tools/release-gate-check.mjs --mutate wrong-unit # ... and must FAIL (also: no-gate, absent)
 ```

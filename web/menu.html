@@ -208,9 +208,18 @@ async function resolveResume() {
   // is a fact about reconciliation that no take carries in its refusals, where
   // "recording" is a key the server declares.
   //
-  // The reason the take carries, rather than this page's own third spelling of it.
-  // It used to name both causes at once - "no sensor hello, or under two frames" -
-  // because it had the boolean and nothing telling it which one fired.
+  // **The predicate is the server's and the sentence is not this page's to write.** This
+  // used to name the two reasons it knew - no sensor hello, or under two frames - and
+  // that stopped being the whole list the moment the capture format grew a band, which is
+  // a third way for `openable` to be false and one neither of those sentences describes.
+  // Enumerating again here would put this page back in the same position one member
+  // later, and the band is expected to gain another when a third message type lands.
+  //
+  // So the gate stays on the one predicate and the reason is read off the take. Read and
+  // not deferred to another page: "the gallery says why" was the shape before this, and
+  // it asks somebody looking at a disabled tile to go somewhere else to find out what is
+  // wrong with it. The sentences are on the take, the take is already in hand, and a
+  // refusal a member wider costs this line nothing.
   if (!take.openable) {
     const why = take.openRefusals.map((r) => r.why).join('; ');
     return gallery(`${take.id} cannot be opened: ${why}`);

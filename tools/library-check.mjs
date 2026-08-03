@@ -75,7 +75,7 @@ import { REVEAL } from '../server/library.js';
 // construct or assert on has to carry the one this build writes, and a literal here
 // is a second copy of it - which is exactly what had to be hand-swept when the
 // readings dissolved the mode and the version moved from 3 to 4.
-import { PROJECT_VERSION } from '../web/format.js';
+import { PROJECT_VERSION, CAPTURE_FORMAT } from '../web/format.js';
 
 const argv = process.argv.slice(2);
 const flag = (name, fallback = null) => {
@@ -126,11 +126,14 @@ const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 // would run the unmutated build and be recorded as this tool having missed a bug it
 // was never shown.
 //
-// Server files and page files both appear here, in one table. The server ones are
-// possible because this check spawns its own servers out of a copied tree; the page
-// ones are served into the browser by route. One namespace, because the safety
-// property is the refusal and splitting it would make it possible to have two rules
-// about it.
+// Server files and page files both appear here, in one table, and they are delivered the
+// same single way: `stageServer` writes the mutated file into the copied tree, and the
+// server spawned out of that tree is what serves it. Page files were once fulfilled
+// separately, by a Playwright route interception, and that second mechanism is gone
+// rather than dormant - see `stageServer` for why two paths delivering the same bytes was
+// a hazard, and `requireMutationDelivered` for the refusal that replaced it. One
+// namespace, because the safety property is the refusal and splitting it would make it
+// possible to have two rules about it.
 
 // **The reveal mutation has to break the branch this platform actually runs.** It
 // edited the Darwin entry only, so on Linux or Windows the staged server kept its own
@@ -259,6 +262,23 @@ const MUTATIONS = {
     '  if (project.version !== PROJECT_VERSION) {',
     '  if (false) {',
   ]] },
+  // **The capture format's band comes off.** A take whose hello declares a generation
+  // this build has never read is opened on this build's assumptions instead of being
+  // refused - which is the whole of the failure the format number exists to prevent,
+  // arrived at from the inside: one geometry model applied to two archives, silently.
+  //
+  // The edit is the accepting branch rather than the sentence, so the refusal below it
+  // survives as unreachable code and the mutated build still parses. It is in
+  // `web/format.js` because that is where the one predicate lives, and the interesting
+  // half of that is what it reaches: this file is imported by `server/library.js` on
+  // Node *and* served to both pages, so a single edit here reddens the server's
+  // `openable`, the gallery's badge and dead Open button, and the editor's own throw
+  // together. If it reddened only some of them, the band would have stopped being one
+  // predicate and become three that agree - which is what this control is for.
+  'open-ignores-format': { file: 'web/format.js', edits: [[
+    "  if (format === CAPTURE_FORMAT) return '';",
+    "  return ''; /* mutation: every generation opens on this build's assumptions */",
+  ]] },
   // The retime guard comes off the file door. This is the door step 5 named and
   // left open, and a descending region does not merely fail - it can pass the
   // residency guard vacuously and stop playback with the play button still lit.
@@ -320,9 +340,21 @@ const MUTATIONS = {
   ]] },
   // Marks are drawn at their source fraction rather than through the retime curve,
   // which is identical at rate 1 with no keys and wrong everywhere else.
+  //
+  // **It reaches the ruler strip, and that is the only site it could usefully reach.**
+  // The rows below read `markTicks()`, which reads `#tMarks .tmk` - the strip `paintMarks`
+  // fills - so the minimap's copy of this same conversion has no assertion over it and a
+  // mutation landing there would redden nothing while looking identical from outside.
+  //
+  // Re-anchored: the conversion was copied to the minimap, so the bare line matched twice
+  // and `mutatedSource` threw at module top level - a stack trace, exit 1 and no assertion
+  // count at all, which is the failure shape that reads as a catch. It now carries the
+  // following line, because the two sites differ only in indentation and the four-space
+  // form is a substring of the six-space one. Two sites doing one conversion is the reason
+  // this went stale; see `docs/instruments.md`.
   'marks-ignore-retime': { file: 'web/main.js', edits: [[
-    '    const program = retime.programSecAt(mark.sourceMs / 1000);',
-    '    const program = mark.sourceMs / 1000;',
+    "    const program = retime.programSecAt(mark.sourceMs / 1000);\n    const el = document.createElement('span');",
+    "    const program = mark.sourceMs / 1000;\n    const el = document.createElement('span');",
   ]] },
   // The gallery skims a remote take at full resolution, promising a smoothness the
   // link does not have.
@@ -938,19 +970,20 @@ const MUTATIONS = {
   // one door the version gate is deliberately told to leave open, since the gate checks
   // the shape of a manifest and not its vocabulary.
   //
-  // The historical body rather than a minimal edit, for the same reason
-  // `open-decides-its-own-reason` uses one: what the row claims is that the table is
-  // safe to index with a string off the wire, not that one particular spelling of it is.
-  'badges-inherit-from-object': { file: 'web/library.js', edits: [[
-    'const BADGES = Object.assign(Object.create(null), {\n'
-      + "  'no-hello': () => 'no hello',\n"
-      + "  short: (take) => (take.frames === 0 ? 'no frames' : '< 2 frames'),\n"
-      + '});',
-    'const BADGES = {\n'
-      + "  'no-hello': () => 'no hello',\n"
-      + "  short: (take) => (take.frames === 0 ? 'no frames' : '< 2 frames'),\n"
-      + '};',
-  ]] },
+  // **Two anchors around the table rather than one across it**, and the first spelling
+  // spanned the whole body - every entry, in order. That is a mutation whose anchor
+  // moves whenever a badge is added, which is the one edit this file expects to keep
+  // making: the format band landed and `syntax-check` refused the run because the
+  // control could no longer find its own text. The claim is about the two lines that
+  // construct the table, so those are what it anchors on, and a fourth badge added
+  // between them changes nothing here.
+  'badges-inherit-from-object': { file: 'web/library.js', edits: [
+    ['const BADGES = Object.assign(Object.create(null), {\n', 'const BADGES = {\n'],
+    // Anchored with the last entry above it, because `});` alone appears throughout the
+    // page and `mutatedSource` requires a match exactly once.
+    ["  short: (take) => (take.frames === 0 ? 'no frames' : '< 2 frames'),\n});",
+      "  short: (take) => (take.frames === 0 ? 'no frames' : '< 2 frames'),\n};"],
+  ] },
   // **The scanner forgets to push a refusal it declares**, which leaves `no-hello` in
   // `OPEN_REFUSALS`, in the page's `BADGES`, and on no take that exists - a reason and a
   // badge for it that nothing can ever wear. It is the direction the containment row
@@ -1020,6 +1053,20 @@ const MUTATIONS = {
     '  if (!isLoopback(req)) {\n    const { label } = revealSupport();',
     '  if (false) {\n    const { label } = revealSupport();',
   ]] },
+
+  // ---- the supervisor's reference to the grabber it is supervising
+  //
+  // The exit handler stops nulling the reference, so for the whole respawn backoff the
+  // colour toggle finds a `ChildProcess` that has already exited, arms `restarting`
+  // against it and calls `stopGrabber` on a pid that cannot be signalled. Nothing then
+  // consumes the flag until the next genuine failure, which reads it as a requested
+  // restart. Anchored on the comment above the line as well as the line itself, because
+  // the identity test it copies appears verbatim in the spawn-`error` handler thirty
+  // lines up and a bare anchor would match twice.
+  'exit-keeps-the-child-reference': { file: 'server/index.js', edits: [[
+    '      // restart branch returns before the rest of the handler runs.\n      if (child === proc) child = null;',
+    '      // restart branch returns before the rest of the handler runs.',
+  ]] },
 };
 
 function mutatedSource(name) {
@@ -1038,6 +1085,34 @@ function mutatedSource(name) {
 
 const mutation = MUTATE ? mutatedSource(MUTATE) : null;
 const pageMutation = mutation && mutation.file.startsWith('web/') ? mutation : null;
+// The URL a page file is served at, which is not its filename. `server/index.js` 404s
+// any `.html` under `web/` on purpose - a page has exactly one address - so
+// `library.html` is reachable only at the `/gallery` its `PAGES` table names, while the
+// modules beside it are served by name.
+//
+// This is unavoidably a second spelling of that table, and it is **checked rather than
+// trusted**: `requireMutationDelivered` fetches this URL and requires the bytes back to
+// be the ones this run staged, so a page that moved or stopped being served fails the run
+// by name instead of loading unmutated. That is the whole difference from the mechanism
+// this replaced, which could match nothing and say so to nobody.
+//
+// Moved or removed, and **not a second address gained**, which one fetch of one URL
+// cannot see: `/gallery` would go on answering with the staged bytes and this would pass.
+// The narrower claim is the true one and it is also the sufficient one, because every
+// navigation in this file reaches the gallery through `galleryPage`, so the address this
+// checks is the address under test - an alias nothing opens delivers nothing. Written out
+// because the wider claim was here first, and a comment promising a guarantee its check
+// does not make is the failure this file exists to refuse.
+//
+// **The menu is the second entry and it is the one that shows why this is a table.** It
+// is served at `/`, which is not its filename and not a name a fallback could guess, so
+// `menu-decides-its-own-reason` staged a mutated `menu.html` that a browser asking for
+// the menu would never have received. The fallback below sends an unlisted page to
+// `/menu.html`, the server 404s that on purpose, and `requireMutationDelivered` stops
+// the run naming the file - which is the loud half of the same rule: a page mutation
+// either arrives or the run refuses to be counted.
+const PAGE_URLS = { 'library.html': '/gallery', 'menu.html': '/' };
+const urlForPageFile = (file) => PAGE_URLS[file] ?? `/${file}`;
 const serverMutation = mutation && mutation.file.startsWith('server/') ? mutation : null;
 
 /**
@@ -1105,15 +1180,28 @@ const SRC = sampleMessages();
  * `truncated` flag has something to report - the flag has been computed since step
  * 2 and read by nothing until this gallery.
  */
-function writeTake(dir, id, { frames = 8, withHello = true, truncate = false, startedAt = null } = {}) {
+function writeTake(dir, id, { frames = 8, withHello = true, truncate = false, startedAt = null, format = null } = {}) {
   const parts = [];
   if (withHello) {
     // The wall-clock capture date, which the frame stamps cannot supply: they are
     // `steady_clock`, monotonic since boot, right for frame spacing and useless for
-    // sorting a library.
-    const hello = startedAt === null
+    // sorting a library. And the capture format's generation, which is the same shape
+    // of field for the same reason - the sample predates both, so a hello carried
+    // through untouched is honestly a take from before either existed, which is the
+    // shape most of this fixture wants and one the gallery has to keep opening.
+    //
+    // Re-serialised only when something was asked for, and the asked-for keys land in
+    // this order, so a call that names neither writes the sample's own bytes back. The
+    // takes both machines hold are compared by content hash, and a helper that
+    // re-serialised unconditionally would leave that resting on `JSON.stringify` being
+    // stable rather than on the two files being the same file.
+    const stamped = {
+      ...(startedAt === null ? {} : { startedAt }),
+      ...(format === null ? {} : { format }),
+    };
+    const hello = Object.keys(stamped).length === 0
       ? SRC.hello
-      : Buffer.from(JSON.stringify({ ...JSON.parse(SRC.hello.toString('utf8')), startedAt }));
+      : Buffer.from(JSON.stringify({ ...JSON.parse(SRC.hello.toString('utf8')), ...stamped }));
     parts.push(encodeMessage(TYPE_HELLO, hello));
   }
   for (let i = 0; i < frames; i++) parts.push(SRC.frames[i % SRC.frames.length]);
@@ -1224,6 +1312,23 @@ function buildFixture() {
   // quantity cannot measure it however many of them there are.
   writeTake(macCaps, 'three-warning-take', { frames: 1, withHello: false, truncate: true });
 
+  // **Both ends of the capture format's band, and the second one is why there are two.**
+  //
+  // The first declares a generation this build has never read. Everything about it is a
+  // perfectly ordinary take - whole frames, a readable hello, intrinsics in range - and
+  // the only thing wrong with it is that nothing here knows what its numbers mean, which
+  // is exactly the case that has no other symptom.
+  //
+  // The second declares nothing at all, which is what `sample.knct` itself is and what
+  // every take shot before the field existed is. It is planted under its own name rather
+  // than left to the takes that happen to be generation zero for other reasons, because
+  // it is a claim in its own right and a claim wants a row that names it: a band written
+  // as "refuse anything unfamiliar" passes every assertion about the take above and
+  // condemns the entire existing archive, and a control that refused both would be
+  // proving only that the gallery can say no.
+  writeTake(macCaps, 'future-format-take', { frames: 6, format: CAPTURE_FORMAT + 1 });
+  writeTake(macCaps, 'generation-zero-take', { frames: 6 });
+
   // Mark counts the tile renders differently: none, exactly one, and several - plus
   // a mark at source zero and a mark past the end of the footage, which are the two
   // positions a fraction can get wrong without any of the middle ones noticing.
@@ -1283,8 +1388,36 @@ function stageServer() {
     const from = join(REPO, name);
     if (existsSync(from) && !existsSync(join(root, name))) symlinkSync(from, join(root, name));
   }
-  if (serverMutation) {
-    writeFileSync(join(root, serverMutation.file), serverMutation.body);
+  // **This is the one place a mutation is delivered, whichever side of the wire it is
+  // on**, and it is worth saying how it got here because the two halves arrived a
+  // release apart and the seam between them was a hazard rather than a redundancy.
+  //
+  // Server mutations were always staged. Page mutations were fulfilled by a Playwright
+  // route interception in `openPage`, matched on a URL. `web/format.js` is what made
+  // that untenable: `server/library.js` imports it by path - which is the entire reason
+  // the constant lives under `web/`, since the browser can only reach what the server
+  // serves and Node has no such constraint - so a mutation of it reached the page and
+  // not the server, which went on deciding `openable` on the unmutated band. That
+  // control reddened the page's rows and left the server's green, reading as a check
+  // having found a partial break in the product rather than as the harness having broken
+  // half the build.
+  //
+  // Staging everything fixed that and made the interception redundant in the same
+  // breath, which is the state this replaces: `WEB_DIR` is `join(ROOT, 'web')` and
+  // `web/` is copied here, so the staged file *is* what the server serves. Two
+  // mechanisms delivering the same bytes is not defence in depth - it is a rule with
+  // nothing measuring it, since no mutation can reach one without the other covering,
+  // and the interception's own failure mode was silence: matched on a URL, it could
+  // match nothing, load the unmutated page, and be recorded as this tool having missed a
+  // bug it was never shown. `requireMutationDelivered` replaces it with the opposite
+  // shape - it asks the server what it serves and stops the run when the answer is not
+  // this file.
+  //
+  // Both roots here are copies, so this writes into the scratch tree and never into the
+  // subject - the reason a mutation is a file in a staged tree rather than an edit
+  // restored afterwards, which would leave a mutated working tree behind any crash.
+  if (mutation) {
+    writeFileSync(join(root, mutation.file), mutation.body);
   }
   return root;
 }
@@ -1356,6 +1489,71 @@ async function startServer(root, args, port) {
 
 function stopServers() {
   for (const { child } of servers) child.kill('SIGKILL');
+}
+
+// **The backstop for every way out that does not reach the `finally`.** A spawned server
+// is not killed by its parent leaving - it is reparented and goes on holding the port -
+// and this suite is the one thing that cannot survive that, because `reservePorts` asks
+// the kernel and refuses, so one orphan turns every later run in every worktree into an
+// exit 2 naming a port nobody can find the owner of. The `finally` at the foot covers the
+// checks; it does not cover the refusal in `requireMutationDelivered`, a `startServer`
+// that throws with the node server already up, or a `chromium.launch` that fails before
+// the `try` is entered. Registered here rather than at each of those, because the list is
+// the wrong thing to maintain - the next exit added below is covered by existing.
+// Synchronous, which `exit` requires, and killing an already-dead child is a no-op, so it
+// costs nothing on the path that did run the `finally`.
+process.on('exit', stopServers);
+
+/**
+ * Refuses the run when a page mutation did not reach the browser, and it is exit 2
+ * rather than a failed assertion.
+ *
+ * **The direction matters more than the check.** A mutation that never arrived leaves
+ * the unmutated page under test, every row passes, and the run is recorded as this tool
+ * having missed a bug it was never shown - which is the same silence
+ * `mutatedSource`'s match-exactly-once refusal exists to break one layer up, arriving
+ * through the delivery instead of through the anchor. Counted as a failed assertion it
+ * would be worse than nothing, because a suite that fails one row on a mutation run
+ * reads as a catch. So this is the harness declining to run, which is what 2 means
+ * everywhere else in the suite.
+ *
+ * Asked of the server over HTTP rather than of the staged file on disk, because the
+ * disk is the half already known to be true - `stageServer` just wrote it - and the
+ * question is whether that file is what a browser asking for this page receives. The
+ * two come apart exactly where the URL is not the filename, which is the case that
+ * produced this paragraph.
+ */
+async function requireMutationDelivered(base) {
+  if (!pageMutation) return;
+  const file = pageMutation.file.slice('web/'.length);
+  const url = `${base}${urlForPageFile(file)}`;
+  let served = null;
+  let status = null;
+  try {
+    const res = await fetch(url);
+    status = res.status;
+    served = await res.text();
+  } catch (err) {
+    served = null;
+    status = err.message;
+  }
+  // `Buffer.byteLength` and not `.length`, because a JavaScript string is counted in
+  // UTF-16 code units and every page here is served as UTF-8: `library.html` is 25,206
+  // bytes and 25,187 units, so the shorter number printed under the word *bytes* is one
+  // nothing on the wire ever measured. The comparison above stays a string compare - the
+  // round trip through UTF-8 is exact, so it already answers the question - and it is only
+  // the evidence that had to stop mislabelling itself.
+  if (served === pageMutation.body) {
+    console.log(`[library] ${MUTATE} delivered: ${url} serves the mutated ${file} (${Buffer.byteLength(served)} bytes)`);
+    return;
+  }
+  console.error(`[library] refusing to run: ${MUTATE} edits web/${file} and ${url} did not answer with it.`);
+  console.error(`[library] the server answered ${status} with ${served === null ? 'nothing' : `${Buffer.byteLength(served)} bytes`}, `
+    + `where the staged file is ${Buffer.byteLength(pageMutation.body)}.`);
+  console.error('[library] a page mutation that does not arrive leaves the unmutated page under test and every row '
+    + 'passing, which reads as this tool having missed a bug it was never shown - so the run stops here rather than '
+    + 'reporting one. Either the page moved to a URL PAGE_URLS does not name, or the server stopped serving it.');
+  process.exit(2);
 }
 
 /**
@@ -1564,36 +1762,6 @@ async function openPage(browser, url, viewport = { width: 1100, height: 760 }) {
   const errors = [];
   page.on('pageerror', (err) => errors.push(String(err)));
   page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
-  if (pageMutation) {
-    // **A page is reached at the URL `PAGES` names it by, not at its filename**, which
-    // is a rule `server/index.js` enforces by 404ing any `.html` under `web/` - so a
-    // mutation of `library.html` intercepted at `**/library.html` would match nothing,
-    // the unmutated page would load, and the run would be recorded as the check having
-    // missed a bug it was never shown. That is the failure the match-exactly-once rule
-    // exists for one layer up, arriving through the delivery instead of the anchor.
-    const file = pageMutation.file.slice('web/'.length);
-    const html = file.endsWith('.html');
-    // The table rather than a conditional, for the reason the rule below already gives:
-    // a page is reached at the URL `PAGES` names it by, so the mapping is a fact about
-    // the server and a check that knew only one of them delivered nothing for the rest.
-    // It knew only `library.html` until the menu got a mutation of its own, and the
-    // shape of that miss is the throw underneath: loud, at the first page opened, and
-    // naming the file - never a silent fulfil of a route nothing requests.
-    const AT = { 'library.html': '/gallery', 'menu.html': '/' };
-    if (html && !(file in AT)) {
-      throw new Error(`no URL is known for web/${file}: this table knows ${Object.keys(AT).join(', ')}`);
-    }
-    // Matched on the pathname rather than by a `**${target}` glob. The menu is served
-    // at `/`, and `**/` matches every directory-shaped URL the page asks for - the
-    // mutated menu would have been fulfilled for requests that are not the menu. A
-    // predicate says the one thing meant: this exact path and nothing under it.
-    const target = html ? AT[file] : `/${file}`;
-    await page.route((url) => url.pathname === target, (route) => route.fulfill({
-      status: 200,
-      contentType: html ? 'text/html; charset=utf-8' : 'text/javascript; charset=utf-8',
-      body: pageMutation.body,
-    }));
-  }
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   return { page, errors };
 }
@@ -1617,6 +1785,12 @@ const macUrl = await startServer(root, ['--captures', macCaps, '--name', 'mac',
   '--node', nodeUrl, '--node-name', 'pi-01',
   '--presets', join(WORK, 'presets'), '--projects', join(WORK, 'projects'),
   '--builtin-presets', join(WORK, 'builtin-presets')], MAC_PORT);
+
+// Before a browser opens anything, so a mutation that cannot arrive costs a server spawn
+// rather than a full run ending in a verdict about the wrong build. One server answers
+// for all of them: every server this suite spawns is spawned out of `root`, which is the
+// tree `stageServer` wrote the mutation into.
+await requireMutationDelivered(macUrl);
 
 const { chromium } = await loadPlaywright();
 const browser = await chromium.launch({ headless: !HEADED, args: ['--use-gl=angle', '--use-angle=default'] });
@@ -1800,6 +1974,35 @@ async function runChecks() {
     check(byId['hello-no-frames'].hasHello === true && byId['hello-no-frames'].frames === 0,
       'a take can carry a hello and no whole frame at all, which is the shape the two client derivations disagreed about',
       `hasHello=${byId['hello-no-frames'].hasHello} frames=${byId['hello-no-frames'].frames}`);
+    // The band, at the door the other three read. `format` is reported as the listing
+    // found it rather than as a boolean, because the refusal has to be able to name the
+    // generation - "unknown format" with no number is a sentence nobody can act on.
+    check(byId['future-format-take'].format === CAPTURE_FORMAT + 1
+      && byId['future-format-take'].openable === false,
+      'a take from a format this build does not read lists, says which generation wrote it, and says it cannot be opened',
+      `format ${JSON.stringify(byId['future-format-take'].format)}, openable ${byId['future-format-take'].openable}`);
+    // The half that stops the band from being "refuse anything unfamiliar", which would
+    // pass the row above while shutting every take on disk today out of the editor.
+    check(byId['generation-zero-take'].format === null
+      && byId['generation-zero-take'].openable === true,
+      'while a take whose hello declares no format at all is generation zero and opens, which is the whole existing archive',
+      `format ${JSON.stringify(byId['generation-zero-take'].format)}, openable ${byId['generation-zero-take'].openable}`);
+    check(byId['local-clip'].format === null && byId['no-hello-take'].format === null,
+      'and the field is null rather than absent on a take that carries no answer, so the page has one thing to read');
+    // **The band arrives as a refusal and not only as a false `openable`**, which is the
+    // half the three rows above cannot see: `openable` would read the same if the format
+    // check had stayed a term in its own expression, and then the tile would have a dead
+    // Open button and nothing on it saying why. The sentence is required to name the
+    // generation, because a refusal reading "unknown format" with the number missing is
+    // the exact shortening this branch removed from the page.
+    const bandRefusals = byId['future-format-take'].openRefusals;
+    check(bandRefusals.length === 1 && bandRefusals[0].key === 'format'
+      && bandRefusals[0].why.includes(String(CAPTURE_FORMAT + 1)),
+      'and it refuses under the format key, in a sentence that names the generation it found',
+      JSON.stringify(bandRefusals));
+    check(byId['generation-zero-take'].openRefusals.length === 0,
+      'while the take the whole existing archive looks like carries no refusal at all',
+      JSON.stringify(byId['generation-zero-take'].openRefusals));
     check(byId['local-clip'].dateSource === 'hello'
       && Math.abs(byId['local-clip'].capturedAt - Date.UTC(2026, 6, 15, 18, 5)) < 1,
       'the wall-clock capture date comes off the hello where the take carries one');
@@ -2467,6 +2670,163 @@ async function runChecks() {
     }
   }
 
+  // ------------------- 4f. a grabber that has exited is not a grabber that is running
+  //
+  // **The window this aims at is between an exit and the respawn the backoff has
+  // scheduled, and it exists because a colour toggle reads the supervisor's `child`
+  // reference to decide whether there is anything to restart.** Nothing used to clear
+  // that reference on exit, so for the whole backoff - `RESTART_DELAYS[attempt]`, a full
+  // second after the first failure - `child` was a truthy `ChildProcess` that had
+  // already gone. A toggle landing there armed `restarting` against the corpse and
+  // called `stopGrabber` on something that can neither be signalled nor exit again, so
+  // nothing consumed the flag; what eventually read it was the *next* grabber's genuine
+  // failure, which then took the requested-restart branch and returned before the
+  // backoff ever ran.
+  //
+  // Its own server rather than 4b's, because an extra restart moves that section's
+  // closed-take count and this section's whole method is provoking extra restarts.
+  //
+  // **What can be observed is the branch that was taken, not the state that was
+  // wrong.** The `attempt = 0` the toggle also does is invisible here - `fake-grabber`
+  // handshakes, and a hello zeroes `attempt` anyway - and the record button is
+  // unreachable for the same reason, since `everLive` is true so the node never reaches
+  // `absent`. What is left is two absences on the next genuine death: no `lost` on the
+  // status channel, and no `restarting grabber in ...ms` in the log. Those are the rows.
+  //
+  // **Both are read as a shape and not as a presence, and the note beside them says what
+  // that cost to learn.** The defect does not remove either word from the log - it moves
+  // them, because the toggle's own `stopGrabber` announces a `lost` of its own and the
+  // respawn that follows still writes a line. A row asking whether the word appeared was
+  // therefore true of the build with the bug in it.
+  console.log('\n[library] a colour toggle during the respawn backoff does not eat the next failure');
+  {
+    const supDir = join(WORK, 'supervised');
+    mkdirSync(supDir, { recursive: true });
+    // Short-lived on purpose: the grabber says hello, streams a burst and dies
+    // unrequested, which is the failure the backoff is for. A hello before each death
+    // is also what pins the window - it puts `attempt` back to 0, so the delay that
+    // follows is `RESTART_DELAYS[0]` and therefore 1000ms rather than a later and wider
+    // entry in the table. The 250ms clean-respawn window is a different one and is not
+    // what this aims at.
+    const supUrl = await startServer(root, [
+      '--captures', supDir, '--name', 'supervised', '--no-color',
+      '--grabber', `${join(REPO, 'tools/fake-grabber.mjs')} --source ${SAMPLE} --die-after 24 --burst 10 --fps 40`,
+    ], MAC_PORT + 1);
+    const supLog = () => servers.find((s) => s.port === MAC_PORT + 1).log.join('');
+    const countIn = (text, re) => [...text.matchAll(re)].length;
+    const EXITED = /\[server\] grabber exited/g;
+    const BACKOFF = /\[server\] restarting grabber in \d+ms \(attempt \d+\)/g;
+
+    // The status channel, held the way the descriptor section holds one: `lost` is
+    // broadcast and never served, so nothing over HTTP can answer this.
+    const statuses = [];
+    const ws = new WebSocket(supUrl.replace('http', 'ws'));
+    ws.on('message', (data, isBinary) => {
+      if (isBinary) return;
+      try {
+        const msg = JSON.parse(data.toString('utf8'));
+        if (msg.status) statuses.push(msg.status);
+      } catch { /* not a status message */ }
+    });
+    await new Promise((done, fail) => { ws.on('open', done); ws.on('error', fail); });
+
+    // Polled finely rather than slept against, because the whole row is a message that
+    // has to land inside a one-second window. 20ms against 1000ms is a margin of fifty.
+    let died = false;
+    for (let i = 0; i < 1500 && !died; i++) {
+      await new Promise((done) => { setTimeout(done, 20); });
+      died = countIn(supLog(), EXITED) >= 1;
+    }
+    check(died, 'the grabber handshook, streamed and died unrequested, which is the failure the backoff exists for',
+      `${countIn(supLog(), EXITED)} exits`);
+
+    // Everything after this point is counted from here, because the first death has
+    // already produced a `lost` and a backoff line of its own and the claim is about
+    // the *next* one.
+    const statusesBefore = statuses.length;
+    const backoffBefore = countIn(supLog(), BACKOFF);
+    const spawnsBefore = countIn(supLog(), /\[server\] starting grabber:/g);
+    ws.send(JSON.stringify({ camera: { color: true } }));
+    // **Whether the message landed in the window is the instrument's own question, and
+    // it is asked separately from the claim.** Both the fixed build and the broken one
+    // take a toggle during the backoff; what differs is the branch. A toggle that
+    // arrived late, after the respawn, is a legitimate restart on a live grabber in
+    // either build - so it would leave the two rows below green on a build that has the
+    // defect, and the run has to say the fixture missed rather than say the code passed.
+    const spawnsAtToggle = countIn(supLog(), /\[server\] starting grabber:/g);
+    check(spawnsAtToggle === spawnsBefore && spawnsBefore === 1,
+      'and the toggle was sent while nothing was running - between the exit and the respawn, which is the window the whole section is about',
+      `${spawnsAtToggle} spawns at the toggle, ${countIn(supLog(), EXITED)} exits`);
+
+    // The next genuine death: a respawn, a hello, a burst, and an exit nobody asked
+    // for. Waited for by the exit count rather than by a duration, since a spawn on a
+    // contended machine is the one part of this with no fixed cost.
+    for (let i = 0; i < 1500 && countIn(supLog(), EXITED) < 2; i++) {
+      await new Promise((done) => { setTimeout(done, 20); });
+    }
+    // A moment past the exit, because the two things being read are written by the
+    // handler that the exit runs and by the socket it broadcasts on.
+    await new Promise((done) => { setTimeout(done, 400); });
+    ws.close();
+
+    // **The read has to land on the second death and not on a third, and on the broken
+    // build a third is only 250ms away.** The requested-restart branch respawns at
+    // `RESPAWN_AFTER_CLEAN_MS` rather than at the backoff, so a mutated run that
+    // over-ran this window would see grabber #3 die, produce the `lost` and the backoff
+    // line the two rows below are asserting the absence of, and pass - and this tool has
+    // no `NOT CAUGHT` branch, so it would exit 0 and read as clean. Two on both sides:
+    // under the fix the next respawn is a second out, and under the mutation a third
+    // death here means the fixture over-ran rather than the code being right.
+    const exitsAtRead = countIn(supLog(), EXITED);
+    check(exitsAtRead === 2,
+      'and exactly one further death has happened when the reading is taken, so this is the next failure rather than a later one',
+      `${exitsAtRead} exits`);
+    // Printed rather than asserted, because it is the diagnostic that tells a fixture
+    // which missed the window from a control that is blind: `takes effect on the next
+    // spawn` means the reference was clear when the toggle arrived, and
+    // `restarting grabber` means it was not. Asserting it would be asserting the
+    // mechanism rather than what the mechanism costs, and it would hand the mutation a
+    // third row to redden.
+    console.log(`  ...   ${supLog().match(/\[server\] colour camera .*/)?.[0] ?? 'no colour line in the log at all'}`);
+
+    // **Both rows below assert a shape rather than a presence, and they do so because
+    // the presence versions passed the mutated build.** Measured on the merge that
+    // brought this section alongside the capture format's band, at a moment the machine
+    // was carrying another worktree's suite: `--mutate exit-keeps-the-child-reference`
+    // reddened *nothing*, and since this tool has no `NOT CAUGHT` branch it exited 0 and
+    // read as a clean pass. The diagnostic line above is what said otherwise - it printed
+    // `restarting grabber` where the fixed build prints `takes effect on the next spawn`,
+    // so the mutation had applied and reached the branch, and the two rows had simply
+    // agreed with it.
+    const after = statuses.slice(statusesBefore);
+    // The broken build emits a `lost` of its own the instant the toggle calls
+    // `stopGrabber` on the corpse, so the word is in this list either way: the fixed
+    // build said `starting live lost` and the mutated one said `lost starting live
+    // starting`. What separates them is order rather than membership. The death this row
+    // is about is the one that follows the respawn coming up, so the `lost` has to sit
+    // after a `live` - which also makes the row robust against the first death's own
+    // `lost` arriving late and landing inside this slice, since that one is still in
+    // front of the `live` that follows it.
+    const liveAfter = after.indexOf('live');
+    check(liveAfter >= 0 && after.indexOf('lost', liveAfter) > liveAfter,
+      'the next failure is still reported lost, rather than being read as the restart the toggle never got to ask for',
+      after.length ? `saw ${after.join(' ')}` : 'no status changes at all');
+    // One backoff line per death, rather than more lines than before. `> backoffBefore`
+    // was true of both builds - the fixed one went 1 to 2 and the mutated one 0 to 1 -
+    // so the row measured that the log had grown rather than that the failure had been
+    // spent. `backoffBefore` is reported and not asserted on because it is a race in the
+    // fixture: `scheduleRetry` writes its line just after the exit the poll loop above
+    // watches for, so whether it has landed by the time the toggle goes out depends on
+    // the machine. The count at the read is not, since the read is 400ms past the exit.
+    // The invariant is the one the defect breaks: the requested-restart branch returns
+    // before `scheduleRetry` runs, so a death that was eaten is a death with no line.
+    const backoffAtRead = countIn(supLog(), BACKOFF);
+    check(backoffAtRead === exitsAtRead,
+      'and it still counts toward the backoff, which is the table a machine with no sensor has to be able to spend',
+      `${backoffAtRead} backoff lines against ${exitsAtRead} deaths, ${backoffBefore} before the toggle`);
+    for (const p of servers.filter((s) => s.port === MAC_PORT + 1)) p.child.kill('SIGKILL');
+  }
+
   // ---------------------------------------------------------- 6. the gallery page
   console.log('\n[library] the tiles: states, marks, buttons and the skim');
   {
@@ -2499,6 +2859,13 @@ async function runChecks() {
       'the Open on a take with no hello is disabled rather than a throw waiting to happen');
     check(one('local-clip').acts.find((a) => a.label === 'Open')?.disabled === false,
       'and an ordinary take opens');
+    // The same pair for the format band. Both, because a page that greyed every Open
+    // would pass the first of these on its own and the second is the one that says the
+    // refusal is about this take rather than about the button.
+    check(one('future-format-take').acts.find((a) => a.label === 'Open')?.disabled === true,
+      'the Open on a take from a format this build cannot read is disabled the same way');
+    check(one('generation-zero-take').acts.find((a) => a.label === 'Open')?.disabled === false,
+      'while a take that declares no format at all still opens');
 
     // **One take, one reason, whichever surface is asking.** The page used to derive
     // this twice, twelve lines apart, and the two derivations disagreed on exactly one
@@ -2922,6 +3289,24 @@ async function runChecks() {
     check(warnTile.flags.includes('short') && /no frames/.test(warnMenu.note.match(/^.*no frames.*$/m)?.[0] ?? ''),
       'and a take with no whole frame says so rather than saying it has fewer than two',
       warnMenu.note.split('\n').find((l) => /frame/.test(l)) ?? '');
+    // The format band's badge and the sentence behind it, read the same way. The
+    // sentence is asserted to carry the generation it found rather than merely to
+    // mention a format, because the number is the only part of it an operator can do
+    // anything with - and it is built from the constant rather than written down, so
+    // this row moves with the band instead of having to be swept when it does.
+    const fmtTile = one('future-format-take');
+    const fmtMenu = await page.evaluate(`globalThis.__library.openMenu(${JSON.stringify(fmtTile.hash)})`);
+    check(fmtTile.flags.includes('format'),
+      'a take from a format this build cannot read carries a badge over its poster', fmtTile.flags.join(' ') || 'no badges');
+    check(new RegExp(`capture format ${CAPTURE_FORMAT + 1}\\b`).test(fmtMenu.note)
+      && new RegExp(`reads format ${CAPTURE_FORMAT}\\b`).test(fmtMenu.note),
+      'and the sentence in the menu names the generation it found and the one this build reads',
+      fmtMenu.note.replace(/\n/g, ' | ').slice(0, 130) || 'the menu says nothing');
+    const zeroTile = one('generation-zero-take');
+    check(!zeroTile.flags.includes('format'),
+      'while a take that declares no format carries no such badge, so the badge is about the generation and not about the key being absent',
+      zeroTile.flags.join(' ') || 'no badges');
+    await page.mouse.click(4, 4);
     const oneFrameTile = one('one-frame-take');
     check(oneFrameTile.flags.includes('short'),
       'while the one-frame take still carries the badge, so the row above is about the wording rather than about the badge going away',
@@ -3207,6 +3592,58 @@ async function runChecks() {
 
     check(errors.length === 0, 'the gallery raises no page errors', errors.slice(0, 2).join(' | '));
     await page.close();
+  }
+
+  // ------------------------------------------- 6f. the fourth door, in the editor
+  //
+  // **The gallery greying a button is not the take being refused.** Three of the four
+  // doors that read this band are on the listing - `openable` on the server, the badge
+  // and the dead Open on the page - and all three can be satisfied without the editor
+  // knowing anything, because a take is also reachable by typing its id into the URL,
+  // by a stale bookmark and by the menu's resume. So the row that matters is the one
+  // driven the way somebody arrives, and what it asserts is that the page did not enter
+  // the editing state rather than that it said something: `showTimelineError` writes to
+  // a note that a later message overwrites, and a take that opened *and* complained
+  // would pass a row reading only the note.
+  //
+  // Both takes through the same door, because a build that refused every take would
+  // pass the first of these and fail nobody's notice.
+  console.log('\n[library] the capture format band at the door the editor opens');
+  {
+    const refusedAt = editorPage(macUrl, 'future-format-take');
+    const { page: refused, errors: refusedErrors } = await openPage(browser, refusedAt, { width: 640, height: 400 });
+    // Taken at the moment it matches rather than read again afterwards, for the reason
+    // the preset rows below give: the note is one line and every later message
+    // overwrites it.
+    const held = await refused.waitForFunction(
+      '(() => { const t = document.getElementById("tNote")?.textContent ?? ""; return t.includes("capture format") ? t : null; })()',
+      null, { timeout: 30000 },
+    ).catch(() => null);
+    const note = held ? String(await held.jsonValue())
+      : await refused.evaluate('document.getElementById("tNote")?.textContent ?? ""');
+    check(new RegExp(`capture format ${CAPTURE_FORMAT + 1}\\b`).test(note),
+      'an editor handed a take from a format this build does not read says which generation it found',
+      note.slice(0, 140) || 'the note is empty');
+    check(await refused.evaluate("document.body.classList.contains('editing')") === false,
+      'and it does not open the take - the refusal is a door rather than a message beside an opened clip');
+    // The throw is what this page is about, so counting it as a finding would be
+    // asserting the scenario did not happen. Anything else still is one.
+    const strayed = refusedErrors.filter((e) => !/capture format/.test(e) && !/Failed to load resource/.test(e));
+    check(strayed.length === 0, 'and refusing it raises no page error beyond the refusal itself',
+      strayed.slice(0, 2).join(' | ') || 'none beyond the refusal');
+    await refused.close();
+
+    const { page: opened, errors: openedErrors } = await openPage(
+      browser, editorPage(macUrl, 'generation-zero-take'), { width: 640, height: 400 },
+    );
+    const editing = await opened.waitForFunction("document.body.classList.contains('editing')", null, { timeout: 30000 })
+      .then(() => true, () => false);
+    check(editing === true,
+      'while a take whose hello declares no format at all opens in the same editor, which is every take shot before the field existed',
+      editing ? 'editing' : await opened.evaluate('document.getElementById("tNote")?.textContent ?? "(no note)"'));
+    check(openedErrors.filter((e) => !/Failed to load resource/.test(e)).length === 0,
+      'and it opens without a page error', openedErrors.slice(0, 2).join(' | ') || 'none');
+    await opened.close();
   }
 
   // A library with no takes at all.

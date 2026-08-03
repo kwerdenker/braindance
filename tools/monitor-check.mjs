@@ -198,6 +198,26 @@ const MUTATIONS = {
     'for (let col = 0; col < DEPTH_W; col++) dst[to + col] = src[from + ((col / grid.k) | 0)];',
     'for (let col = 0; col < DEPTH_W; col++) dst[to + col] = src[from + Math.min(grid.w - 1, (((col / grid.k) | 0) + 1))];',
   ]] },
+  // **The control for section 6.** The viewer stops noticing that a hello said colour is
+  // off, so `hasColor` keeps whatever value the last decoded JPEG left it at - and the
+  // shader keeps sampling `colorPrev`/`colorCurr`, which nothing is refreshing any more.
+  // Live, that is a cloud textured with a frozen still of the moment colour was switched
+  // off, for the rest of the session, on a viewer that otherwise looks completely healthy.
+  //
+  // It reddens the `hasColor` row after the toggle and nothing else. The fixture rows in
+  // the same section stay green by construction - the hello still says `"color":false` and
+  // the frames still declare `colorBytes === 0`, because this edit is in the page and the
+  // stream never knew about it - and that separation is the point: a control that reddened
+  // the fixture rows as well would have failed for a neighbouring reason and would say
+  // nothing about the viewer, which is the shape `decimate-reaches-recorder` above already
+  // records this tool being caught by.
+  //
+  // Replaced with a comment rather than deleted, so the branch keeps its shape and only the
+  // statement under test goes away.
+  'colour-off-keeps-the-texture': { file: 'web/main.js', edits: [[
+    '        if (!msg.color) uniforms.hasColor.value = 0;',
+    '        // the hello said colour is off, and this build does nothing about it',
+  ]] },
 };
 if (MUTATE && !MUTATIONS[MUTATE]) {
   console.error(`unknown mutation ${MUTATE} - have ${Object.keys(MUTATIONS).join(', ')}`);
@@ -988,6 +1008,132 @@ try {
         rounds.map((r) => `÷4 left ${r[4].sentinel}`).join(', '));
       ok('and the page reported no error while doing any of it', pageErrors.length === 0,
         pageErrors.slice(0, 2).join(' | '));
+
+      // ------------------------------ 6. the colour camera, switched off mid-shoot
+      //
+      // **The colour-off half of the live path, which nothing in this repo could reach
+      // until the fixture learned to produce it.** The colour camera comes off at boot
+      // with `--no-color` or mid-shoot from the editor's checkbox, and `tools/fake-grabber.mjs`
+      // ignored both for its whole life - so eight of `library-check`'s servers ran in a
+      // colour-off configuration and were answered with a `"color":true` hello over frames
+      // still carrying full JPEGs. The viewer's one statement that handles the real thing
+      // was therefore untested in the strongest sense available: deleting it left the whole
+      // suite green.
+      //
+      // What it costs live is a cloud wearing a frozen still of the moment colour went off,
+      // for the rest of the session, on a page that looks completely healthy. `webcam.js`
+      // already closes this exact hole on its own side - `setUnavailable` throws the held
+      // frame away rather than keeping it, so "a source that reconnects during an outage is
+      // not painted a still of the moment the sensor died" - and the point cloud did not.
+      //
+      // **Two rows on two different objects, so a red row says which half is at fault.**
+      // One reads the wire: what the respawned grabber actually handshook and what its
+      // frames declare. One reads the page: whether the viewer stopped sampling a colour it
+      // is no longer being sent. The fixture could be honest and the viewer wrong, which is
+      // the defect; or the fixture could be lying, which would make the viewer row
+      // meaningless - and a single row could not tell those apart.
+      //
+      // Its own server and its own captures directory, deliberately away from the
+      // take-identity section: the toggle takes the grabber down and a respawn splits a
+      // take, so running this beside `caps-3` and the emit log would corrupt the one
+      // section whose whole claim is that a take is byte-for-byte what the writer emitted.
+      await stopAll();
+      console.log('\n[monitor] the colour camera goes off, and the cloud stops wearing the last JPEG');
+      mkdirSync(join(WORK, 'caps-6'), { recursive: true });
+      await start([...streamer(), '--captures', join(WORK, 'caps-6'), '--name', 'colouroff',
+        '--projects', join(WORK, 'p6'), '--presets', join(WORK, 'q6')]);
+
+      // Read off the wire rather than off the page, for the reason above. Helloes are
+      // recognised on the grabber's own fields, the same discriminator `main.js` uses,
+      // because the payload goes into a take verbatim and carries no type tag.
+      const streamed = { helloes: [], colorBytes: [] };
+      const observer = new WebSocket(`ws://127.0.0.1:${PORT}/`);
+      observer.on('message', (data, isBinary) => {
+        if (isBinary) { streamed.colorBytes.push(data.readUInt32LE(4)); return; }
+        const msg = JSON.parse(data.toString('utf8'));
+        if (typeof msg.serial === 'string' && Number.isFinite(msg.fx)) streamed.helloes.push(msg);
+      });
+      await new Promise((resolve, reject) => {
+        observer.on('open', resolve);
+        observer.on('error', reject);
+      });
+
+      await page.goto(RECORDER_URL, { waitUntil: 'load' });
+
+      // **The precondition is asserted, never waited out.** `hasColor` reaching 1 is the
+      // proof that a JPEG really decoded and bound, since `bindColor` is the only thing
+      // that ever sets it - so if it never arrives, everything below is measuring nothing
+      // and has to say so. A fixed wait here would turn "no colour ever decoded" into a
+      // silent pass on the row that matters most.
+      const hasColor = () => page.evaluate('globalThis.__kinect.uniforms.hasColor.value');
+      let bound = false;
+      try {
+        await waitFor(async () => (await hasColor()) === 1, 20000, 'a colour frame to decode and bind');
+        bound = true;
+      } catch { /* the row below is the report, and the rows after it are skipped */ }
+      ok('a colour-on grabber paints the cloud with a real decoded JPEG, which is what the toggle is measured against',
+        bound, bound ? '' : 'hasColor never reached 1, so no colour ever bound and nothing below would have measured the toggle');
+
+      // Counted before the press, because the restart can be under way by the time the
+      // click resolves and a hello read after the fact could be the one already on file.
+      const helloesBefore = streamed.helloes.length;
+      // **The real control, pressed the way an operator presses it.** The page's own
+      // `change` handler is what puts `{camera: {color: false}}` on the socket, so this
+      // exercises the wire the product uses rather than a function this tool reached past
+      // it for - which would prove the server's half while leaving the control untested.
+      await page.click('#colorCam');
+
+      // Waited on the *respawned* grabber's handshake rather than on a duration, because
+      // the toggle drops the child and the backoff spawns a replacement with the new argv.
+      // A fixed sleep here would make the row about how fast this machine is.
+      let respawned = null;
+      try {
+        await waitFor(() => streamed.helloes.length > helloesBefore, 25000, 'the respawned grabber to hand shake');
+        respawned = streamed.helloes.at(-1);
+      } catch { /* reported by the row below */ }
+      ok('the toggle takes the grabber down and the replacement hands shake again',
+        respawned !== null, respawned ? '' : 'no second hello arrived, so nothing restarted');
+      // **Both fields, and the second is the one that is easy to get wrong.**
+      // `native/grabber.cpp` reports `lowLight` as the *conjunction*, so a grabber given
+      // `--no-color` alone - which is exactly what the server produces here, since
+      // `camera.lowLight` stays true and `--no-low-light` is never appended - says
+      // `"lowLight":false`. A fixture watching only for `--no-low-light` would still say
+      // `true`, reproducing this same defect one field over while looking fixed.
+      ok('and it handshakes the configuration it was actually given: colour off, and low light off with it',
+        respawned?.color === false && respawned?.lowLight === false,
+        `hello says color=${respawned?.color}, lowLight=${respawned?.lowLight}`);
+
+      // Frames from before the new hello are dropped rather than counted, so one still in
+      // flight under the previous grabber cannot read as the new one failing to drop its
+      // colour.
+      streamed.colorBytes.length = 0;
+      let streaming = false;
+      try {
+        await waitFor(() => streamed.colorBytes.length >= 5, 15000, 'frames from the respawned grabber');
+        streaming = true;
+      } catch { /* reported by the row below */ }
+      const carried = streamed.colorBytes.filter((c) => c !== 0).length;
+      ok('and every frame it sends declares no colour block at all, which is what the viewer reads to decide whether to decode one',
+        streaming && carried === 0,
+        streaming ? `${carried} of ${streamed.colorBytes.length} frames still declared colour` : 'no frames arrived after the respawn');
+
+      // **The row this section exists for**, and the one `colour-off-keeps-the-texture`
+      // has to redden on its own. Skipped rather than asserted when no colour ever bound,
+      // because `hasColor` is 0 at boot: asserting it against a page that never reached 1
+      // would pass by agreeing with the initial value and record the strongest row in this
+      // file as green on a run that tested nothing.
+      if (bound) {
+        let zeroed = false;
+        try {
+          await waitFor(async () => (await hasColor()) === 0, 15000, 'the viewer to stop sampling a colour it is no longer sent');
+          zeroed = true;
+        } catch { /* reported by the row below */ }
+        ok('the viewer stops texturing the cloud the moment the hello says there is no colour',
+          zeroed, zeroed ? '' : `hasColor is still ${await hasColor()}, so the cloud is wearing a frozen still of the moment colour went off`);
+      } else {
+        console.log('  ....  the viewer row did not run: no colour ever bound, so there was nothing for the toggle to take away');
+      }
+      observer.terminate();
 
       await browser.close();
     }

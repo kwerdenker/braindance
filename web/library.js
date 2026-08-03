@@ -128,7 +128,7 @@ const post = (url, body) => jsonOf(url, {
  *
  * **A key with no entry here reads as itself.** The first spelling of this was
  * `key === 'short' ? … : 'no hello'`, which is a table of two wearing an else - so a
- * third refusal, of the kind the server is free to add and which is being added,
+ * third refusal, of the kind the server is free to add and which has since arrived,
  * would have been badged "no hello" over a take that has one. Visibly unmapped beats
  * confidently wrong, and `library-check` asserts the two tables agree rather than
  * leaving it to be noticed.
@@ -147,10 +147,26 @@ const post = (url, body) => jsonOf(url, {
  *
  * Fixed at the table rather than at the one lookup, because the lookup is one today
  * and the property that makes it safe belongs to the table. `Object.keys` still sees
- * exactly the two entries, which is what `badgeKeys()` reports.
+ * exactly the three entries, which is what `badgeKeys()` reports.
  */
 const BADGES = Object.assign(Object.create(null), {
   'no-hello': () => 'no hello',
+  // The third refusal the paragraph above predicted, arriving exactly as predicted: the
+  // server grew a capture-format band and this table gained a label and nothing else.
+  // The label is short because the sentence is `refusal.why` and the server wrote it -
+  // which matters more here than for its neighbours, since that sentence names the
+  // generation it found and "unknown format" on its own cannot.
+  //
+  // **The tile under this badge still draws, and that is decided rather than left over.**
+  // The skim unprojects the take's depth on this build's intrinsics, which is the very
+  // thing the refusal calls geometry nobody can check - so a badged tile is showing a
+  // picture whose shape may not be the room's. It draws anyway, because the poster's job
+  // here is recognition and not measurement: a gallery is where somebody goes to find
+  // which take this is, a blank tile answers that worse than an approximate one, and the
+  // badge over it says the picture is not to be trusted. Nothing bakes: the take cannot
+  // be opened, and `render-worker` reaches a take through `/edit?take=` - the same door
+  // `openTake` refuses at - so no export can be made from one of these.
+  format: () => 'unknown format',
   short: (take) => (take.frames === 0 ? 'no frames' : '< 2 frames'),
 });
 
@@ -213,9 +229,12 @@ function warningsOf(take) {
 /**
  * Why a take cannot be opened, or the empty string when it can.
  *
- * Read rather than derived. The two sentences this used to compose disagreed with the
- * badges over the same poster, and the fix is not a third careful copy - it is that
- * the take carries its own reasons and every surface quotes them.
+ * Read rather than derived. The four sentences this used to compose disagreed with the
+ * badges over the same poster, and the fix is not a fifth careful copy - it is that
+ * the take carries its own reasons and every surface quotes them. The format band is
+ * the one that shows why quoting beats shortening: it has to name the generation it
+ * found, because "unknown format" with no number is a refusal nobody can act on, and a
+ * page shortening the server's sentence is how that number went missing.
  */
 const cannotOpen = (take) => take.openRefusals[0]?.why ?? '';
 

@@ -26,6 +26,68 @@ growth bound. When you write a proof tool, ask what a broken implementation woul
 to still pass it, and close that. **Every proof tool needs a falsification control**:
 something that must FAIL if the thing under test were not actually doing the work.
 
+### The passthrough row that hashed a served part against the set of served parts
+
+`vcam-check` section 2 claimed "the bytes served are the bytes emitted", with a comment above
+it saying in as many words that anything decoding and re-encoding on the way through would fail
+it. It could not. `frame` was taken off the end of `sub.parts`, `jpegHash` was the hash of
+`frame`, and the row then asked whether anything in `sub.parts` hashed to `jpegHash` — which
+`frame` does, being one of them. The other half of the conjunction was `served.length === 64`,
+true of every sha256 hex digest there has ever been. The whole row reduced to "the emit log is
+not empty", and the log was read and then never compared against anything.
+
+The reason it was written that way was real and was even stated in the comment: the emit log's
+third column hashes the whole payload, which for a colour message is a u64 stamp then the JPEG,
+and the stamp moves per frame, so the logged hash can never equal the hash of a served part.
+Faced with two sides that could not be compared, the row hashed one side against itself. **When
+the two ends of a comparison do not share a quantity, make the writer log one — do not hash
+around the problem.** The fix was a fourth column carrying the sha256 of the part body, passed
+in at the call site because the wire layout belongs there and `note` should not have to know
+that type 3 puts a stamp before its JPEG.
+
+`hd-reencodes-in-flight` is the control, and it was written *before* the fix and run against the
+unfixed row on purpose: `[vcam] 22 assertions, 0 failed`, `NOT CAUGHT`, with every row in
+section 2 green including both of the ones that exist to catch it. That output is the finding.
+Two things it taught that generalise. The mutation has to be memoised, because a synchronous
+1920x1080 re-encode per message starves the stream until `a frame was served at all` reddens
+instead — a control that fires for a neighbouring reason is not a control. And its ffmpeg
+fallback means an ffmpeg that failed to run prints NOT CAUGHT too, so what discriminates a real
+catch is the *pair*: NOT CAUGHT against the old row, `caught, as required` against the new one.
+A single run in either direction would not have said which.
+
+### A defect that moves a word rather than removing it, and two rows that asked whether it was there
+
+`library-check`'s colour-toggle-during-the-backoff section asserts that the *next* genuine
+grabber death is still reported `lost` and still counts toward the backoff table. Both rows read
+for a presence: `after.includes('lost')`, and the backoff line count being greater than the count
+taken before the toggle. Both passed the mutated build, so `--mutate exit-keeps-the-child-reference`
+reddened nothing at all — and `library-check` has no `NOT CAUGHT` branch, so it exited 0 and read
+as a clean pass rather than as the check being blind.
+
+What made the rows wrong is that the defect does not delete either signal. It **moves** them. The
+toggle landing on a stale `child` reference calls `stopGrabber` on a process that has already
+exited, and that announces a `lost` of its own; the respawn that follows still writes a backoff
+line. Measured side by side, the fixed build's status slice was `starting live lost` and the
+mutated build's was `lost starting live starting`, and the backoff counts went 1→2 fixed against
+0→1 mutated. Membership is true of both. "Greater than before" is true of both.
+
+The two fixes are the same fix in different clothes. The `lost` row now asks for **order** — the
+`lost` has to sit after the `live` that the respawn produced — which is what "the *next* failure"
+meant all along and which is incidentally robust against the previous death's `lost` arriving late
+and landing in the slice. The backoff row now asks for **one line per death**, `backoffAtRead ===
+exitsAtRead`, rather than for growth; the count taken before the toggle turned out to be a race in
+the fixture and is now reported rather than asserted on, since `scheduleRetry` writes its line just
+after the exit the poll loop watches for.
+
+Two things worth carrying forward. **When the thing under test is a sequence, a row that asks
+whether a value appears anywhere in that sequence has thrown away the only axis that discriminates**
+— ask where it appears relative to the event it is supposed to follow. And the diagnostic that had
+been deliberately left un-asserted is what caught this: the section prints the server's own
+`colour camera on - ...` line, and reading `restarting grabber` where a fixed build prints `takes
+effect on the next spawn` is what said the mutation had applied and reached the branch while the
+rows agreed with it. **A printed-not-asserted probe beside a claim is how you tell a control that
+missed from a fixture that never ran** — the two are indistinguishable from the assertion count.
+
 ### An A/B where one arm cleans up after the other measures nothing
 
 The version of that failure worth naming separately, because both arms run, both produce a
@@ -359,6 +421,113 @@ machine it fires eight, all of them the intended row. So a throw is now `crashed
 verdict and before `untested`. **Read which assertions fired, not how many** — and a proof
 tool must never count its own crash as a finding in either direction.
 
+### Reverting a probe with `git checkout --` deletes the thing under test when it is uncommitted
+
+Found while mutation-testing the `.knct` specification row in `syntax-check`. The row was new
+and so was the specification it reads, both of them uncommitted, and each probe ended in
+`git checkout -- server/protocol.js` to undo the damage. That restores the file to `HEAD`, which
+in this state means restoring the version with no specification in it at all. So the first probe
+was valid, the revert silently removed the feature, and the two probes after it ran against a
+file that no longer had anything to check — both went red, both for the wrong reason, and both
+would have been recorded as catches by anybody reading only the count. One of them additionally
+reported `Identifier 'MAGIC' has already been declared`, which is the shape of a probe whose
+own edit is malformed rather than a finding, and is the tell that should stop the run.
+
+`git stash` is already forbidden here for a different reason, and the same replacement covers
+this one: **copy the file outside the repository, probe, and restore from the copy**, then
+`diff` the restore against it and re-run the clean arm to confirm it is green again. The rule
+in `CLAUDE.md` about taking a baseline is written for a measurement, and it applies unchanged to
+mutating an instrument you have not committed yet. The cheaper version of the same protection is
+to commit the instrument before probing it, so that a revert has something to revert to.
+
+### A mutation is source text, and nothing was checking that the text still existed
+
+Three declared controls could not run at all, and had not been able to for a long time.
+`editor-check --mutate space-unbound` anchored on `if (timeline.playing) timeline.pause();`
+where the branch now reads `pauseTransport()` — renamed in `51c7c9d`, sixty commits before
+this was found. `keyframe-check --mutate undo-on-input` anchored on a listener whose local
+was renamed `el` to `input`; one word killed the control that proves a slider drag is one
+undo step rather than two hundred. `library-check --mutate marks-ignore-retime` anchored on
+the line converting a mark through the retime curve, which had been *copied* to the minimap,
+so it matched twice and the tool refused it.
+
+**The two shapes of refusal disagree, and the disagreement runs the dangerous way.**
+`editor-check` resolves its mutation inside a `try` and reports `DID NOT RUN` with exit 2,
+which is the honest answer. `keyframe-check` and `library-check` call `mutatedSource` at
+module top level with nothing catching it, so a run prints a stack trace and exits 1 with no
+`FAIL` row, no assertion count and no verdict line — which is indistinguishable from a caught
+mutation to anything reading exit codes, and `keyframe-check`'s throw happens after
+`chromium.launch`, so it leaves a browser behind as well.
+
+**Neither is the real lesson.** `timeline.pause()` had not vanished from the tree; it moved
+off the line the mutation cared about, and still exists elsewhere in `web/main.js`. Nothing
+casual would have spotted any of the three. The class is that every anchor in this suite is
+one rename away from the same silence, and the only thing that would have noticed was
+`sweep-all`, which needs a server, a browser and hours — the right verdict at the wrong
+latency, since it is what a merge waits on rather than what tells you your control is dead
+while you are leaning on it.
+
+**This had already happened once and was closed as an instance.** The comment above
+`undo-includes-view` in `tools/keyframe-check.mjs` records a previous re-anchoring in these
+words: the line it named moved, "so the old text matched nothing and the tool refused the
+mutation - correctly, and silently as far as anything reading only the exit code was
+concerned." That instance was fixed and the class was left open, and three more went stale
+behind it.
+
+So `syntax-check` now walks every tool's `MUTATIONS` table and asserts each anchor matches
+its target file **exactly once**. It costs nothing, needs no server and runs in CI. The table
+is read without executing the tool, by cutting the source at the end of the declaration,
+appending an export and importing that prefix from inside `tools/` so the tool's own relative
+imports still resolve; a prefix that does not import fails the row rather than being read as
+"this tool has no table". Targets resolve by the entry's *shape*, never by the tool's name,
+and an unrecognised seventh shape fails naming the tool instead of being skipped. Measured at
+`907b87f`: 239 anchors across 13 tables, of 15 declared.
+
+**A duplicate is as stale as a miss, and that is the half a naive row drops.** The real defect
+here was `marks-ignore-retime` matching *two* sites, so a row asking "does this text appear"
+rather than "exactly once" sails straight past the thing that prompted the work while looking
+thorough. Both controls exist for that reason: `anchor-matches-twice` duplicates an anchored
+line into its target file, and `anchor-goes-stale` changes one character inside a `from`
+string. Each must redden the anchor row **and nothing else** — a control that reddens the
+whole tool says nothing about which question the tool was asking.
+
+**One thing this does not close.** `library-check`'s `reveal-drops-the-path` resolves its edit
+through `process.platform`, so a macOS developer and a Linux CI run check different strings
+and neither checks the third. And the minimap's copy of the mark conversion still has no
+control over it at all: `markTicks()` only ever reads the ruler strip, so that second site
+could stop going through the retime curve entirely and every row in the suite would stay
+green. Two sites doing one conversion is what made this anchor stale in the first place.
+
+**And reading a table by importing the tool's prefix made this row need what the tool needs,
+which CI found and a developer's machine cannot.** The cut ran from the top of the file so that a
+table referencing a const beside it would still resolve, and it dragged two things with it: the
+tool's own `import ... from 'ws'`, which CI has not installed because this tool is documented as
+needing nothing at all, and the tool's top-level *work* - `export-check` and `registry-check` both
+resolve a commit with `git log -S` while their module body runs, so reading their tables walked the
+whole history of `web/main.js` and threw outright in a tree extracted without its `.git`. Four
+tables went unread on CI, at 137 anchors against 248 here.
+
+The row was loud about it, four FAIL lines and the fallen count, which is why the count is in the
+summary line at all - but the summary still read `all 137 ... match once`, true of what it read and
+indistinguishable from a clean row. **A count is only honest beside what it could not count**, so
+an unread table is now named in that same sentence. The cut itself is the declaration alone, which
+reads fifteen of the sixteen with no imports and no side effects at all, falling back to the
+package-stripped prefix for the one table that references a neighbouring const. Verified where it
+failed: a tree extracted with neither `node_modules` nor `.git` reads all 248 in 14 tables, in 5.7s
+against minutes.
+
+**And the shape inference was wrong within days, which is the argument for normalising rather
+than for a better guess.** A bare `{ from, to }` had a single declarer, `registry-check`, which
+edits the browser bundle - so the resolver read the shape as meaning `web/main.js`. Then
+`syntax-check` grew a `spec-drifts` control of its own in the same shape against
+`server/protocol.js`, and the row went looking for `export const TYPE_COLOR = 3;` in the bundle,
+found nothing, and reported a control that works perfectly as an anchor that had gone stale. The
+merge that brought the two together is what surfaced it, and it is a false positive rather than a
+missed defect, so it is the cheap direction of the same mistake. The fix is `spec-drifts` moving
+to `{ file, edits }` and declaring its own target, not the resolver learning a second tool's
+name: a resolver that knows which tool is asking is the hardcoded list this row exists to
+replace.
+
 ### A mutation can erase its own evidence
 
 `plant-open-take` originally appended its foreign bytes through a second file descriptor.
@@ -584,6 +753,40 @@ writer's own log rather than from an artifact the reader creates. **Before polli
 condition, ask what the polling call itself writes, opens or caches** - anything that lists,
 scans or indexes a directory something else is writing is a candidate.
 
+### A fix can be a probe with an observer effect, and the same rule catches it
+
+The section above is about an instrument that disturbs what it samples. The same failure has
+a second home nobody looks for it in — **a fix placed at a door, where the disturbance is the
+fix**. `resize()` reallocates the drawing buffer and never drew into it, so a parked editor's
+stage went black on every path that resized it, and the fix is a `requestRepaint()` on
+`resize()`'s last line: at the door rather than at the seven callers, which is this repo's own
+rule about closing the class.
+
+It was still wrong as first written, and by exactly the mechanism above. **Most calls to
+`resize()` do not resize anything.** `rebuildLanes` runs it on every lane rebuild, so every
+rate change reaches it through `timingChanged` -> `lanesChanged` with the strip the height it
+already was — and asking for a repaint there is a second accurate seek on top of the one the
+gesture's own release issues. Measured: 2 seeks for one held arrow key against 1, which is the
+seek storm the speed control was rewritten to avoid, arriving through a door opened for
+something else. It cost the take as well, three runs out of three, because the release resumes
+playback behind its seek and the repaint's seek put the playhead back on the frame the resume
+had just left.
+
+Two things are worth keeping from how it was found. The row that caught it was **not** either
+of the new rows written for the fix — it was section 4's existing play-intent row, which went
+red in a `--no-render` run and green in the full one, and read exactly like a flake. What
+settled it was the row *above* it printing a number rather than a verdict: `2 seeks for 6
+repeats` against HEAD's `1`. **A row that reports a count beside its pass is what lets the
+neighbouring boolean be diagnosed instead of re-run.**
+
+And the guard that fixed it rests on a fact about a browser rather than about this build — a
+same-size `setSize` reallocates nothing, so a conditional repaint is safe. That is the shape of
+premise that quietly stops being true, so it is asserted rather than trusted: `editor-check`
+section 13 fires a `resize` event with the window unchanged and requires the picture to still
+be there. Measured, 158,247 lit pixels before and exactly 158,247 after, against 0 across a
+resize that moved the buffer 1298x730 -> 1084x610. **When a fix is conditional on a platform
+behaviour, the condition is a claim and needs its own row.**
+
 **A fixture that has never held the shape under test cannot measure it, and the gallery's
 tile heights are the plainest case of that yet.** Every take in `library-check`'s fixture
 carried at most one warning — truncated, or no hello, or under two frames — so a
@@ -648,6 +851,35 @@ the operator that means what was intended. In the gallery's control enumeration 
 every tab the key `''`: the sweep reported four controls it could not name and four drivers
 naming nothing, both rows red, neither of them about the page. It looks exactly like a real
 enumeration failure.
+
+### A row that provokes a refusal writes into a channel a later row sweeps
+
+The third variant of the two sections above, and the one that arrives by post rather than in
+person: the probe does not disturb what *it* samples, it disturbs what something fifteen
+sections away samples. `editor-check` ends by asserting that the page said nothing at all -
+`errors.length === 0`, fed by both `pageerror` and `console` at type `error`. Section 7 then
+grew a block that hands the deliverable menu a document whose `in` point is not a time, which
+is the whole point of it, and `showTimelineError` writes every refusal it shows the operator to
+`console.error` as well. Every row the new block wrote was green and the sweep went red: 252
+assertions, one failure, and the failure quoting the string the new block had just planted.
+
+**The repair is a drain that asserts, not an exemption that does not.** A filter at the sweep is
+the obvious move and it is the one rule 5 is about - a deliberate exclusion, carrying its own
+justification, that stops anybody looking twice. It would also be *standing* rather than local:
+it would go on covering whatever the page said next that happened to match, and a build where
+the refusal stopped happening would take the exemption with it in complete silence, because a
+filter that removes nothing is indistinguishable from a filter that removed the thing it was
+written for. The block takes its own entry out instead and asserts that it took exactly one,
+which turns the noise into a claim about the refusal: `clip-bound-coerces-nonnumeric` reddens
+that row too, `0 drained: nothing`, because a build that does not refuse says nothing to the
+console.
+
+The temptation next door is to stop driving the door. Section 14 hands `restoreProject` a
+document it must reject from inside a page-side `try`/`catch`, so the throw never reaches the
+console at all - and copying that here would have made the problem disappear along with the
+test. The menu is the door a document from another build actually arrives through, and writing
+to the console is part of what arriving through it does. **When an instrument's own noise
+collides with a sweep, move the noise, never the sweep.**
 
 ## What do my arms agree about
 
@@ -735,6 +967,47 @@ user-facing surface should have at least one arm pointed at that surface.** Sect
 browser; `bind-ignores-grid` and `expand-shifts-by-a-block` are one control each, and the
 second exists because the first reddens every row and a control that fails everything cannot
 say which row carries the claim.
+
+**A fourth, and this time the skipped object was a kind of client no tool had ever created.**
+The recorder refuses to start a take while a webcam subscriber is pulling ~50Mbit/s over the
+same radio the depth packets are competing for, and the rule implementing that refusal had no
+arm anywhere in the suite. Not because anybody excluded it — because every proof tool in this
+repo subscribes over `127.0.0.1` to a server started with no `--host`, so `Webcam.isLoopback`
+was true by construction and the filter picking out costing subscribers ran against the empty
+array in every run of every check. Deleting the rule outright would have changed nothing any of
+them observed, and it had in fact already half-happened: the predicate shipped twice, and the
+copy carrying the whole docstring about the exemption being inherited by argument rather than
+measured had no callers at all.
+
+That is the shape worth taking away. The first three skipped objects were things nobody looked
+at; this one was a *state of the system* nobody could reach, because the way every tool
+connects made one branch unreachable. **Ask what your fixtures make impossible, not only what
+your probes omit** — a constant that every arm happens to share is an exclusion nobody wrote
+down. `guard-check` and `monitor-check` had both already solved it for their own claims, by
+widening the server with `--host 0.0.0.0` and connecting over this machine's own non-internal
+IPv4, so the technique was in the repo and simply had not been pointed here. `vcam-check`
+section 6 does that now, with `refusal-ignores-webcam` as the control and an operator accepting
+the cost as the positive twin, since an arm built only out of refusals passes against a server
+that refuses everything. On a machine with no second address it exits 2 as UNPROVEN rather than
+passing, because the arm cannot mean anything there.
+
+**A fifth, and this time the skipped object was reachable through a hook that answers a
+neighbouring question.** `editor-check`'s deliverable block drove exactly the shape that
+freezes the transport — a saved trim adopted from the menu — and asserted through
+`__kinect.editor.clipRange()`, which returns the raw `clipIn`/`clipOut` document fields. The
+transport does not move on those. It reads `clipInSec` and `clipOutSec`, two getters that were
+not symmetric, so a trim past the program's end made the pair cross and `frameAt` composed to a
+constant: every position the editor could ask for came back as one frame, and `exportClip`
+computed both of its bounds through it and wrote a one-frame file. The block passed identically
+either way, because the fields it read were the ones the document held rather than the ones the
+picture came from.
+
+The tell is that `clipRange()` is not wrong. It returns what it is named for, and the fix left
+it alone — the new rows read the transport instead, because the two are different questions.
+**A hook that answers a question adjacent to the claim is worse than no hook**, since it makes
+the row look grounded: the arm is reading live state through a real seam, and the state it
+reads simply is not the one the behaviour depends on. Ask what the *subject* reads, not what is
+convenient to read about it.
 
 ## Close the class, not the instance — and have the check enumerate it
 

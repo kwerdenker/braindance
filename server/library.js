@@ -49,10 +49,18 @@ export { VALID_ID };
 // function asserts.
 export const VALID_HASH = /^sha256:[0-9a-f]{64}$/;
 
-// Two constants, shared with the page rather than restated here. See web/format.js
-// for what version 1 means and why it is a version rather than an authored buffer
-// height; re-exported so callers on this side have one import to reach for.
-import { PROJECT_VERSION, VALID_ID } from '../web/format.js';
+// Two constants and one predicate, shared with the page rather than restated here. See
+// web/format.js for what version 1 means and why it is a version rather than an authored
+// buffer height; re-exported so callers on this side have one import to reach for.
+//
+// `captureFormatRefusal` is imported rather than the number it compares against, and
+// that is the whole point of it: what travels between the doors that decide whether a
+// take may be opened is the decision, rather than a constant each is free to compare its
+// own way. **There are two such doors now and there were four**, which is this branch's
+// subject - the gallery's badge and its dead Open button used to compare for themselves
+// and now quote `openRefusals`, leaving `OPEN_REFUSALS.format` below and the editor's
+// `openTake`, which is handed a hello and never a manifest.
+import { PROJECT_VERSION, VALID_ID, captureFormatRefusal } from '../web/format.js';
 
 export { PROJECT_VERSION };
 
@@ -187,6 +195,14 @@ export async function appendMarks(capturePath, records) {
 export const OPEN_REFUSALS = {
   recording: () => 'this take is still being written, so it has no settled hash and nothing may open it until the recorder closes it',
   'no-hello': () => 'this take carries no sensor hello, so its intrinsics are unknown and it cannot be unprojected',
+  // **The one entry that does not write its own sentence, and the delegation is the
+  // point.** `captureFormatRefusal` is read by a door this table cannot reach - the
+  // editor's `openTake` is handed a hello and never a take manifest - so the band has a
+  // reader outside the library and the sentence has to live where both can see it.
+  // Spelling it again here would be the two-copies failure this table exists to end,
+  // one file further out. What this table owns is that the format band is *a refusal
+  // like the others*: keyed, badged, and counted by `openable`.
+  format: (format) => captureFormatRefusal('this take', format),
   short: (frames) => (frames === 0
     ? 'the scan found no whole frame in this take, so there is nothing here to draw or to open'
     : 'a take needs two frames to bracket a position, so there is nothing here to play'),
@@ -243,6 +259,10 @@ async function describeTake(dir, file, recording) {
       dateSource: 'mtime',
       truncated: false,
       hasHello: null,
+      // Null with the rest of them, and for the same reason: the hello is at the head
+      // of a file this is deliberately not reading, so a take mid-write has no answer
+      // here rather than an answer that happens to be the current generation.
+      format: null,
       hello: null,
       // The same authority answering a case it already knows, rather than a second
       // derivation: a take still being written has no settled hash, so nothing may
@@ -273,14 +293,29 @@ async function describeTake(dir, file, recording) {
   // own modification time, and says which it used rather than presenting a guess
   // as a record.
   const fromHello = Number.isFinite(hello?.startedAt) && hello.startedAt > 0;
+  // What generation of the format wrote this take, carried up to the gallery as it was
+  // found rather than coerced into a number. A hello saying `"format": "banana"` is a
+  // writer this build has no idea about, and reporting that as null would file it with
+  // the takes that honestly declare nothing - which is the one band that opens.
+  const format = hello?.format ?? null;
 
   // Why this take cannot be opened, drawn from the one table above. **The push order
   // is the badge order**, since the gallery renders these in the order they arrive and
   // `cannotOpen` quotes the first. Decided here rather than sorted there, because two
   // files agreeing about an order is the same shape as two files agreeing about a
   // sentence.
+  //
+  // **The format band is asked whether before it is asked what, and both questions go to
+  // the same function**, so they cannot answer differently. It has to be a gate rather
+  // than an unconditional push because `captureFormatRefusal` returns the empty string
+  // for a take that opens - and an entry whose `why` is empty is not a refusal, it is a
+  // refusal-shaped hole. Every ordinary take would carry one, `openable` would go false
+  // across the whole library, and a node serving them fails `carriesRefusals` at the
+  // link, so the far end lists nothing at all. That cascade is not hypothetical: it is
+  // what `--mutate refusals-must-be-nonempty` plants on purpose.
   const openRefusals = [];
   if (!index.hello) openRefusals.push(refusal('no-hello'));
+  if (captureFormatRefusal('this take', format) !== '') openRefusals.push(refusal('format', format));
   if (stamps.length < 2) openRefusals.push(refusal('short', stamps.length));
 
   return {
@@ -303,13 +338,20 @@ async function describeTake(dir, file, recording) {
     // screen can show. The tile has to say that rather than offering an Open
     // button that throws.
     hasHello: Boolean(index.hello),
+    // Beside `hasHello` and `dateSource` rather than inside the four-value `hello`
+    // subset below, because it is a fact about the file and not one of the intrinsics -
+    // and because that subset carries its own argument for shipping four values and no
+    // more, which this would quietly widen.
+    format,
     // The intrinsics, so a poster can unproject the take rather than draw a picture
     // of the sensor's grid. Only these four: a gallery has no use for the serial or
     // the firmware, and shipping a node's whole hello to every browser that lists a
     // directory is more of that node's record than the listing needs.
     hello: hello ? { fx: hello.fx, fy: hello.fy, cx: hello.cx, cy: hello.cy } : null,
-    // Two frames is the floor for a pair source, so a shorter take lists and
-    // refuses to open. Named here rather than discovered in the editor.
+    // Two frames is the floor for a pair source, so a shorter take lists and refuses to
+    // open. Named here rather than discovered in the editor - and the format band is one
+    // of the names rather than a term in a second expression, so a gallery that offers
+    // Open and an editor that throws on it cannot come apart.
     openRefusals,
     openable: openRefusals.length === 0,
     recording: false,
