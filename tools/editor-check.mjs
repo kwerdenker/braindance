@@ -5832,12 +5832,31 @@ try {
     // Any control that commits will do, so it is found rather than named - a row keyed to
     // one parameter's id goes quiet the day that parameter is renamed, and what it needs
     // is an auto-save on the wire rather than a particular edit.
+    //
+    // **Found off the registry rather than off the panel's order**, and that distinction
+    // is what this row got wrong first. `#panelBody input[type="checkbox"]` took whatever
+    // the panel happened to render first, which was a look value when the row was written
+    // and became `colorCam` when the panel gained its groups - a sensor toggle that
+    // changes the sensor rather than the document, so it commits nothing and puts no
+    // auto-save on the wire. The row caught it, because it asserts the condition it built
+    // instead of assuming it; a fixture selected by position is one an unrelated edit to
+    // the page silently re-points, which is the same "arrives through the container"
+    // shape section 1's selector is written the way it is for.
+    //
+    // A `step` parameter is the checkbox kind - `panelRow` gives the input the parameter's
+    // own name for an id - so this asks the look registry which of its values render as
+    // one and takes the first that is on the page.
     const toggled = await page.evaluate(`(() => {
-      const box = document.querySelector('#panelBody input[type="checkbox"]');
-      if (!box) return null;
-      box.checked = !box.checked;
-      box.dispatchEvent(new Event('change', { bubbles: true }));
-      return box.id || 'a panel toggle';
+      const steps = __kinect.params.names('look')
+        .filter((n) => __kinect.params.spec(n).kind === 'step');
+      for (const name of steps) {
+        const box = document.getElementById(name);
+        if (!box || box.type !== 'checkbox' || !box.closest('#panelBody')) continue;
+        box.checked = !box.checked;
+        box.dispatchEvent(new Event('change', { bubbles: true }));
+        return box.id;
+      }
+      return null;
     })()`);
     for (let i = 0; i < 12 && workingPuts === 0; i++) {
       await new Promise((done) => { setTimeout(done, 100); });
