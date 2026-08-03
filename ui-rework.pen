@@ -3244,7 +3244,6 @@
                       "context": "div",
                       "height": 30,
                       "layout": "vertical",
-                      "gap": 3,
                       "children": [
                         {
                           "type": "text",
