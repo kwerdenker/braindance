@@ -120,6 +120,85 @@ page loads. **Whenever a row reads source rather than behaviour, ask by what mec
 mutation would reach the bytes that row reads**, and do not assume the answer is the same
 for every file the tool can mutate.
 
+### An enumeration that walks a flat tree is the files that exist, not the tree
+
+The grid row above walks `web/` and `server/` rather than a list of the files that hold the
+number today, which is the close-the-class rule: a page added next year is asked by
+existing. Its first spelling walked the *direct children* of each and skipped anything that
+`statSync` said was a directory. Both directories are flat, so the walk found every file
+there is, the row was green for the right reason, and nothing about it said that the first
+subdirectory anybody made would be skipped silently — with a module inside it free to
+redeclare the grid under a row still printing green.
+
+The mistake is not the missing recursion. It is that the enumeration was **the files that
+exist** while the comment above it claimed the enumeration was **the tree**, and the two are
+the same list right up until they are not. A traversal cannot be falsified by the tree it
+walks when that tree has nothing in it to recurse into, so the control is a tree the row
+builds: `web/flat.js` with no grid and `web/nested/buried.js` with one, run through the same
+walker, asserting it answers `['web/nested/buried.js']`. A walker that stops at the top
+answers `[]` and the row goes red, where against the real `web/` it would answer exactly
+what the row wants. **When a row's claim is about a shape the subject does not currently
+have, build the shape and run the same code over it** — a mutation of the subject cannot
+reach a case the subject does not contain.
+
+### A row comparing two tables must compare the declarations, not the instances
+
+The gallery badges each refusal the server can send, and the two lists are genuinely
+separate — the sentence is the server's, the badge over a 228px poster is the page's — so a
+key added to one and not the other is the failure. The row's first spelling read the
+server's side by flattening the refusals the fixture takes happened to carry. That covers a
+key exactly as far as some fixture provokes it, which is the reverse of the guarantee: the
+next refusal will apply to a take shape `buildFixture` does not write, so it would be absent
+from the derived list, absent from the page's table, and the row would compare two keys
+against two keys and pass. Fixed by exporting `OPEN_REFUSALS` from `server/library.js` and
+reading `Object.keys` off it, with `--mutate refusal-without-a-badge` adding a declared key
+no take provokes and no page badges — a mutation the old row could not have caught, because
+nothing it read would have changed. **A row asserting two enumerations agree has to reach
+both enumerations; a sample of one of them is a row about the sample.**
+
+Its neighbour is the other direction and is one line: every key a take actually arrived with
+has to be in the table, or the declaration has drifted off the code the way the page's table
+did.
+
+### A claim about "whichever surface asks" needs a control per surface
+
+The refusal moved to the server so that one take gets one sentence on every surface, and the
+commit changed the gallery and the menu together. The control mutated only the gallery. So
+reverting the menu to its old hard-coded "no sensor hello, or under two frames" — or adding
+any new local derivation there — left every row green, and the claim was asserted rather
+than enforced for half of what it claimed.
+
+Adding the second control found the delivery hole underneath it. A page mutation is
+delivered by intercepting its route, and `openPage` knew one page: `library.html` at
+`/gallery`, with a throw for anything else. That throw is why the miss was loud rather than
+silent, and it is worth keeping in that shape — the table now names `menu.html` at `/` and
+still throws for a file with no URL. The glob went with it: `**${target}` for a page served
+at `/` is `**/`, which matches every directory-shaped URL the page requests, so the mutated
+menu would have been fulfilled for requests that are not the menu. It matches on the
+pathname now. **A claim that names more than one surface is not controlled until each
+surface has a mutation of its own, and the second control is usually what discovers that the
+delivery only ever worked for the first.**
+
+### Two machines on one network are two builds, and a rig that stages both cannot see it
+
+`library-check` spawns its node and its editing machine out of one staged tree, so both
+speak the build under test and every wire-format claim between them is an oracle agreeing
+with itself. The failure that shape cannot show is a version skew: the editing machine gets
+upgraded first, because it is the one somebody is standing at, and the node goes on serving
+the manifest of the build before. That manifest parses, survives the id and hash filters,
+and reconciles into the listing looking like any other take — so a field the pages now
+require is simply absent, and the gallery blanks on a `TypeError` while painting the first
+remote tile.
+
+The node in that row is a stub `http` server serving a manifest written out by hand, on a
+kernel-assigned port rather than one out of the reserved span, because a port `listen(0)`
+hands back cannot be held by another worktree. Written out field for field rather than
+generated by deleting a key from today's shape: a fixture derived from the code it is meant
+to outlive follows that code. And the row has two arms, because a gate that refused every
+manifest would pass the refusal arm while taking the link off entirely. **When a claim is
+about two builds talking, one of them has to be a fixture — anything the rig spawns is the
+build under test.**
+
 ### A mutation that does nothing reads as a check that found nothing
 
 Step 5 produced one: a mutation meant to draw editor furniture into the rendered frame

@@ -112,6 +112,9 @@ node tools/export-check.mjs --mutate pointsize-absolute   # ... and must FAIL mu
 node tools/library-check.mjs                              # step 7: library, recorder, routes
 node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL
 node tools/library-check.mjs --mutate open-decides-its-own-reason  # ... one take, one refusal, whichever surface asks
+node tools/library-check.mjs --mutate menu-decides-its-own-reason  # ... and the menu is a surface too
+node tools/library-check.mjs --mutate refusal-without-a-badge      # ... a reason the server declares and no page can badge
+node tools/library-check.mjs --mutate node-admits-an-old-manifest  # ... a node one build behind, refused at the link
 node tools/library-check.mjs --mutate grid-declared-twice          # ... and the sensor grid stated once
 node tools/library-check.mjs --mutate tile-height-follows-content  # ... the gallery's geometry
 node tools/library-check.mjs --mutate poster-height-in-js          # ... and its poster's box

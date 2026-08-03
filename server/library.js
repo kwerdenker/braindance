@@ -156,6 +156,60 @@ export async function appendMarks(capturePath, records) {
 // ------------------------------------------------------------------- manifest
 
 /**
+ * Every reason this build can refuse to open a take, keyed, with the sentence each one
+ * carries - and this is the only place any of them is written.
+ *
+ * A list on the take rather than one string, because a take can carry two blocking
+ * facts at once and a single string cannot serve a tile that badges both. `openable` is
+ * then "the list is empty" rather than a second expression of the same predicate, which
+ * is what stops the two drifting.
+ *
+ * It is here rather than in the pages because it was in the pages, twice, twelve lines
+ * apart, and they disagreed. A take with a hello and no whole frame was badged "the
+ * scan found no whole frame in this take" and, on the button beside it, told it "needs
+ * two frames to bracket a position" - a sentence about a take that has one, shown over
+ * a take that has none. Measured on the shipped build before this moved, with the
+ * `hello-no-frames` fixture `library-check` now plants: nothing had ever reached that
+ * shape, because the take with zero frames carried no hello and answered on the
+ * recording branch, and the take with a hello had a frame.
+ *
+ * Zero frames and one frame are different facts and the sentence says which, which is
+ * the distinction the gallery's badge already drew and the button did not.
+ *
+ * **A table rather than three pushes with their sentences inline, because the keys have
+ * a second reader.** `web/library.js` keeps its own table of what each key is badged as
+ * over a 228px poster, and the two have to cover the same keys or a refusal arrives
+ * with no badge. A check comparing the page's table against the refusals that happen to
+ * be in a fixture library cannot see a key no fixture take produces; comparing it
+ * against this object can, which is why the enumeration is a value here and not a shape
+ * to be recovered from the branches below.
+ */
+export const OPEN_REFUSALS = {
+  recording: () => 'this take is still being written, so it has no settled hash and nothing may open it until the recorder closes it',
+  'no-hello': () => 'this take carries no sensor hello, so its intrinsics are unknown and it cannot be unprojected',
+  short: (frames) => (frames === 0
+    ? 'the scan found no whole frame in this take, so there is nothing here to draw or to open'
+    : 'a take needs two frames to bracket a position, so there is nothing here to play'),
+};
+
+/** One refusal, so a key that is not in the table above is a throw rather than a tile. */
+const refusal = (key, ...args) => ({ key, why: OPEN_REFUSALS[key](...args) });
+
+/**
+ * Whether a take from somewhere else carries refusals this build can render.
+ *
+ * The shape and not the vocabulary. A *newer* node may send a key this build has never
+ * heard of, and the gallery is built for that - an unmapped key is badged as itself,
+ * because visibly unmapped beats confidently wrong - so rejecting on an unknown key
+ * would refuse a node whose takes are perfectly listable. What cannot be rendered is a
+ * take with no refusals at all, which is what an *older* node sends: it carried
+ * `openable`, `hasHello` and `frames` and left every surface to derive the sentence,
+ * which is the derivation this design removed.
+ */
+const carriesRefusals = (take) => Array.isArray(take.openRefusals)
+  && take.openRefusals.every((r) => r && typeof r.key === 'string' && typeof r.why === 'string' && r.why !== '');
+
+/**
  * One take as the gallery sees it. Read through `cachedIndex`, which holds no
  * descriptor, so a directory of two hundred takes costs two hundred sidecar reads
  * and nothing that stays open.
@@ -196,10 +250,7 @@ async function describeTake(dir, file, recording) {
       // recording take is a wider statement - it names stopping before opening,
       // downloading, renaming or removing - and stays a page concern for that reason,
       // because an action list does not belong in a library scanner.
-      openRefusals: [{
-        key: 'recording',
-        why: 'this take is still being written, so it has no settled hash and nothing may open it until the recorder closes it',
-      }],
+      openRefusals: [refusal('recording')],
       openable: false,
       recording: true,
       // Cheap and it is the one thing that is true mid-take: marks pressed in the
@@ -223,47 +274,14 @@ async function describeTake(dir, file, recording) {
   // as a record.
   const fromHello = Number.isFinite(hello?.startedAt) && hello.startedAt > 0;
 
-  /**
-   * Why this take cannot be opened, in sentences, keyed so a surface can decide what
-   * to do with each - and this is the only place any of them is written.
-   *
-   * A list rather than one string, because a take can carry two blocking facts at
-   * once and a single string cannot serve a tile that badges both. `openable` below
-   * is then "the list is empty" rather than a second expression of the same
-   * predicate, which is what stops the two drifting.
-   *
-   * It is here rather than in the pages because it was in the pages, twice, twelve
-   * lines apart, and they disagreed. A take with a hello and no whole frame was
-   * badged "the scan found no whole frame in this take" and, on the button beside it,
-   * told it "needs two frames to bracket a position" - a sentence about a take that
-   * has one, shown over a take that has none. Measured on the shipped build before
-   * this moved, with the `hello-no-frames` fixture `library-check` now plants: nothing
-   * had ever reached that shape, because the take with zero frames carried no hello
-   * and answered on the branch above, and the take with a hello had a frame.
-   *
-   * Zero frames and one frame are different facts and the sentence says which, which
-   * is the distinction the gallery's badge already drew and the button did not.
-   *
-   * **The push order is the badge order**, since the gallery renders these in the
-   * order they arrive and `cannotOpen` quotes the first. Decided here rather than
-   * sorted there, because two files agreeing about an order is the same shape as two
-   * files agreeing about a sentence.
-   */
+  // Why this take cannot be opened, drawn from the one table above. **The push order
+  // is the badge order**, since the gallery renders these in the order they arrive and
+  // `cannotOpen` quotes the first. Decided here rather than sorted there, because two
+  // files agreeing about an order is the same shape as two files agreeing about a
+  // sentence.
   const openRefusals = [];
-  if (!index.hello) {
-    openRefusals.push({
-      key: 'no-hello',
-      why: 'this take carries no sensor hello, so its intrinsics are unknown and it cannot be unprojected',
-    });
-  }
-  if (stamps.length < 2) {
-    openRefusals.push({
-      key: 'short',
-      why: stamps.length === 0
-        ? 'the scan found no whole frame in this take, so there is nothing here to draw or to open'
-        : 'a take needs two frames to bracket a position, so there is nothing here to play',
-    });
-  }
+  if (!index.hello) openRefusals.push(refusal('no-hello'));
+  if (stamps.length < 2) openRefusals.push(refusal('short', stamps.length));
 
   return {
     id,
@@ -357,17 +375,46 @@ export class NodeLink {
     return res.json();
   }
 
-  /** The node's own takes, or null if it cannot be reached. Never throws upward. */
+  /**
+   * The node's own takes, or null if it cannot be read. Never throws upward.
+   *
+   * **Two machines on one network are two builds**, and the one that gets upgraded
+   * first is whichever the operator was standing at. A node still running the build
+   * before the refusals moved off the pages answers `/library/takes` with `openable`,
+   * `hasHello` and `frames` and no `openRefusals` at all - a manifest that parses,
+   * passes the id and hash filters below, and reconciles into the listing looking like
+   * any other take. The gallery then iterates a field that is not there while painting
+   * the first remote tile, and the whole shelf goes blank on a `TypeError` with nothing
+   * on screen saying why.
+   *
+   * Refused here, at the boundary, rather than guarded at each of the surfaces that
+   * read a take. A `?? []` on the page would draw a tile claiming a take is fine, which
+   * is a second implementation wearing a fallback and the fallback is the half that
+   * would be believed; and there are three surfaces, so the guard would be three
+   * guesses about one wire format. This is the one place a manifest from another build
+   * arrives, so it is the one place that can say the build is the problem.
+   *
+   * The whole manifest and never take by take. Admitting the readable ones would hide
+   * the rest behind a shelf that looks complete, and "some of that node's takes are
+   * missing" is the failure a link is supposed to make impossible to have silently.
+   */
   async takes() {
     try {
       const body = await this.fetchJson('/library/takes');
-      this.lastError = null;
       // The hash is filtered beside the id because it is the other field of a node's
       // that reaches a path here. **A take still being shot advertises no hash at
       // all** - `describeTake` reports null on purpose, and `reconcile` keys those by
       // side and name - so null is a take the gallery has to be able to list and
       // refuse to download. What must not pass is a string that is not a hash.
-      return body.takes.filter((t) => VALID_ID.test(t.id) && (t.hash === null || VALID_HASH.test(t.hash)));
+      const takes = body.takes.filter((t) => VALID_ID.test(t.id) && (t.hash === null || VALID_HASH.test(t.hash)));
+      const older = takes.find((t) => !carriesRefusals(t));
+      if (older) {
+        this.lastError = 'it is running an older build whose take manifest carries no open-refusal reasons, '
+          + `so nothing it holds can be listed here - ${older.id} arrived with none. Upgrade the node to this build.`;
+        return null;
+      }
+      this.lastError = null;
+      return takes;
     } catch (err) {
       this.lastError = err.message;
       return null;

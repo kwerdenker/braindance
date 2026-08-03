@@ -63,6 +63,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, cpSync, mkdirSync, readdirSync, rmSync, symlinkSync, existsSync, readFileSync, writeFileSync, appendFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { createConnection } from 'node:net';
+import { createServer } from 'node:http';
 import { networkInterfaces } from 'node:os';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
@@ -905,6 +906,40 @@ const MUTATIONS = {
       + "  return '';\n"
       + '};',
   ]] },
+  // **The menu goes back to naming both causes at once**, which is the sentence that
+  // shipped: a page holding an `openable` boolean and nothing telling it which half
+  // fired, so a take with a hello and one frame was told it might have neither. A
+  // second control beside `open-decides-its-own-reason` and not a widening of it,
+  // because the claim is that *whichever surface asks* gets the server's sentence, and
+  // a control that mutates only the gallery leaves the other surface free to derive its
+  // own with every row still green - which is what it was doing.
+  'menu-decides-its-own-reason': { file: 'web/menu.html', edits: [[
+    '  if (!take.openable) {\n'
+      + '    const why = take.openRefusals.map((r) => r.why).join(\'; \');\n'
+      + '    return gallery(`${take.id} cannot be opened: ${why}`);\n'
+      + '  }',
+    '  if (!take.openable) return gallery(`${take.id} cannot be opened: no sensor hello, or under two frames`);',
+  ]] },
+  // **A refusal the server declares and no page can badge**, which is the drift the
+  // two-table row exists to catch and could not see while it read the refusals a
+  // fixture take happened to carry. Nothing here provokes this key - that is the
+  // point: a reason that applies to a take shape this library does not hold is exactly
+  // the one that would arrive unbadged, and a row deriving its list from
+  // `/library/takes` would compare two keys against two keys and print green.
+  'refusal-without-a-badge': { file: 'server/library.js', edits: [[
+    'export const OPEN_REFUSALS = {\n',
+    'export const OPEN_REFUSALS = {\n'
+      + "  'wrong-format': () => 'this take was written by a generation of the format this build cannot read',\n",
+  ]] },
+  // **The link admits a manifest from the build before the refusals moved**, which is
+  // the take that reconciles in looking like any other and then blanks the shelf while
+  // the first remote tile paints. The gate rather than the sentence it sets, because
+  // what the row claims is that nothing without refusals reaches a surface - a mutation
+  // of the wording would redden a message row while the take still came through.
+  'node-admits-an-old-manifest': { file: 'server/library.js', edits: [[
+    '      const older = takes.find((t) => !carriesRefusals(t));\n      if (older) {',
+    '      const older = takes.find((t) => !carriesRefusals(t));\n      if (false) {',
+  ]] },
   // **The monitor's cost line goes back to spelling the grid out inline**, which is
   // where it was for as long as the comment above it promised the opposite. It
   // computes exactly the same number, renders identical pixels and serves identical
@@ -1480,15 +1515,26 @@ async function openPage(browser, url, viewport = { width: 1100, height: 760 }) {
     // exists for one layer up, arriving through the delivery instead of the anchor.
     const file = pageMutation.file.slice('web/'.length);
     const html = file.endsWith('.html');
-    const target = html ? '/gallery' : `/${file}`;
-    await page.route(`**${target}`, (route) => route.fulfill({
+    // The table rather than a conditional, for the reason the rule below already gives:
+    // a page is reached at the URL `PAGES` names it by, so the mapping is a fact about
+    // the server and a check that knew only one of them delivered nothing for the rest.
+    // It knew only `library.html` until the menu got a mutation of its own, and the
+    // shape of that miss is the throw underneath: loud, at the first page opened, and
+    // naming the file - never a silent fulfil of a route nothing requests.
+    const AT = { 'library.html': '/gallery', 'menu.html': '/' };
+    if (html && !(file in AT)) {
+      throw new Error(`no URL is known for web/${file}: this table knows ${Object.keys(AT).join(', ')}`);
+    }
+    // Matched on the pathname rather than by a `**${target}` glob. The menu is served
+    // at `/`, and `**/` matches every directory-shaped URL the page asks for - the
+    // mutated menu would have been fulfilled for requests that are not the menu. A
+    // predicate says the one thing meant: this exact path and nothing under it.
+    const target = html ? AT[file] : `/${file}`;
+    await page.route((url) => url.pathname === target, (route) => route.fulfill({
       status: 200,
       contentType: html ? 'text/html; charset=utf-8' : 'text/javascript; charset=utf-8',
       body: pageMutation.body,
     }));
-    if (html && file !== 'library.html') {
-      throw new Error(`no URL is known for web/${file}: only library.html is served, at /gallery`);
-    }
   }
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   return { page, errors };
@@ -1575,14 +1621,46 @@ async function runChecks() {
   // deliberately not to `tools/`: every proof tool here states the grid independently,
   // and that is correct rather than sloppy, because a check that imported the constant
   // it asserts would be holding a `512` against itself.
+  //
+  // **It recurses, and the first spelling of it did not.** `web/` and `server/` are flat
+  // today, so a walk of their direct children found every file there is and read as a
+  // walk of the tree - with a `continue` on a directory that would have skipped the
+  // first subdirectory anybody made, silently, leaving a module free to redeclare the
+  // grid under a row still printing green. That is the close-the-class rule failing in
+  // the shape it is meant to catch: the enumeration was the files that exist rather
+  // than the tree, and nothing about the row said which.
   console.log('\n[library] the sensor grid is declared once, and the tree is what says so');
   {
     const grid = /(?<![\d.])(?:512|424)(?![\d.])/;
+    // Relative paths under `base`, deepest last, as one flat list. Split out from the
+    // row below so the falsification control underneath can run the same walker over a
+    // tree it built, which is the only way to hold a traversal to its claim - a
+    // recursion bug in this loop is invisible against a directory that has nothing in
+    // it to recurse into.
+    const sourcesUnder = (base, dir, prefix = '') => readdirSync(join(base, dir), { withFileTypes: true })
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .flatMap((entry) => (entry.isDirectory()
+        ? sourcesUnder(base, `${dir}/${entry.name}`, `${prefix}${entry.name}/`)
+        : [`${dir}/${entry.name}`]));
+
+    // The control, run before the row it controls: a tree whose only grid is one
+    // directory down. A walker that skips directories answers `[]` here and this goes
+    // red, where against the real `web/` and `server/` it would answer exactly what the
+    // row below wants and pass. Built under `.library-check` and left there with the
+    // rest of the run's scratch.
+    const probeRoot = join(REPO, '.library-check', 'grid-probe');
+    rmSync(probeRoot, { recursive: true, force: true });
+    mkdirSync(join(probeRoot, 'web', 'nested'), { recursive: true });
+    writeFileSync(join(probeRoot, 'web', 'flat.js'), 'export const NOTHING = 1;\n');
+    writeFileSync(join(probeRoot, 'web', 'nested', 'buried.js'), 'export const W = 512;\n');
+    const probed = sourcesUnder(probeRoot, 'web').filter((rel) => grid.test(readFileSync(join(probeRoot, rel), 'utf8')));
+    check(eq(probed, ['web/nested/buried.js']),
+      'the walk this row uses reaches a file one directory down, so a grid buried in a subdirectory is found',
+      probed.join(' ') || 'the walk found nothing, which is a walk that stops at the top of the tree');
+
     const holders = [];
     for (const dir of ['web', 'server']) {
-      for (const name of readdirSync(join(root, dir)).sort()) {
-        const rel = `${dir}/${name}`;
-        if (statSync(join(root, rel)).isDirectory()) continue;
+      for (const rel of sourcesUnder(root, dir)) {
         if (grid.test(withoutComments(shippedSource(rel)))) holders.push(rel);
       }
     }
@@ -1683,6 +1761,122 @@ async function runChecks() {
       `remaining space is reported as time, not bytes (${lib.storage.label})`);
     check(lib.storage.secondsLeft > 0 && Number.isFinite(lib.storage.bytesPerSec),
       'and it is a duration derived from a rate rather than a byte count');
+  }
+
+  // ------------------------------------------- 2b. a node from another build
+  //
+  // **Two machines on one network are two builds**, and every fixture above has them
+  // running the same one - which is the shape that cannot show this. The editing
+  // machine is upgraded first because it is the one somebody is standing at, and the
+  // node then answers `/library/takes` in the vocabulary of the build before: an
+  // `openable` boolean, a `hasHello`, a frame count, and no refusals at all. That
+  // manifest parses, survives the id and hash filters, and reconciles into the listing
+  // looking like any other take, so the failure lands where nothing is watching for it
+  // - the gallery iterating a field that is not there while painting the first remote
+  // tile, and the whole shelf blank on a `TypeError`.
+  //
+  // The node is a stub rather than a second server, because what has to be tested is a
+  // manifest this tree can no longer produce. Anything spawned out of `stageServer`
+  // runs the build under test and answers correctly by construction, which is the same
+  // trap as an oracle that agrees with itself.
+  //
+  // On a kernel-assigned port rather than one out of the reserved span. `reservePorts`
+  // exists because two worktrees sharing a fixed port shared a server and asserted
+  // against each other's fixtures; a port the kernel hands out on `listen(0)` cannot
+  // be held by anybody, which answers the same worry without widening the span.
+  console.log('\n[library] a node running an older build is refused at the link, not rendered');
+  {
+    const { NodeLink } = await import(pathToFileURL(join(root, 'server/library.js')).href);
+    const stub = (takes) => new Promise((done) => {
+      const srv = createServer((req, res) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ takes }));
+      });
+      srv.listen(0, '127.0.0.1', () => done({ srv, url: `http://127.0.0.1:${srv.address().port}` }));
+    });
+    // The manifest the build before this one served, field for field. Written out here
+    // rather than generated, because a fixture derived from today's shape by deleting a
+    // key is a fixture that follows the code it is meant to outlive.
+    const oldShape = {
+      id: 'shot-on-an-old-node',
+      file: 'shot-on-an-old-node.knct',
+      bytes: 4096,
+      hash: `sha256:${'ab'.repeat(32)}`,
+      frames: 1,
+      durationSec: 0,
+      capturedAt: Date.UTC(2026, 5, 1),
+      dateSource: 'mtime',
+      truncated: false,
+      hasHello: true,
+      hello: { fx: 365, fy: 365, cx: 256, cy: 212 },
+      openable: false,
+      recording: false,
+      marks: [],
+    };
+    const newShape = {
+      ...oldShape,
+      id: 'shot-on-this-build',
+      hash: `sha256:${'cd'.repeat(32)}`,
+      openRefusals: [{ key: 'short', why: 'a take needs two frames to bracket a position, so there is nothing here to play' }],
+    };
+
+    const old = await stub([oldShape]);
+    const current = await stub([newShape]);
+    try {
+      const oldLink = new NodeLink(old.url, 'old-node');
+      const oldTakes = await oldLink.takes();
+      check(oldTakes === null, 'a manifest with no refusals on it is refused whole rather than admitted take by take',
+        oldTakes === null ? 'null' : `${oldTakes.length} takes came through`);
+      check(/older build/.test(oldLink.lastError ?? '') && /shot-on-an-old-node/.test(oldLink.lastError ?? ''),
+        'and the link says it is the node\'s build and which take arrived without them, rather than reporting a timeout',
+        JSON.stringify(oldLink.lastError));
+
+      // **The other arm, and the row is unfalsifiable without it.** A gate that
+      // refused every manifest would pass both rows above while taking the link off
+      // entirely, which is the same failure one build further along.
+      const currentLink = new NodeLink(current.url, 'current-node');
+      const currentTakes = await currentLink.takes();
+      check(currentTakes?.length === 1 && currentTakes[0].id === 'shot-on-this-build',
+        'a manifest that carries them passes, so the gate is a version band rather than the link switched off',
+        `${currentTakes === null ? 'null' : currentTakes.length} takes, error ${JSON.stringify(currentLink.lastError)}`);
+
+      // What the operator gets, which is the half a boundary test cannot see: the
+      // gallery still paints, the local shelf is all there, and the line under the
+      // header says what happened. With the gate off this is where the `TypeError`
+      // lands and every tile goes with it, so the arm is here rather than assumed.
+      const mixedUrl = await startServer(root, ['--captures', macCaps, '--name', 'mac', '--node', old.url,
+        '--node-name', 'old-node', '--presets', join(WORK, 'presets'), '--projects', join(WORK, 'projects'),
+        '--builtin-presets', join(WORK, 'builtin-presets')], MAC_PORT + 1);
+      const { page, errors } = await openPage(browser, galleryPage(mixedUrl));
+      // **Waited for behind a catch, because this is the arm the mutation kills.** With
+      // the gate off, the remote take reconciles in and the page throws inside its
+      // top-level paint, so `__library` is never assigned at all - and an unguarded
+      // wait is twenty seconds of Playwright and then a throw that ends the whole run
+      // at 29 of 363 assertions. Measured: that is what `--mutate
+      // node-admits-an-old-manifest` did before this catch. A control is supposed to
+      // redden the rows carrying its claim and leave every other claim still
+      // measurable; one whose blast radius is the tool measures nothing else.
+      const painted = await page.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 })
+        .then(() => true).catch(() => false);
+      const tiles = painted ? await page.evaluate('globalThis.__library.tiles()') : [];
+      check(painted && tiles.length > 0 && errors.length === 0,
+        'the gallery beside an older node still draws this machine\'s own takes, with no page error',
+        `${painted ? `${tiles.length} tiles` : 'the page never finished painting'}, ${errors.length} errors: ${errors.join(' | ')}`);
+      // `tiles.length > 0` and not just `every`, because an empty list satisfies every
+      // predicate there is - and an empty list is exactly what the arm above reports
+      // when the page has died.
+      check(tiles.length > 0 && tiles.every((t) => t.state !== 'remote'),
+        'and nothing from that node is on the shelf, because a shelf missing some of them silently is the worse answer',
+        `${tiles.length} tiles, ${tiles.filter((t) => t.state === 'remote').length} of them remote`);
+      const line = await page.evaluate('document.getElementById("note")?.textContent ?? ""');
+      check(/old-node/.test(line) && /older build/.test(line),
+        'and the page names the node and says its build is the reason', JSON.stringify(line));
+      await page.close();
+      for (const p of servers.filter((sv) => sv.port === MAC_PORT + 1)) p.child.kill('SIGKILL');
+    } finally {
+      old.srv.close();
+      current.srv.close();
+    }
   }
 
   // ----------------------------------------------------------- 3. decimation
@@ -2180,6 +2374,37 @@ async function runChecks() {
       'and it is the sentence about the frame it does not have rather than the one about bracketing a position',
       JSON.stringify(buttonWhy));
 
+    // **The same take, asked of the other surface**, because "whichever surface asks"
+    // is a claim about more than one of them and the two rows above are both the
+    // gallery. The menu resolves the Resume tile against `/library/all` and used to
+    // hold an `openable` boolean with nothing telling it which half had fired, so it
+    // named both causes at once - "no sensor hello, or under two frames" over a take
+    // with a hello and one of the two conditions. A reader of this file could have
+    // reverted that line and watched every row here stay green, which is a claim
+    // asserted rather than enforced; `--mutate menu-decides-its-own-reason` is the
+    // control that closes it.
+    const refusedHash = one('hello-no-frames').hash;
+    {
+      const { page: menu, errors: menuErrors } = await openPage(browser, `${macUrl}/`);
+      // Seeded and then reloaded, because the page resolves its tile once at load out
+      // of storage another surface writes. Setting it on a page already resolved would
+      // be asserting against the answer for an empty machine.
+      await menu.evaluate(`localStorage.setItem('kinect.lastOpened', ${JSON.stringify(JSON.stringify({
+        takeHash: refusedHash, takeId: 'hello-no-frames', project: null,
+      }))})`);
+      await menu.reload({ waitUntil: 'domcontentloaded' });
+      await menu.waitForFunction('globalThis.__menu !== undefined', null, { timeout: 20000 });
+      const resume = await menu.evaluate('globalThis.__menu.resume()');
+      check(resume.href === '/gallery' && (resume.reason ?? '').includes(buttonWhy),
+        'the menu refuses the same take in the same sentence the gallery put on its button',
+        `menu ${JSON.stringify(resume.reason)} against button ${JSON.stringify(buttonWhy)}`);
+      check(!/no sensor hello, or under two frames/.test(resume.reason ?? ''),
+        'and not in a sentence naming both causes over a take that has one of them',
+        JSON.stringify(resume.reason));
+      check(menuErrors.length === 0, 'and the menu raises no page error resolving it', menuErrors.join(' | '));
+      await menu.close();
+    }
+
     // **Every refusal the server can send has a badge on the page, asked of the two
     // tables rather than of the refusals that exist today.** The page decides its own
     // badge text - a 228px poster is a page constraint - so the two lists are
@@ -2189,13 +2414,35 @@ async function runChecks() {
     // format-version band is exactly that third refusal arriving. `recording` is left
     // out by name: `warningsOf` returns its own four-verb warning before it reaches
     // this table, which is the one sentence the page still writes and why.
+    //
+    // **Read off `OPEN_REFUSALS` and not off `/library/takes`**, because the fixture
+    // library is not an enumeration of anything. The first spelling of this row
+    // flattened the refusals the fixture takes happened to carry, which covers a key
+    // exactly as far as some take here provokes it - so the next refusal, which will
+    // apply to a take shape nothing in `buildFixture` writes, would be absent from the
+    // list, absent from the page's table, and the row would print green having compared
+    // two keys against two keys. The claim is that a reason added later is asked by
+    // existing, and only the server's own declaration can carry it.
+    //
+    // Imported out of the staged tree rather than through this file's static import of
+    // `server/library.js`, which reaches the repo: a server mutation is written into
+    // the stage, so a row reading the repo's copy would be answering about an
+    // unmutated build and `--mutate refusal-without-a-badge` would pass.
+    const { OPEN_REFUSALS } = await import(pathToFileURL(join(root, 'server/library.js')).href);
     const badgeKeys = await page.evaluate('globalThis.__library.badgeKeys()');
-    const serverKeys = [...new Set((await getJson(`${macUrl}/library/takes`)).takes
-      .flatMap((t) => (t.openRefusals ?? []).map((r) => r.key)))].filter((k) => k !== 'recording');
+    const serverKeys = Object.keys(OPEN_REFUSALS).filter((k) => k !== 'recording');
     const unbadged = serverKeys.filter((k) => !badgeKeys.includes(k));
     check(serverKeys.length > 0 && unbadged.length === 0,
       'every refusal the server can send has a badge on the page, so a reason added later is asked by existing',
       `server ${serverKeys.join(' ')} against page ${badgeKeys.join(' ')}`);
+    // And the declaration is not a list nothing reads: every key in it has to be a key
+    // the scanner can actually produce, or the row above is comparing the page against
+    // an enumeration that has drifted off the code the way the page's table did.
+    const liveKeys = [...new Set((await getJson(`${macUrl}/library/takes`)).takes
+      .flatMap((t) => t.openRefusals.map((r) => r.key)))];
+    check(liveKeys.every((k) => k in OPEN_REFUSALS),
+      'and every refusal a take actually arrived with is one the table declares',
+      `${liveKeys.join(' ')} against ${Object.keys(OPEN_REFUSALS).join(' ')}`);
 
     // Marks on the tile's scrub bar, at their source fraction. The two that a
     // fraction gets wrong on its own are checked by name: source zero has to land
