@@ -323,6 +323,28 @@ text and inside a `${}`. A scan that reads strings puts it on the 512 list and f
 scan that swallows template expressions takes it off the 424 list and fails. One file,
 both directions, which is what an arm for a scanner has to do.
 
+**Then the scan itself needed the same treatment twice, and both were about a token being
+asked of a character.** It entered its numeric branch only on a digit, so `.512e3` — 512,
+in the notation with no leading digit — was invisible: a whole spelling in which a second
+grid could ship under a green row. And it decided the `/` question from the previous
+*character*, so `return /512/` left it looking at the `n` of `return`, called that a value,
+called the slash division, and read the pattern's digits as code. A scan now takes an
+identifier whole and keeps it, because the question was always about the previous token.
+
+Two details in that are worth carrying. **A dot followed by a digit needs no
+disambiguation**, since `a.512` is a SyntaxError and property access can never look like
+this — the guard the first version had was protecting against a case the language does not
+have. And **the kept word has to be cleared by every branch that is not an identifier**,
+or a `return` left standing across the string in `return 'x' / 512` turns that division
+into a regex and swallows the code to the next slash. That is the silent direction, so the
+clearing is the part to get right rather than the keeping.
+
+**A spelling is only covered where a control plants it.** The mutation for notations
+planted hex and digit-leading scientific, so the row's claim to see *any* spelling was
+two-thirds measured and read as whole. `grid-declared-with-a-leading-dot` is its own
+mutation rather than a third number in that one, because the two fail differently and a
+control that covers a case is the only thing that says the case is covered.
+
 ### An enumeration that walks a flat tree is the files that exist, not the tree
 
 The grid row above walks `web/` and `server/` rather than a list of the files that hold the

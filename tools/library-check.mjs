@@ -1110,6 +1110,15 @@ const MUTATIONS = {
     '  const depthKB = Math.ceil(DEPTH_W / state.divisor) * Math.ceil(DEPTH_H / state.divisor) * 2 / 1000;',
     '  const depthKB = Math.ceil(0x200 / state.divisor) * Math.ceil(4.24e2 / state.divisor) * 2 / 1000;',
   ]] },
+  // **And the notation with no leading digit**, which is its own mutation rather than a
+  // third number in the one above because a spelling is only covered where a control
+  // plants it: hex and digit-leading scientific were, and `.512e3` was not, so the row's
+  // claim to see any spelling was two-thirds measured. The scan entering only on a digit
+  // passes this and reports the grid as declared once.
+  'grid-declared-with-a-leading-dot': { file: 'web/main.js', edits: [[
+    '  const depthKB = Math.ceil(DEPTH_W / state.divisor) * Math.ceil(DEPTH_H / state.divisor) * 2 / 1000;',
+    '  const depthKB = Math.ceil(.512e3 / state.divisor) * Math.ceil(.424e3 / state.divisor) * 2 / 1000;',
+  ]] },
   // The loopback gate comes off the one route in this program that starts a process,
   // so a browser across the link opens a window on a machine nobody is standing at.
   'reveal-answers-any-caller': { file: 'server/index.js', edits: [[
@@ -1245,17 +1254,38 @@ const numbersIn = (src) => {
   const stack = [];
   const inTemplate = () => stack[stack.length - 1]?.kind === 'template';
   let depth = 0;
-  // The last significant character, which is what decides the `/` question. Not the last
-  // character: whitespace and comments do not answer it.
+  // The last significant character and the last identifier, which together decide the `/`
+  // question. Not the last character alone: `return` ends in a letter and a letter ends a
+  // value, so the character on its own calls every `return /re/` a division. `prevWord` is
+  // cleared by every branch that is not an identifier, because a `return` left standing
+  // across the string in `return 'x' / 2` would turn that division into a regex and
+  // swallow the code up to the next slash - which is the silent direction.
   let prev = '';
+  let prevWord = '';
   let i = 0;
-  const NUM = /^(?:0[xX][\dA-Fa-f](?:_?[\dA-Fa-f])*|0[oO][0-7](?:_?[0-7])*|0[bB][01](?:_?[01])*|\d(?:_?\d)*(?:\.(?:\d(?:_?\d)*)?)?(?:[eE][+-]?\d(?:_?\d)*)?)n?/;
+  // The decimal form has two shapes because JavaScript does: digits first, or a leading
+  // dot. `.512e3` is 512 and the first spelling of this scan could not see it, since it
+  // entered only on a digit - a whole notation in which a second grid could be declared
+  // under a green row, which is the direction that does not announce itself. A dot
+  // followed by a digit is never a property access, because `a.512` is a SyntaxError, so
+  // there is nothing to disambiguate here.
+  const NUM = /^(?:0[xX][\dA-Fa-f](?:_?[\dA-Fa-f])*|0[oO][0-7](?:_?[0-7])*|0[bB][01](?:_?[01])*|\d(?:_?\d)*(?:\.(?:\d(?:_?\d)*)?)?(?:[eE][+-]?\d(?:_?\d)*)?|\.\d(?:_?\d)*(?:[eE][+-]?\d(?:_?\d)*)?)n?/;
+  // The words after which a `/` is a pattern and never a quotient.
+  const REGEX_AFTER = new Set(['return', 'throw', 'case', 'yield', 'typeof', 'instanceof',
+    'in', 'of', 'delete', 'void', 'new', 'do', 'else', 'await']);
   while (i < src.length) {
     const c = src[i];
     if (inTemplate()) {
       if (c === '\\') { i += 2; continue; }
-      if (c === '`') { stack.pop(); prev = '`'; i++; continue; }
-      if (c === '$' && src[i + 1] === '{') { stack.push({ kind: 'code', depth }); depth++; prev = '{'; i += 2; continue; }
+      if (c === '`') { stack.pop(); prev = '`'; prevWord = ''; i++; continue; }
+      if (c === '$' && src[i + 1] === '{') {
+        stack.push({ kind: 'code', depth });
+        depth++;
+        prev = '{';
+        prevWord = '';
+        i += 2;
+        continue;
+      }
       i++;
       continue;
     }
@@ -1271,12 +1301,28 @@ const numbersIn = (src) => {
       while (i < src.length && src[i] !== c) i += src[i] === '\\' ? 2 : 1;
       i++;
       prev = c;
+      prevWord = '';
       continue;
     }
-    if (c === '`') { stack.push({ kind: 'template' }); i++; continue; }
-    // A regex only where a value cannot already have ended. `}` counts as a value ending,
-    // which is the ambiguous case resolved toward division, as the comment above says.
-    if (c === '/' && !/[\w$)\]}'"`]/.test(prev)) {
+    if (c === '`') { stack.push({ kind: 'template' }); i++; prevWord = ''; continue; }
+    // An identifier taken whole, because the `/` question below is about the previous
+    // *token* and asking it of the previous character gets `return /512/` wrong - `n` ends
+    // a word, a word ends a value, and a value means division. That reads the regex as
+    // code and reports its digits, which is the loud direction but still a clean tree
+    // failing over a module that returns a pattern.
+    if (/[A-Za-z_$]/.test(c)) {
+      let j = i;
+      while (j < src.length && /[\w$]/.test(src[j])) j++;
+      prevWord = src.slice(i, j);
+      prev = 'a';
+      i = j;
+      continue;
+    }
+    // A regex only where a value cannot already have ended - or after one of the words
+    // that cannot be followed by division, which is what makes `return /512/` a pattern
+    // and `total / 512` a quotient. `}` stays the ambiguous case resolved toward
+    // division, as the comment above says.
+    if (c === '/' && (!/[\w$)\]}'"`]/.test(prev) || REGEX_AFTER.has(prevWord))) {
       i++;
       let klass = false;
       while (i < src.length) {
@@ -1289,26 +1335,31 @@ const numbersIn = (src) => {
       }
       i++;
       prev = '/';
+      prevWord = '';
       continue;
     }
-    if (c === '{') { depth++; prev = c; i++; continue; }
+    if (c === '{') { depth++; prev = c; prevWord = ''; i++; continue; }
     if (c === '}') {
       depth--;
       const top = stack[stack.length - 1];
-      if (top?.kind === 'code' && top.depth === depth) { stack.pop(); i++; continue; }
+      if (top?.kind === 'code' && top.depth === depth) { stack.pop(); prevWord = ''; i++; continue; }
       prev = c;
+      prevWord = '';
       i++;
       continue;
     }
-    // A number, but only where one can start - `a.512` is a property and `x512` a name.
-    if (/\d/.test(c) && !/[\w$.]/.test(prev)) {
+    // A number, in either of the two shapes one can start in: a digit, or a dot with a
+    // digit behind it. `x512` is a name and never reached here, because the identifier
+    // branch above has already taken it whole.
+    if (/\d/.test(c) || (c === '.' && /\d/.test(src[i + 1] ?? ''))) {
       const [token] = NUM.exec(src.slice(i));
       values.push(Number(token.replace(/n$/, '').replace(/_/g, '')));
       i += token.length;
       prev = '0';
+      prevWord = '';
       continue;
     }
-    if (!/\s/.test(c)) prev = c;
+    if (!/\s/.test(c)) { prev = c; prevWord = ''; }
     i++;
   }
   return values;
@@ -2179,6 +2230,17 @@ async function runChecks() {
       'export const WIDE = 1512;\nexport const SMALL = 4.24;\nexport const HEX = 0x201;\n');
     writeFileSync(join(probeRoot, 'web', 'nested', 'buried.js'), 'export const W = 512;\n');
     writeFileSync(join(probeRoot, 'web', 'nested', 'hexadecimal.js'), 'export const W = 0x200;\n');
+    // **Two forms that the scan needs a token for rather than a character.** `.512e3` is
+    // 512 in the notation with no leading digit, and a scan entering only on a digit
+    // cannot see it - a whole spelling in which a second grid ships under a green row.
+    // `return /424/` is the other side: `return` ends in a letter, a letter ends a value,
+    // and a value means the `/` is division, so the pattern gets read as code and its
+    // digits reported. One file holds both, so it must land on the width list and not on
+    // the height list - a scan that misses the first or falls for the second gets exactly
+    // one of those wrong.
+    writeFileSync(join(probeRoot, 'web', 'nested', 'edge-forms.js'),
+      'export const W = .512e3;\n'
+      + 'export const rows = () => { return /424/; };\n');
     writeFileSync(join(probeRoot, 'web', 'nested', 'deeper', 'further.js'), 'export const H = 424;\n');
     writeFileSync(join(probeRoot, 'web', 'nested', 'deeper', 'scientific.js'), 'export const H = 4.24e2;\n');
     // **The literal text a module carries, which is the same fact as the paragraph in the
@@ -2222,7 +2284,7 @@ async function runChecks() {
     // the 512 list and fails, and a scan that swallows template expressions takes it off
     // the 424 list and fails. One file, both directions.
     const WANT = {
-      512: ['web/nested/buried.js', 'web/nested/hexadecimal.js', 'web/page.html'],
+      512: ['web/nested/buried.js', 'web/nested/edge-forms.js', 'web/nested/hexadecimal.js', 'web/page.html'],
       424: ['web/nested/deeper/further.js', 'web/nested/deeper/scientific.js', 'web/nested/literals.js'],
     };
     for (const [what, n] of GRID) {
