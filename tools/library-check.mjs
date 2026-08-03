@@ -99,6 +99,15 @@ const MAC_PORT = Number(flag('--mac-port', '8211'));
 // and the failure reads exactly like a finding about the recorder. The span is checked
 // end to end before anything spawns, and `startServer` asserts its port is inside it, so
 // a section added later at `+17` is caught by arithmetic rather than by a wrong reading.
+//
+// **The span stayed at 16 and the collision inside it was fixed instead**, which is worth
+// saying because widening was the first answer and it is the wrong one. Every worktree on
+// this machine has to find the whole span free, so two more ports is a cost paid by
+// everybody to route around a bug in the bookkeeping - and the bug is one offset naming
+// two servers in `servers`, which `startServer` now drops the stale half of. Reuse is
+// deliberate here rather than tolerated: `+14` is a rename server and later a
+// broken-preset one, and an offset with a live holder cannot be taken at all, because the
+// kernel refuses the bind.
 const PORT_SPAN = 16;
 const MUTATE = flag('--mutate');
 const HEADED = argv.includes('--headed');
@@ -1461,6 +1470,24 @@ async function startServer(root, args, port) {
     throw new Error(`port ${port} is outside the reserved span ${MAC_PORT}..${MAC_PORT + PORT_SPAN}: `
       + 'raise PORT_SPAN and the note beside it, or this server is one nothing checked was free');
   }
+  // **An offset this run has used before belongs to whoever is on it now**, and the entry
+  // for the last holder is dropped rather than left beside the new one. Sections reuse an
+  // offset on purpose - `+14` is a broken-preset server long after the rename server on it
+  // has been killed - and two entries for one port make every `servers.find((s) => s.port
+  // === n)` in this file answer with whichever was pushed first, which is the dead one.
+  //
+  // That is not hypothetical either: it read `0 exits` off a killed server's log while the
+  // live one under test had died twenty-two times, and reported three rows about a
+  // supervisor that was working. The reading was wrong rather than the code, which is the
+  // worst way for a proof tool to be wrong - so the ambiguity is removed rather than
+  // documented.
+  //
+  // Replaced and not refused, because two *live* servers on one port is a case the kernel
+  // already rules out: the second would fail to bind, and the exit-instead-of-listening
+  // throw below is what says so. Reaching here at all means the last holder let the port
+  // go, which is the definition of it being the last one.
+  const stale = servers.findIndex((s) => s.port === port);
+  if (stale !== -1) servers.splice(stale, 1);
   const child = spawn(process.execPath, [join(root, 'server/index.js'), '--port', String(port), ...args], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });

@@ -370,6 +370,37 @@ manifest would pass the refusal arm while taking the link off entirely. **When a
 about two builds talking, one of them has to be a fixture — anything the rig spawns is the
 build under test.**
 
+### Two sections on one port, and the one that read a log read the wrong one
+
+The sibling of the `MAC_PORT + 9` case above, with this file on both ends of it instead of
+another worktree. `library-check` keeps its spawned servers in one `servers` array and
+finds them by port — `servers.find((s) => s.port === MAC_PORT + 1).log.join('')` is how a
+section reads what its server printed. Two sections claimed `+1`. The first killed its
+server long before the second started, so the bind succeeded and nothing failed; what was
+left was two entries for one port, and `find` answers with whichever was pushed first,
+which is the dead one.
+
+The respawn-backoff section therefore counted grabber exits in an empty log and reported
+`0 exits`, three rows red, against a supervisor that was working correctly — and the log
+it should have read carried twenty-two deaths, which the corroborating row beside it
+printed in full. **The reading was wrong rather than the code**, which is the worst way for
+a proof tool to be wrong: it is a finding about the instrument wearing the shape of a
+finding about the program, and the merge that surfaced it looked exactly like a
+regression. What settled it was a control run of the same tool on `main`, on a port span
+nothing else held: 365 assertions, none failed, against 390 with 3 failed here, with the
+three sections' code byte-identical between the two trees.
+
+Fixed by dropping the stale entry when an offset is claimed again, so a lookup by port
+answers with the server that is on it. Not by refusing the reuse and not by widening the
+span: reuse is deliberate — `+14` is a rename server and later a broken-preset one — and
+two more ports is a cost every worktree on the machine pays to route around a bug in the
+bookkeeping. Two *live* servers on one port is a case the kernel already rules out, so
+reaching the claim at all means the last holder let go.
+
+**The general shape is rule 4 read backwards.** A probe placed where its answer would be
+different is no good if something else can answer for it, and an array searched by a key
+two things share is exactly that. `find` on a non-unique key is a silent choice.
+
 ### A mutation that does nothing reads as a check that found nothing
 
 Step 5 produced one: a mutation meant to draw editor furniture into the rendered frame
