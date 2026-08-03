@@ -276,6 +276,22 @@ held, `startServer` throws if its own child exits instead of listening, and it r
 outside the declared span so a section added at `+17` is a failure rather than a hole. Pass
 `--node-port`/`--mac-port` a range nothing else holds.
 
+**Two more collisions inside the span, and both were silent.** An offset two sections both
+reach for binds without complaint, because the first holder is dead by the time the second
+starts — what is left is two entries for one port, and every `servers.find((s) => s.port ===
+n)` in the tool answers with whichever was pushed first, which is the dead one. Measured when
+it happened: the respawn-backoff section read another section's log and reported `0 exits`
+against a log carrying twenty-two deaths, which reads as a finding about the supervisor and is
+a finding about the reading. `startServer` drops the stale entry at the claim now — not at the
+lookup, because a section that only starts a server and never reads its log still poisons the
+one that does — and keeps it on a retired list the cleanup still walks.
+
+The other is a `--node-port` chosen *inside* the mac span, which the free check deduplicates
+away: both pass, the run starts, the node binds the shared offset first and is still live when
+a section reaches it, and the retire path then drops a running server off the cleanup list. The
+operator sees an EADDRINUSE several sections in, naming neither the overlap nor the node. It is
+a fact about the arguments, so `reservePorts` now answers it from the arguments and exits 2.
+
 **Three rows in it are flaky under machine contention, and they are written down here so the
 next person does not spend the afternoon on an innocent change.** Two are in the
 marks-on-the-scrubber section and are the same race: `and it is stamped in source milliseconds
@@ -340,7 +356,7 @@ delegates the sentence, and `openTake` in the editor, which is handed a hello an
 manifest — so `format.js` is still where the band lives, and a comparison inlined at either door
 would still pass every row here and drift the first time the band gains a member.
 
-So the assertion the mutation really carries is the *count*: it reddens **8 of 390** — the
+So the assertion the mutation really carries is the *count*: it reddens **8 of 392** — the
 listing's `openable`, the refusal the take carries, the two-table containment row, the gallery's
 badge and its Open button, the menu's sentence, and the editor's note and its refusal to open.
 The count grew when the surfaces stopped deriving, which is the right direction: quoting one
@@ -352,7 +368,7 @@ mean the band had quietly become several predicates that agree.
 **Its opposite number is `--mutate openable-recomputes-the-band`**, which puts the band back to
 being a term in `openable` rather than an entry in the table, and it exists because
 `openable` is false either way. Every row asking whether the future-format take opens passes a
-build where the band decides for itself again — measured: 4 of 390, and the three rows that
+build where the band decides for itself again — measured: 5 of 392, and the three rows that
 brought the band into this suite are all still green under it. What reddens is what the take
 *carries*: the refusal itself, the containment row now declaring a `format` nothing produces, the
 badge over the poster and the sentence in the menu. **When a merge collapses two derivations into

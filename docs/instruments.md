@@ -257,6 +257,33 @@ of near misses — `1512`, `4.24`, `0x201` — and the rows assert the whole mat
 rather than membership, so a matcher that grew *looser* than the regex it replaced fails
 without needing a row of its own.
 
+### A JavaScript question asked of every file in the tree gets answered by prose and CSS
+
+The other end of the same row, and the two corrections pull in opposite directions, which is
+what makes the pair worth reading together. The walk is deliberately wide — every file under
+`web/` and `server/`, so a page added next year is asked by existing — and `web/` holds three
+HTML pages and a stylesheet as well as the modules. Asking "is 512 a literal here" of markup
+answers about layout and copy: a `width: 512px` rule in `nav.css`, or a paragraph mentioning
+a 424-line budget, would have made that file a second grid owner and failed a clean suite on
+a change that redeclared nothing.
+
+Narrowing the *walk* to `.js` closes it by opening a hole, because the pages here carry real
+code — `menu.html` holds `resolveResume` inline and this suite mutates it. So the walk stays
+wide and the **question** narrows: the whole of a module, and the `<script>` bodies of a
+page. Typed scripts are excluded by their `type` rather than by looking like data, because
+`index.html` carries an importmap, and a version string in a JSON blob is not a declaration
+of anything.
+
+The probe tree carries a page stating both numbers four times over — in prose, in a
+`<style>` rule, in the importmap, and finally in a module script — and a stylesheet stating
+both in a rule. Exactly one of those five is a declaration, and the rows assert the whole
+matched list, so either mistake fails: reading the paragraph, or no longer reading the
+script.
+
+**The general rule is that a scope has two halves and they are set separately.** What the
+enumeration reaches and what the question is asked of are different decisions, and collapsing
+them means every widening of one silently widens the other.
+
 ### An enumeration that walks a flat tree is the files that exist, not the tree
 
 The grid row above walks `web/` and `server/` rather than a list of the files that hold the
@@ -345,8 +372,8 @@ fail for different reasons and a combined row would report the wrong one.
 **The control for it is `--mutate refusals-must-be-nonempty`, and it is deliberately not
 a well-behaved one.** It reddens both arm rows, and then it reddens the node's own rows
 across the suite, because the bug it plants is exactly "every healthy node goes dark" and
-that is what that looks like from here — 124 assertions, 11 failed, where a clean run
-reaches 390. That is the blast-radius rule being broken knowingly rather than by accident:
+that is what that looks like from here — 125 assertions, 11 failed, where a clean run
+reaches 392. That is the blast-radius rule being broken knowingly rather than by accident:
 several sections assume a linked node holding remote takes, and the first of them,
 `drawn(undefined)`, waited out its own timeout and threw at 105. That one is guarded now,
 the same way the way-back anchor is; the next is the confirm dialog for a take in state
@@ -401,6 +428,36 @@ to outlive follows that code. And the row has two arms, because a gate that refu
 manifest would pass the refusal arm while taking the link off entirely. **When a claim is
 about two builds talking, one of them has to be a fixture — anything the rig spawns is the
 build under test.**
+
+### The branch that carried the argument against second answers, and then gave one
+
+`OPEN_REFUSALS` exists so that `openable` is "the refusal list is empty" and never a second
+expression of the same predicate, and the paragraph saying so sits directly above a
+`describeTake` whose two branches did not both do it. The settled-take branch derived.
+The take-being-written branch carried `openRefusals: [refusal('recording')]` and a hardcoded
+`openable: false` on the next line — two answers to one question, written in by the commit
+whose entire subject is that there should be one.
+
+Nothing was wrong yet, which is the whole difficulty: both said the take cannot be opened,
+so they agreed, and they would go on agreeing until one moved. What waits at the end of that
+is the quiet failure rather than a loud one — `cannotOpen` quotes the list, so a list that
+went while the boolean stayed leaves a *disabled* Open button explaining nothing, which
+looks like a take that simply cannot be opened rather than like a bug.
+
+**Every existing row was structurally unable to see it.** The two-table rows compare which
+keys the tables know and skip `recording` by name, for a reason of fact — no take on that
+server is being written, so the response cannot carry the key. The row that does watch a live
+recording take asked `openable === false`, which is true in both builds. So the exclusion
+that was correct in one place became the reason nothing covered the branch, which is rule 5
+arriving through a justification nobody had cause to look at twice.
+
+Two rows now. One asks every take in the listing whether `openable` is its list being empty
+— a claim about the scanner rather than about the fixture, so a third branch added later is
+asked by existing. The other stands where the recording take actually is and asks for the
+sentence, not the boolean. `--mutate recording-decides-openable-itself` empties the list and
+hardcodes the boolean together, because hardcoding alone changes nothing observable and
+would have been a control that did nothing: 1 failed assertion of 392, the row that carries
+the claim and no other.
 
 ### Two sections on one port, and the one that read a log read the wrong one
 

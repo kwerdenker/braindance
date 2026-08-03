@@ -248,6 +248,16 @@ async function describeTake(dir, file, recording) {
   // than a figure that reads like a fact, and says the take is recording, which is
   // what the tile actually has to draw.
   if (recording) {
+    // **Hoisted so `openable` is derived here too, and it was not.** This branch used to
+    // carry the list and a hardcoded `openable: false` beside it, which is precisely the
+    // second expression of one predicate that the table above exists to remove - written
+    // into the branch by the commit that wrote the argument against it. Nothing caught it:
+    // both said the take cannot be opened, so they agreed until the day one moved, and the
+    // failure they would have produced is the quiet one - a disabled Open button whose
+    // reason is the empty string, because `cannotOpen` quotes the list and the list is
+    // what would have gone. The two-table rows cannot see this either, since they skip
+    // `recording` on purpose.
+    const openRefusals = [refusal('recording')];
     return {
       id,
       file,
@@ -270,8 +280,8 @@ async function describeTake(dir, file, recording) {
       // recording take is a wider statement - it names stopping before opening,
       // downloading, renaming or removing - and stays a page concern for that reason,
       // because an action list does not belong in a library scanner.
-      openRefusals: [refusal('recording')],
-      openable: false,
+      openRefusals,
+      openable: openRefusals.length === 0,
       recording: true,
       // Cheap and it is the one thing that is true mid-take: marks pressed in the
       // room land in the sidecar, and the sidecar is beside the take rather than in

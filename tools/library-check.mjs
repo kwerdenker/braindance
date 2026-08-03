@@ -707,8 +707,11 @@ const MUTATIONS = {
   ]] },
   // The manifest scans the take being written, which is a full read and a sha256 of
   // a growing multi-gigabyte file per request, against the recorder's own disk.
+  // Anchored on the branch's condition alone. It used to carry the `return {` two lines
+  // down with it, which put the refusal list between them the moment that was hoisted -
+  // and `syntax-check` refused the control rather than letting it silently match nothing.
   'manifest-scans-open-take': { file: 'server/library.js', edits: [[
-    '  if (recording) {\n    return {', '  if (false) {\n    return {',
+    '  if (recording) {\n', '  if (false) {\n',
   ]] },
   // The boot stops making the captures directory, which is the state a reflashed
   // node comes up in.
@@ -1010,6 +1013,19 @@ const MUTATIONS = {
     "  if (!index.hello) openRefusals.push(refusal('no-hello'));\n",
     '',
   ]] },
+  // **The take being written goes back to answering twice**, which is where it was: the
+  // list on one line and a hardcoded `openable: false` on the next. Both edits together,
+  // because a mutation that only hardcodes the boolean changes nothing observable - the
+  // list is non-empty, so `false` is what deriving would have given and the run would
+  // record a control that did nothing. Emptying the list beside it is what makes the two
+  // disagree, and disagreeing is the whole subject: the manifest goes on reporting a take
+  // that cannot be opened while `cannotOpen` has nothing to quote, so the Open button is
+  // disabled with an empty explanation.
+  'recording-decides-openable-itself': { file: 'server/library.js', edits: [
+    ["    const openRefusals = [refusal('recording')];", '    const openRefusals = [];'],
+    ['      openRefusals,\n      openable: openRefusals.length === 0,\n      recording: true,',
+      '      openRefusals,\n      openable: false,\n      recording: true,'],
+  ] },
   // **The capture-format band goes back to being a term in `openable` rather than a
   // refusal in the list**, which is the shape it arrived from `main` in and the shape the
   // merge changed. It is the control for that change, and the reason it needs one is that
@@ -1025,10 +1041,15 @@ const MUTATIONS = {
   //
   // Narrow on purpose: an empty `openRefusals` still satisfies `carriesRefusals`, so the
   // node link stays up and the rest of the suite still measures.
+  // The second edit carries `openRefusals,` above it and `recording: false,` below,
+  // because both branches of `describeTake` derive `openable` from the list now and the
+  // line on its own matches twice. `recording: false` is what says which branch this is.
   'openable-recomputes-the-band': { file: 'server/library.js', edits: [
     ["  if (captureFormatRefusal('this take', format) !== '') openRefusals.push(refusal('format', format));\n", ''],
-    ['    openable: openRefusals.length === 0,',
-      "    openable: Boolean(index.hello) && stamps.length >= 2 && captureFormatRefusal('this take', format) === '',"],
+    ['    openRefusals,\n    openable: openRefusals.length === 0,\n    recording: false,',
+      '    openRefusals,\n'
+      + "    openable: Boolean(index.hello) && stamps.length >= 2 && captureFormatRefusal('this take', format) === '',\n"
+      + '    recording: false,'],
   ] },
   // **One dimension of the grid stops being a literal while the other holds**, and the
   // value is deliberately unchanged - `DEPTH_W - 88` is still 424, so every page still
@@ -1488,6 +1509,22 @@ const portHeld = (port) => new Promise((done) => {
  * check. Exit 2 rather than 1: this is the suite declining to run, not a claim failing.
  */
 async function reservePorts() {
+  // **The node's port inside the mac span is a configuration this cannot serve**, and the
+  // `new Set` below used to swallow it: both ports are free, every check passes, and the
+  // run starts. The node comes up on it first and is still live when a section reaches
+  // that offset, so the claim-a-taken-offset path in `startServer` retires a server that
+  // is *running* - the replacement then dies on EADDRINUSE and the run ends on an error
+  // about a port, several sections in, naming neither the overlap nor the node.
+  //
+  // Refused here instead, because it is a fact about the arguments and can be known before
+  // anything spawns. Exit 2 with the other refusals: the suite declining to run.
+  if (NODE_PORT >= MAC_PORT && NODE_PORT <= MAC_PORT + PORT_SPAN) {
+    console.error(`[library] refusing to run: --node-port ${NODE_PORT} is inside the mac span `
+      + `${MAC_PORT}..${MAC_PORT + PORT_SPAN}, so the node and a section would claim one port.`);
+    console.error('[library] pass two ranges that do not overlap - the node needs one port and the mac side needs '
+      + `${PORT_SPAN + 1} from --mac-port.`);
+    process.exit(2);
+  }
   const wanted = [NODE_PORT, ...Array.from({ length: PORT_SPAN + 1 }, (_, i) => MAC_PORT + i)];
   const held = [];
   for (const port of new Set(wanted)) if (await portHeld(port)) held.push(port);
@@ -1973,6 +2010,36 @@ async function runChecks() {
     ].join(''), 'g');
     const declares = (source, n) => [...source.matchAll(NUMERIC)]
       .some((m) => Number(m[0].replace(/n$/, '').replace(/_/g, '')) === n);
+
+    // **The JavaScript in a file, because this is a claim about JavaScript.** The walk
+    // reaches every file under `web/` and `server/`, which is three HTML pages and a
+    // stylesheet as well as the modules - and asking "is 512 a literal here" of markup
+    // answers about prose and layout. A `width: 512px` in `nav.css`, or a paragraph in
+    // `index.html` mentioning a 424-line budget, is not a second declaration of the
+    // sensor's grid, and a row that failed on one would be blocking a copy change with a
+    // proof failure. Bad in both directions, too: the alternative of trusting it makes
+    // every future stylesheet a place the grid can hide.
+    //
+    // Restricting the *walk* to `.js` would close it by opening a hole, because the pages
+    // here carry real code - `menu.html` holds `resolveResume` inline, which is a module
+    // this suite mutates. So the walk stays wide and the question narrows: the whole of a
+    // module, and the `<script>` bodies of a page.
+    //
+    // **Typed scripts are excluded by type and not by looking like data.** `index.html`
+    // carries an importmap, which is JSON in a `<script>` tag - a version string in it is
+    // not a declaration of anything, and it is skipped because its `type` says it is not
+    // JavaScript rather than because this guessed. An empty `type`, `module`, or a
+    // JavaScript mime are the three that count.
+    const SCRIPT = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+    const isJs = (attrs) => {
+      const type = /\btype\s*=\s*["']?([^"'\s>]*)/i.exec(attrs)?.[1]?.toLowerCase();
+      return !type || type === 'module' || /^(text|application)\/(java|ecma)script$/.test(type);
+    };
+    const javascriptIn = (rel, source) => {
+      if (rel.endsWith('.js') || rel.endsWith('.mjs')) return source;
+      if (!rel.endsWith('.html')) return '';
+      return [...source.matchAll(SCRIPT)].filter((m) => isJs(m[1])).map((m) => m[2]).join('\n');
+    };
     const GRID = [['the depth width', 512], ['the depth height', 424]];
     // Relative paths under `base`, deepest last, as one flat list. Split out from the
     // row below so the falsification control underneath can run the same walker over a
@@ -2015,17 +2082,32 @@ async function runChecks() {
     writeFileSync(join(probeRoot, 'web', 'nested', 'hexadecimal.js'), 'export const W = 0x200;\n');
     writeFileSync(join(probeRoot, 'web', 'nested', 'deeper', 'further.js'), 'export const H = 424;\n');
     writeFileSync(join(probeRoot, 'web', 'nested', 'deeper', 'scientific.js'), 'export const H = 4.24e2;\n');
+    // A page and a stylesheet, which is what the tree actually holds beside the modules.
+    // The page states both numbers three times over and only one of them is a
+    // declaration: in prose, in a `<style>` rule, in an importmap that is a `<script>` of
+    // the wrong type, and then in a module script, which is the one that counts. The
+    // stylesheet states the height in a rule and must be found by nothing - a `424px`
+    // column is a layout decision, and a row that called it a second grid would fail a
+    // clean tree on a copy change.
+    writeFileSync(join(probeRoot, 'web', 'page.html'),
+      '<p>the sensor is 512 across and 424 down, which this paragraph says and does not declare</p>\n'
+      + '<style>.tile { width: 512px; height: 424px; }</style>\n'
+      + '<script type="importmap">{"imports":{"x":"/x-512-424.js"}}</script>\n'
+      + '<script type="module">const W = 512;</script>\n');
+    writeFileSync(join(probeRoot, 'web', 'sheet.css'), '.rail { height: 424px; width: 512px; }\n');
     const walked = sourcesUnder(probeRoot, 'web');
     // Sorted per directory and depth-first, which is the order `sourcesUnder` produces
     // and the order these are written in.
     const WANT = {
-      512: ['web/nested/buried.js', 'web/nested/hexadecimal.js'],
+      512: ['web/nested/buried.js', 'web/nested/hexadecimal.js', 'web/page.html'],
       424: ['web/nested/deeper/further.js', 'web/nested/deeper/scientific.js'],
     };
     for (const [what, n] of GRID) {
-      const probed = walked.filter((rel) => declares(readFileSync(join(probeRoot, rel), 'utf8'), n));
+      const probed = walked.filter((rel) => declares(
+        withoutComments(javascriptIn(rel, readFileSync(join(probeRoot, rel), 'utf8'))), n,
+      ));
       check(eq(probed, WANT[n]),
-        `the walk this row uses reaches ${what} buried in a subdirectory, in every spelling of the number and in no near miss of it`,
+        `the walk this row uses reaches ${what} buried in a subdirectory, in every spelling of the number, in a page's script and in no near miss, stylesheet or paragraph`,
         probed.join(' ') || 'the walk found nothing');
     }
 
@@ -2033,7 +2115,8 @@ async function runChecks() {
     // declared once" is two claims and only one of them can be answered by a match on
     // either number.
     const holdersOf = (n) => ['web', 'server'].flatMap(
-      (dir) => sourcesUnder(root, dir).filter((rel) => declares(withoutComments(shippedSource(rel)), n)),
+      (dir) => sourcesUnder(root, dir)
+        .filter((rel) => declares(withoutComments(javascriptIn(rel, shippedSource(rel))), n)),
     );
     for (const [what, n] of GRID) {
       const holders = holdersOf(n);
@@ -3102,6 +3185,27 @@ async function runChecks() {
     check(unreachable.length === 0,
       'and every refusal the table declares is one some take here actually arrives with, so a branch forgotten in the scanner is not a badge nobody can earn',
       unreachable.length ? `declared and never produced: ${unreachable.join(' ')}` : liveKeys.join(' '));
+
+    // **The predicate against the list, on every take rather than on the branches.** The
+    // whole argument for the table is that `openable` is "the list is empty" and not a
+    // second expression of the same thing - and `describeTake` has two branches, one of
+    // which derived it and one of which carried the list and a hardcoded `openable: false`
+    // beside it. They agreed, so nothing was wrong yet; the failure waiting there is a
+    // disabled Open button whose reason is the empty string, since `cannotOpen` quotes a
+    // list that had gone while the boolean stayed.
+    //
+    // Asked of every take in the listing, which is what makes it a claim about the scanner
+    // rather than about the takes this fixture happens to hold - a third branch added
+    // later is asked by existing. The two rows above cannot reach it from either
+    // direction: they compare *which keys* the tables know, and this is about a take whose
+    // keys are all perfectly declared and whose boolean stopped following them.
+    const disagreed = (await getJson(`${macUrl}/library/takes`)).takes
+      .filter((t) => t.openable !== (t.openRefusals.length === 0));
+    check(disagreed.length === 0,
+      'and every take\'s openable is its refusal list being empty, rather than a second answer to the same question',
+      disagreed.length
+        ? disagreed.map((t) => `${t.id} openable=${t.openable} with ${t.openRefusals.length} refusals`).join(', ')
+        : 'agreed on every take');
 
     // Marks on the tile's scrub bar, at their source fraction. The two that a
     // fraction gets wrong on its own are checked by name: source zero has to land
@@ -5806,6 +5910,22 @@ async function runChecks() {
       JSON.stringify({ recording: listed?.recording, hash: listed?.hash, frames: listed?.frames }));
     check(listed?.openable === false,
       'and it says it cannot be opened, so the tile has something to draw rather than zeros');
+    // **And it says *why*, which is the half a boolean cannot carry.** This branch of
+    // `describeTake` used to hold the refusal list and a hardcoded `openable: false` beside
+    // it - two answers to one question, written in by the commit whose whole subject is
+    // that there should be one. They agreed, so nothing was wrong yet, and what waits at
+    // the end of that is the quiet failure: `cannotOpen` quotes the list, so a list that
+    // went while the boolean stayed leaves a disabled Open button explaining nothing.
+    //
+    // The row is here rather than beside its two-table siblings because this is the only
+    // server in the suite with a take being written - those rows read a listing that
+    // cannot contain one, and skip `recording` by name for exactly that reason. A probe
+    // for this claim has to stand where the answer could be different.
+    check(listed?.openRefusals?.length === 1 && listed.openRefusals[0].key === 'recording'
+      && typeof listed.openRefusals[0].why === 'string' && listed.openRefusals[0].why !== ''
+      && listed.openable === (listed.openRefusals.length === 0),
+      'and the reason is on the take rather than only in the boolean, with openable following the list here too',
+      JSON.stringify(listed?.openRefusals));
     // **The missing hash is load-bearing on the menu, so it is asserted as that too.**
     // `resolveResume` finds the take it was last opened on by hash and by nothing else,
     // and `lastOpened` refuses a saved entry whose `takeHash` is not a non-empty string
