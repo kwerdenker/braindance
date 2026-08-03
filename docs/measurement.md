@@ -154,3 +154,31 @@ Likewise **a multi-line script through `bash -c "..."` loses twice**: the outer 
 every `$(...)` before bash sees it, and JSON quoting carries newlines as two literal
 characters. Ship it base64. And on this node `pkill -f` matches the remote shell running your
 own command — resolve listeners by port through `ss`.
+
+## A route's cost is per item, so measure it against a library the size of a shoot
+
+The gallery's poll had to pick between the cheap question and the true one:
+`/record/state`, which is memory the process already holds, and `/library/all`, which is
+what the grid is actually drawn from. "The listing is more expensive" is the kind of
+reasoning this repo does not accept on its own, so it was measured.
+
+Interleaved A/B on this rig, 20 pairs alternating the two routes against a 200-take
+library, both servers' indexes warm and the sidecars written, page cache settling
+discarded as the first eight pairs: **1.2ms for `/record/state` against 145ms for
+`/library/all`**, with the linked pair on one machine so the listing includes its node
+round trip. The steady-state figures are the last twelve pairs; the first two reads were
+5.3s and 1.6s and are the cache, not the route.
+
+The number that decides is not the ratio but where it comes from. `describeTake` reads a
+marks sidecar per take on both machines, so the listing's cost is per take and a
+five-second cadence would spend four hundred sidecar reads every tick to answer a question
+that is almost always no — against a recorder whose own comment says exactly this
+contention is what turns a slow card into dropped frames. **A route measured against a
+fixture-sized library reports a constant where the thing you need is a slope.** The
+200-take fixture is hardlinks of one capture, so the bytes are one file and the per-take
+work is real.
+
+Cold is a different quantity and worth stating so nobody re-derives it as a regression:
+the first listing over 200 unindexed takes took **7m30s**, because `cachedIndex` scans each
+file once and writes a `.idx` beside it. The second server over the same directory warmed
+in 2.4s off those sidecars.

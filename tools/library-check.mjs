@@ -5524,10 +5524,19 @@ async function runChecks() {
       const t = globalThis.__library.tiles().find((x) => x.id === ${JSON.stringify(id)});
       return t ? { flags: t.flags, acts: t.acts } : null;
     })()`);
+    // **The action a remote take offers is Download, and while it is being written it
+    // is not offered at all.** `availability` gives a remote take a Download button
+    // only once it has stopped, because a take mid-write has no settled hash and the
+    // node answers 409 for it - so what a shooting remote tile carries is the same
+    // disabled Open a local one does. That transition, disabled Open to enabled
+    // Download, is what this station gets out of following the node's recorder, and it
+    // is a different pair of buttons from the one the direct gallery below reads.
+    const actLabels = (t) => (t?.acts ?? []).map((a) => `${a.label}${a.disabled ? ' (off)' : ''}`).join(' ') || '(none)';
     const remoteBefore = await linkedFlags(shooting.takeId);
-    check(remoteBefore?.flags?.includes('recording') === true,
-      'a station with no sensor of its own draws the node\'s open take into its grid and says it is being written',
-      `flags ${remoteBefore?.flags?.join(',') ?? '(no tile)'}`);
+    check(remoteBefore?.flags?.includes('recording') === true
+      && remoteBefore?.acts?.find((a) => a.label === 'Open')?.disabled === true,
+      'a station with no sensor of its own draws the node\'s open take into its grid, says it is being written, and refuses every action behind that',
+      `flags ${remoteBefore?.flags?.join(',') ?? '(no tile)'}, acts ${actLabels(remoteBefore)}`);
     // This machine's own recorder, said out loud. It is the reading that makes the row
     // below a claim about following the *node* rather than about following anything:
     // a gallery here that polled only what this process holds would be polling a flag
@@ -5556,10 +5565,9 @@ async function runChecks() {
       'the station is polling, which is what makes the row below about what the poll watches rather than about a page that stopped asking',
       `${linkedPolls} requests to /record/state`);
     check(remoteAfter?.flags?.includes('recording') === false
-      && remoteAfter?.acts?.find((a) => a.label === 'Open')?.disabled === false,
-      'and it follows the node\'s recorder rather than its own, so the finished take stops being refused without anybody reloading',
-      `flags ${remoteAfter?.flags?.join(',') || '(none)'}, `
-      + `Open ${remoteAfter?.acts?.find((a) => a.label === 'Open')?.disabled ? 'still disabled' : 'enabled'}`);
+      && remoteAfter?.acts?.find((a) => a.label === 'Download')?.disabled === false,
+      'and it follows the node\'s recorder rather than its own, so the finished take stops being refused and becomes downloadable without anybody reloading',
+      `flags ${remoteAfter?.flags?.join(',') || '(none)'}, acts ${actLabels(remoteAfter)}`);
     check(linked.errors.length === 0, 'and the linked gallery raises no page error while it follows',
       linked.errors.slice(0, 2).join(' | '));
     await linked.page.close();
