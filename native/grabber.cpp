@@ -45,6 +45,20 @@ static const uint32_t TYPE_COLOR = 3;
 static const int CW = 1920;
 static const int CH = 1080;
 
+// What generation of this format the hello below declares. A magic says which reader
+// to use and a message type says which record this is; neither says what the numbers
+// inside it mean, and that is what changes: move the depth quantisation or the
+// registration path and every take written afterwards is structurally identical to
+// every take written before, so one geometry model runs over two archives and the
+// older half is silently reprojected wrong.
+//
+// **This is unavoidably a second spelling of a JavaScript number**, since the browser
+// cannot import a C++ constant and Node reads `web/format.js` by path. That file owns
+// the meaning - the three bands and what each opens - and `tools/syntax-check.mjs`
+// reads both values textually and requires them equal, which is what stops the two
+// drifting apart in the one direction nothing else would notice.
+static const uint32_t CAPTURE_FORMAT = 1;
+
 // A corpus is deliberately not KNCT: the wire format carries u16 millimetre depth
 // and a JPEG, which are both lossy relative to what Registration::apply actually
 // consumes. Its own magic keeps the two from ever being read by the wrong reader.
@@ -569,6 +583,11 @@ int main(int argc, char **argv) {
 
   // The browser needs the real intrinsics to unproject; hardcoded values skew the cloud.
   //
+  // format leads the record because it is what says how to read the rest of it. Every
+  // other key here is a measurement whose meaning depends on the generation that took
+  // it, so a reader that has not yet decided whether it can interpret this take at all
+  // has no business acting on its focal length.
+  //
   // startedAt is the wall clock, and it is here rather than in the server because
   // this is the only place that knows when the stream actually began. Every frame
   // timestamp below is steady_clock - monotonic since boot, which is exactly right
@@ -580,10 +599,10 @@ int main(int argc, char **argv) {
     std::chrono::system_clock::now().time_since_epoch()).count();
   char hello[512];
   int helloLen = std::snprintf(hello, sizeof(hello),
-    "{\"serial\":\"%s\",\"firmware\":\"%s\",\"width\":%d,\"height\":%d,"
+    "{\"format\":%u,\"serial\":\"%s\",\"firmware\":\"%s\",\"width\":%d,\"height\":%d,"
     "\"fx\":%.6f,\"fy\":%.6f,\"cx\":%.6f,\"cy\":%.6f,\"color\":%s,"
     "\"minDepth\":%.3f,\"maxDepth\":%.3f,\"lowLight\":%s,\"startedAt\":%lld}",
-    serial.c_str(), dev->getFirmwareVersion().c_str(), DW, DH,
+    CAPTURE_FORMAT, serial.c_str(), dev->getFirmwareVersion().c_str(), DW, DH,
     ir.fx, ir.fy, ir.cx, ir.cy, wantColor ? "true" : "false",
     minDepth, maxDepth, (wantColor && lowLight) ? "true" : "false", startedAt);
   // snprintf truncates silently, and a truncated hello is not JSON - so every take

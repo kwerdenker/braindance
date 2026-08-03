@@ -47,7 +47,7 @@
 // over the picture where they cost no height. See `library.html` for each of those in
 // the place it is enforced.
 
-import { VALID_ID } from '/format.js';
+import { VALID_ID, captureFormatRefusal } from '/format.js';
 
 const DEPTH_W = 512;
 const DEPTH_H = 424;
@@ -151,6 +151,31 @@ function warningsOf(take) {
       why: 'this take carries no sensor hello, so its intrinsics are unknown and it cannot be unprojected',
     });
   }
+  // The band immediately after the one above, because it is the same fact one step
+  // further along: a take with no hello has intrinsics nobody knows, and a take from a
+  // generation nobody knows has intrinsics whose *meaning* nobody knows. The sentence
+  // comes from `format.js` rather than being spelled here, so this badge and the dead
+  // Open button below it and the editor's own throw are one statement in three places.
+  // The `short` stays local, because what fits over a 228px poster is this file's
+  // concern and nothing else's.
+  //
+  // **The tile under this badge still draws, and that is decided rather than left over.**
+  // The skim unprojects the take's depth on this build's intrinsics, which is the very
+  // thing the refusal calls geometry nobody can check - so a badged tile is showing a
+  // picture whose shape may not be the room's. It draws anyway, because the poster's job
+  // here is recognition and not measurement: a gallery is where somebody goes to find
+  // which take this is, a blank tile answers that worse than an approximate one, and the
+  // badge over it says the picture is not to be trusted. Nothing bakes: the take cannot
+  // be opened, and `render-worker` reaches a take through `/edit?take=` - the same door
+  // `openTake` refuses at - so no export can be made from one of these.
+  const wrongFormat = captureFormatRefusal('this take', take.format ?? null);
+  if (wrongFormat) {
+    out.push({
+      key: 'format',
+      short: 'unknown format',
+      why: wrongFormat,
+    });
+  }
   if (take.frames !== null && take.frames < 2) {
     // Zero and one are different facts and the badge says which. A take cut before
     // its first whole frame has no picture to show at all - which is why the skim
@@ -172,6 +197,12 @@ function warningsOf(take) {
 const cannotOpen = (take) => {
   if (take.recording === true) return warningsOf(take)[0].why;
   if (take.hasHello === false) return 'this take carries no sensor hello, so its intrinsics are unknown';
+  // Taken from `format.js` rather than shortened here the way its two neighbours are.
+  // Those two say one thing each and a reader can be told the rest by the badge; this
+  // one has to name the generation it found, because "unknown format" without the
+  // number is a refusal nobody can act on.
+  const wrongFormat = captureFormatRefusal('this take', take.format ?? null);
+  if (wrongFormat) return wrongFormat;
   if (take.frames !== null && take.frames < 2) return 'a take needs two frames to bracket a position';
   return '';
 };
