@@ -2180,6 +2180,23 @@ async function runChecks() {
       'and it is the sentence about the frame it does not have rather than the one about bracketing a position',
       JSON.stringify(buttonWhy));
 
+    // **Every refusal the server can send has a badge on the page, asked of the two
+    // tables rather than of the refusals that exist today.** The page decides its own
+    // badge text - a 228px poster is a page constraint - so the two lists are
+    // genuinely separate and a key added to one and not the other is the failure. The
+    // first spelling of the page's side was a two-case conditional with an else, which
+    // would have badged a third refusal "no hello" over a take that has one, and a
+    // format-version band is exactly that third refusal arriving. `recording` is left
+    // out by name: `warningsOf` returns its own four-verb warning before it reaches
+    // this table, which is the one sentence the page still writes and why.
+    const badgeKeys = await page.evaluate('globalThis.__library.badgeKeys()');
+    const serverKeys = [...new Set((await getJson(`${macUrl}/library/takes`)).takes
+      .flatMap((t) => (t.openRefusals ?? []).map((r) => r.key)))].filter((k) => k !== 'recording');
+    const unbadged = serverKeys.filter((k) => !badgeKeys.includes(k));
+    check(serverKeys.length > 0 && unbadged.length === 0,
+      'every refusal the server can send has a badge on the page, so a reason added later is asked by existing',
+      `server ${serverKeys.join(' ')} against page ${badgeKeys.join(' ')}`);
+
     // Marks on the tile's scrub bar, at their source fraction. The two that a
     // fraction gets wrong on its own are checked by name: source zero has to land
     // at the left edge rather than being falsy-dropped, and one past the end has to

@@ -91,6 +91,35 @@ result, and it has now caught two flaws that reading the code did not:
 Report which mutations you ran and what each one caught. A check nobody has broken on purpose
 is a check nobody knows the sensitivity of.
 
+### A source row that reads the staged tree cannot be falsified by a page mutation
+
+The match-exactly-once rule guards the *anchor*. This is the same hole one layer further
+out, in the **delivery**, where nothing refuses it — and it was almost shipped as the
+falsification control for a row about the sensor grid being declared once.
+
+`library-check` applies its two kinds of mutation by two different mechanisms, and only one
+of them touches the tree. `stageServer` writes a **server** mutation into the copied tree,
+so a row reading `join(root, 'server/…')` sees it. A **page** mutation never lands on disk
+at all: `openPage` installs a Playwright route interception, so the browser gets the
+mutated body and the staged `root/web/main.js` is still the clean file. A row that walked
+the staged tree looking for a literal would therefore have passed against every page
+mutation there is, while looking exactly like a row with a control behind it.
+
+The fix is a `shippedSource(rel)` helper — the staged copy for every file, and
+`mutation.body` for the one file the mutation replaces — so the row reads what the run
+actually ships rather than what it happened to write down. Measured: with the helper,
+`--mutate grid-declared-twice` reddens the row and names both holders,
+`web/format.js web/main.js`, over a run that reached all 351 assertions. The other half is
+a code fact rather than a second measurement, and it is the whole mechanism: `stageServer`
+writes `serverMutation` and nothing else, so the staged `web/` is the clean tree on every
+page mutation and a row reading it would have counted one holder and passed.
+
+`docs/proof-tools.md` already records this family's other member — `web/library.html` has
+no URL of its own, so a `**/library.html` interception matches nothing and the unmutated
+page loads. **Whenever a row reads source rather than behaviour, ask by what mechanism the
+mutation would reach the bytes that row reads**, and do not assume the answer is the same
+for every file the tool can mutate.
+
 ### A mutation that does nothing reads as a check that found nothing
 
 Step 5 produced one: a mutation meant to draw editor furniture into the rendered frame

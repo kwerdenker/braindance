@@ -115,6 +115,30 @@ const post = (url, body) => jsonOf(url, {
 // -------------------------------------------------------------- what a take says
 
 /**
+ * The badge each refusal wears over a poster, as a table rather than a conditional
+ * with an else on the end.
+ *
+ * The sentence under a badge is the server's and this is the part that is not: a
+ * 228px poster is a page constraint, and "no frames" against "< 2 frames" is a
+ * distinction only something drawing the tile can be asked to make. Zero and one are
+ * different facts and the badge says which - a take cut before its first whole frame
+ * has no picture to show at all, which is why the skim never asks for one, where a
+ * single-frame take has exactly one and draws it. Reading `< 2 frames` on a tile with
+ * a blank poster would send somebody looking for the frame it has.
+ *
+ * **A key with no entry here reads as itself.** The first spelling of this was
+ * `key === 'short' ? … : 'no hello'`, which is a table of two wearing an else - so a
+ * third refusal, of the kind the server is free to add and which is being added,
+ * would have been badged "no hello" over a take that has one. Visibly unmapped beats
+ * confidently wrong, and `library-check` asserts the two tables agree rather than
+ * leaving it to be noticed.
+ */
+const BADGES = {
+  'no-hello': () => 'no hello',
+  short: (take) => (take.frames === 0 ? 'no frames' : '< 2 frames'),
+};
+
+/**
  * The warnings a take carries, short enough for a badge and long enough to act on.
  *
  * One list, read by the poster badges, by the ⋯ menu and by the viewer, because
@@ -155,13 +179,6 @@ function warningsOf(take) {
   // `VALID_ID`**: there is no local derivation left to fall back to, because a second
   // one is exactly what was wrong.
   //
-  // Zero and one are different facts and the badge says which. A take cut before its
-  // first whole frame has no picture to show at all - which is why the skim below
-  // never asks for one - where a single-frame take has exactly one and draws it. Both
-  // refuse to open, and reading `< 2 frames` on a tile with a blank poster would send
-  // somebody looking for the frame it has. That distinction is a 228px poster's
-  // problem rather than a library fact, which is why `short` is still written here
-  // while the sentence under it is not.
   // No `?? []` guarding this. `describeTake` sets the field in both its branches, so a
   // take that reached this page without one is a server this page cannot render
   // anyway, and a silent empty list would draw a tile claiming a take is fine - which
@@ -170,7 +187,7 @@ function warningsOf(take) {
   for (const refusal of take.openRefusals) {
     out.push({
       key: refusal.key,
-      short: refusal.key === 'short' ? (take.frames === 0 ? 'no frames' : '< 2 frames') : 'no hello',
+      short: BADGES[refusal.key]?.(take) ?? refusal.key,
       why: refusal.why,
     });
   }
@@ -1625,6 +1642,11 @@ globalThis.__library = {
     empty: false,
   })),
   emptyLine: () => grid.querySelector('.empty')?.textContent ?? null,
+  // Which refusal keys this page has a badge for, so a check can hold the two tables
+  // against each other rather than against the refusals that happen to exist today.
+  // A key the server can send and this page cannot badge is the next wrong label,
+  // and it is a row rather than something to notice.
+  badgeKeys: () => Object.keys(BADGES),
 
   /**
    * Every tile's geometry as it actually rendered, which is the only place the
