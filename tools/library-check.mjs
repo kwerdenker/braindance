@@ -1273,6 +1273,12 @@ const numbersIn = (src) => {
   // The words after which a `/` is a pattern and never a quotient.
   const REGEX_AFTER = new Set(['return', 'throw', 'case', 'yield', 'typeof', 'instanceof',
     'in', 'of', 'delete', 'void', 'new', 'do', 'else', 'await']);
+  // What may begin and continue a name, taken from the language rather than described.
+  // `$` and `_` are named because they are the two the properties leave out.
+  const ID_START = /[\p{ID_Start}$_]/u;
+  // The two joiners are written as escapes on purpose - they are zero-width, and a
+  // character class nobody can see the contents of is one nobody can review.
+  const ID_PART = /[\p{ID_Continue}$\u200C\u200D]/u;
   while (i < src.length) {
     const c = src[i];
     if (inTemplate()) {
@@ -1310,9 +1316,17 @@ const numbersIn = (src) => {
     // a word, a word ends a value, and a value means division. That reads the regex as
     // code and reports its digits, which is the loud direction but still a clean tree
     // failing over a module that returns a pattern.
-    if (/[A-Za-z_$]/.test(c)) {
+    //
+    // **`ID_Start` and `ID_Continue` rather than the ASCII classes**, which is the same
+    // correction as taking HTML's MIME list instead of a pattern shaped like it: these
+    // properties *are* the language's definition of an identifier, and `[A-Za-z_$]` is a
+    // guess at one that happens to cover the letters this tree uses today. `pixelsπ` is a
+    // perfectly good name; under the ASCII classes the `π` fell out of the identifier,
+    // landed as punctuation, and the division behind it read as a regex that swallowed
+    // the number - silently, and in a module the row is meant to be reading.
+    if (ID_START.test(c)) {
       let j = i;
-      while (j < src.length && /[\w$]/.test(src[j])) j++;
+      while (j < src.length && ID_PART.test(src[j])) j++;
       prevWord = src.slice(i, j);
       prev = 'a';
       i = j;
@@ -2322,7 +2336,11 @@ async function runChecks() {
       // A finished regex divided by something, which is the third way the slash question
       // gets answered wrongly: the slash that *closed* a pattern is not the slash that
       // could open one, and treating it as the latter swallows what follows.
-      + 'export const ratio = /x/ / 512;\n');
+      + 'export const ratio = /x/ / 512;\n'
+      // And a name the ASCII classes cannot finish reading. `π` is `ID_Continue`, so
+      // `pixelsπ` is one identifier; a scan that stops at the `s` leaves the `π` standing
+      // as punctuation, and the division behind it opens a regex over the number.
+      + 'export const perRow = (pixelsπ) => pixelsπ / 512;\n');
     writeFileSync(join(probeRoot, 'web', 'nested', 'deeper', 'further.js'), 'export const H = 424;\n');
     writeFileSync(join(probeRoot, 'web', 'nested', 'deeper', 'scientific.js'), 'export const H = 4.24e2;\n');
     // **The literal text a module carries, which is the same fact as the paragraph in the

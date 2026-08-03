@@ -370,14 +370,24 @@ attribute value ends at whitespace and a capture reading it to the `>` answers
 `text/javascript defer`, which is in no list of anything. Same failure as the missing MIME
 types and from the same direction: a running script's body dropped.
 
-### Eight rounds of one seam, and what that says about hand-rolling a lexer
+### Nine rounds of one seam, and what that says about hand-rolling a lexer
 
-The scan that answers "is this number written in the code" has now been corrected eight
+The scan that answers "is this number written in the code" has now been corrected nine
 times, and every correction was the same sentence: a question about a *token* answered
 with a *character*. Leading-dot numbers, `return /re/`, postfix `++`, legacy octal,
 `\btype` inside `data-type`, an unquoted attribute running past its end, a quoted `>`
-ending a start tag, and a finished regex divided by something. Each was real, each was
-silent, and each was found by review rather than by a run.
+ending a start tag, a finished regex divided by something, and an identifier the ASCII
+classes could not finish reading. Each was real, each was silent, and each was found by
+review rather than by a run.
+
+**Three of the nine had the same *fix*, and that is the pattern worth taking away**: the
+language or the spec already publishes the set, and the code had a description of it
+instead. HTML's sixteen JavaScript MIME essences against `(text|application)/(java|ecma)script`;
+`\p{ID_Start}`/`\p{ID_Continue}` against `[A-Za-z_$]`; and the numeric grammar's two decimal
+shapes against the one that starts with a digit. In each case the enumeration *is* the
+definition, and a pattern that covers today's members is a claim about the future that
+nothing checks. **Reach for the published set before writing a character class that means
+"names" or "types" or "numbers".**
 
 **That is the honest cost of a hand-rolled lexer, and it is worth stating rather than
 hiding behind the fixes.** The alternative was never a regex — a regex over a language is
