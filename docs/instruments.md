@@ -153,6 +153,561 @@ result, and it has now caught two flaws that reading the code did not:
 Report which mutations you ran and what each one caught. A check nobody has broken on purpose
 is a check nobody knows the sensitivity of.
 
+### A source row that reads the staged tree cannot be falsified by a page mutation
+
+The match-exactly-once rule guards the *anchor*. This is the same hole one layer further
+out, in the **delivery**, where nothing refused it — and it was almost shipped as the
+falsification control for a row about the sensor grid being declared once.
+
+`library-check` applied its two kinds of mutation by two different mechanisms, and only one
+of them touched the tree. `stageServer` wrote a **server** mutation into the copied tree,
+so a row reading `join(root, 'server/…')` saw it. A **page** mutation never landed on disk
+at all: `openPage` installed a Playwright route interception, so the browser got the
+mutated body and the staged `root/web/main.js` was still the clean file. A row that walked
+the staged tree looking for a literal would therefore have passed against every page
+mutation there is, while looking exactly like a row with a control behind it.
+
+**The tool now has one delivery, and this section is kept for the shape rather than for
+the mechanism.** `stageServer` writes every mutation, whichever side of the wire it is on,
+and `requireMutationDelivered` then asks the server over HTTP whether the bytes it serves
+are the ones this run staged — `docs/proof-tools.md` carries that collapse in full,
+including why two mechanisms delivering the same bytes was a rule with nothing measuring
+it. The `shippedSource(rel)` helper written to close this therefore lost its conditional
+in the same breath: `mutation.body` and the staged copy became the same bytes, so the
+branch was a second path that could only ever agree, and it is one read now.
+
+Two things survive the mechanism that produced them, and they are why this is still here.
+
+**A source row and a behaviour row are falsified by different things**, and it is worth
+asking which you have. The row that catches a page mutation by driving the page is safe
+from this entirely; the row that greps the tree depends on a delivery it does not name.
+When the delivery changed, only the second kind had to be re-examined.
+
+**What holds the staging is the source rows' own controls.** Remove the write in
+`stageServer` and `grid-declared-twice` stops reddening — that is the arm, and it is
+already in the suite. A helper that guarantees the bytes independently of the staging
+would have been the second gate again: nothing could reach one without the other covering,
+so neither could be tested and one of them would be doing all the work.
+
+Measured when the conditional came out, which is the check that it was genuinely
+redundant rather than merely looking it: `--mutate grid-declared-twice` still reddens both
+dimension rows naming `web/format.js web/main.js`, and `grid-declared-in-another-spelling`
+still reddens its two, over a baseline of 392 assertions with none failed.
+
+### A known intermittent in `library-check` section 9, written down with its signature
+
+`and it is stamped in source milliseconds rather than program time` goes red now and then,
+always reporting exactly `0ms against source 150ms at program 1.0s`. The row seeks the
+transport to program time 1.0, awaits `settled()`, presses mark, and compares the sidecar's
+`sourceMs` against `retime.sourceSecAt(1.0)`. `0ms` is not a near miss — it is the mark
+being taken with the playhead still at the start, so the seek had not been applied when
+`markHere` ran.
+
+Seen five times in about eleven runs while the refusal work was going through: four of them
+under back-to-back mutation sweeps, and **once in an unmutated baseline**, which is the part
+worth recording, because "only ever under load" was the reading until it was not. Two
+baselines run immediately afterwards on a machine with nothing else on it came back at 367
+assertions, none failed. Nothing in the diff that was being measured touches the retime
+curve, the transport or the mark sidecar, which is this file's own tell for flake rather
+than regression - a `git diff` rather than a judgement.
+
+It is recorded rather than diagnosed. The constant `0` and the constant `150` say the
+failure is discrete rather than noisy, so whatever it is has a single shape and is worth an
+hour when somebody has one: **the suspicion is that `settled()` can return before the seek
+it was waiting on has been applied**, which would make every row in that section that seeks
+and then reads a candidate rather than just this one.
+
+### One regex over two constants cannot see one of them go missing
+
+The grid row asks whether the sensor's `512x424` is declared once, and its first spelling
+asked with a single `512|424` alternation. A file "holds the grid" if it matches, and
+`web/format.js` matches for as long as *either* number is still written down there — so a
+`DEPTH_H` that stopped being a literal, or drifted off 424 while `DEPTH_W` held, leaves the
+holder list reading exactly `['web/format.js']` and the row green over a tree whose
+JavaScript no longer describes the frames the grabber sends.
+
+The duplication half was never at risk: a second file redeclaring either number lands in
+the list and the row fails. It is the row's *other* half that could not fire — its own
+failure message says "a grid that went missing", and it only said that when both went at
+once. Two rows now, one per dimension, and `--mutate grid-loses-a-dimension` turns
+`DEPTH_H = 424` into `DEPTH_H = DEPTH_W - 88`: the value is unchanged, so every page draws
+the same pixels and every message is the same size, and the only thing it can move is
+whether `424` is written down. Measured: 366 assertions, exactly one failed, the height
+row, with the width row still green — which is the split being necessary rather than
+tidy. **When a row's subject is a pair, ask for each half separately, or the half that is
+still there answers for the one that is not.**
+
+### A search for a number that searches for its digits is a search for one spelling
+
+The third thing wrong with the same row, found by review rather than by a failure. Having
+split the alternation into one regex per dimension, each was still
+`(?<![\d.])512(?![\d.])` — decimal digits with guards either side to keep `512` out of
+`1512` and `4.24`. That is a matcher for a *spelling* wearing the name of the number. A
+module redeclaring the width as `512.0` is rejected by the trailing guard, and `0x200`,
+`5.12e2`, `0b1000000000` and `5_12` are never looked at at all. Each of them is a second
+declaration of the sensor's geometry sitting under a row reporting one, which is exactly
+the drift the row exists to refuse.
+
+Closed by tokenising every JavaScript numeric literal and comparing its **value**, so the
+spellings stop being a list to keep up with — the boundary guards go with it, because
+`1512` tokenises whole and answers 1512. The bound is stated in the code rather than left
+to be discovered: this sees a literal in any notation and does not see an *expression* that
+computes the value, so `256 * 2` and `DEPTH_W - 88` are invisible to it. Legacy octal
+`01000` is left out because it is a SyntaxError in a module and `syntax-check` holds that.
+
+**The control is the part worth copying.** `grid-declared-in-another-spelling` plants the
+same second declaration as `grid-declared-twice` with nothing changed but the notation —
+`0x200` and `4.24e2` — and both mutations are kept, because they fail differently: one is
+caught by any matcher and the other only by one that compares values. Verified rather than
+argued, by running both matchers over both planted lines: the old one catches
+`grid-declared-twice` on both dimensions and misses `grid-declared-in-another-spelling` on
+both, where the new one catches all four. A control every version of the instrument passes
+is not a control for the change.
+
+The probe tree gained the same treatment, one file per dimension per spelling plus a file
+of near misses — `1512`, `4.24`, `0x201` — and the rows assert the whole matched list
+rather than membership, so a matcher that grew *looser* than the regex it replaced fails
+without needing a row of its own.
+
+### A JavaScript question asked of every file in the tree gets answered by prose and CSS
+
+The other end of the same row, and the two corrections pull in opposite directions, which is
+what makes the pair worth reading together. The walk is deliberately wide — every file under
+`web/` and `server/`, so a page added next year is asked by existing — and `web/` holds three
+HTML pages and a stylesheet as well as the modules. Asking "is 512 a literal here" of markup
+answers about layout and copy: a `width: 512px` rule in `nav.css`, or a paragraph mentioning
+a 424-line budget, would have made that file a second grid owner and failed a clean suite on
+a change that redeclared nothing.
+
+Narrowing the *walk* to `.js` closes it by opening a hole, because the pages here carry real
+code — `menu.html` holds `resolveResume` inline and this suite mutates it. So the walk stays
+wide and the **question** narrows: the whole of a module, and the `<script>` bodies of a
+page. Typed scripts are excluded by their `type` rather than by looking like data, because
+`index.html` carries an importmap, and a version string in a JSON blob is not a declaration
+of anything.
+
+The probe tree carries a page stating both numbers four times over — in prose, in a
+`<style>` rule, in the importmap, and finally in a module script — and a stylesheet stating
+both in a rule. Exactly one of those five is a declaration, and the rows assert the whole
+matched list, so either mistake fails: reading the paragraph, or no longer reading the
+script.
+
+**The general rule is that a scope has two halves and they are set separately.** What the
+enumeration reaches and what the question is asked of are different decisions, and collapsing
+them means every widening of one silently widens the other.
+
+**And the same fact one layer further in: a string is not code either.** Narrowing to the
+JavaScript left `throw new Error('expected 512 bytes')` counting as a declaration of the
+sensor's width, so an ordinary debug message added to any module would have failed a clean
+suite. Comments were already excluded, by a regex; strings were not, and the two are the
+same exclusion — what the row wants is what a lexer would call a numeric token.
+
+The pair of regexes went, replaced by one scan. They were each approximating half of a
+lexer and each carrying a patch for the other's territory: the line-comment rule skipped a
+`//` preceded by a colon, which exists so that a URL *in a string* survives comment
+stripping. That is a lexer being written one exception at a time, and the exceptions only
+stop arriving when the thing knows what a literal is.
+
+Two decisions in it are worth copying. **Template expressions are scanned and template text
+is not**, because `${...}` is code by definition and swallowing the whole template would
+lose a declaration inside one silently. And **where it has to guess, it guesses toward
+reporting**: a `/` after `}` is division here, so a regex in that position is scanned as
+code and its digits are over-reported, which fails loudly. The other reading skips to the
+next `/` and swallows the code in between, which is a declaration going unseen under a
+green row. When an instrument must be wrong sometimes, choose the direction that announces
+itself.
+
+The probe carries one file that is on one list and off the other. Its 512s are all
+text — two strings, an escaped quote, a comment, a template — and its 424 appears both as
+text and inside a `${}`. A scan that reads strings puts it on the 512 list and fails; a
+scan that swallows template expressions takes it off the 424 list and fails. One file,
+both directions, which is what an arm for a scanner has to do.
+
+**Then the scan itself needed the same treatment twice, and both were about a token being
+asked of a character.** It entered its numeric branch only on a digit, so `.512e3` — 512,
+in the notation with no leading digit — was invisible: a whole spelling in which a second
+grid could ship under a green row. And it decided the `/` question from the previous
+*character*, so `return /512/` left it looking at the `n` of `return`, called that a value,
+called the slash division, and read the pattern's digits as code. A scan now takes an
+identifier whole and keeps it, because the question was always about the previous token.
+
+Two details in that are worth carrying. **A dot followed by a digit needs no
+disambiguation**, since `a.512` is a SyntaxError and property access can never look like
+this — the guard the first version had was protecting against a case the language does not
+have. And **the kept word has to be cleared by every branch that is not an identifier**,
+or a `return` left standing across the string in `return 'x' / 512` turns that division
+into a regex and swallows the code to the next slash. That is the silent direction, so the
+clearing is the part to get right rather than the keeping.
+
+**A spelling is only covered where a control plants it.** The mutation for notations
+planted hex and digit-leading scientific, so the row's claim to see *any* spelling was
+two-thirds measured and read as whole. `grid-declared-with-a-leading-dot` is its own
+mutation rather than a third number in that one, because the two fail differently and a
+control that covers a case is the only thing that says the case is covered.
+
+**And the last of them: a regex over an enumeration is a guess at it.** Deciding which
+`<script>` blocks hold JavaScript, the check matched `(text|application)/(java|ecma)script`
+— a shape, and a reasonable-looking one. HTML defines *sixteen* JavaScript MIME type
+essences, and that pattern is four of them. A page written with `application/x-javascript`
+runs in every browser and had its body discarded, so executable JavaScript was being
+dropped from a row about what the JavaScript declares. Silently, which is how a missing
+spelling always fails.
+
+There is no shape behind the sixteen — `text/livescript` and `text/jscript` are there for
+reasons twenty-five years old — so the enumeration *is* the definition, and the fix is to
+write it down rather than to describe it. **When a set is defined by a list somebody else
+maintains, copy the list; a pattern that covers today's members is a claim about the
+future that nothing checks.** Parameters are stripped before the comparison, because the
+spec matches the essence and because reading `text/javascript; charset=utf-8` as
+JavaScript over-reports loudly where dropping it goes unseen.
+
+The probe's second page carries executable code under a type nobody writes any more and a
+JSON block under a type that is not code, so it has to be a holder of one number and not
+the other: a check knowing only the modern four loses the first, and a check reading
+anything inside a `<script>` gains the second. It also carries the unquoted form with an
+attribute behind it — `<script type=text/javascript defer>` — because an unquoted
+attribute value ends at whitespace and a capture reading it to the `>` answers
+`text/javascript defer`, which is in no list of anything. Same failure as the missing MIME
+types and from the same direction: a running script's body dropped.
+
+### Nine rounds of one seam, and what that says about hand-rolling a lexer
+
+The scan that answers "is this number written in the code" has now been corrected nine
+times, and every correction was the same sentence: a question about a *token* answered
+with a *character*. Leading-dot numbers, `return /re/`, postfix `++`, legacy octal,
+`\btype` inside `data-type`, an unquoted attribute running past its end, a quoted `>`
+ending a start tag, a finished regex divided by something, and an identifier the ASCII
+classes could not finish reading. Each was real, each was silent, and each was found by
+review rather than by a run.
+
+**Three of the nine had the same *fix*, and that is the pattern worth taking away**: the
+language or the spec already publishes the set, and the code had a description of it
+instead. HTML's sixteen JavaScript MIME essences against `(text|application)/(java|ecma)script`;
+`\p{ID_Start}`/`\p{ID_Continue}` against `[A-Za-z_$]`; and the numeric grammar's two decimal
+shapes against the one that starts with a digit. In each case the enumeration *is* the
+definition, and a pattern that covers today's members is a claim about the future that
+nothing checks. **Reach for the published set before writing a character class that means
+"names" or "types" or "numbers".**
+
+**That is the honest cost of a hand-rolled lexer, and it is worth stating rather than
+hiding behind the fixes.** The alternative was never a regex — a regex over a language is
+strictly worse — it was a dependency, and this repo has no parser and adds packages under
+a supply-chain gate. The scan is a hundred lines and every failure it has had is in the
+loud-or-silent taxonomy already written here, so the choice is defensible. But a reader
+arriving next year should know the shape: the property is easy to state, and the *scanner*
+is the part that is hard, and it will keep having edges.
+
+Two things make the cost bearable, and both are worth copying to any similar instrument:
+
+**The failures divide into loud and silent, and the design leans one way on purpose.** A
+misread that scans something which is not code over-reports and fails a clean tree, which
+somebody sees. A misread that skips something which *is* code goes unseen under a green
+row. Every ambiguous decision in the scan is resolved toward the first, and the one case
+left genuinely ambiguous — a `/` after `}` — is documented as such.
+
+**The probe files are the real arm, not the mutation table.** Most of these forms cannot be
+planted in the tree the mutations edit: octal is a SyntaxError in a module, no page here
+carries a `data-type` attribute, and a mutation of a file under `tools/` would be staged
+where nothing runs. So the probe carries them, it asserts the *whole matched list* rather
+than membership, and each planted file sits on one dimension's list and off the other's —
+which makes both a missed form and an over-read form fail, with no row of its own for
+either.
+
+### A comment that was true when written, and false one commit later
+
+The scan's own paragraph said legacy octal could be ignored: `01000` is 512, it is a
+SyntaxError in a module, and every file walked here is a module. Both halves were true when
+that was written. The second stopped being true the day the same check began reading
+`<script>` bodies out of pages — an **untyped** script is a *classic* script, classic
+scripts are sloppy mode, and there the form is legal and means 512. So a page could declare
+the width as `01000`, the browser would agree it was 512, and the scan would record 1000
+and report the grid as stated once.
+
+Nothing announced it. The comment was not edited into being wrong; the *code around it*
+grew a case its premise excluded, which is the version of documentation drift that no
+amount of care while writing prevents. **When you widen what a check accepts, re-read the
+exclusions it already carries — each one is a claim about the old input set.**
+
+The fix is to read the form rather than to rewrite the sentence, since the excuse for
+skipping it is gone. Only a leading zero followed by octal digits: `08` and `09` are the
+legacy *decimal* forms and mean eight and nine, `0` alone is zero, and anything with a dot
+or an exponent is decimal — all three fall out of the pattern rather than needing a case of
+their own.
+
+Its neighbour in the same round is the same shape one layer out. `\btype` was matching the
+`type` in `data-type`, because a word boundary sits between `-` and `type` as happily as
+after `<script` — so a page carrying `<script data-type="application/json">` had its body
+read as JSON and dropped, while the browser, seeing no `type` attribute at all, ran it. An
+attribute begins at whitespace or at the start of the attribute list, and `\b` is not that
+boundary however much it looks like one.
+
+### The grid that is declared twice on purpose, in two languages that cannot share one
+
+Everything above is about the sensor grid being stated once. It cannot be. `native/grabber.cpp`
+holds `DW`/`DH` and is C++, so it cannot import `web/format.js` — the second declaration
+has to exist, and every row in `library-check` is structurally unable to see it, because
+that walk is `web/` and `server/` and could not honestly be anything else.
+
+**Two unavoidable declarations are not a drift problem solved by deleting one; they are a
+drift problem solved by comparing them.** `syntax-check` already did exactly this for
+`CAPTURE_FORMAT` and the grid is the same shape, so it is the same eight lines. What drift
+costs is worth naming, because it is not a wrong picture: the grabber emits a depth block
+of its own size, `server/capture.js` measures every frame against `DEPTH_W * DEPTH_H`, and
+so every frame is refused at the parser with the sensor working perfectly — a node that
+starts and serves nothing.
+
+Anchored on the *declaration* in each language and never on a mention, which matters more
+here than it did for the format constant: `grabber.cpp` also holds `char hello[512]`, a
+buffer with nothing to do with the sensor, and a search for the number would find it.
+Falsified by hand, since this row is in `syntax-check` and that tool carries no mutation
+table: `DH` moved to 423 fails with `DEPTH_H is 424 in web/format.js and DH is 423 in
+native/grabber.cpp`, and restoring it returns the run to 39 files and 0 failed.
+
+**The general form is worth more than the instance.** When a row proves a property within
+one language, ask what the same property looks like at the edge of that language — and
+whether the thing on the other side is a copy that must agree, rather than a copy that
+should not exist.
+
+### An enumeration that walks a flat tree is the files that exist, not the tree
+
+The grid row above walks `web/` and `server/` rather than a list of the files that hold the
+number today, which is the close-the-class rule: a page added next year is asked by
+existing. Its first spelling walked the *direct children* of each and skipped anything that
+`statSync` said was a directory. Both directories are flat, so the walk found every file
+there is, the row was green for the right reason, and nothing about it said that the first
+subdirectory anybody made would be skipped silently — with a module inside it free to
+redeclare the grid under a row still printing green.
+
+The mistake is not the missing recursion. It is that the enumeration was **the files that
+exist** while the comment above it claimed the enumeration was **the tree**, and the two are
+the same list right up until they are not. A traversal cannot be falsified by the tree it
+walks when that tree has nothing in it to recurse into, so the control is a tree the row
+builds: `web/flat.js` with no grid and `web/nested/buried.js` with one, run through the same
+walker, asserting it answers `['web/nested/buried.js']`. A walker that stops at the top
+answers `[]` and the row goes red, where against the real `web/` it would answer exactly
+what the row wants. **When a row's claim is about a shape the subject does not currently
+have, build the shape and run the same code over it** — a mutation of the subject cannot
+reach a case the subject does not contain.
+
+### A row comparing two tables must compare the declarations, not the instances
+
+The gallery badges each refusal the server can send, and the two lists are genuinely
+separate — the sentence is the server's, the badge over a 228px poster is the page's — so a
+key added to one and not the other is the failure. The row's first spelling read the
+server's side by flattening the refusals the fixture takes happened to carry. That covers a
+key exactly as far as some fixture provokes it, which is the reverse of the guarantee: the
+next refusal will apply to a take shape `buildFixture` does not write, so it would be absent
+from the derived list, absent from the page's table, and the row would compare two keys
+against two keys and pass. Fixed by exporting `OPEN_REFUSALS` from `server/library.js` and
+reading `Object.keys` off it, with `--mutate refusal-without-a-badge` adding a declared key
+no take provokes and no page badges — a mutation the old row could not have caught, because
+nothing it read would have changed. **A row asserting two enumerations agree has to reach
+both enumerations; a sample of one of them is a row about the sample.**
+
+**Its neighbour was written as the other direction and asserted the same one**, which is the
+part worth keeping. The comment promised that every key in the table is one the scanner can
+produce, and the code asked that every key a take arrived with is declared. Those are
+opposite containments, and only the second was being checked — so a refusal added to
+`OPEN_REFUSALS` and to the page's `BADGES` with the `describeTake` branch that pushes it
+forgotten would stay green forever: a declared reason, a badge for it, and no take that can
+ever wear either. A comment that describes a stronger check than the line under it is worse
+than no comment, because it is the thing a reader checks instead of the code.
+
+Both directions now, and `recording` is excluded from the second by a fact rather than for
+convenience: no take on that server is being written, so the response cannot carry that key
+however correct the scanner is, and it is proven where it can be proven — in the section that
+stands a recorder up. The cost is deliberate and belongs to whoever adds the next refusal: it
+now needs a fixture take that provokes it, because a reason nothing here can reach is a reason
+nothing here is testing. `--mutate refusal-declared-but-never-pushed` deletes the `no-hello`
+push and leaves the key declared and badged; 368 assertions, five failed, and they are one
+fact arriving in five places.
+
+### A claim about "whichever surface asks" needs a control per surface
+
+The refusal moved to the server so that one take gets one sentence on every surface, and the
+commit changed the gallery and the menu together. The control mutated only the gallery. So
+reverting the menu to its old hard-coded "no sensor hello, or under two frames" — or adding
+any new local derivation there — left every row green, and the claim was asserted rather
+than enforced for half of what it claimed.
+
+Adding the second control found the delivery hole underneath it. A page mutation is
+delivered by intercepting its route, and `openPage` knew one page: `library.html` at
+`/gallery`, with a throw for anything else. That throw is why the miss was loud rather than
+silent, and it is worth keeping in that shape — the table now names `menu.html` at `/` and
+still throws for a file with no URL. The glob went with it: `**${target}` for a page served
+at `/` is `**/`, which matches every directory-shaped URL the page requests, so the mutated
+menu would have been fulfilled for requests that are not the menu. It matches on the
+pathname now. **A claim that names more than one surface is not controlled until each
+surface has a mutation of its own, and the second control is usually what discovers that the
+delivery only ever worked for the first.**
+
+### A positive arm built from the interesting shape misses the ordinary one
+
+The version-skew row above has a second arm because a gate that refused every manifest
+would satisfy the refusal arm while taking the link off entirely. The first spelling of
+that arm served one take, and it was the *refused* one — a take carrying a nonempty
+`openRefusals`, because that is the shape the row is about. It is the wrong shape to test
+a gate with. `openRefusals: []` is what an ordinary openable take sends, which is nearly
+every take there is, so a gate written as `length > 0` would take the link off for every
+healthy library while an arm holding only the refused take stayed green. The fixture
+carries both now, and the empty-list case has a row that names it, because the two takes
+fail for different reasons and a combined row would report the wrong one.
+
+**The control for it is `--mutate refusals-must-be-nonempty`, and it is deliberately not
+a well-behaved one.** It reddens both arm rows, and then it reddens the node's own rows
+across the suite, because the bug it plants is exactly "every healthy node goes dark" and
+that is what that looks like from here — 125 assertions, 11 failed, where a clean run
+reaches 392. That is the blast-radius rule being broken knowingly rather than by accident:
+several sections assume a linked node holding remote takes, and the first of them,
+`drawn(undefined)`, waited out its own timeout and threw at 105. That one is guarded now,
+the same way the way-back anchor is; the next is the confirm dialog for a take in state
+`both`, and the ones after that are download, reclaim and delete. Guarding the class —
+**every section that needs the node surviving a node that is not there** — is worth doing
+and is not done. Until it is, read this control by which rows went red and not by the
+assertion total, which is the rule this repo already states for every check.
+
+### A table indexed by a string off the wire has `Object.prototype` answering for it
+
+The version gate on `NodeLink` checks the *shape* of a node's manifest and deliberately not
+its vocabulary, so that a newer node can name a refusal this build has never heard of and
+have the tile badge the key as itself — visibly unmapped beating confidently wrong. That
+door is the point of the design, and the page's badge table was an ordinary object literal
+behind it. `BADGES['__proto__']` answers with `Object.prototype` rather than `undefined`, so
+the `?.` does not short-circuit, the call throws on a value that is not a function, and the
+gallery dies painting the tile — the same blank shelf the gate exists to prevent, arriving
+through the one door the gate was told to leave open. `constructor`, `toString` and
+`valueOf` are the quieter half: they are callable, so they badge a take `[object Object]`
+under a promise that an unmapped key reads as itself.
+
+`Object.create(null)` at the table, not a guard at the lookup, because the lookup is one
+today and the property that makes it safe belongs to the table. The same reading then
+applied to the instrument that checks it: the containment row asked `k in OPEN_REFUSALS`,
+and `in` walks the prototype chain, so a take arriving with `toString` would have been
+called a declared refusal. It is `Object.hasOwn` now. **An instrument asking `in` about keys
+that came off a wire is asking a question `Object.prototype` gets to answer.**
+
+The control drives it rather than reasoning about it: a stub node one build *ahead*, serving
+a take whose refusal key is `__proto__`, with a real server pointed at it and the real page
+loaded. `--mutate badges-inherit-from-object` puts the plain literal back and the row reports
+`TypeError: BADGES[refusal.key] is not a function`, the page never finishing its paint. Two
+rows, because surviving is not the claim — the second asks what the badge actually says, and
+that arm is the one the quieter half of the fault would fail.
+
+### Two machines on one network are two builds, and a rig that stages both cannot see it
+
+`library-check` spawns its node and its editing machine out of one staged tree, so both
+speak the build under test and every wire-format claim between them is an oracle agreeing
+with itself. The failure that shape cannot show is a version skew: the editing machine gets
+upgraded first, because it is the one somebody is standing at, and the node goes on serving
+the manifest of the build before. That manifest parses, survives the id and hash filters,
+and reconciles into the listing looking like any other take — so a field the pages now
+require is simply absent, and the gallery blanks on a `TypeError` while painting the first
+remote tile.
+
+The node in that row is a stub `http` server serving a manifest written out by hand, on a
+kernel-assigned port rather than one out of the reserved span, because a port `listen(0)`
+hands back cannot be held by another worktree. Written out field for field rather than
+generated by deleting a key from today's shape: a fixture derived from the code it is meant
+to outlive follows that code. And the row has two arms, because a gate that refused every
+manifest would pass the refusal arm while taking the link off entirely. **When a claim is
+about two builds talking, one of them has to be a fixture — anything the rig spawns is the
+build under test.**
+
+### The branch that carried the argument against second answers, and then gave one
+
+`OPEN_REFUSALS` exists so that `openable` is "the refusal list is empty" and never a second
+expression of the same predicate, and the paragraph saying so sits directly above a
+`describeTake` whose two branches did not both do it. The settled-take branch derived.
+The take-being-written branch carried `openRefusals: [refusal('recording')]` and a hardcoded
+`openable: false` on the next line — two answers to one question, written in by the commit
+whose entire subject is that there should be one.
+
+Nothing was wrong yet, which is the whole difficulty: both said the take cannot be opened,
+so they agreed, and they would go on agreeing until one moved. What waits at the end of that
+is the quiet failure rather than a loud one — `cannotOpen` quotes the list, so a list that
+went while the boolean stayed leaves a *disabled* Open button explaining nothing, which
+looks like a take that simply cannot be opened rather than like a bug.
+
+**Every existing row was structurally unable to see it.** The two-table rows compare which
+keys the tables know and skip `recording` by name, for a reason of fact — no take on that
+server is being written, so the response cannot carry the key. The row that does watch a live
+recording take asked `openable === false`, which is true in both builds. So the exclusion
+that was correct in one place became the reason nothing covered the branch, which is rule 5
+arriving through a justification nobody had cause to look at twice.
+
+Two rows now. One asks every take in the listing whether `openable` is its list being empty
+— a claim about the scanner rather than about the fixture, so a third branch added later is
+asked by existing. The other stands where the recording take actually is and asks for the
+sentence, not the boolean. `--mutate recording-decides-openable-itself` empties the list and
+hardcodes the boolean together, because hardcoding alone changes nothing observable and
+would have been a control that did nothing: 1 failed assertion of 392, the row that carries
+the claim and no other.
+
+### Splitting a list gave the lookups a right answer and the sweeps a short one
+
+The tail of the port-collision fix below, and the reason it is its own entry is that the
+fix was correct and still broke something. Moving a reclaimed offset's previous holder to
+a `retired` list is what makes `servers.find((s) => s.port === n)` answer with whoever is
+on the port. It also silently changed what `servers` *means*: it stopped being every
+server this run started, and the end-of-run fatal-log sweep had been reading it on the
+old meaning.
+
+Measured when the row went in: **four** servers are retired on a full run, so four
+servers' logs were outside the scan. A `cannot open` from any of them would have been a
+failure this tool detected and did not say, which is the worst shape a proof tool has —
+worse than not looking, because the verdict claims it looked.
+
+**The lesson is about the readers rather than the list.** Every consumer of a collection
+is either a *lookup*, which wants the one that is current, or a *sweep*, which wants all
+of them — and splitting a collection to fix a lookup gives every sweep a new bug at the
+same moment. The fix is a named `everyServer()` used by both sweeps, rather than
+`[...servers, ...retired]` spelled at each site, because there were two sites and the bug
+was one of them being forgotten.
+
+The row checks the *count* against a counter incremented where a server is started, not
+the collection the loop reads. What went wrong was never this loop naming the wrong
+variable; it was a list splitting somewhere else and one of its two readers not being
+told, so the row has to be red for that, including for the next collection somebody adds.
+
+**It has no `--mutate` entry, and that limit is worth knowing before you write a row about
+the instrument.** A mutation spec writes its body into the staged tree, and the stage is
+`server/` and `web/` — a mutation naming a file under `tools/` would be delivered to a
+copy nothing runs and would be recorded as a control that passed, which is the
+silent-delivery failure this file already carries two entries about. So it was
+mutation-tested by hand: `everyServer()` put back to `servers` reddens that row and
+nothing else, reporting `swept 18 of 22 started` against a clean `22 of 22`.
+
+### Two sections on one port, and the one that read a log read the wrong one
+
+The sibling of the `MAC_PORT + 9` case above, with this file on both ends of it instead of
+another worktree. `library-check` keeps its spawned servers in one `servers` array and
+finds them by port — `servers.find((s) => s.port === MAC_PORT + 1).log.join('')` is how a
+section reads what its server printed. Two sections claimed `+1`. The first killed its
+server long before the second started, so the bind succeeded and nothing failed; what was
+left was two entries for one port, and `find` answers with whichever was pushed first,
+which is the dead one.
+
+The respawn-backoff section therefore counted grabber exits in an empty log and reported
+`0 exits`, three rows red, against a supervisor that was working correctly — and the log
+it should have read carried twenty-two deaths, which the corroborating row beside it
+printed in full. **The reading was wrong rather than the code**, which is the worst way for
+a proof tool to be wrong: it is a finding about the instrument wearing the shape of a
+finding about the program, and the merge that surfaced it looked exactly like a
+regression. What settled it was a control run of the same tool on `main`, on a port span
+nothing else held: 365 assertions, none failed, against 390 with 3 failed here, with the
+three sections' code byte-identical between the two trees.
+
+Fixed by dropping the stale entry when an offset is claimed again, so a lookup by port
+answers with the server that is on it. Not by refusing the reuse and not by widening the
+span: reuse is deliberate — `+14` is a rename server and later a broken-preset one — and
+two more ports is a cost every worktree on the machine pays to route around a bug in the
+bookkeeping. Two *live* servers on one port is a case the kernel already rules out, so
+reaching the claim at all means the last holder let go.
+
+**The general shape is rule 4 read backwards.** A probe placed where its answer would be
+different is no good if something else can answer for it, and an array searched by a key
+two things share is exactly that. `find` on a non-unique key is a silent choice.
+
 ### A mutation that does nothing reads as a check that found nothing
 
 Step 5 produced one: a mutation meant to draw editor furniture into the rendered frame

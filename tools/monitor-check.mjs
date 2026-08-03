@@ -195,8 +195,8 @@ const MUTATIONS = {
   // everything: a control that reddens every row cannot say which row is carrying the
   // claim, and the claim here is that a sample lands where it was measured.
   'expand-shifts-by-a-block': { file: 'web/main.js', edits: [[
-    'for (let col = 0; col < DW; col++) dst[to + col] = src[from + ((col / grid.k) | 0)];',
-    'for (let col = 0; col < DW; col++) dst[to + col] = src[from + Math.min(grid.w - 1, (((col / grid.k) | 0) + 1))];',
+    'for (let col = 0; col < DEPTH_W; col++) dst[to + col] = src[from + ((col / grid.k) | 0)];',
+    'for (let col = 0; col < DEPTH_W; col++) dst[to + col] = src[from + Math.min(grid.w - 1, (((col / grid.k) | 0) + 1))];',
   ]] },
   // **The control for section 6.** The viewer stops noticing that a hello said colour is
   // off, so `hasColor` keeps whatever value the last decoded JPEG left it at - and the

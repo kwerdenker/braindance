@@ -419,6 +419,44 @@ if (!existsSync(DOC)) {
     } else {
       console.log(`  format/ CAPTURE_FORMAT is ${inJs[1]} in both languages`);
     }
+
+    // **The sensor grid, in the two languages that have to agree about it and cannot share
+    // a declaration.** `library-check` proves the grid is stated once across `web/` and
+    // `server/`, and that row is structurally unable to see the other side of the wire:
+    // the grabber is C++ and cannot import `web/format.js`, so its `DW`/`DH` are a second
+    // declaration that has to exist. Two unavoidable declarations are not a drift problem
+    // solved by deleting one - they are a drift problem solved by comparing them, which is
+    // exactly what `CAPTURE_FORMAT` above already does and for the same reason.
+    //
+    // What drift costs is a node that starts and then serves nothing: the grabber would
+    // emit a depth block of its own size and `server/capture.js` measures every frame
+    // against `DEPTH_W * DEPTH_H`, so every frame is refused at the parser with the sensor
+    // working perfectly.
+    //
+    // Anchored on the declaration in each language and never on a mention, which matters
+    // more here than it did for the format: `grabber.cpp` also holds `char hello[512]`,
+    // a buffer that has nothing to do with the sensor and would answer a search for the
+    // number.
+    const GRID = [['DEPTH_W', 'DW'], ['DEPTH_H', 'DH']];
+    const grid = GRID.map(([js, cpp]) => {
+      const fromJs = readFileSync(join(ROOT, 'web/format.js'), 'utf8')
+        .match(new RegExp(`^export const ${js} = (\\d+);`, 'm'));
+      const fromCpp = grabber.match(new RegExp(`^static const int ${cpp} = (\\d+);`, 'm'));
+      return { js, cpp, fromJs, fromCpp };
+    });
+    const undeclared = grid.filter(({ fromJs, fromCpp }) => !fromJs || !fromCpp);
+    const disagreed = grid.filter(({ fromJs, fromCpp }) => fromJs && fromCpp && fromJs[1] !== fromCpp[1]);
+    if (undeclared.length) {
+      fail(`the sensor grid is not declared where this looked: ${undeclared
+        .map(({ js, cpp, fromJs }) => (fromJs ? `${cpp} in native/grabber.cpp` : `${js} in web/format.js`))
+        .join(', ')} - a declaration that moved cannot be compared with anything`);
+    } else if (disagreed.length) {
+      fail(`${disagreed.map(({ js, cpp, fromJs, fromCpp }) => `${js} is ${fromJs[1]} in web/format.js and ${cpp} is ${fromCpp[1]} in native/grabber.cpp`).join('; ')}`
+        + ' - the grabber would emit a depth block that server/capture.js measures against the other number and refuses, '
+        + 'so a node with a working sensor would serve no frames at all');
+    } else {
+      console.log(`  grid/   ${grid.map(({ fromJs }) => fromJs[1]).join('x')} in both languages`);
+    }
   }
 }
 
