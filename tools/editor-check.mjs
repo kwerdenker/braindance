@@ -4873,19 +4873,22 @@ try {
     await putDoc(WORKING, differing);
     await reopen();
     const offeredBeforeMove = await offerState();
-    const moved = workingBody({ id: openId, hash: openHash });
-    moved.outputSize = fresh.outputSize === '1280x720' ? '1920x1080' : '1280x720';
-    moved.pointSize = (Number(differing.pointSize) || 1) + 7;
+    // Three distinguishable values, and that is the whole arrangement: the clip a fresh
+    // open gives, the document the chip is offering, and what the name holds by the time
+    // it is pressed. The first draft of this row moved a field the project does not
+    // carry, so both sides read `undefined`, the row passed on every build and the tool
+    // reported NOT CAUGHT - which is the honest reading of a row testing nothing.
+    const moved = workingBody({ id: openId, hash: openHash }, false);
     await putDoc(WORKING, moved);
-    check(offeredBeforeMove.shown && moved.pointSize !== differing.pointSize,
-      'the offer is on screen and then the document behind its name is replaced, which is what an edit made while the chip is up does to it',
-      `chip ${offeredBeforeMove.shown ? 'shown' : 'hidden'}, offered pointSize ${differing.pointSize} against the store's new ${moved.pointSize}`);
+    check(offeredBeforeMove.shown && moved.outputSize !== differing.outputSize,
+      'the offer is on screen and then the document behind its name is replaced by a different one, which is what an edit made while the chip is up does to it',
+      `chip ${offeredBeforeMove.shown ? 'shown' : 'hidden'}, offered ${differing.outputSize} against the store's new ${moved.outputSize}`);
     await page.click('#tResumeOpen');
     await settle();
     const restoredAfterMove = await page.evaluate('__kinect.keyframes.project()');
-    check(restoredAfterMove.pointSize === differing.pointSize,
+    check(restoredAfterMove.outputSize === differing.outputSize,
       'and pressing it restores the document that was offered rather than whatever the name holds by then, since the work it was advertising is the work being recovered',
-      `pointSize ${restoredAfterMove.pointSize} against the offered ${differing.pointSize} and the store's ${moved.pointSize}`);
+      `${restoredAfterMove.outputSize} against the offered ${differing.outputSize} and the store's ${moved.outputSize}`);
 
     const afterRestore = await offerState();
     check(!afterRestore.shown,
