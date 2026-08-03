@@ -193,7 +193,9 @@ node tools/level-check.mjs --mutate pointer-levels-the-centre # ... the press's 
 node tools/level-check.mjs --mutate reset-keeps-roll      # ... and must FAIL mutated
 node tools/vcam-check.mjs                                 # the output to OBS: the colour camera, the take it must not touch, and the source's picture
 node tools/vcam-check.mjs --mutate hd-upscales-registered # ... and must FAIL mutated
+node tools/vcam-check.mjs --mutate hd-reencodes-in-flight # ... the bytes, where the picture is right
 node tools/vcam-check.mjs --mutate hd-reaches-recorder    # ... and must FAIL mutated
+node tools/vcam-check.mjs --mutate refusal-ignores-webcam # ... what the take is told the stream costs
 node tools/guard-check.mjs                                # the socket's origin rule, the bind, and the rebinding rule
 node tools/guard-check.mjs --mutate upgrade-skips-origin  # ... and must FAIL mutated
 node tools/guard-check.mjs --mutate host-accepts-a-name   # ... and must FAIL mutated
