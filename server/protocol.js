@@ -1,6 +1,81 @@
 // Wire format shared by the native grabber, the recorder and the replayer.
 //
-//   [u32 magic 'KNCT'][u32 type][u32 payloadLen][payload]
+// ---- the .knct decoder specification ---------------------------------------
+//
+// **A recorded take is this wire verbatim** - the framing below, written to disk in
+// arrival order, with nothing added and nothing wrapped around it. So this is both the
+// live protocol and the archive format, and it is written out here rather than left
+// implied because the archive outlives the stack that recorded it: a Kinect v2
+// discontinued for years, a libfreenect2 that is minimally maintained, and a depth solve
+// on an OpenCL that Apple has deprecated. Issue #45 asked whether a take's exit from this
+// program should be a point-cloud export or a specification, and settled on this: an
+// export costs a measured 4.10x the take as xyz and does not replace it, since the take
+// is kept anyway for the native JPEG and the sensor stamps, while a page here is enough
+// for somebody to write a reader in an afternoon.
+//
+// The numbers in the table are checked against this module's own exports by
+// `tools/syntax-check.mjs`, which fails when a constant moves and the prose does not, and
+// which enumerates the exports rather than a list so a constant added later is asked by
+// existing. A specification nobody checks is a document that drifts, which is the failure
+// this repository deleted its design document to avoid.
+//
+//   MAGIC              0x4b4e4354   'KNCT' read as a little-endian u32
+//   HEADER_BYTES       12           three u32s: magic, type, payloadLen
+//   TYPE_HELLO         1            the sensor record, once, before any frame
+//   TYPE_FRAME         2            one depth grid and at most one JPEG
+//   TYPE_COLOR         3            live only - the recorder never writes one
+//   MAX_PAYLOAD_BYTES  8388608      a longer declared payload is a desync, not a frame
+//
+// **Container.** Every message is `[u32 magic][u32 type][u32 payloadLen][payload]`, all
+// integers little-endian, `payloadLen` counting the payload alone. A file is one message
+// after another to EOF. A final message whose payload falls short of its declared length
+// is a take that was cut off mid-write rather than a corrupt file, and every frame before
+// it is still good - which is why a reader should stop at a short tail instead of
+// refusing the take.
+//
+// **Type 1, the hello.** UTF-8 JSON, once, ahead of every frame. `fx`, `fy`, `cx`, `cy`
+// are the depth camera's intrinsics *as this device reported them*, and they are what a
+// reader must unproject with rather than any constant: they are per-device, and the
+// viewer's own boot defaults of 366/366/256/212 sit about 45mm from a real sensor's at
+// three metres. `width` and `height` are the depth grid. Not every take carries every
+// key - the list has grown, and one recorded before a key existed simply lacks it.
+//
+// **Type 2, the frame.** `[u32 depthBytes][u32 colorBytes][u64 stampMs][depth][jpeg]`,
+// little-endian again, `stampMs` a wall clock in milliseconds from the recording machine.
+// The depth is `width * height` u16 millimetres, row-major, top row first, so
+// `depthBytes` is `width * height * 2`. `colorBytes` may be zero: the colour camera runs
+// at about half the depth rate, and a frame carrying no JPEG means the previous picture
+// still stands rather than that anything was lost. The JPEG, where present, is the
+// *registered* colour - `Registration::apply`'s resample into the depth camera's
+// viewpoint - so it shares the depth grid pixel for pixel and a per-vertex colour is a
+// direct lookup at the same row and column.
+//
+// **A depth of 0 is not a point.** It is the solve returning no reading along that ray,
+// and a reader that unprojects it anyway puts a vertex at the sensor origin - a wall of
+// geometry that was never in the room. Measured over all 284 frames of the sample take,
+// 76.5% of the 512x424 grid carries a reading: mean 166,148 samples, range 146,129 to
+// 170,134.
+//
+// **Unprojection**, libfreenect2's pinhole model, the same one `Registration::getPointXYZ`
+// and the vertex shader in `web/main.js` use. For the sample at column `col` and row
+// `row` holding `mm` millimetres, in metres, in a right-handed frame with the camera
+// looking down -z:
+//
+//     z = mm / 1000
+//     X =  (col + 0.5 - cx) / fx * z
+//     Y = -(row + 0.5 - cy) / fy * z
+//     Z = -z
+//
+// The half pixel is the sample's centre, and Y is negated because image space grows
+// downward. That is the whole of it: those four lines against the four intrinsics out of
+// the hello turn a take into geometry with none of this program running.
+//
+// **Nothing in the file says which generation of grabber wrote it.** That is issue #44's
+// to fix rather than this specification's, and it is recorded here because a reader that
+// assumes one geometry model across an archive holding more than one gets a silently
+// wrong answer - and here is where somebody writing that reader will be looking.
+//
+// ---- end of the .knct decoder specification --------------------------------
 
 export const MAGIC = 0x4b4e4354;
 export const TYPE_HELLO = 1;

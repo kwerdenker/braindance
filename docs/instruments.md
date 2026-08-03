@@ -204,6 +204,25 @@ machine it fires eight, all of them the intended row. So a throw is now `crashed
 verdict and before `untested`. **Read which assertions fired, not how many** — and a proof
 tool must never count its own crash as a finding in either direction.
 
+### Reverting a probe with `git checkout --` deletes the thing under test when it is uncommitted
+
+Found while mutation-testing the `.knct` specification row in `syntax-check`. The row was new
+and so was the specification it reads, both of them uncommitted, and each probe ended in
+`git checkout -- server/protocol.js` to undo the damage. That restores the file to `HEAD`, which
+in this state means restoring the version with no specification in it at all. So the first probe
+was valid, the revert silently removed the feature, and the two probes after it ran against a
+file that no longer had anything to check — both went red, both for the wrong reason, and both
+would have been recorded as catches by anybody reading only the count. One of them additionally
+reported `Identifier 'MAGIC' has already been declared`, which is the shape of a probe whose
+own edit is malformed rather than a finding, and is the tell that should stop the run.
+
+`git stash` is already forbidden here for a different reason, and the same replacement covers
+this one: **copy the file outside the repository, probe, and restore from the copy**, then
+`diff` the restore against it and re-run the clean arm to confirm it is green again. The rule
+in `CLAUDE.md` about taking a baseline is written for a measurement, and it applies unchanged to
+mutating an instrument you have not committed yet. The cheaper version of the same protection is
+to commit the instrument before probing it, so that a revert has something to revert to.
+
 ### A mutation can erase its own evidence
 
 `plant-open-take` originally appended its foreign bytes through a second file descriptor.
