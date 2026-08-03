@@ -8591,8 +8591,14 @@ async function importPresetFile(file) {
  * would put a round trip in the path of every take opening for the sake of an offer
  * that usually has nothing to make.
  */
+// The document the resume chip is currently offering, held from the moment it is
+// offered because the name it came from does not stay still. Null whenever no offer
+// is on screen.
+let offeredWorkingBody = null;
+
 function offerWorkingDocument(projects) {
   ui.resume.hidden = true;
+  offeredWorkingBody = null;
   const working = projects?.find((doc) => doc.name === WORKING_PROJECT);
   if (!working) return;
   // **Matched on hash rather than on id.** A rename frees the old id and a later take
@@ -8612,6 +8618,15 @@ function offerWorkingDocument(projects) {
   // When, because "there is autosaved work" is not enough to decide with: an operator
   // who stopped an hour ago and one who lost the tab a minute ago want opposite things
   // from this button, and the stamp is the only thing that tells them apart.
+  // **Held, not merely pointed at.** The next edit autosaves over `__working__`, so a
+  // chip that fetched the name when pressed would restore the edit made *since* the
+  // offer and report it as a recovery, with the work it was actually offering already
+  // overwritten. What the operator was shown is what the button now restores.
+  //
+  // The store still has one slot, so a reload before the offer is taken still loses the
+  // older document - that is a property of autosaving to a single name and is not what
+  // this is fixing. What is fixed is a button that advertised one thing and did another.
+  offeredWorkingBody = JSON.parse(JSON.stringify(working.body));
   ui.resumeWhen.textContent = `autosaved ${new Date(working.savedAt).toLocaleString()}`;
   ui.resume.hidden = false;
 }
@@ -10122,8 +10137,9 @@ ui.projectOpen.addEventListener('click', async () => {
 // looks like it does something.
 ui.resumeOpen.addEventListener('click', async () => {
   try {
-    await loadProjectNamed(WORKING_PROJECT);
+    await loadProjectNamed(WORKING_PROJECT, offeredWorkingBody);
     ui.resume.hidden = true;
+    offeredWorkingBody = null;
     say('restored the autosaved edit');
   } catch (err) {
     showTimelineError(err);
@@ -10187,8 +10203,24 @@ ui.deliverableNew.addEventListener('click', async () => {
  * so a retime curve swapped underneath a running playhead asks the source to go
  * backwards on the very next step, from inside the animation loop.
  */
-async function loadProjectNamed(name) {
-  const doc = await (await fetch(`/projects/${encodeURIComponent(name)}`)).json();
+/**
+ * Loads a project by name, or applies a document the caller is already holding.
+ *
+ * **`offered` exists because one name in this store moves under its own reader.**
+ * `__working__` is rewritten by `history.commit()` on every edit, so a document the
+ * resume chip offered can be gone by the time somebody presses the chip - fetching the
+ * name then restores whatever was typed in between and calls it a recovery. The offer
+ * captures what it is offering and hands it back here, so the button restores the
+ * document it advertised rather than the current contents of a slot.
+ *
+ * One implementation and not two: everything below this line - the footage check, the
+ * transport, the history stack - runs identically either way. What the parameter
+ * decides is only whether this function still has to go and get the document.
+ */
+async function loadProjectNamed(name, offered = null) {
+  const doc = offered === null
+    ? await (await fetch(`/projects/${encodeURIComponent(name)}`)).json()
+    : { body: offered };
   if (doc.error) throw new Error(doc.error);
   const take = doc.body.take;
   if (take && openTakeHash && take.hash && take.hash !== openTakeHash) {

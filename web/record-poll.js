@@ -127,16 +127,31 @@ export function pollRecordState(saw, believed = null) {
   // Skipped rather than queued, because a tick is a question about what is true now: a
   // queue of them would answer with a backlog of stale moments, and the one still in
   // flight is already asking the question the skipped tick wanted answered.
-  let inFlight = false;
-  const tick = async () => {
-    if (inFlight) return;
-    inFlight = true;
-    try {
-      await run();
-    } finally {
-      inFlight = false;
+  //
+  // **A caller asking during one gets a rerun rather than a discarded question, and
+  // that is the difference between the two ways in.** The cadence wants the guard: a
+  // tick that is still running is the tick this one would have been. The record button
+  // wants the opposite - it awaits this to repaint from the state its own POST just
+  // produced, so returning the request already in flight hands it a snapshot taken
+  // *before* the press, and on a station with a slow `--node` that snapshot is several
+  // seconds old. The button then re-enables against stale state and the next click can
+  // choose start where it meant stop.
+  //
+  // One rerun however many callers ask, and they all await the same one: the question
+  // is "what is true after my action", and a single fresh read answers it for all of
+  // them. The interval comes in through `onCadence` below, which skips instead, so a
+  // handler that hangs still cannot stack listings behind it.
+  let running = null;
+  let rerun = null;
+  const tick = () => {
+    if (running) {
+      if (!rerun) rerun = running.then(() => { rerun = null; return tick(); });
+      return rerun;
     }
+    running = run().finally(() => { running = null; });
+    return running;
   };
+  const onCadence = () => { if (!running) tick(); };
   const run = async () => {
     let state;
     try {
@@ -154,6 +169,6 @@ export function pollRecordState(saw, believed = null) {
     } catch { /* not seen, so not recorded as seen - the next tick offers it again */ }
   };
   tick();
-  setInterval(tick, EVERY_MS);
+  setInterval(onCadence, EVERY_MS);
   return tick;
 }

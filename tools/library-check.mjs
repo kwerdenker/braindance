@@ -639,7 +639,29 @@ const MUTATIONS = {
   // Must redden only the overlap row. The retry rows have to stay green, or the control
   // is proving that the guard broke the retry rather than that it bounded it.
   'poll-ticks-overlap': { file: 'web/record-poll.js', edits: [[
-    '    if (inFlight) return;\n    inFlight = true;\n', '',
+    '  const tick = () => {\n'
+    + '    if (running) {\n'
+    + '      if (!rerun) rerun = running.then(() => { rerun = null; return tick(); });\n'
+    + '      return rerun;\n    }\n'
+    + '    running = run().finally(() => { running = null; });\n'
+    + '    return running;\n  };\n'
+    + '  const onCadence = () => { if (!running) tick(); };',
+    '  const tick = () => run();\n  const onCadence = () => { tick(); };',
+  ]] },
+
+  // A caller asking during a tick gets the tick already in flight instead of a rerun -
+  // which is the round-4 guard before it learned the difference between the two ways
+  // in. The record button awaits this to repaint from the state its own POST produced,
+  // and the in-flight request snapshotted `recorder.state` before the press, so the
+  // surface paints the world as it was and the next click can choose start where it
+  // meant stop.
+  //
+  // The returned promise and not the guard, because the guard is right: the cadence
+  // must go on skipping. Must redden only the row counting the button's own read.
+  'post-action-poll-discarded': { file: 'web/record-poll.js', edits: [[
+    '      if (!rerun) rerun = running.then(() => { rerun = null; return tick(); });\n'
+    + '      return rerun;',
+    '      return running;',
   ]] },
 
   'poll-forgets-a-failed-refresh': { file: 'web/record-poll.js', edits: [[
@@ -6034,6 +6056,52 @@ async function runChecks() {
       `${listingsWhileHung} listings while it hung, ${hungListings} after it cleared,`
       + ` ${ticksSeen} ticks to /record/state throughout`);
     await hung.close();
+
+    // **The other way into the same poll, which the guard above nearly closed.** The
+    // cadence wants to be skipped while a tick runs; the record button wants the
+    // opposite. It awaits the poll after its own POST so the surface repaints from the
+    // world its press produced - and handing it the request already in flight hands it
+    // a `recorder.state` snapshot taken before the press. The button re-enables against
+    // that, and the next click chooses start or stop from it.
+    //
+    // Counted in requests rather than read off the painted surface, because the paint
+    // is repaired by the next cadence tick a few seconds later: a row that waited to
+    // read it would pass on both builds and only be measuring the interval. What
+    // separates them is whether the press caused a read of its own at all.
+    //
+    // The response is fetched immediately and delivered late, which is what makes the
+    // in-flight request one that snapshotted before the click. Delaying the request
+    // instead would snapshot after it and there would be nothing to catch.
+    const slow = await browser.newPage();
+    let stateRequests = 0;
+    await slow.route('**/record/state', async (route) => {
+      stateRequests++;
+      const answered = await route.fetch();
+      const body = await answered.text();
+      await new Promise((done) => { setTimeout(done, 4000); });
+      await route.fulfill({ status: answered.status(), body, headers: answered.headers() });
+    });
+    await slow.goto(recorderPage(liveUrl), { waitUntil: 'domcontentloaded' });
+    await slow.waitForFunction("document.getElementById('recGo') !== null", null, { timeout: 30000 });
+    // Pressed while one is in flight, which is the whole condition. The first tick goes
+    // out at load and takes four seconds to come back, so a click one second in is
+    // inside it without having to race anything.
+    await new Promise((done) => { setTimeout(done, 1000); });
+    const requestsBeforePress = stateRequests;
+    await slow.click('#recGo');
+    // Comfortably under the five-second cadence, so an extra request in this window is
+    // the button's own and cannot be the interval's.
+    await new Promise((done) => { setTimeout(done, 2500); });
+    const requestsAfterPress = stateRequests;
+    const started = await getJson(`${liveUrl}/record/state`);
+    check(started.recording === true,
+      'the record button really did start a take, so the row below is about the read that followed a press rather than about a press that did nothing',
+      `recording ${started.recording}, take ${started.takeId}`);
+    check(requestsAfterPress > requestsBeforePress,
+      'and pressing it asks the recorder again rather than settling for the answer already in flight, which was taken before the press and would repaint the world as it was',
+      `${requestsBeforePress} requests before the press, ${requestsAfterPress} within 2.5s after it`);
+    await post(`${liveUrl}/record/stop`);
+    await slow.close();
     for (const p of servers.filter((sv) => sv.port === MAC_PORT + 1)) p.child.kill('SIGKILL');
   }
 

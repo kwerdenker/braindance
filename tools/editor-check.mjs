@@ -252,6 +252,24 @@ const MUTATIONS = {
   // Must redden only the row about a broken neighbour. Every other row in section 13
   // lists cleanly, so the gate and the fix agree across all of them - which is exactly
   // how this survived a section that had already asserted the offer twelve ways.
+  // The resume chip goes back to fetching `__working__` when it is pressed, rather than
+  // restoring the document it was offering. That name is rewritten by `history.commit()`
+  // on every edit, so a nudge of any control between the offer appearing and the button
+  // being pressed means the press restores the nudge and reports it as a recovery - with
+  // the work it was advertising already overwritten.
+  //
+  // Must redden only the row that moves the document under the offer. Every other resume
+  // row presses the chip with nothing having touched the store in between, where fetching
+  // the name and holding the body give the same answer - which is how this survived a
+  // section that already presses the chip and reads the restored document back.
+  'resume-fetches-the-moving-name': {
+    file: 'web/main.js',
+    edits: [[
+      '    await loadProjectNamed(WORKING_PROJECT, offeredWorkingBody);',
+      '    await loadProjectNamed(WORKING_PROJECT);',
+    ]],
+  },
+
   'resume-waits-for-every-list': {
     file: 'web/main.js',
     edits: [[
@@ -4840,6 +4858,35 @@ try {
     check(restored.outputSize === differing.outputSize,
       'and pressing it restores the autosaved document onto the open take, without leaving the page for a URL that would drop the take',
       `${restored.outputSize} against the autosave's ${differing.outputSize} and the fresh clip's ${fresh.outputSize}`);
+    // **And the offer survives the store moving under it.** `__working__` is the one
+    // name in this library that rewrites itself: `history.commit()` autosaves over it on
+    // every edit, so between the chip appearing and somebody pressing it the document it
+    // was offering can already be gone. Fetching the name at that point restores the
+    // edit made *since* the offer and calls it a recovery, with the work the operator
+    // was looking at overwritten and unrecoverable.
+    //
+    // The store is moved by writing it directly rather than by driving an edit, because
+    // what the defect turns on is that the contents changed between the offer and the
+    // press - `history.commit()` is one way to change them and not the property under
+    // test. Writing it makes the row say which document came back rather than depend on
+    // which control happened to autosave.
+    await putDoc(WORKING, differing);
+    await reopen();
+    const offeredBeforeMove = await offerState();
+    const moved = workingBody({ id: openId, hash: openHash });
+    moved.outputSize = fresh.outputSize === '1280x720' ? '1920x1080' : '1280x720';
+    moved.pointSize = (Number(differing.pointSize) || 1) + 7;
+    await putDoc(WORKING, moved);
+    check(offeredBeforeMove.shown && moved.pointSize !== differing.pointSize,
+      'the offer is on screen and then the document behind its name is replaced, which is what an edit made while the chip is up does to it',
+      `chip ${offeredBeforeMove.shown ? 'shown' : 'hidden'}, offered pointSize ${differing.pointSize} against the store's new ${moved.pointSize}`);
+    await page.click('#tResumeOpen');
+    await settle();
+    const restoredAfterMove = await page.evaluate('__kinect.keyframes.project()');
+    check(restoredAfterMove.pointSize === differing.pointSize,
+      'and pressing it restores the document that was offered rather than whatever the name holds by then, since the work it was advertising is the work being recovered',
+      `pointSize ${restoredAfterMove.pointSize} against the offered ${differing.pointSize} and the store's ${moved.pointSize}`);
+
     const afterRestore = await offerState();
     check(!afterRestore.shown,
       'and the offer withdraws once it has been taken, since restoring what is already on screen is a button that does nothing',
