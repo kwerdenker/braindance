@@ -119,6 +119,7 @@ node tools/library-check.mjs --mutate refusal-declared-but-never-pushed # ... an
 node tools/library-check.mjs --mutate openable-recomputes-the-band # ... and a band that decides for itself beside the table
 node tools/library-check.mjs --mutate recording-decides-openable-itself # ... and the take being written, which answered twice
 node tools/library-check.mjs --mutate node-admits-an-old-manifest  # ... a node one build behind, refused at the link
+node tools/library-check.mjs --mutate node-admits-an-old-record-state # ... and behind on the other route, whose absent field is not an idle recorder
 node tools/library-check.mjs --mutate badges-inherit-from-object   # ... and one build ahead, whose reason still badges
 node tools/library-check.mjs --mutate refusals-must-be-nonempty    # ... and a healthy node not refused for being healthy
                                                                    #     (wide: takes the link off, so it stops at 125 of 392 -
@@ -142,6 +143,25 @@ node tools/library-check.mjs --mutate menu-close-strands-focus     # ... and a m
 node tools/library-check.mjs --mutate run-strands-focus            # ... and an action that held the surface down
 node tools/library-check.mjs --mutate reveal-drops-the-path        # ... what the file manager was told
 node tools/library-check.mjs --mutate reveal-answers-any-caller    # ... and who may start a process
+node tools/library-check.mjs --mutate poll-refreshes-every-tick     # ... the gallery follows the recorder rather than the page load
+node tools/library-check.mjs --mutate pulse-ignores-the-node        # ... and the recorder it follows is the one holding the sensor
+node tools/library-check.mjs --mutate health-answers-beside-the-table # ... a route answering outside the table is one no sweep can see
+node tools/library-check.mjs --mutate empty-window-keeps-its-start  # ... a window with no frames in it still closes
+node tools/library-check.mjs --mutate respawns-count-a-colour-toggle # ... and a restart somebody asked for is not the sensor flapping
+node tools/library-check.mjs --mutate respawns-dip-before-the-spawn  # ... and the count does not read low while that restart is in flight
+node tools/library-check.mjs --mutate openpath-drops-at-the-stop     # ... a take is the recorder's until its index exists, not until it stops
+node tools/library-check.mjs --mutate poll-first-tick-is-blind       # ... and the first tick answers against the grid already painted
+node tools/library-check.mjs --mutate poll-forgets-a-failed-refresh  # ... and a refresh that failed leaves its transition unseen
+node tools/library-check.mjs --mutate poll-ticks-overlap             # ... while one that has not come back is not asked again
+node tools/library-check.mjs --mutate post-action-poll-discarded     # ... and a press asks again rather than taking the answer in flight
+node tools/library-check.mjs --mutate listing-never-times-out        # ... and a listing nothing will answer frees itself
+node tools/library-check.mjs --mutate delete-guesses-past-an-unreachable-node # ... a node that did not answer is not a node with nothing on it
+node tools/library-check.mjs --mutate first-load-bounded       # ... a cold library is slow for a reason, and the load is not the poll
+node tools/library-check.mjs --mutate first-load-strands-the-page  # ... and a first listing that fails leaves a page that still works
+node tools/library-check.mjs --mutate listing-ignores-client-abort # ... a caller that gave up takes the node fetch with it
+node tools/library-check.mjs --mutate cancel-watches-the-consumed-request # ... including on a route that read its body before asking
+node tools/library-check.mjs --mutate listing-takes-a-refusal-as-a-library # ... and a refusal that parses is not a library
+node tools/library-check.mjs --mutate faint-fixed-in-one-page       # ... one token, and the page that drifts is named
 node tools/library-check.mjs --mutate write-overwrites-builtin # ... and must FAIL
 node tools/library-check.mjs --mutate list-swallows-unreadable # ... and must FAIL
 node tools/library-check.mjs --mutate open-take-swallows-library # ... and must FAIL
@@ -195,10 +215,21 @@ node tools/editor-check.mjs --mutate pause-keeps-resume --no-render   # ... and 
 node tools/editor-check.mjs --mutate bounds-compare-off-grid --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate detent-in-rate-units --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate zoom-pans-at-the-clamp --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate note-skips-title --no-render      # ... the whole of a long refusal stays reachable
+node tools/editor-check.mjs --mutate tick-seeks-source-seconds --no-render # ... a mark tick seeks where it is drawn
+node tools/editor-check.mjs --mutate offer-ignores-take-hash --no-render # ... the resume offer joins on footage, not on a name
+node tools/editor-check.mjs --mutate resume-waits-for-every-list --no-render # ... and a broken neighbouring library does not strand it
+node tools/editor-check.mjs --mutate resume-fetches-the-moving-name --no-render # ... and restores the document it offered, not what the name holds by then
+node tools/editor-check.mjs --mutate resume-restores-without-keeping --no-render # ... and keeps it, so the recovery outlives the tab
+node tools/editor-check.mjs --mutate shortcuts-reject-altgr --no-render # ... the mark keys work on the layouts that need AltGr to type them
+node tools/editor-check.mjs --mutate marks-ignore-the-clip-range --no-render # ... and offer only the marks a trimmed clip can reach
+node tools/editor-check.mjs --mutate tick-seeks-outside-the-trim --no-render # ... the ruler's ticks obey the same rule the keys do
+node tools/editor-check.mjs --mutate beyond-mark-loses-focus --no-render # ... a mark past the end still answers a keyboard
 node tools/editor-check.mjs --mutate clip-range-unclamped --no-render # ... a trim the program cannot hold
 node tools/editor-check.mjs --mutate clip-bound-coerces-nonnumeric --no-render # ... and a trim that is not a time at all
 node tools/editor-check.mjs --mutate refusal-strands-the-picker --no-render # ... and the menu that named what was refused
 node tools/editor-check.mjs --mutate resize-skips-repaint --no-render # ... and the picture a resize clears
+node tools/editor-check.mjs --mutate resume-races-the-autosave --no-render # ... the recovery is written after the edits already on the wire
 node tools/editor-check.mjs --mutate restore-accepts-view-track --no-render # ... and a track the writer never writes
 node tools/editor-check.mjs --mutate prune-ignores-movement --no-render # ... a stored collapse, against the boot it has to survive
 node tools/editor-check.mjs --mutate panel-rederives-per-write --no-render # ... and what the panel costs the render path

@@ -57,6 +57,25 @@ same way. The convention was reached independently several times and it is one r
 `--mutate <name>` serves a deliberately broken `main.js` into the running server, or for the
 two vendoring tools rebuilds a deliberately broken source tree.
 
+**Read the first line of the output before reading anything else.** A mutated run says
+`MUTATED: <name> delivered`; an unmutated one says `unmutated tree`. That distinction is what
+tells a run that caught nothing from a run that tested nothing, and the second is easy to
+produce by accident from a shell. A batch built as
+
+```sh
+for m in first-load-bounded listing-never-times-out; do
+  args="--mutate $m"; node tools/library-check.mjs $args --node-port 8210   # WRONG under zsh
+done
+```
+
+runs five baselines: **zsh does not word-split an unquoted parameter**, so the tool receives one
+argument spelled `--mutate first-load-bounded`, matches no flag, and runs the tree as it is.
+Every run then reports the same assertions and the same failures, which reads exactly like four
+mutations a check could not catch — the same conclusion, from the opposite cause. That cost a
+seventy-minute batch here. Pass the name as its own quoted word, `--mutate "$m"`, or write the
+invocations out; and either way check the header, because the tool already says which tree it
+ran and the header is cheaper than the inference.
+
 **Fourteen tools carry mutations by one of those two mechanisms** — editor, export, guard, jobs,
 keyframe, level, library, monitor, registration, registry, sensor-view, timeline, vcam and
 vendor — and all of them refuse a mutation whose text they cannot find exactly once, because a

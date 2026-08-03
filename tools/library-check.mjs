@@ -361,9 +361,17 @@ const MUTATIONS = {
   // following line, because the two sites differ only in indentation and the four-space
   // form is a substring of the six-space one. Two sites doing one conversion is the reason
   // this went stale; see `docs/instruments.md`.
+  // **Disambiguated by the newline and the indent rather than by the line after it.**
+  // The mini-map builds its own ticks from the identical expression, so the bare line
+  // matches twice - and the pairing that separated them, `createElement('span')` on the
+  // next line, stopped separating anything the moment the ruler's tick became a button
+  // with a paragraph of comment between the two. An anchor that leans on its neighbour
+  // is an anchor that goes stale when the neighbour is edited for an unrelated reason.
+  // A leading `\n` plus four spaces cannot match the six-space line inside the
+  // `miniMarks` map, so this is a property of the line itself.
   'marks-ignore-retime': { file: 'web/main.js', edits: [[
-    "    const program = retime.programSecAt(mark.sourceMs / 1000);\n    const el = document.createElement('span');",
-    "    const program = mark.sourceMs / 1000;\n    const el = document.createElement('span');",
+    '\n    const program = retime.programSecAt(mark.sourceMs / 1000);\n',
+    '\n    const program = mark.sourceMs / 1000;\n',
   ]] },
   // The gallery skims a remote take at full resolution, promising a smoothness the
   // link does not have.
@@ -490,6 +498,279 @@ const MUTATIONS = {
   // against today's tree rather than only once `jobs` exists. What must fail is the
   // shadowing row: with `presets` unowned, the file planted at web/presets/ is
   // served off disk with a 200 where the route table should have answered 404.
+  // The health route answers from a branch ahead of the dispatcher instead of from a
+  // `ROUTES` entry - which is exactly the shape no route sweep can see. The handler
+  // still works and still touches nothing, so the read sweep's resource rows have
+  // nothing to say about it; what goes is `/library/routes` publishing it, and with
+  // that the enumeration that drives every route by existing.
+  //
+  // This is the general failure the table was built to end, aimed at the newest entry:
+  // a branch beside the dispatch is a route that is real to a browser and invisible to
+  // every check that walks the published list.
+  'health-answers-beside-the-table': {
+    file: 'server/index.js',
+    edits: [
+      ["  { path: '/sensor/health', pattern: /^\\/sensor\\/health$/, read: serveSensorHealth },\n", ''],
+      [
+        '  // The table first, the file tree second. `serveRoute` answers false only for a',
+        '  if (urlPath === \'/sensor/health\') { serveSensorHealth(req, res); return; }\n\n'
+        + '  // The table first, the file tree second. `serveRoute` answers false only for a',
+      ],
+    ],
+  },
+
+  // The health window's reset goes back below the early return, so a five-second window
+  // that carried no frames is never closed and `stats.since` keeps its value across the
+  // gap. The next window after a sixty-second USB drop is then measured over sixty-five
+  // seconds - roughly a thirteenth of the true rate, into the log and into
+  // `observedBytesPerSec`, which the remaining-time readout divides free space by.
+  //
+  // Must redden: the row reading the window length back off `/sensor/health` on a
+  // server with no sensor, which reports about 5000ms closed and the server's whole
+  // uptime open. The steady-delivery row stays green, because delivery never takes the
+  // early return and a control that reddened it would be measuring a different fault.
+  'empty-window-keeps-its-start': {
+    file: 'server/index.js',
+    edits: [
+      [
+        '  const closed = { ms: Date.now() - stats.since, frames: stats.frames, dropped: stats.dropped, bytes: stats.bytes };\n'
+        + '  Object.assign(stats, { frames: 0, dropped: 0, bytes: 0, since: Date.now() });\n',
+        '  const closed = { ms: Date.now() - stats.since, frames: stats.frames, dropped: stats.dropped, bytes: stats.bytes };\n',
+      ],
+      [
+        '  console.log(`[server] ${fps} fps  ${mbs} MB/s  dropped=${closed.dropped}  clients=${wss.clients.size}`);\n}, 5000);',
+        '  console.log(`[server] ${fps} fps  ${mbs} MB/s  dropped=${closed.dropped}  clients=${wss.clients.size}`);\n'
+        + '  Object.assign(stats, { frames: 0, dropped: 0, bytes: 0, since: Date.now() });\n}, 5000);',
+      ],
+    ],
+  },
+
+  // The gallery's poll loses its change gate, so every tick calls `refresh()`. This is
+  // the fault the gate exists to prevent rather than a way of switching the poll off:
+  // the fetch still happens on the cadence, and `paint()` now closes every menu,
+  // releases every skim and replaces every tile five seconds apart for as long as the
+  // page is open.
+  //
+  // Must redden: the row asserting a tick that changed nothing leaves the tiles it
+  // found. The row asserting a tick that *did* change the recording flag repaints has
+  // to stay green, or the control is only proving the poll stopped running.
+  'poll-refreshes-every-tick': { file: 'web/library.js', edits: [[
+    '  if (!changed) return;\n', '',
+  ]] },
+
+  // The gallery's poll goes back to watching only the recorder on the machine serving
+  // the page. On a station with a `--node` that recorder never moves - the sensor is on
+  // the node - so the tick's answer is constant for the life of the page while the grid
+  // it gates is drawn from both libraries, and a take finished on the node goes on
+  // refusing Open until somebody reloads.
+  //
+  // The route's field and not the gallery's gate, because those are two different
+  // claims and `poll-refreshes-every-tick` already takes the gate. Must redden section
+  // 14's linked-topology rows and leave the direct-gallery rows above them green: the
+  // failure is specific to the machine whose recorder is somewhere else, which is the
+  // whole reason it survived a section that served the gallery from the recorder.
+  'pulse-ignores-the-node': { file: 'server/index.js', edits: [[
+    '    node: node ? await node.recordState() : null,\n', '',
+  ]] },
+
+  // Every start of a grabber counts as a respawn again, including the one a colour
+  // toggle asks for - so a node an operator reconfigured twice reads as a node whose
+  // sensor dropped twice, and the endpoint's own claim that a healthy node reads zero
+  // stops being true of any node anybody has touched.
+  //
+  // The increment and not the subtraction, so `restarts` goes to zero in the same
+  // breath as `respawns` goes to one: both halves of the reading are wrong, and a
+  // mutation that only moved the total would leave the second number right by accident.
+  'respawns-count-a-colour-toggle': { file: 'server/index.js', edits: [[
+    'grabberRestarts++; ', '',
+  ]] },
+
+  // The requested restart is counted where it is learned rather than beside the spawn it
+  // excuses, which is where it used to be. `respawns` is `grabberSpawns - 1 -
+  // grabberRestarts`, so a restart counted on the exit runs the subtraction one ahead of
+  // itself for the whole backoff - a quarter of a second after a clean stop, a second and
+  // a half after a hard one - and a node that had genuinely lost its sensor reads one
+  // respawn, then zero, then one again.
+  //
+  // Must redden only the monotonicity row. The totals this section already asserts are
+  // right on both builds, because the reading is correct at both ends of the gap and
+  // wrong only inside it: a control that moved the totals would be a different defect.
+  'respawns-dip-before-the-spawn': { file: 'server/index.js', edits: [[
+    'setTimeout(() => { grabberRestarts++; spawnGrabber(); }, delay);',
+    'grabberRestarts++;\n        setTimeout(spawnGrabber, delay);',
+  ]] },
+
+  // `openPath` goes back to answering only for the take currently being written, so the
+  // whole of a close - the flush, the marks, the index and the content hash - becomes
+  // time in which this process says nobody owns a file it is still reading and writing.
+  // `/library/all` calls that take finalised and the gallery offers Download, Rename and
+  // Remove on a take with no hash yet.
+  //
+  // The getter rather than the field, because `finalizing` has a second reader in
+  // `writingId`: clearing the field would move both, and a run could not then say which
+  // of the two the gallery was actually following. Must redden section 14's finalisation
+  // rows and leave the rows above them - the ones about a take that is genuinely still
+  // recording - green.
+  'openpath-drops-at-the-stop': { file: 'server/recorder.js', edits: [[
+    'return this.take?.path ?? this.finalizing?.path ?? null;',
+    'return this.take?.path ?? null;',
+  ]] },
+
+  // The gallery's poll goes back to a first tick that cannot disagree with anything. The
+  // page reads `/library/all`, paints from it, and only then asks the recorder - so a
+  // take that stops inside that gap is stopped in the first fingerprint and in every one
+  // after it, none of them differ, and the tile goes on refusing to open a finished take
+  // until somebody reloads.
+  //
+  // Must redden the row that stops a take with the first `/record/state` held, and leave
+  // every other row in section 14 green: an unseeded poll is still a working poll for
+  // every transition that happens after it has an observation to compare against, which
+  // is why this survived a section built out of those.
+  'poll-first-tick-is-blind': { file: 'web/library.js', edits: [[
+    '}, believedFromLibrary());', '});',
+  ]] },
+
+  // The poll goes back to recording a tick as seen before the caller has managed to do
+  // anything with it. One refresh losing its connection then advances the fingerprint
+  // past the transition it failed on, every later tick matches, and the grid keeps a
+  // finished take's actions disabled until some other transition happens along - the
+  // same permanent staleness `poll-first-tick-is-blind` covers at the other end of the
+  // page's life, reached by a different road.
+  //
+  // The module and not the gallery's `throw`, because those are two halves of one
+  // arrangement and this is the half that decides. Must redden only the retry row.
+  // The poll goes back to starting a tick whether or not the last one has finished. On
+  // its own that is harmless; beside the retry it is not, because a handler that never
+  // returns leaves `previous` where it was and every later tick then reports the same
+  // change and starts another `/library/all` - which on a station with a `--node` is a
+  // request and a connection to the other machine every five seconds, for as long as
+  // the page is open.
+  //
+  // Must redden only the overlap row. The retry rows have to stay green, or the control
+  // is proving that the guard broke the retry rather than that it bounded it.
+  // The gallery's listing loses its bound, so a node that accepts a connection and never
+  // answers hangs it - and single-flight then skips every later tick for as long as it
+  // hangs. The pile-up guard and the timeout are two halves of one arrangement: without
+  // the bound, the guard turns one dead listing into a gallery that has stopped.
+  'listing-never-times-out': { file: 'web/library.js', edits: [[
+    'signal: bound ? AbortSignal.timeout(LISTING_TIMEOUT_MS) : undefined,',
+    'signal: undefined,',
+  ]] },
+
+  // The bound goes back onto the first listing, where a cold library is slow for a
+  // legitimate reason and fifteen seconds is not enough to build 200 indexes.
+  'first-load-bounded': { file: 'web/library.js', edits: [[
+    'try {\n  await refresh();\n} catch (err) {\n  say(`the library could not be read',
+    'try {\n  await refresh({ bound: true });\n} catch (err) {\n  say(`the library could not be read',
+  ]] },
+
+  // The first listing goes back to being unguarded, so anything it throws ends module
+  // evaluation before the poll is started and before the page has a hook to drive.
+  'first-load-strands-the-page': { file: 'web/library.js', edits: [[
+    'try {\n  await refresh();\n} catch (err) {\n'
+    + '  say(`the library could not be read: ${err.message}`);\n  paint();\n}',
+    'await refresh();',
+  ]] },
+
+  // The listing goes back to being believed whatever the server said about it, which is
+  // where it was until a JSON refusal was found walking straight past the catch above.
+  // `res.json()` resolves on a 500 carrying `{ error }`, so `library` becomes an object
+  // with no `takes` and no `storage`, `paint()` throws reading `library.storage.label`,
+  // and the throw lands inside the catch that was supposed to recover from it.
+  //
+  // **Must redden all four rows of the first-load class, both arms, and that is not what
+  // this comment predicted.** The guess was that the non-JSON arm would stay green, on
+  // the reasoning that `res.json()` throws on a body that will not parse and so never
+  // reaches the assignment. It does not any more: the parse failure is caught into
+  // `null` beside the refusal now, so both doors arrive at the same check and removing
+  // it strands the page through either. Written down rather than quietly narrowed,
+  // because the run said something better than the prediction did - before the fix only
+  // one of the two doors was shut, and it was shut by accident, by a `SyntaxError`
+  // nobody chose escaping from `res.json()` with a message that named nothing.
+  //
+  // So this is not a revert to the build that shipped, and calling it one would be the
+  // more useful-sounding claim: that build strands on a refusal that parses and survives
+  // one that does not. What the mutation stages is the guard's absence, which is the
+  // thing under test.
+  'listing-takes-a-refusal-as-a-library': { file: 'web/library.js', edits: [[
+    '  if (!res.ok || !Array.isArray(body?.takes)) {\n'
+    + '    throw new Error(body?.error ?? `the library could not be listed: HTTP ${res.status}`);\n'
+    + '  }\n  library = body;',
+    '  library = body;',
+  ]] },
+
+  // The cancellation goes back to watching the request rather than the response. Every
+  // call site still passes a signal and the source sweep still reads clean - which is
+  // exactly what shipped - but on the two routes that await `readBody(req)` first the
+  // request has already ended, so a listener attached afterwards can never fire.
+  //
+  // `res.req` rather than reordering the call sites, because the defect being staged is
+  // *which object is watched* and reaching the request through the response leaves the
+  // signature and all four callers untouched. Must redden the removal arm and leave the
+  // listing arm green: the listing reads no body, so it worked on both builds and is
+  // what makes this a control for the ordering rather than for cancellation at large.
+  'cancel-watches-the-consumed-request': { file: 'server/index.js', edits: [[
+    "  res.on('close', () => ctl.abort());",
+    "  res.req.on('close', () => ctl.abort());",
+  ]] },
+
+  // The listing route stops telling the node that its caller has gone, so a browser that
+  // gave up leaves the outbound fetch running here.
+  'listing-ignores-client-abort': { file: 'server/index.js', edits: [[
+    'await node.takes(untilCallerLeaves(res)) : null;\n  const takes = reconcile(',
+    'await node.takes() : null;\n  const takes = reconcile(',
+  ]] },
+
+  // Delete goes back to being offered while the node is unreachable, where the copy count
+  // it rests on came from a manifest read that failed rather than from a node with
+  // nothing on it.
+  'delete-guesses-past-an-unreachable-node': { file: 'web/library.js', edits: [[
+    '  if (library.node && !library.node.reachable) {\n'
+    + '    return `${library.node.name} cannot be reached, so whether this take has a second copy `\n'
+    + "      + 'is unknown - delete is refused rather than guessed at';\n  }\n",
+    '',
+  ]] },
+
+  'poll-ticks-overlap': { file: 'web/record-poll.js', edits: [[
+    '  const tick = () => {\n'
+    + '    if (running) {\n'
+    + '      if (!rerun) rerun = running.then(() => { rerun = null; return tick(); });\n'
+    + '      return rerun;\n    }\n'
+    + '    running = run().finally(() => { running = null; });\n'
+    + '    return running;\n  };\n'
+    + '  const onCadence = () => { if (!running) tick(); };',
+    '  const tick = () => run();\n  const onCadence = () => { tick(); };',
+  ]] },
+
+  // A caller asking during a tick gets the tick already in flight instead of a rerun -
+  // which is the round-4 guard before it learned the difference between the two ways
+  // in. The record button awaits this to repaint from the state its own POST produced,
+  // and the in-flight request snapshotted `recorder.state` before the press, so the
+  // surface paints the world as it was and the next click can choose start where it
+  // meant stop.
+  //
+  // The returned promise and not the guard, because the guard is right: the cadence
+  // must go on skipping. Must redden only the row counting the button's own read.
+  'post-action-poll-discarded': { file: 'web/record-poll.js', edits: [[
+    '      if (!rerun) rerun = running.then(() => { rerun = null; return tick(); });\n'
+    + '      return rerun;',
+    '      return running;',
+  ]] },
+
+  'poll-forgets-a-failed-refresh': { file: 'web/record-poll.js', edits: [[
+    '    try {\n      await saw(state, changed);\n      previous = mark;\n'
+    + '    } catch { /* not seen, so not recorded as seen - the next tick offers it again */ }',
+    '    previous = mark;\n    saw(state, changed);',
+  ]] },
+
+  // One page's `--faint` goes back to the value that fails AA, which is the drift three
+  // separate declarations of one token invite. Deliberately one page and not all three:
+  // the rows are per page, so the run says *which* surface regressed rather than that
+  // some surface did, and the two pages left alone are what makes that reading possible.
+  'faint-fixed-in-one-page': { file: 'web/library.html', edits: [[
+    '    --faint: #828c99;', '    --faint: #6d7683;',
+  ]] },
+
   'namespaces-hardcoded': { file: 'server/index.js', edits: [[
     'export const OWNED_NAMESPACES = new Set(ROUTES.map((r) => {',
     // Two parens are open at the anchor (`new Set(` and `ROUTES.map(`), so the
@@ -749,9 +1030,14 @@ const MUTATIONS = {
   ]] },
   // The editor goes back to swallowing a library that will not load, which is the
   // empty picker an operator gets told nothing about.
+  //
+  // Re-anchored when the same loop started keeping each list rather than discarding
+  // it - the resume offer reads the projects out of it. The mutated line still throws
+  // the reason away, which is what this control is about, and still returns `null` for
+  // the list, so the offer's own rows are not what goes red here.
   'open-take-swallows-library': { file: 'web/main.js', edits: [[
-    '    await refresh().catch((err) => unavailable.push(`${what} (${err.message})`));',
-    '    await refresh().catch(() => {});',
+    '    listed[what] = await refresh().catch((err) => { unavailable.push(`${what} (${err.message})`); return null; });',
+    '    listed[what] = await refresh().catch(() => null);',
   ]] },
   // Every version older than this build gets one sentence again, so a document with no
   // conversion path is told the thing that is true of a document from the future.
@@ -1080,6 +1366,23 @@ const MUTATIONS = {
   'node-admits-an-old-manifest': { file: 'server/library.js', edits: [[
     '      const older = takes.find((t) => !carriesRefusals(t));\n      if (older) {',
     '      const older = takes.find((t) => !carriesRefusals(t));\n      if (false) {',
+  ]] },
+
+  // The same gate on the other route goes away: a `/record/state` with no `writingId`
+  // in it is read as a recorder that owns no take, which is what `?? null` did before
+  // the refusal existed. The field is still filtered for, so the mutation is the
+  // conclusion drawn from it rather than the question - a build that stopped asking
+  // would also stop the heal arm working and could not say which half was wrong.
+  //
+  // Must redden two rows and leave three green: the refusal itself and the listing that
+  // carries it go red, while the node that carries the field, the takes that still list
+  // beside it, and the heal all pass on both builds - the mutated build never refuses,
+  // so it has nothing to recover from and the heal row reads as success. That
+  // asymmetry is the point: a control reddening the whole section would not show that
+  // absence and an idle recorder had stopped being told apart.
+  'node-admits-an-old-record-state': { file: 'server/library.js', edits: [[
+    '      const missing = POLLED_NODE_FIELDS.filter((f) => body[f] === undefined);',
+    '      const missing = POLLED_NODE_FIELDS.filter((f) => body[f] === undefined) && [];',
   ]] },
   // **The monitor's cost line goes back to spelling the grid out inline**, which is
   // where it was for as long as the comment above it promised the opposite. It
@@ -2101,6 +2404,15 @@ const macUrl = await startServer(root, ['--captures', macCaps, '--name', 'mac',
   '--presets', join(WORK, 'presets'), '--projects', join(WORK, 'projects'),
   '--builtin-presets', join(WORK, 'builtin-presets')], MAC_PORT);
 
+// When this process last had a server with no sensor come up. Read by the sensor-health
+// section far below, which asserts that a five-second window closes at five seconds
+// rather than growing for as long as the sensor is away - and "rather than" needs the
+// number it is not, or the row is a threshold with nothing behind it. Stamped here and
+// not after the delivery check below, because the number it stands for is when the
+// server started, and a refusal that spends seconds fetching a page would otherwise be
+// subtracted from an uptime that did include it.
+const bootedAt = Date.now();
+
 // Before a browser opens anything, so a mutation that cannot arrive costs a server spawn
 // rather than a full run ending in a verdict about the wrong build. One server answers
 // for all of them: every server this suite spawns is spawned out of `root`, which is the
@@ -2747,6 +3059,86 @@ async function runChecks() {
         for (const p of servers.filter((sv) => sv.port === MAC_PORT + 8)) p.child.kill('SIGKILL');
       } finally {
         ahead.srv.close();
+      }
+
+      // ---- and a node one build behind on the *other* route, which the gate above
+      //      cannot see
+      //
+      // The manifest gate asks `/library/takes` about its build and answers for the
+      // whole link, but a node is two routes and they moved in different releases: the
+      // build immediately before this one serves a manifest that carries `openRefusals`
+      // - so it passes everything above - and a `/record/state` that predates
+      // `writingId` entirely. Read with a `?? null` that node is a recorder sitting
+      // idle, which is a legal state and therefore invisible: the fingerprint the
+      // gallery's poll computes is constant from the first tick, no remote start or
+      // stop can ever change it, and the shelf stops rereading the library for the
+      // machine half its tiles come from. **The object every observation happened to
+      // skip**, and it was skipped because the version question looked already asked.
+      //
+      // The stub routes on the path rather than answering everything alike, because
+      // the whole shape of this defect is one route being current while the other is
+      // not - a fixture that served one body to both could not stage it.
+      const twoRoute = (recordState) => new Promise((done) => {
+        const srv = createServer((req, res) => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify(req.url.startsWith('/record/state')
+            ? recordState()
+            : { takes: [newShape, openableShape] }));
+        });
+        srv.listen(0, '127.0.0.1', () => done({ srv, url: `http://127.0.0.1:${srv.address().port}` }));
+      });
+      // Written out rather than derived by deleting a key from the current one, for the
+      // reason `oldShape` above is: a fixture built by subtracting from today's shape
+      // follows the code it exists to outlive.
+      let served = { recording: false, takeId: null };
+      const behind = await twoRoute(() => served);
+      const carries = await twoRoute(() => ({ recording: false, takeId: null, writingId: null }));
+      try {
+        const blind = new NodeLink(behind.url, 'behind-node');
+        // Before the poll has said anything, because a link that has answered nothing
+        // is not a link that has failed - and a gate that refused on a null would
+        // refuse every node at boot while passing every row below it.
+        check(Array.isArray(await blind.takes()),
+          'a node is listed before the poll has spoken to it, since a link with no answer yet has not failed one',
+          `${blind.lastError === null ? 'no error' : blind.lastError}`);
+
+        const polled = await blind.recordState();
+        check(polled.reachable === false,
+          'a recorder state with no writingId in it is refused rather than read as a node that owns no take',
+          `reachable ${polled.reachable}, writingId ${JSON.stringify(polled.writingId)}`);
+        const refused = await blind.takes();
+        check(refused === null && /older build/.test(blind.lastError ?? '') && /writingId/.test(blind.lastError ?? ''),
+          'and the refusal reaches the listing, which is the only one of the two routes that draws anything',
+          `${refused === null ? 'null' : `${refused.length} takes`}, ${JSON.stringify(blind.lastError)}`);
+
+        // **The other arm, and the rows above are unfalsifiable without it.** A guard
+        // that refused every node would satisfy both of them while taking the link off,
+        // which is the same defect one build further along - and `writingId: null` is
+        // the exact value the absent case was being confused with, so this is the arm
+        // that says the gate reads absence rather than emptiness.
+        const well = new NodeLink(carries.url, 'carrying-node');
+        const wellPolled = await well.recordState();
+        check(wellPolled.reachable === true && wellPolled.writingId === null,
+          'a node carrying the field and simply not writing is not refused for it, so the gate reads absence rather than an idle recorder',
+          `reachable ${wellPolled.reachable}, writingId ${JSON.stringify(wellPolled.writingId)}`);
+        check(Array.isArray(await well.takes()),
+          'and its takes still list, so this is a version band rather than the poll switched off',
+          `${well.lastError === null ? 'no error' : well.lastError}`);
+
+        // **The refusal has to be able to end, and nothing else here would notice if it
+        // could not.** Parked in `lastError` it would either be wiped by the next
+        // listing that succeeded - never surviving to be read - or latch, and a node
+        // upgraded ten minutes later would stay refused until this process restarted.
+        // Both failures pass every row above, which is why the heal is its own arm.
+        served = { recording: false, takeId: null, writingId: null };
+        await blind.recordState();
+        const healed = await blind.takes();
+        check(healed !== null && blind.lastError === null,
+          'and a node upgraded under a running link is followed again within one tick, rather than staying refused until this process restarts',
+          `${healed === null ? `still refused: ${blind.lastError}` : `${healed.length} takes`}`);
+      } finally {
+        behind.srv.close();
+        carries.srv.close();
       }
     } finally {
       old.srv.close();
@@ -6361,6 +6753,1049 @@ async function runChecks() {
     check(armed?.armed === true, 'and it can be armed, which is the whole point of provisioning it',
       JSON.stringify({ armed: armed?.armed, error: armed?.error }));
     for (const p of servers.filter((sv) => sv.port === MAC_PORT + 13)) p.child.kill('SIGKILL');
+  }
+
+  // --------------------------- 13. the sensor answers for its own health over HTTP
+  //
+  // **The point of the route is what reading it does not cost.** These numbers already
+  // existed - the health interval computes them every five seconds and prints one line
+  // to a console nobody is reading during a shoot - and the only way to find out
+  // whether the sensor was delivering was to attach a monitor over the socket.
+  // `consumersCostingTheTake` exists because an attached monitor can cost the take
+  // frames, so the one instrument for "is this sensor well" made it less well.
+  //
+  // Two servers, because the two claims need opposite fixtures. `macUrl` has no sensor
+  // and has never had one, so every window it closes is empty - which is the case the
+  // window used to carry across a gap. The live server below has a fake grabber
+  // delivering steadily, which is the case that must go on reporting a rate.
+  console.log('\n[library] the sensor answers for its own health, and a window with no frames in it still closes');
+  const liveDir = join(WORK, 'health-live');
+  rmSync(liveDir, { recursive: true, force: true });
+  mkdirSync(liveDir, { recursive: true });
+  // Spawned here and killed at the end of section 14, because both sections need a
+  // server that is genuinely delivering frames and recording, and the port span has
+  // one slot left in it. Named at the two places that matter rather than left to be
+  // noticed.
+  const liveUrl = await startServer(root, [
+    '--captures', liveDir, '--name', 'shooting-live', '--record', '--no-color',
+    '--grabber', `${join(REPO, 'tools/fake-grabber.mjs')} --source ${SAMPLE} --fps 40`,
+  ], MAC_PORT + 1);
+  {
+    const table = (await getJson(`${macUrl}/library/routes`)).routes;
+    const entry = table.find((r) => r.path === '/sensor/health');
+    // **Published and answering, asked as one row.** A route that answers from a branch
+    // beside the dispatcher is real to a browser and invisible to the sweep that drives
+    // every entry by existing, and a route in the table with no handler is the mirror -
+    // so both halves are here, and the mutation takes the first one.
+    const health = await getJson(`${macUrl}/sensor/health`);
+    check(Boolean(entry) && entry.read === true && entry.mutates === false && entry.live === false
+      && typeof health.state === 'string',
+      'the sensor health route is a ROUTES entry the table publishes, read-only and not a live sensor feed, and it answers',
+      entry ? `published: read=${entry.read} mutates=${entry.mutates} live=${entry.live}, state ${health.state}`
+        : `not in the table of ${table.length}`);
+    check(typeof health.monitorDropped === 'number' && typeof health.respawns === 'number'
+      && typeof health.fps === 'number' && typeof health.bytesPerSec === 'number',
+      'and it carries the four numbers an operator would otherwise have attached a monitor to read',
+      `monitorDropped=${health.monitorDropped} respawns=${health.respawns} fps=${health.fps} B/s=${health.bytesPerSec.toFixed(0)}`);
+    // **And it does not offer a number that would be read as sensor loss.** The count
+    // behind it moves inside `broadcastFrame`, once per socket that is over its buffer
+    // ceiling - so under the old name a node whose sensor was struggling with nobody
+    // watching read zero drops, and one frame two lagging monitors both missed read as
+    // two. The row is written against the bare name rather than against the new one,
+    // because what had to go is the word an operator would trust.
+    check(health.dropped === undefined,
+      'and nothing on it is called `dropped` unqualified, since the only count here is monitors failing to keep up with the output rather than the sensor failing to deliver',
+      `dropped=${JSON.stringify(health.dropped)}, monitorDropped=${health.monitorDropped}`);
+    // A machine with no sensor on it, said as a state rather than as silence. This is
+    // also the reading that makes the window row below about an *empty* window.
+    check(['lost', 'absent', 'starting'].includes(health.state) && health.respawns >= 1,
+      'a server with no sensor says so and counts the grabbers it has been through, which is the flapping question the backoff\'s own counter cannot answer',
+      `state ${health.state}, ${health.respawns} respawns`);
+
+    // **The window that closed last, on a server where no window has ever carried a
+    // frame.** The reset used to sit past the early return, so `stats.since` kept its
+    // value for the life of the process and the first window after a gap was measured
+    // over the gap. Read against this server's uptime, which by now is far longer than
+    // one window - so the separation between "about five seconds" and "as long as the
+    // server has been up" is what this row reads rather than a bare threshold.
+    let closed = null;
+    for (let i = 0; i < 24; i++) {
+      closed = (await getJson(`${macUrl}/sensor/health`)).window;
+      if (closed) break;
+      await new Promise((done) => { setTimeout(done, 500); });
+    }
+    const uptimeMs = Date.now() - bootedAt;
+    check(closed !== null && closed.frames === 0 && closed.ms > 3500 && closed.ms < 7500,
+      'a five-second window that carried no frames still closes at about five seconds rather than growing for as long as the sensor is away',
+      closed ? `${closed.ms}ms carrying ${closed.frames} frames, against ${(uptimeMs / 1000).toFixed(0)}s of server uptime`
+        : 'no window had closed after 12s');
+    // The other half of the same change, and the reason the rates are not in the row
+    // above: a window with no frames has no rate in it, so the last honest measurement
+    // is left standing rather than replaced by one computed over a window that never
+    // happened. On this server there has never been one, so it is still zero.
+    const rates = await getJson(`${macUrl}/sensor/health`);
+    check(rates.fps === 0 && rates.bytesPerSec === 0,
+      'and the rate is left alone by an empty window rather than recomputed over it - on this server there has never been one, so it is still nothing',
+      `${rates.fps} fps, ${rates.bytesPerSec} B/s after ${(uptimeMs / 1000).toFixed(0)}s of empty windows`);
+
+    // Steady delivery, which never takes the early return at all. The control for the
+    // row above: a mutation that only breaks the empty-window path must leave this one
+    // green, or what it caught was something else.
+    //
+    // **A second sample, taken a window after the first.** The grabber takes a few
+    // seconds to come up, so the first window this server closes is usually an empty
+    // one - and reading the very next window would be reading the boot transient,
+    // which is a genuinely long window on a build with the fault and therefore a row
+    // that goes red for the one reason it is supposed to control for.
+    let delivering = null;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((done) => { setTimeout(done, 500); });
+      delivering = await getJson(`${liveUrl}/sensor/health`);
+      if (delivering.window?.frames > 0 && delivering.fps > 0) break;
+    }
+    await new Promise((done) => { setTimeout(done, 5500); });
+    const settled = await getJson(`${liveUrl}/sensor/health`);
+    check(settled?.window?.frames > 0 && settled.fps > 0 && settled.bytesPerSec > 0,
+      'a server whose sensor is delivering reports a rate over a window that carried frames, which is the reading the empty-window fix must not have touched',
+      `${settled?.fps?.toFixed(1)} fps over ${settled?.window?.ms}ms carrying ${settled?.window?.frames} frames`);
+    check(Math.abs((settled?.window?.ms ?? 0) - 5000) <= 1500,
+      'and its window is the same five seconds, so the two servers disagree about the frames rather than about the clock',
+      `${settled?.window?.ms}ms`);
+
+    // **A restart somebody asked for is not the sensor flapping.** Turning the colour
+    // camera on stops a perfectly healthy grabber and spawns another, and counting that
+    // with the failures makes the flapping number something an operator raises by
+    // ticking a checkbox - which is worse than not reporting it, because the endpoint's
+    // own claim is that a healthy node reads zero.
+    //
+    // A server of its own, and that is not tidiness: the delivering one above is
+    // recording, `recorder.split()` runs on every grabber exit, and a restart here
+    // would end the take section 14 is waiting on. Its own captures directory for the
+    // same reason.
+    const toggleDir = join(WORK, 'health-toggle');
+    rmSync(toggleDir, { recursive: true, force: true });
+    mkdirSync(toggleDir, { recursive: true });
+    const toggleUrl = await startServer(root, [
+      '--captures', toggleDir, '--name', 'toggling', '--no-color',
+      '--grabber', `${join(REPO, 'tools/fake-grabber.mjs')} --source ${SAMPLE} --fps 40`,
+    ], MAC_PORT + 13);
+    // Waited for rather than slept against: `applyCamera` only restarts when there is a
+    // grabber to restart, so a toggle sent before the first handshake lands on the
+    // no-child branch, changes nothing, and leaves every row below asserting about an
+    // event that did not happen. That is the vacuous pass this block is written against.
+    let running = null;
+    for (let i = 0; i < 60; i++) {
+      running = await getJson(`${toggleUrl}/sensor/health`);
+      if (running.state === 'live') break;
+      await new Promise((done) => { setTimeout(done, 250); });
+    }
+    const totalSpawns = (h) => h.respawns + h.restarts + 1;
+    const beforeToggle = await getJson(`${toggleUrl}/sensor/health`);
+    check(running?.state === 'live' && beforeToggle.respawns === 0 && beforeToggle.restarts === 0,
+      'a healthy grabber that has never failed reads zero respawns and zero restarts, which is what the toggle below has to move exactly one of',
+      `state ${beforeToggle.state}, ${beforeToggle.respawns} respawns, ${beforeToggle.restarts} restarts`);
+
+    const toggleWs = new WebSocket(toggleUrl.replace('http', 'ws'));
+    await new Promise((done, fail) => { toggleWs.on('open', done); toggleWs.on('error', fail); });
+    toggleWs.send(JSON.stringify({ camera: { color: true } }));
+    let afterToggle = beforeToggle;
+    for (let i = 0; i < 60; i++) {
+      await new Promise((done) => { setTimeout(done, 250); });
+      afterToggle = await getJson(`${toggleUrl}/sensor/health`);
+      if (totalSpawns(afterToggle) > totalSpawns(beforeToggle)) break;
+    }
+    toggleWs.close();
+    // The precondition, and it is the whole reason the row after it can fail. Without
+    // it a build that simply never restarts on a colour toggle - or a toggle that
+    // arrived before there was a child to stop - satisfies "respawns stayed at zero"
+    // by nothing having happened, which is a green row about an event nobody caused.
+    check(totalSpawns(afterToggle) === totalSpawns(beforeToggle) + 1,
+      'the colour toggle really did stop the grabber and start another, so the rows below are about a restart that happened',
+      `${totalSpawns(beforeToggle)} grabbers before, ${totalSpawns(afterToggle)} after`);
+    check(afterToggle.respawns === 0,
+      'and the health endpoint does not report it as the sensor having dropped, because a configuration change is not a fault',
+      `${afterToggle.respawns} respawns after the toggle`);
+    check(afterToggle.restarts === 1,
+      'it is counted as the requested restart it is, beside the respawns rather than folded into them - or a node that restarted forty times for forty toggles would read as never having restarted at all',
+      `${afterToggle.restarts} restarts`);
+
+    // **And the number gets there without passing through a lie.** Both readings above
+    // are taken at rest, and the subtraction they check is right at rest on a build that
+    // counted the restart on the exit and on one that counts it beside the spawn. What
+    // separates those two is the quarter-second to second and a half in between: a
+    // restart counted when the old grabber died leaves `grabberRestarts` one ahead of
+    // `grabberSpawns` for the whole backoff, so `respawns` reads one lower than it is,
+    // and a node that had genuinely lost its sensor reports itself well to anyone who
+    // looks in that window. A health number is read exactly when something feels wrong,
+    // which is the worst possible moment for it to be briefly reassuring.
+    //
+    // A real fault first, because `Math.max(0, ...)` hides the whole defect below one.
+    // From nought respawns the dip is negative and clamps to nought, which is what it
+    // already reads - so the drop only becomes visible once there is a genuine failure
+    // underneath it to hide, and that is also the only case anybody is harmed by.
+    // Found by walking the tree rather than by asking for a direct child, because it is
+    // not one: `pgrep -P` on the server returned nothing here and the row correctly said
+    // it had measured nothing rather than passing on a kill that never happened. How
+    // many processes sit between this suite and a grabber is a detail of how the server
+    // is launched, and a row that depends on that number is a row that goes quiet the
+    // next time it changes - so the whole subtree is walked and the grabber is picked
+    // out by name.
+    // A bug this row already paid for, and it is fixed one level down rather than here:
+    // an earlier section starts and kills its own server on this same port, so looking
+    // the offset up returned a process that had been dead since section 12. Its subtree
+    // was empty, no grabber was ever found, and the row reported that it had measured
+    // nothing - correctly, which is the only reason the mistake was visible at all.
+    // `startServer` now moves a reclaimed offset's previous holder to `retired`, so
+    // `servers` names one process per port and this is the live one by construction.
+    const toggleProc = servers.find((sv) => sv.port === MAC_PORT + 13)?.child;
+    const grabberUnder = (root) => {
+      // `-ww` because macOS `ps` truncates the command at the terminal width by default,
+      // and the grabber is named at the end of a long absolute path - so the match below
+      // silently found nothing while the process was right there.
+      const rows = execFileSync('ps', ['-ww', '-Ao', 'pid=,ppid=,command='], { encoding: 'utf8' }).trim().split('\n');
+      const parsed = rows.map((r) => r.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/)).filter(Boolean);
+      const family = new Set([root]);
+      for (let grew = true; grew;) {
+        grew = false;
+        for (const m of parsed) {
+          if (family.has(Number(m[2])) && !family.has(Number(m[1]))) { family.add(Number(m[1])); grew = true; }
+        }
+      }
+      // **The server is excluded by name as well as by pid, because it also matches.**
+      // `--grabber <path>/fake-grabber.mjs` is one of its own arguments, so a filter on
+      // the word alone picks the server out of its own subtree - and this row then
+      // SIGKILLs the process every remaining row in the block is talking to, which
+      // arrives as `fetch failed` several rows later rather than as anything naming the
+      // kill. The grabber is the descendant that runs the file rather than the one that
+      // names it.
+      return parsed
+        .filter((m) => family.has(Number(m[1])) && Number(m[1]) !== root
+          && /fake-grabber/.test(m[3]) && !/server\/index\.js/.test(m[3]))
+        .map((m) => Number(m[1]));
+    };
+    // Retried, because `grabberSpawns` is incremented at the top of `spawnGrabber` and
+    // the loop above breaks the instant that reading moves - which is microseconds
+    // before there is a process to find. Waiting for `live` rather than sleeping a
+    // fixed amount, so the row is about the kill rather than about a guess at how long
+    // a handshake takes.
+    let grabberPid = null;
+    let lookupError = null;
+    for (let i = 0; i < 40 && grabberPid === null; i++) {
+      await new Promise((done) => { setTimeout(done, 250); });
+      try {
+        grabberPid = grabberUnder(toggleProc.pid)[0] ?? null;
+      } catch (err) { lookupError = err.message; }
+    }
+    if (grabberPid) process.kill(grabberPid, 'SIGKILL');
+    let faulted = afterToggle;
+    for (let i = 0; i < 80; i++) {
+      await new Promise((done) => { setTimeout(done, 250); });
+      faulted = await getJson(`${toggleUrl}/sensor/health`);
+      if (faulted.respawns >= 1 && faulted.state === 'live') break;
+    }
+    check(faulted.respawns === 1 && faulted.restarts === 1,
+      'a grabber killed under the server is counted as the fault it is, which is the one respawn the reading below has to keep reporting',
+      grabberPid ? `killed ${grabberPid}: ${faulted.respawns} respawns, ${faulted.restarts} restarts, state ${faulted.state}`
+        : `no grabber found under the server after 10s, so this row measured nothing${lookupError ? ` (${lookupError})` : ''}`);
+
+    // Sampled across the whole of the next restart rather than at its ends. The cadence
+    // is what makes the row able to fail: the backoff is 250ms at its shortest, so a
+    // sample every 40ms cannot miss it, and the widest gap between two samples is
+    // reported so a run on a machine that stalled says so instead of passing.
+    const toggleBack = new WebSocket(toggleUrl.replace('http', 'ws'));
+    await new Promise((done, fail) => { toggleBack.on('open', done); toggleBack.on('error', fail); });
+    const readings = [{ at: performance.now(), h: faulted }];
+    toggleBack.send(JSON.stringify({ camera: { color: false } }));
+    for (let i = 0; i < 150; i++) {
+      await new Promise((done) => { setTimeout(done, 40); });
+      readings.push({ at: performance.now(), h: await getJson(`${toggleUrl}/sensor/health`) });
+      if (totalSpawns(readings.at(-1).h) > totalSpawns(faulted)) break;
+    }
+    toggleBack.close();
+    const widest = Math.max(...readings.slice(1).map((r, i) => r.at - readings[i].at));
+    const spanned = readings.at(-1).at - readings[0].at;
+    check(totalSpawns(readings.at(-1).h) === totalSpawns(faulted) + 1 && widest <= 200 && spanned >= 250,
+      'the second toggle really did stop and respawn the grabber, and the whole of it was sampled faster than the shortest backoff it can run at',
+      `${readings.length} readings over ${Math.round(spanned)}ms, widest gap ${Math.round(widest)}ms`);
+    const dip = readings.find((r, i) => i > 0 && r.h.respawns < readings[i - 1].h.respawns);
+    check(dip === undefined,
+      'and the respawn count never goes backwards while it happens - the failure this node really had stays reported for every moment of the restart it did not have',
+      dip ? `fell to ${dip.h.respawns} at ${Math.round(dip.at - readings[0].at)}ms`
+        : `held at ${readings.map((r) => r.h.respawns).join('')} throughout`);
+    for (const p of servers.filter((sv) => sv.port === MAC_PORT + 13)) p.child.kill('SIGKILL');
+  }
+
+  // ------------------- 14. the gallery follows the recorder rather than the page load
+  //
+  // `refresh()` ran once at module load and nothing polled, so a tile went on saying a
+  // take was still being written for as long as the page stayed open - and `cannotOpen`
+  // reads that same warning out to disable Open, Download, Rename and Remove behind it.
+  // Once the recorder stopped, every one of those was wrong until somebody reloaded:
+  // the take is finished, hashed and openable, and the gallery refuses to open it.
+  console.log('\n[library] the gallery follows the recorder rather than the moment it was loaded');
+  {
+    let shooting = null;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((done) => { setTimeout(done, 250); });
+      shooting = await getJson(`${liveUrl}/record/state`);
+      if (shooting.recording) break;
+    }
+    check(shooting?.recording === true,
+      'a take is genuinely open, which is what makes the tile below a tile that is lying rather than one that is right',
+      String(shooting?.takeId));
+
+    const { page, errors } = await openPage(browser, galleryPage(liveUrl));
+    await page.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 });
+    // Counted rather than assumed. Every row below is about what the poll *decides*,
+    // and all of them would pass on a page that had stopped polling at all - which is
+    // the opposite failure and the one a gate is most likely to be written into.
+    let polls = 0;
+    page.on('request', (req) => { if (req.url().endsWith('/record/state')) polls++; });
+
+    const flagsOf = async (id) => page.evaluate(`(() => {
+      const t = globalThis.__library.tiles().find((x) => x.id === ${JSON.stringify(id)});
+      return t ? { flags: t.flags, acts: t.acts } : null;
+    })()`);
+    const before = await flagsOf(shooting.takeId);
+    check(before?.flags?.includes('recording') === true,
+      'the tile of the take being written says so, and its Open is refused behind that',
+      `flags ${before?.flags?.join(',')}, Open ${before?.acts?.find((a) => a.label === 'Open')?.disabled ? 'disabled' : 'enabled'}`);
+
+    // **A property on the node itself, because that is what a repaint destroys.**
+    // `paint()` calls `grid.replaceChildren()`, so a tile that survived a tick is the
+    // same object and a tile that did not is a new one - which no reading of the
+    // library's own state can tell apart, since both would report the same take.
+    await page.evaluate("document.querySelector('.tile').__quietProbe = 'planted'");
+    const pollsAtProbe = polls;
+    // Comfortably longer than one cadence rather than barely, because this row's
+    // meaning rests on a tick having happened: at 6.5s it came back with exactly one
+    // request and no headroom, and a five-second timer on a machine three other agents
+    // are also running checks on can drift further than that. A row whose control
+    // depends on scheduling luck is a row that teaches people to re-run.
+    await new Promise((done) => { setTimeout(done, 8500); });
+    const quiet = await page.evaluate(`(() => ({
+      probe: document.querySelector('.tile')?.__quietProbe ?? null,
+      tiles: globalThis.__library.tiles().length,
+    }))()`);
+    check(polls > pollsAtProbe,
+      'the poll is running, which is what makes the row below about the gate rather than about a page that stopped asking',
+      `${polls - pollsAtProbe} requests to /record/state in 8.5s`);
+    check(quiet.probe === 'planted',
+      'and a tick in which the recorder did not move replaces no tile - the menu an operator has open and the skim under their pointer both survive it',
+      quiet.probe === 'planted' ? `${quiet.tiles} tiles, the same nodes` : 'the grid was rebuilt');
+
+    // **The same gallery on the machine it is actually used from**, which is not this
+    // one. An editing station carries no sensor and runs with `--node`, so
+    // `/library/all` reconciles the node's takes into its grid and draws a tile for a
+    // take being written over there - and the recorder it polled to decide whether any
+    // of that had changed was its own, which never moves. The tile went on refusing
+    // Open, Download, Rename and Remove for as long as the page stayed open, on the one
+    // machine somebody is standing at. The section that found none of this served the
+    // gallery from the recorder, where the two are the same process.
+    //
+    // A captures directory of its own and empty, so every take in this grid is the
+    // node's and a row about the remote tile cannot be answered by a local one.
+    const linkedDir = join(WORK, 'linked-gallery');
+    rmSync(linkedDir, { recursive: true, force: true });
+    mkdirSync(linkedDir, { recursive: true });
+    const linkedUrl = await startServer(root, [
+      '--captures', linkedDir, '--name', 'mac-editing',
+      '--node', liveUrl, '--node-name', 'shooting-live',
+    ], MAC_PORT + 12);
+    const linked = await openPage(browser, galleryPage(linkedUrl));
+    await linked.page.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 });
+    let linkedPolls = 0;
+    linked.page.on('request', (req) => { if (req.url().endsWith('/record/state')) linkedPolls++; });
+    const linkedFlags = async (id) => linked.page.evaluate(`(() => {
+      const t = globalThis.__library.tiles().find((x) => x.id === ${JSON.stringify(id)});
+      return t ? { flags: t.flags, acts: t.acts } : null;
+    })()`);
+    // **The action a remote take offers is Download, and while it is being written it
+    // is not offered at all.** `availability` gives a remote take a Download button
+    // only once it has stopped, because a take mid-write has no settled hash and the
+    // node answers 409 for it - so what a shooting remote tile carries is the same
+    // disabled Open a local one does. That transition, disabled Open to enabled
+    // Download, is what this station gets out of following the node's recorder, and it
+    // is a different pair of buttons from the one the direct gallery below reads.
+    const actLabels = (t) => (t?.acts ?? []).map((a) => `${a.label}${a.disabled ? ' (off)' : ''}`).join(' ') || '(none)';
+    const remoteBefore = await linkedFlags(shooting.takeId);
+    check(remoteBefore?.flags?.includes('recording') === true
+      && remoteBefore?.acts?.find((a) => a.label === 'Open')?.disabled === true,
+      'a station with no sensor of its own draws the node\'s open take into its grid, says it is being written, and refuses every action behind that',
+      `flags ${remoteBefore?.flags?.join(',') ?? '(no tile)'}, acts ${actLabels(remoteBefore)}`);
+    // This machine's own recorder, said out loud. It is the reading that makes the row
+    // below a claim about following the *node* rather than about following anything:
+    // a gallery here that polled only what this process holds would be polling a flag
+    // that is false now and false for the life of the page.
+    const linkedOwn = await getJson(`${linkedUrl}/record/state`);
+    check(linkedOwn.recording === false && linkedOwn.node?.recording === true,
+      'and its own recorder is idle while the node it names is shooting, which is the split that made the local flag useless here',
+      `local ${linkedOwn.recording}, node ${linkedOwn.node?.name} ${linkedOwn.node?.recording} (reachable ${linkedOwn.node?.reachable})`);
+
+    // **A take stops being recorded several seconds before it stops being the
+    // recorder's, and everything below is about what the library says inside that gap.**
+    // `close` gives up `this.take` at the front of it, because the marks and the
+    // mid-write handler both need the open take gone the moment it stops - and then
+    // flushes the stream, writes the sidecar and reads the whole file back to build the
+    // index and the content hash, which are what make a take a gallery entry at all. On
+    // a slow disk that is seconds. Answer "nobody is writing this" in there and
+    // `/library/all` calls the take finalised, so the gallery offers Download on a take
+    // with no hash and Remove on a file this process is mid-read of.
+    //
+    // Observed while it runs rather than reasoned about: `/record/stop` does not answer
+    // until the close has finished, so every sample taken while that request is in
+    // flight and reporting `recording: false` is a sample from inside the window.
+    const stopping = post(`${liveUrl}/record/stop`);
+    let stopSettled = false;
+    stopping.then(() => { stopSettled = true; }, () => { stopSettled = true; });
+    let insideSamples = 0;
+    let askedInside = null;
+    while (!stopSettled && insideSamples < 400) {
+      const s = await getJson(`${liveUrl}/record/state`);
+      if (s.recording !== false) continue;
+      insideSamples++;
+      if (askedInside !== null) continue;
+      // **The frame API rather than the listing, because it is the cheap question and
+      // the window is short.** Both doors are the same `beingRecorded` predicate over
+      // the same `openPath`, but `/library/all` walks the directory and hashes what it
+      // finds - and on the broken build that hash runs against the file `buildIndex` is
+      // reading, so the listing took longer than the window it was meant to be read
+      // inside and the row reddened for missing rather than for what it saw. This one
+      // is a predicate and a 409.
+      //
+      // Confirmed inside the window by the stop not having answered yet: the response
+      // below arrived first, and the window does not close until that request does.
+      const asked = await fetch(`${liveUrl}/capture/${shooting.takeId}/index`);
+      const body = await asked.json().catch(() => null);
+      if (!stopSettled) askedInside = { status: asked.status, error: body?.error ?? null };
+    }
+    await stopping;
+    check(insideSamples > 0,
+      'the close was caught while it was still running, which is what makes the row below a reading from inside the window rather than one that missed it',
+      `${insideSamples} samples taken inside the close`);
+    check(askedInside?.status === 409,
+      'and the take is still the recorder\'s for the whole of it - the frame API refuses a take whose index and hash do not exist yet, which is the same refusal every surface offering Download, Rename or Remove is drawn from',
+      askedInside === null ? 'no answer came back inside the window at all, which on this route means the server went scanning a file it should have refused'
+        : `HTTP ${askedInside.status}: ${askedInside.error ?? '(no refusal)'}`);
+
+    // And the half the gate is not allowed to swallow. Stopping the take changes the
+    // recording flag, which is exactly the fact a tile is drawn from - and it has to
+    // reach both galleries, the one served by the recorder and the one a network away.
+    await page.waitForFunction(
+      `(() => { const t = globalThis.__library.tiles().find((x) => x.id === ${JSON.stringify(shooting.takeId)});
+        return t && !t.flags.includes('recording'); })()`,
+      null, { timeout: 20000 },
+    ).catch(() => {});
+    await linked.page.waitForFunction(
+      `(() => { const t = globalThis.__library.tiles().find((x) => x.id === ${JSON.stringify(shooting.takeId)});
+        return t && !t.flags.includes('recording'); })()`,
+      null, { timeout: 25000 },
+    ).catch(() => {});
+    const remoteAfter = await linkedFlags(shooting.takeId);
+    check(linkedPolls > 0,
+      'the station is polling, which is what makes the row below about what the poll watches rather than about a page that stopped asking',
+      `${linkedPolls} requests to /record/state`);
+    check(remoteAfter?.flags?.includes('recording') === false
+      && remoteAfter?.acts?.find((a) => a.label === 'Download')?.disabled === false,
+      'and it follows the node\'s recorder rather than its own, so the finished take stops being refused and becomes downloadable without anybody reloading',
+      `flags ${remoteAfter?.flags?.join(',') || '(none)'}, acts ${actLabels(remoteAfter)}`);
+    check(linked.errors.length === 0, 'and the linked gallery raises no page error while it follows',
+      linked.errors.slice(0, 2).join(' | '));
+    await linked.page.close();
+    for (const p of servers.filter((sv) => sv.port === MAC_PORT + 12)) p.child.kill('SIGKILL');
+
+    const after = await flagsOf(shooting.takeId);
+    check(after?.flags?.includes('recording') === false,
+      'and a tick in which the recorder stopped repaints, so the tile stops claiming a finished take is still being written',
+      `flags ${after?.flags?.join(',') || '(none)'}`);
+    check(after?.acts?.find((a) => a.label === 'Open')?.disabled === false,
+      'and its Open, Download, Rename and Remove come back without anybody reloading the page',
+      after?.acts?.map((a) => `${a.label}${a.disabled ? ' (off)' : ''}`).join(' '));
+    const probeAfter = await page.evaluate("document.querySelector('.tile')?.__quietProbe ?? null");
+    check(probeAfter === null,
+      'which is a genuine repaint rather than a tile edited in place, since the nodes the tick found are gone',
+      String(probeAfter));
+
+    check(errors.length === 0, 'and the gallery raises no page error while it follows', errors.slice(0, 2).join(' | '));
+    await page.close();
+
+    // **A node that did not answer is not a node with nothing on it.** `/library/all`
+    // hands `reconcile` a null when the manifest read fails and null reads as an empty
+    // array, so a dropped link removes every node-only tile and turns every `both` take
+    // into a `local` one - and the delete confirmation that refuses to remove the last
+    // copy is drawn from exactly that count. The tile then offers a delete whose safety
+    // rests on a reading that says "no second copy" where what happened is "no answer".
+    //
+    // A station of its own pointed at a port nothing holds, so the node is unreachable
+    // from the first listing rather than made so mid-run - there is no window here for a
+    // successful read to have populated anything.
+    const blindNodeUrl = await startServer(root, [
+      '--captures', macCaps, '--name', 'mac-blind',
+      // **Inside the reserved span, and that is the whole reason for the offset.** The
+      // node has to be one nothing answers on, so a port outside the span would be a
+      // port some other worktree is free to hold - and a stranger answering turns the
+      // unreachable node this section is about into a reachable one. `+16` is reserved
+      // like the rest and its only server was killed at the end of the rename section,
+      // so it is dead by here. If a later section takes it in between, the precondition
+      // row below reads a reachable node and says so rather than passing quietly.
+      '--node', `http://127.0.0.1:${MAC_PORT + 16}`, '--node-name', 'a-node-that-is-not-there',
+    ], MAC_PORT + 11);
+    const dark = await openPage(browser, galleryPage(blindNodeUrl));
+    await dark.page.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 });
+    const darkState = await dark.page.evaluate('globalThis.__library.state()');
+    const darkTiles = await dark.page.evaluate('globalThis.__library.tiles()');
+    check(darkState.node?.reachable === false && darkTiles.length > 0,
+      'the station has a node it cannot reach and takes of its own on screen, which is the pair the row below needs',
+      `node ${darkState.node?.name} reachable ${darkState.node?.reachable}, ${darkTiles.length} tiles`);
+    // **Delete is an act, and the first draft of these two rows looked for it in the ⋯
+    // menu.** `menu` holds rename, reveal and reclaim; there is no `delete` in it on any
+    // build, so "not one of them offers Delete" was a filter over an empty match and
+    // passed whatever the page did - the mutation restored the offer and the row went on
+    // agreeing. The missing-Delete arm below is what stops that recurring: a lookup that
+    // finds nothing now fails here rather than reading as a refusal.
+    const deleteAct = (t) => t.acts.find((a) => a.item === 'delete');
+    const noDelete = darkTiles.filter((t) => !deleteAct(t));
+    const deletable = darkTiles.filter((t) => !deleteAct(t)?.disabled);
+    check(noDelete.length === 0 && deletable.length === 0,
+      'and not one of them offers Delete while the node is unreachable, because the copy count that would make it safe came from a read that failed rather than from a node with nothing on it',
+      noDelete.length
+        ? `${noDelete.length} of ${darkTiles.length} render no Delete at all, so this row would be reading nothing`
+        : deletable.length ? `${deletable.length} of ${darkTiles.length} still deletable: ${deletable.map((t) => t.id).join(' ')}`
+          : `${darkTiles.length} tiles, every Delete refused`);
+    const why = darkTiles[0] ? deleteAct(darkTiles[0])?.why ?? '' : '';
+    check(/cannot be reached/.test(why) && why.includes('a-node-that-is-not-there'),
+      'and it says which node it could not reach, so the refusal is a fact about the link rather than a control that went dead',
+      `"${why.slice(0, 90)}"`);
+    check(dark.errors.length === 0, 'and that gallery raises no page error', dark.errors.slice(0, 2).join(' | '));
+    await dark.page.close();
+    for (const p2 of servers.filter((sv) => sv.port === MAC_PORT + 11)) p2.child.kill('SIGKILL');
+
+    // **The gap between the listing a gallery paints and the first tick it compares
+    // against.** The page reads `/library/all`, draws a take as being written, and only
+    // then asks the recorder what it is doing. A first tick with nothing behind it
+    // cannot report a change, so a take that stopped inside that gap was stopped in the
+    // first fingerprint and in every one after it - none of them ever differed, the
+    // library was never reread, and the tile refused to open a finished take for as long
+    // as the page stayed up. It survived every row above because all of them watch a
+    // transition that happens *after* the page has an observation to compare against.
+    //
+    // The gap is held open rather than raced for: the first `/record/state` is caught at
+    // the page's edge and kept there while the take is stopped underneath, so the tick
+    // that is finally allowed through is answering about a world that moved while it was
+    // waiting. That is the same shape as the real failure and none of its timing.
+    const second = await post(`${liveUrl}/record/start`);
+    let shootingAgain = null;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((done) => { setTimeout(done, 250); });
+      shootingAgain = await getJson(`${liveUrl}/record/state`);
+      if (shootingAgain.recording) break;
+    }
+    check(shootingAgain?.recording === true && shootingAgain.takeId !== shooting.takeId,
+      'a second take is open, so the page below paints a tile that is genuinely mid-write rather than one left over from the first',
+      `${shootingAgain?.takeId} (was ${shooting.takeId}), start said ${JSON.stringify(second).slice(0, 60)}`);
+
+    const blind = await browser.newPage();
+    const blindErrors = [];
+    blind.on('pageerror', (err) => blindErrors.push(String(err)));
+    blind.on('console', (msg) => { if (msg.type() === 'error') blindErrors.push(msg.text()); });
+    // **Every tick is held, not only the first, and that is the difference between a
+    // control and a coincidence.** The poll re-asks on a five-second timer whatever the
+    // held request is doing, so a second tick let through while the take was still
+    // being written would give the unseeded build an observation to compare against -
+    // and the tick after *that* would see the stop, report a change, and refresh. The
+    // defect would have been repaired by the fixture rather than by the code, and this
+    // row would have gone green on the build it exists to redden. Holding the lot means
+    // every tick this page ever gets answers about the world after the stop, which is
+    // precisely the state a first tick with nothing behind it cannot act on.
+    const heldTicks = [];
+    let releaseTicks = false;
+    await blind.route('**/record/state', async (route) => {
+      if (releaseTicks) { await route.continue(); return; }
+      heldTicks.push(route);
+    });
+    await blind.goto(galleryPage(liveUrl), { waitUntil: 'domcontentloaded' });
+    await blind.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 });
+    const paintedMidWrite = await blind.evaluate(`(() => {
+      const t = globalThis.__library.tiles().find((x) => x.id === ${JSON.stringify(shootingAgain?.takeId)});
+      return t ? t.flags.includes('recording') : null;
+    })()`);
+    check(paintedMidWrite === true && heldTicks.length > 0,
+      'the page painted that take as being written and every tick it has asked for is held at the edge, which is the state the gap leaves a real gallery in',
+      `painted mid-write ${paintedMidWrite}, ${heldTicks.length} /record/state held`);
+    await post(`${liveUrl}/record/stop`);
+    const restedAfter = await getJson(`${liveUrl}/record/state`);
+    check(restedAfter.writingId === null,
+      'and the take finished underneath it - index, hash and all - before the tick was let go, so the tick answers about a world that moved while it waited',
+      `writingId ${restedAfter.writingId}, recording ${restedAfter.recording}`);
+    releaseTicks = true;
+    for (const route of heldTicks) await route.continue().catch(() => {});
+    const cameBack = await blind.waitForFunction(
+      `(() => { const t = globalThis.__library.tiles().find((x) => x.id === ${JSON.stringify(shootingAgain?.takeId)});
+        return t && !t.flags.includes('recording') && t.acts.find((a) => a.label === 'Open')?.disabled === false; })()`,
+      null, { timeout: 25000 },
+    ).then(() => true).catch(() => false);
+    const blindTile = await blind.evaluate(`(() => {
+      const t = globalThis.__library.tiles().find((x) => x.id === ${JSON.stringify(shootingAgain?.takeId)});
+      return t ? { flags: t.flags, acts: t.acts.map((a) => a.label + (a.disabled ? ' (off)' : '')) } : null;
+    })()`);
+    check(cameBack,
+      'and the tile stops refusing a take that finished in the gap, because the first tick is compared against the grid that was painted rather than against nothing',
+      blindTile === null ? 'no tile for that take' : `flags ${blindTile.flags.join(',') || '(none)'}, acts ${blindTile.acts.join(' ')}`);
+    check(blindErrors.length === 0, 'and that page raises no error while it catches up', blindErrors.slice(0, 2).join(' | '));
+    await blind.close();
+
+    // **A refresh that fails is a transition the gallery has not seen yet.** The poll
+    // used to record a tick as seen the moment it had one, so a single `/library/all`
+    // losing its connection advanced the fingerprint past the very transition its
+    // refresh had failed on - and since every later tick then matched, the gallery never
+    // looked again and the tile kept a finished take's actions disabled for the life of
+    // the page. One unlucky five-second window, permanent.
+    //
+    // The failure is injected at the page's edge and withdrawn after exactly one, which
+    // is what separates "retries" from "kept trying forever": the row below wants the
+    // next tick to succeed, not the fetch to be broken for the rest of the section.
+    const third = await post(`${liveUrl}/record/start`);
+    let shootingThird = null;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((done) => { setTimeout(done, 250); });
+      shootingThird = await getJson(`${liveUrl}/record/state`);
+      if (shootingThird.recording) break;
+    }
+    check(shootingThird?.recording === true,
+      'a third take is open, so the page below has a transition to miss and then catch up on',
+      `${shootingThird?.takeId}, start said ${JSON.stringify(third).slice(0, 50)}`);
+
+    const flaky = await browser.newPage();
+    const flakyErrors = [];
+    flaky.on('pageerror', (err) => flakyErrors.push(String(err)));
+    flaky.on('console', (msg) => { if (msg.type() === 'error') flakyErrors.push(msg.text()); });
+    let listings = 0;
+    let refused = 0;
+    await flaky.route('**/library/all', async (route) => {
+      listings++;
+      // The first listing is the page's own load and has to succeed, or there is no
+      // painted grid for the tick to disagree with and the row measures the wrong hole.
+      // The second is the refresh the stop transition asks for, and it is the one that
+      // fails.
+      if (listings === 2) { refused++; await route.abort('connectionfailed'); return; }
+      await route.continue();
+    });
+    await flaky.goto(galleryPage(liveUrl), { waitUntil: 'domcontentloaded' });
+    await flaky.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 });
+    const flakyPainted = await flaky.evaluate(`(() => {
+      const t = globalThis.__library.tiles().find((x) => x.id === ${JSON.stringify(shootingThird?.takeId)});
+      return t ? t.flags.includes('recording') : null;
+    })()`);
+    check(flakyPainted === true,
+      'that page painted the open take as being written, from a listing that was allowed through',
+      `painted mid-write ${flakyPainted}, ${listings} listings so far`);
+    await post(`${liveUrl}/record/stop`);
+    const caughtUp = await flaky.waitForFunction(
+      `(() => { const t = globalThis.__library.tiles().find((x) => x.id === ${JSON.stringify(shootingThird?.takeId)});
+        return t && !t.flags.includes('recording') && t.acts.find((a) => a.label === 'Open')?.disabled === false; })()`,
+      null, { timeout: 30000 },
+    ).then(() => true).catch(() => false);
+    check(refused === 1,
+      'and exactly one of its listings was refused - the refresh the stop asked for, so the tick after it is a retry rather than a first attempt',
+      `${refused} refused of ${listings} listings`);
+    const flakyTile = await flaky.evaluate(`(() => {
+      const t = globalThis.__library.tiles().find((x) => x.id === ${JSON.stringify(shootingThird?.takeId)});
+      return t ? { flags: t.flags, acts: t.acts.map((a) => a.label + (a.disabled ? ' (off)' : '')) } : null;
+    })()`);
+    check(caughtUp,
+      'and the gallery comes back from it on a later tick, because a refresh that failed leaves the transition unseen rather than spending it',
+      flakyTile === null ? 'no tile for that take' : `flags ${flakyTile.flags.join(',') || '(none)'}, acts ${flakyTile.acts.join(' ')}`);
+    await flaky.close();
+
+    // **And the retry is bounded, which is the debt holding the fingerprint back took
+    // on.** A handler that never returns leaves `previous` where it was, so without a
+    // guard every later tick reports the same change and starts another `/library/all`
+    // - and where a `--node` is linked that is a request and a connection to the other
+    // machine every five seconds for as long as the page is open. The failure mode is
+    // not a wrong answer but an unbounded one, so what this counts is requests.
+    //
+    // The listing is accepted and then never answered, which is the shape that matters:
+    // a refused request returns and lets the handler finish, and the whole defect is
+    // about a handler that does not.
+    const fourth = await post(`${liveUrl}/record/start`);
+    let shootingFourth = null;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((done) => { setTimeout(done, 250); });
+      shootingFourth = await getJson(`${liveUrl}/record/state`);
+      if (shootingFourth.recording) break;
+    }
+    check(shootingFourth?.recording === true,
+      'a fourth take is open, so the page below has a transition whose refresh can be left hanging',
+      `${shootingFourth?.takeId}, start said ${JSON.stringify(fourth).slice(0, 50)}`);
+
+    const hung = await browser.newPage();
+    let hungListings = 0;
+    let ticksSeen = 0;
+    const heldForever = [];
+    const heldAt = [];
+    await hung.route('**/library/all', async (route) => {
+      hungListings++;
+      // The first is the page's own load and has to answer, or there is no painted grid
+      // and no transition to follow. Every one after it is held open for good.
+      if (hungListings === 1) { await route.continue(); return; }
+      heldForever.push(route);
+      heldAt.push(Date.now());
+    });
+    await hung.route('**/record/state', async (route) => { ticksSeen++; await route.continue(); });
+    await hung.goto(galleryPage(liveUrl), { waitUntil: 'domcontentloaded' });
+    await hung.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 });
+    await post(`${liveUrl}/record/stop`);
+    // Two cadences and change, so a poll that started a listing per tick would have
+    // started two or three and a poll that waits for the one in flight has started
+    // exactly one - and deliberately short of the fifteen-second listing timeout, which
+    // the rows after this one are about. The margin keeps a slow machine from reading as
+    // a catch without letting the bound fire early and change what is being counted.
+    await new Promise((done) => { setTimeout(done, 11000); });
+    const heldCount = heldForever.length;
+    const listingsWhileHung = hungListings;
+    check(heldCount === 1,
+      'it has exactly one listing in flight however long that one takes - a refresh that has not come back is the question already being asked, not a reason to ask it again every five seconds',
+      `${heldCount} listings left hanging, ${hungListings} requested in total`);
+    // **The liveness half is that it comes back on its own, and nothing here clears the
+    // hang for it.** The single-flight guard and the listing's timeout are two halves of
+    // one arrangement: without the bound, the guard turns one dead listing into a gallery
+    // that has stopped, since the guard holds for the whole tick and the tick is waiting
+    // on a request that will never answer. The earlier version of this row aborted the
+    // held listing itself and then checked that a new one went out, which proves the
+    // retry works and says nothing about whether anything would ever have released it.
+    // So the fixture now just waits: past fifteen seconds the page's own bound fails the
+    // listing, the handler throws, the fingerprint stays where it was, and the next tick
+    // offers the same transition again.
+    //
+    // **Timed from the held listing rather than from here, because the two are not a
+    // fixed distance apart.** The transition is only noticed on the first tick after the
+    // stop has flushed, indexed and hashed, so the listing that hangs goes out somewhere
+    // in the first cadences rather than at a known moment - and the bound then runs
+    // fifteen seconds from *it*, with the retry landing on the next five-second tick
+    // after that. A flat twelve-second wait from here read twenty-three seconds against a
+    // listing that went out at five and could not have been reasked before twenty-five,
+    // which failed a correct build for being two seconds early. Polled to a deadline that
+    // moves with the listing instead, and reported as the interval it actually took.
+    const freeBy = (heldAt[0] ?? Date.now()) + 15000 + 5000 + 6000;
+    while (Date.now() < freeBy && hungListings === listingsWhileHung) {
+      await new Promise((done) => { setTimeout(done, 250); });
+    }
+    const freedAfter = heldAt[0] ? Date.now() - heldAt[0] : null;
+    check(hungListings > listingsWhileHung,
+      'and the page frees itself from a listing nothing was ever going to answer, so the single listing above is a poll waiting rather than a poll that has stopped',
+      `${listingsWhileHung} listings while it hung, ${hungListings} ${freedAfter}ms after that listing went out,`
+      + ` ${ticksSeen} ticks to /record/state throughout`);
+    for (const route of heldForever) await route.abort('connectionfailed').catch(() => {});
+    await hung.close();
+
+    // **The other way into the same poll, which the guard above nearly closed.** The
+    // cadence wants to be skipped while a tick runs; the record button wants the
+    // opposite. It awaits the poll after its own POST so the surface repaints from the
+    // world its press produced - and handing it the request already in flight hands it
+    // a `recorder.state` snapshot taken before the press. The button re-enables against
+    // that, and the next click chooses start or stop from it.
+    //
+    // Counted in requests rather than read off the painted surface, because the paint
+    // is repaired by the next cadence tick a few seconds later: a row that waited to
+    // read it would pass on both builds and only be measuring the interval. What
+    // separates them is whether the press caused a read of its own at all.
+    //
+    // The response is fetched immediately and delivered late, which is what makes the
+    // in-flight request one that snapshotted before the click. Delaying the request
+    // instead would snapshot after it and there would be nothing to catch.
+    const slow = await browser.newPage();
+    let stateRequests = 0;
+    await slow.route('**/record/state', async (route) => {
+      stateRequests++;
+      const answered = await route.fetch();
+      const body = await answered.text();
+      await new Promise((done) => { setTimeout(done, 3000); });
+      await route.fulfill({ status: answered.status(), body, headers: answered.headers() });
+    });
+    await slow.goto(recorderPage(liveUrl), { waitUntil: 'domcontentloaded' });
+    await slow.waitForFunction("document.getElementById('recGo') !== null", null, { timeout: 30000 });
+    // Pressed while one is in flight, which is the whole condition. The first tick goes
+    // out at load and takes three seconds to come back, so a click 1.2s in is inside it
+    // without having to race anything.
+    await new Promise((done) => { setTimeout(done, 1200); });
+    const requestsBeforePress = stateRequests;
+    await slow.click('#recGo');
+    // **Long enough for the rerun to have gone out, and short enough that the cadence
+    // has not.** The rerun is chained onto the request in flight, so it cannot be
+    // observed before that one comes back - the first draft of this row measured 2.5s
+    // after a press made 1s into a 4s response and found nothing on a correct build,
+    // which is a fixture that closed its window before the thing it was watching for.
+    // The in-flight response lands at about 3.2s and the rerun goes out behind it; the
+    // interval's first fire is at 5s and skips anyway while that rerun runs.
+    await new Promise((done) => { setTimeout(done, 3000); });
+    const requestsAfterPress = stateRequests;
+    const started = await getJson(`${liveUrl}/record/state`);
+    check(started.recording === true,
+      'the record button really did start a take, so the row below is about the read that followed a press rather than about a press that did nothing',
+      `recording ${started.recording}, take ${started.takeId}`);
+    check(requestsAfterPress > requestsBeforePress,
+      'and pressing it asks the recorder again rather than settling for the answer already in flight, which was taken before the press and would repaint the world as it was',
+      `${requestsBeforePress} requests before the press, ${requestsAfterPress} within 3s after it`);
+    await post(`${liveUrl}/record/stop`);
+    await slow.close();
+
+    // **The bound belongs to the poll, and the first listing is the case it must not
+    // reach.** A cold library is slow for a legitimate reason - `cachedIndex` scans each
+    // file once and writes a `.idx` beside it, measured at 7m30s over 200 unindexed takes
+    // against 2.4s for a second server off those sidecars - and the load is a top-level
+    // await, so a bound that fires there ends module evaluation before the poll starts
+    // and before `globalThis.__library` exists. What the operator gets is not a slow
+    // gallery but a blank one that never recovers.
+    //
+    // Eighteen seconds because the bound is fifteen: long enough that a bounded load has
+    // certainly given up, short enough not to pay for more than one of them. Held rather
+    // than made genuinely slow, since what is under test is which listing carries a
+    // deadline, not how fast an index builds.
+    const cold = await browser.newPage();
+    let coldListings = 0;
+    await cold.route('**/library/all', async (route) => {
+      coldListings++;
+      if (coldListings === 1) await new Promise((done) => { setTimeout(done, 18000); });
+      await route.continue();
+    });
+    await cold.goto(galleryPage(liveUrl), { waitUntil: 'domcontentloaded' });
+    let coldInstalled = true;
+    await cold.waitForFunction('globalThis.__library !== undefined', null, { timeout: 30000 })
+      .catch(() => { coldInstalled = false; });
+    const coldTiles = coldInstalled ? await cold.evaluate('globalThis.__library.tiles().length') : 0;
+    check(coldInstalled && coldTiles > 0,
+      'a first listing slower than the poll\'s own bound still paints, because a cold library is the case that listing exists to get through rather than a link to give up on',
+      coldInstalled ? `held 18s, ${coldTiles} tiles` : 'the page never installed its hook - module evaluation ended on the load');
+    await cold.close();
+
+    // **And the class the bound was only one way into.** Anything the first listing
+    // throws ends the module there, so a node that resets, a 500 out of `serveLibrary`
+    // and a body that is not JSON all leave the same blank shelf with no error on it.
+    // Answered with a 500 rather than aborted, because a refused request is the shape a
+    // reader would least expect to be fatal.
+    const broken = await browser.newPage();
+    let brokenListings = 0;
+    await broken.route('**/library/all', async (route) => {
+      brokenListings++;
+      if (brokenListings === 1) { await route.fulfill({ status: 500, body: 'the library is unavailable' }); return; }
+      await route.continue();
+    });
+    await broken.goto(galleryPage(liveUrl), { waitUntil: 'domcontentloaded' });
+    let brokenInstalled = true;
+    await broken.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 })
+      .catch(() => { brokenInstalled = false; });
+    check(brokenInstalled,
+      'and a first listing that fails outright leaves a page that still has its hook, rather than ending module evaluation on a top-level await',
+      brokenInstalled ? 'installed after a 500' : 'the page never installed its hook');
+    const repaired = brokenInstalled
+      ? await broken.evaluate('globalThis.__library.refresh().then(() => globalThis.__library.tiles().length).catch(() => -1)')
+      : -1;
+    check(repaired > 0,
+      'and it comes back on the next listing that works, so the failure costs a refresh rather than the session',
+      repaired === -1 ? 'no working refresh was reachable' : `${repaired} tiles after the next refresh`);
+    await broken.close();
+
+    // **And the same refusal in the shape this server actually sends it.** The arm above
+    // answers with a body that is not JSON, so `res.json()` throws before anything is
+    // assigned and the intact default is what gets painted - a real door, and not the one
+    // `serveLibrary` uses. What it writes is `sendJson(res, { error }, 500)`, and that
+    // body parses: read straight through it landed in `library` whole, `paint()` went for
+    // `library.storage.label` on an object with no storage, and the throw arrived *inside*
+    // the catch added to recover from it - where a throw is uncaught, so module evaluation
+    // ended anyway. A fixture is a claim about which failures were tried, and this one had
+    // tried the half the server does not send.
+    const refusedPage = await browser.newPage();
+    let refusedListings = 0;
+    await refusedPage.route('**/library/all', async (route) => {
+      refusedListings++;
+      if (refusedListings === 1) {
+        await route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'the captures directory cannot be read: ENOTDIR' }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+    await refusedPage.goto(galleryPage(liveUrl), { waitUntil: 'domcontentloaded' });
+    let refusedInstalled = true;
+    await refusedPage.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 })
+      .catch(() => { refusedInstalled = false; });
+    check(refusedInstalled,
+      'and a refusal that parses - the only kind this server sends - is not believed as a library, so the page still installs its hook',
+      refusedInstalled ? 'installed after a JSON 500' : 'the page never installed its hook');
+    // Asked separately, because a page that installed its hook over a blank shelf with no
+    // sentence on it is the failure this surface is named for. The server took trouble to
+    // say which directory and why, and that is the whole difference between a five-second
+    // fix and a mystery.
+    const refusedSaid = refusedInstalled
+      ? await refusedPage.evaluate('document.getElementById("note")?.textContent ?? ""')
+      : '';
+    check(/ENOTDIR/.test(refusedSaid),
+      'and the server\'s own sentence is what reaches the note, rather than a TypeError raised while painting the refusal',
+      JSON.stringify(refusedSaid));
+    await refusedPage.close();
+    for (const p of servers.filter((sv) => sv.port === MAC_PORT + 1)) p.child.kill('SIGKILL');
+
+    // **A node that stops answering must not leave this machine holding the pair.**
+    // `serveLibrary` awaits `node.takes`, which crosses the network with no bound of its
+    // own - and once the gallery's listing is bounded, every retry that gives up leaves
+    // another handler here and another outbound socket over there, one pair per tick for
+    // as long as the page is open. The browser's abort cancels its own request and
+    // nothing else unless this process is told to pass it on.
+    //
+    // Driven with a plain `fetch` rather than through a page, because what is under test
+    // is what this server does when its caller leaves - a browser would only add a second
+    // place for the answer to come from. The node is a stub on a kernel-assigned port for
+    // the same reason the older-build stub is: anything spawned from `stageServer` runs
+    // the build under test and answers correctly by construction.
+    const deafHeld = [];
+    const deaf = await new Promise((done) => {
+      const srv = createServer((req, res) => {
+        if (req.url === '/library/takes') {
+          const seen = { closedAt: null, answered: false };
+          deafHeld.push(seen);
+          // `close` fires for a request that ended either way, so what it answered is
+          // recorded with it - a row that counted closes alone would read a completed
+          // request as a cancelled one.
+          req.on('close', () => { seen.closedAt = Date.now(); seen.answered = res.writableEnded; });
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' }).end('{"takes":[]}');
+      });
+      srv.listen(0, '127.0.0.1', () => done({ srv, url: `http://127.0.0.1:${srv.address().port}` }));
+    });
+    const deafUrl = await startServer(root, [
+      '--captures', macCaps, '--name', 'mac-deaf',
+      '--node', deaf.url, '--node-name', 'a-node-that-never-answers',
+    ], MAC_PORT + 11);
+    const heldBefore = deafHeld.length;
+    await fetch(`${deafUrl}/library/all`, { signal: AbortSignal.timeout(2000) }).catch(() => {});
+    const gaveUpAt = Date.now();
+    check(deafHeld.length > heldBefore,
+      'the listing really did reach the node and is being held there, which is what makes the row below about cancellation rather than about a request that never went out',
+      `${deafHeld.length - heldBefore} held at the node`);
+    const mine = deafHeld[deafHeld.length - 1];
+    for (let i = 0; i < 24 && mine && mine.closedAt === null; i++) {
+      await new Promise((done) => { setTimeout(done, 250); });
+    }
+    const freed = mine?.closedAt === null ? null : mine.closedAt - gaveUpAt;
+    check(mine != null && mine.closedAt !== null && mine.answered === false && freed < 1500,
+      'and a caller giving up drops the node fetch with it, so a listing nobody is waiting for stops costing a handler here and a socket over there',
+      mine?.closedAt === null ? 'the node still holds it 6s after the caller gave up'
+        : `dropped ${freed}ms after the caller gave up, unanswered`);
+    // **And the same question asked of a route that reads a body first**, which is where
+    // the signal was structurally dead while every arm above stayed green. An
+    // `IncomingMessage` is a stream and emits `close` when it *ends*, so once
+    // `serveRemoval` has awaited `readBody(req)` the request is already destroyed and a
+    // listener attached after it never fires again. The listing reads no body and so
+    // worked, which is why one arm over one route could not see it - the two halves of
+    // the class are the two shapes of handler, not the four route names, and the source
+    // sweep below reads clean on both builds because the call really does carry a signal.
+    const heldBeforePost = deafHeld.length;
+    await fetch(`${deafUrl}/library/delete/a-take-this-machine-does-not-have`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ hash: `sha256:${'ab'.repeat(32)}` }),
+      signal: AbortSignal.timeout(2000),
+    }).catch(() => {});
+    const postGaveUpAt = Date.now();
+    check(deafHeld.length > heldBeforePost,
+      'a removal reaches the node too, so the row below is about a body-reading route rather than one that never asked',
+      `${deafHeld.length - heldBeforePost} held at the node`);
+    const posted = deafHeld[deafHeld.length - 1];
+    for (let i = 0; i < 24 && posted && posted.closedAt === null; i++) {
+      await new Promise((done) => { setTimeout(done, 250); });
+    }
+    const postFreed = posted?.closedAt === null ? null : posted.closedAt - postGaveUpAt;
+    check(posted != null && posted.closedAt !== null && posted.answered === false && postFreed < 1500,
+      'and a route that read its body before asking still drops the node fetch when its caller goes, rather than watching a request that had already ended',
+      posted?.closedAt === null ? 'the node still holds it 6s after the caller gave up'
+        : `dropped ${postFreed}ms after the caller gave up, unanswered`);
+    for (const p of servers.filter((sv) => sv.port === MAC_PORT + 11)) p.child.kill('SIGKILL');
+    deaf.srv.close();
+
+    // **Every route that awaits the node, and not the one where it was noticed.** The
+    // gallery is only the caller whose retry made the leak accumulate; a download, a
+    // removal and a mark sync await the same unbounded fetch behind a browser that can
+    // close at any point. Read off the source so a route added later is asked by
+    // existing, rather than off the four that were found.
+    const indexSrc = readFileSync(join(root, 'server/index.js'), 'utf8');
+    const nodeCalls = [...indexSrc.matchAll(/await node\.takes\(([^)]*)\)/g)].map((m) => m[1]);
+    const unsignalled = nodeCalls.filter((args) => !/untilCallerLeaves|signal/.test(args));
+    check(nodeCalls.length >= 4 && unsignalled.length === 0,
+      'and every route that awaits the node hands it the caller it is waiting for, so the next one written inherits the rule rather than being outside a list',
+      unsignalled.length ? `${unsignalled.length} of ${nodeCalls.length} pass nothing`
+        : `${nodeCalls.length} calls, all signalled`);
+  }
+
+  // ------------------------- 15. one token, three declarations, one shared stylesheet
+  //
+  // `--faint` is declared separately in every page and `web/nav.css` styles the current
+  // surface with `var(--faint)` while declaring it nowhere - so the shared stylesheet
+  // already depends on each page saying the same thing, and fixing one page's hex is
+  // how the three drift apart.
+  //
+  // **The pages are enumerated rather than named**, so a fourth page that declares the
+  // token is asked about by existing. Same for the surfaces: every `--paper` the page
+  // declares is a background the token can end up on, and a floor that only covered the
+  // ones somebody checked would be a floor with a hole the shape of the next design.
+  console.log('\n[library] the faint token clears AA on every page that declares it');
+  {
+    const channel = (c) => (c / 255 <= 0.04045 ? c / 255 / 12.92 : ((c / 255 + 0.055) / 1.055) ** 2.4);
+    const luminance = (hex) => {
+      const n = Number.parseInt(hex.slice(1), 16);
+      return 0.2126 * channel((n >> 16) & 255) + 0.7152 * channel((n >> 8) & 255) + 0.0722 * channel(n & 255);
+    };
+    const ratio = (a, b) => {
+      const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    // The floor WCAG AA sets for body text, and these are 9px readouts.
+    const AA = 4.5;
+    const tokenIn = (css, name) => (css.match(new RegExp(`--${name}:\\s*(#[0-9a-fA-F]{6})`)) ?? [])[1] ?? null;
+
+    // **The build under test, which on a mutated run is not the repo's own tree.** Read
+    // out of the staged root every server here is spawned from, because that is where
+    // `stageServer` writes a mutation and therefore what a browser in this run receives.
+    // A row reading `REPO` would measure the unmutated source on a mutated run, pass,
+    // and have the run recorded as this check having missed a bug it was never shown -
+    // the same failure the match-exactly-once rule exists for, arriving through the
+    // delivery instead of the anchor. Named as the install rather than as a branch on
+    // `pageMutation` so that it stays true of however the next mutation is delivered.
+    const sourceOf = (rel) => readFileSync(join(root, rel), 'utf8');
+
+    const pages = readdirSync(join(REPO, 'web')).filter((f) => f.endsWith('.html')).sort();
+    const declaring = pages
+      .map((file) => ({ file, css: sourceOf(`web/${file}`) }))
+      .filter((p) => tokenIn(p.css, 'faint') !== null);
+    check(declaring.length >= 3,
+      `every page declaring --faint is measured rather than three being named (${pages.length} pages in web/, ${declaring.length} declaring it)`,
+      declaring.map((p) => p.file).join(' '));
+
+    // One row per page, and that split is the point: it makes a run say *which* surface
+    // regressed rather than that some surface did.
+    for (const { file, css } of declaring) {
+      const faint = tokenIn(css, 'faint');
+      const surfaces = [...css.matchAll(/--(paper(?:-\d)?):\s*(#[0-9a-fA-F]{6})/g)]
+        .map((m) => ({ name: m[1], hex: m[2] }));
+      const measured = surfaces.map((s) => ({ ...s, ratio: ratio(faint, s.hex) }));
+      const worst = measured.reduce((a, b) => (a.ratio <= b.ratio ? a : b), measured[0]);
+      check(measured.length >= 2 && worst.ratio >= AA,
+        `${file}: --faint clears ${AA}:1 against every surface the page declares`,
+        `${faint} - ${measured.map((m) => `${m.name} ${m.ratio.toFixed(2)}`).join(', ')}`);
+    }
+
+    // And the restating itself, which is the finding the contrast is a symptom of.
+    const values = new Set(declaring.map((p) => tokenIn(p.css, 'faint')));
+    check(values.size === 1,
+      'and every page declares the same value, because nav.css reads the token without declaring one and cannot be right on two pages that disagree',
+      declaring.map((p) => `${p.file} ${tokenIn(p.css, 'faint')}`).join(', '));
+    const navCss = sourceOf('web/nav.css');
+    check(/var\(--faint\)/.test(navCss) && tokenIn(navCss, 'faint') === null,
+      'which is not a hypothetical: the shared stylesheet uses the token and declares none',
+      `nav.css reads it, declares ${tokenIn(navCss, 'faint') ?? 'nothing'}`);
   }
 
   // **Every server this run started, and a row saying so.** The sweep read `servers`

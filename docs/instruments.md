@@ -1793,3 +1793,49 @@ way that read as a missing feature — `camera.project()` answers in canvas coor
 `page.mouse` takes viewport ones, which were the same number only while the canvas sat at the
 window's corner. **When a change moves where the canvas is, the tools that drive it by
 coordinate are all suspect, not just the ones that mention size.**
+
+**A table of rules where the rule bodies are never called is a table of claims nothing
+enforces.** `editor-check` section 1 sweeps every control the editor renders and requires each
+to be covered by a `DRIVER_RULES` entry. Every entry carried a `match` written against a DOM
+element — and `covered()` re-spelled the same condition against the serialized row, so no
+`match` in the file was ever executed. The field read as the implementation and was decoration.
+
+What that cost: a rule added for the ruler's mark ticks matched nothing, said nothing, and the
+sweep went on reporting every control covered. The ticks were not in the selector either, so
+the class was outside the enumeration twice over — a pressable control the page renders, with a
+driver entry written for it, and a sweep that could not see either. Both halves passed, and
+each half is the reason the other was invisible.
+
+`match` is the implementation now and `covered()` walks the table, so a rule with no branch is
+impossible rather than silent. The row that would have caught it is the new one: **every rule
+in the table matches at least one control the page renders.** A rule is a claim that a class of
+control exists and is driven, so a rule with no instance is either a control that has been
+removed — delete the rule and the section it names — or a sweep that cannot see it. Ordering
+became precedence in the same change, with the widest rule last, because a table walked in
+order credits a control to the first rule that claims it and the panel-wide rule would
+otherwise take controls three narrower rules are the honest attribution for.
+
+**Generalise: when a check has a table of rules and a dispatcher, ask which one the running
+code reads.** If the answer is "the dispatcher", the table is documentation, and documentation
+that looks like enforcement is worse than none — somebody will add a rule to it and believe the
+class is closed.
+
+**A section that stages its subject one way cannot see a defect that only exists the other
+way.** The gallery's five-second poll was proved by a section that opened the gallery on the
+server holding the recorder, where "this machine's recorder" and "the recorder that owns the
+take" are the same process. On an editing station — `--node`, no sensor — they are not, and the
+poll watched a flag that never moves while the grid it gates was drawn from both libraries. The
+section passed every row on a build where the feature did nothing on the machine it is used
+from. The fix is a second gallery in the same section, served by a station whose captures
+directory is empty and whose `--node` is the recording server, so every take in that grid is
+the node's and a row about the remote tile cannot be answered by a local one. **When a feature
+spans two machines, staging both of them on one is not a simplification of the fixture, it is a
+different fixture.**
+
+Its own trap, worth writing down because it read as a defect: a remote take that has stopped
+offers **Download**, not Open. `availability` gives Open to a remote take only while it is
+shooting, because a take mid-write has no settled hash and the node answers 409 for it. So the
+transition the linked station gets out of following the node is disabled Open to enabled
+Download, and a row copied from the local gallery asserts `find('Open').disabled === false`
+against an `undefined` and fails on a build that works perfectly. **`?.field === false` on a
+`find` that returned nothing is a missing element reported as a wrong value.**

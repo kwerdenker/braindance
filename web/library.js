@@ -48,6 +48,7 @@
 // the place it is enforced.
 
 import { DEPTH_H, DEPTH_W, VALID_ID } from '/format.js';
+import { pollRecordState } from '/record-poll.js';
 
 // The depth divisor per state. A local take is read whole; a take that is only on
 // the node comes through the divisor, which is what turns a 486KB frame into about
@@ -75,7 +76,28 @@ const stamp = (ms) => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 };
 
-let library = { takes: [], node: null, here: '?', reveal: { available: false, label: null, why: null } };
+// **Every field `paint` reads, because `paint` can now run against it.** This is what the
+// page holds before the first listing lands, and until the load was allowed to fail it
+// was never drawn - so `storage` being absent cost nothing and stayed absent. The moment
+// a failed first listing paints an empty shelf instead of ending module evaluation,
+// `paint` reads `library.storage.label` off `undefined` and throws from inside the very
+// catch that was meant to keep the page alive, stranding it exactly as before for a
+// second reason. `remaining` reports the same fields, so what the page draws before it
+// has asked and what it draws after are one shape rather than two.
+//
+// `secondsLeft` at `Infinity` rather than zero: the readout below turns red under fifteen
+// minutes, and a page that has not asked yet has not been told the card is nearly full.
+let library = {
+  takes: [],
+  node: null,
+  here: '?',
+  storage: {
+    // A dash rather than a sentence, because the readout reads `<label> left at current
+    // settings` and any phrase here becomes a claim inside it.
+    freeBytes: null, bytesPerSec: null, secondsLeft: Infinity, label: '—', error: null,
+  },
+  reveal: { available: false, label: null, why: null },
+};
 let filter = 'all';
 
 // **Written to both status lines, because a modal covers one of them.** `#note` sits
@@ -530,6 +552,22 @@ function addButton(row, label, cls, onClick, { disabled = false, why = '', item 
  */
 function cannotDelete(take) {
   if (take.recording === true) return warningsOf(take)[0].why;
+  // **A node we could not reach is not a node with nothing on it.** `/library/all` hands
+  // `reconcile` a null when the manifest read fails and null is read as an empty array,
+  // so a link dropping removes every node-only tile and turns every `both` take into a
+  // `local` one - and the confirmation that refuses to delete the last copy is drawn
+  // from exactly that count. The take then offers a delete whose safety rests on a
+  // reading that says "no second copy" when what happened is "no answer".
+  //
+  // Refused for every take rather than only the ones that were `both`, because after the
+  // repaint there is no way to tell which those were: the reading that would say so is
+  // the one that failed. This is the conservative half of the fix and it is deliberately
+  // not the whole of it - the tiles still disappear on a failed read, which is a
+  // separate change to how a failed manifest is carried.
+  if (library.node && !library.node.reachable) {
+    return `${library.node.name} cannot be reached, so whether this take has a second copy `
+      + 'is unknown - delete is refused rather than guessed at';
+  }
   if (take.state === 'remote') {
     return `${take.id} is only on ${library.node?.name ?? 'the node'}, and delete removes a file on this machine`;
   }
@@ -1634,16 +1672,142 @@ function paint() {
   }
 }
 
-async function refresh() {
-  library = await (await fetch('/library/all')).json();
+// **Bounded, because a listing that never comes back stops this page following the
+// recorder at all.** `NodeLink.recordState` carries a three-second timeout and
+// `NodeLink.takes` carries none, so a node that accepts a connection and then says
+// nothing leaves `/library/all` hanging - and single-flight, which is what stops those
+// piling up, then means every later tick is skipped for as long as it hangs. The two
+// together turn one unlucky listing into a gallery frozen until somebody reloads.
+//
+// Fifteen seconds rather than the node poll's three: this crosses the network to have a
+// directory walked and a sidecar read per take, measured at 145ms against a 200-take
+// library, so the bound is there to catch a link that has died rather than to hurry a
+// listing that is working. Failing is enough, because a failed refresh is a transition
+// this poll has not seen - it says so and the next tick offers it again.
+//
+// **The bound belongs to the poll's refresh and to nothing else, and the first draft of
+// it put the bound in here where every caller got it.** There are three: the load below,
+// an operator action's refresh in `run`, and the poll. Only the poll has the single-
+// flight guard, so only the poll can turn one dead listing into a page that has stopped
+// asking - the other two fail an action or a load that somebody is watching, and would
+// rather wait than be cut off. That matters most on the load: a **cold** library is slow
+// for a legitimate reason, `cachedIndex` scans each file once and writes a `.idx` beside
+// it, and the first listing over 200 unindexed takes measured **7m30s** against the 2.4s
+// a second server took off those sidecars. Bounded at fifteen seconds, the one case this
+// page exists to get through would have been the case it refused.
+const LISTING_TIMEOUT_MS = 15000;
+
+async function refresh({ bound = false } = {}) {
+  const res = await fetch('/library/all', {
+    signal: bound ? AbortSignal.timeout(LISTING_TIMEOUT_MS) : undefined,
+  });
+  const body = await res.json().catch(() => null);
+  // **Checked before it replaces the last library that worked**, because the server's
+  // refusals are JSON. `res.json()` on a 500 carrying `{ error: ... }` resolves
+  // perfectly happily, so assigning it straight through put an object with no `takes`
+  // and no `storage` into `library` - and `paint()` reads `library.storage.label`. The
+  // throw then landed *inside* the top-level catch, which paints again against the same
+  // wrecked object, and a throw inside a catch is uncaught: module evaluation ends,
+  // `__library` is never installed and the poll never starts. That is the exact failure
+  // the catch was added to end, arriving through the one door it did not cover, and the
+  // fixture missed it by serving a body that was not JSON - so `res.json()` threw, the
+  // assignment never happened, and the intact default was what got painted.
+  //
+  // The same shape `documentsIn` in `web/main.js` uses against the same server, rather
+  // than a second way of asking whether a listing is a listing.
+  if (!res.ok || !Array.isArray(body?.takes)) {
+    throw new Error(body?.error ?? `the library could not be listed: HTTP ${res.status}`);
+  }
+  library = body;
   paint();
 }
+
+/**
+ * The listing just painted, said back in the shape `/record/state` answers in, so the
+ * poll can compare its first tick against the grid rather than against nothing.
+ *
+ * Read off `local` and `remote` rather than off the reconciled record, because those
+ * are the two recorders the poll asks and the reconciled `recording` flag is whichever
+ * side won the spread. A take mid-write has no hash and so is never merged, which is
+ * why one of the two is always the whole answer for its machine.
+ */
+const believedFromLibrary = () => ({
+  writingId: library.takes.find((t) => t.local?.recording)?.local.id ?? null,
+  node: library.node
+    ? {
+      reachable: library.node.reachable,
+      writingId: library.takes.find((t) => t.remote?.recording)?.remote.id ?? null,
+    }
+    : null,
+});
 
 for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => { filter = tab.dataset.filter; paint(); });
 }
 
-await refresh();
+// **A first listing that fails leaves a page that works, and that is the class rather
+// than the timeout that revealed it.** This is a top-level await, so anything it throws
+// ends the module here - before the poll is started and before `globalThis.__library`
+// exists. The bound above was one way to reach that and unbounding it closes only that
+// one: a node that resets the connection, a 500 out of `serveLibrary`, a listing that
+// parses as something other than JSON all end module evaluation identically, and what
+// the operator gets is a blank shelf with no error on it and no way to retry short of a
+// reload. Caught here, the page paints what it has, says what went wrong, and starts the
+// poll - which asks again every five seconds and repairs the grid the moment the library
+// can be read.
+try {
+  await refresh();
+} catch (err) {
+  say(`the library could not be read: ${err.message}`);
+  paint();
+}
+
+/**
+ * The gallery stops being a snapshot taken at load.
+ *
+ * A tile of a take that is mid-write says so, and `cannotOpen` reads that same
+ * warning out to disable Open, Download, Rename and Remove behind it. Nothing polled,
+ * so the moment the recorder stopped every one of those was wrong until somebody
+ * reloaded: the take is finished, hashed and openable, and the gallery went on
+ * refusing to open it for as long as the page stayed up.
+ *
+ * **Gated here rather than inside the poll, and the gate is the whole of this.**
+ * `paint()` closes every menu, releases every skim and replaces every tile, so an
+ * ungated refresh would take an open menu away every five seconds and reset a skim
+ * under the pointer. The recording flag and the take id are what decide what a tile
+ * is allowed to claim about a take, so they are what a repaint is worth paying for;
+ * a frame count ticking up is not.
+ *
+ * The failure is reported rather than swallowed, on the line the unreachable node
+ * already uses: a gallery that quietly stopped following the recorder looks exactly
+ * like a gallery with nothing to follow.
+ *
+ * **And re-thrown after it is reported, which is what buys the retry.** The poll only
+ * records a tick as seen once this handler returns, so a refresh that lost its
+ * connection leaves the fingerprint where it was and the next tick offers the same
+ * transition again. Reporting it and returning normally - which is what this did - made
+ * one unlucky five-second window permanent: the fingerprint had already advanced past
+ * the transition the refresh failed on, every later tick matched it, and the grid kept a
+ * finished take's Open, Download, Rename and Remove disabled until some *other*
+ * transition happened along.
+ *
+ * **Seeded with what the grid on screen already says, because the listing above and
+ * the poll's first tick are two reads of a moving world.** A take that stopped between
+ * them left the paint saying "being written" and every fingerprint from then on saying
+ * "nothing is" - all identical, so nothing ever changed, and the tile refused to open a
+ * finished take for as long as the page stayed up. The seed makes the first tick a
+ * comparison against the paint rather than against nothing, so the disagreement is
+ * caught on the tick that finds it.
+ */
+pollRecordState(async (state, changed) => {
+  if (!changed) return;
+  try {
+    await refresh({ bound: true });
+  } catch (err) {
+    say(`the library could not be reread: ${err.message}`);
+    throw err;
+  }
+}, believedFromLibrary());
 
 // What a check reads. Every number here comes from the library's own state rather
 // than from the DOM, except the mark ticks - those are read back off the page on
@@ -1660,7 +1824,17 @@ globalThis.__library = {
     // `why` off the rendered `title` rather than out of `availability`, so a row
     // asking whether two surfaces say the same thing reads the sentence an operator
     // would actually get rather than the one the function returned.
-    acts: [...el.querySelectorAll('.acts .act')].map((b) => ({ label: b.textContent, disabled: b.disabled, why: b.title })),
+    //
+    // `item` for the same reason the menu below carries one, and the symmetry is
+    // load-bearing rather than tidy: acts reported the label alone, so a check looking
+    // an act up by name had only `menu` to look in - and `menu` holds rename, reveal
+    // and reclaim and has no `delete` on any build. A row asserting that no tile offers
+    // Delete while a node is unreachable was therefore a filter over a match that
+    // cannot exist, and passed whatever the page did. Both lists answer the same four
+    // questions now, so an act can be found where an act is.
+    acts: [...el.querySelectorAll('.acts .act')].map((b) => ({
+      item: b.dataset.act, label: b.textContent, disabled: b.disabled, why: b.title,
+    })),
     menu: [...el.querySelectorAll('.menu .mi')].map((b) => ({
       item: b.dataset.item, label: b.textContent, disabled: b.disabled, why: b.title,
     })),
@@ -1837,12 +2011,16 @@ globalThis.__library = {
       note: vNote.textContent,
       flags: [...document.querySelectorAll('#vFlags .flag')].map((f) => f.dataset.flag),
       marks: [...vBar.querySelectorAll('.mk')].map((m) => Number.parseFloat(m.style.left)),
-      acts: [...document.querySelectorAll('#vActs .act')].map((b) => ({ label: b.textContent, disabled: b.disabled, why: b.title })),
       // Reported in the same shape `tiles()` reports a tile's, because what reads them
       // is one comparison: the two surfaces have to offer a take the same things, and a
       // reader that could see only one half of each would be comparing the halves that
       // never disagreed. The ⋯ itself is in the header rather than in `#vActs`, so the
-      // action rows line up without either side needing to be trimmed of it.
+      // action rows line up without either side needing to be trimmed of it. That is
+      // why the key order here is the key order there - the comparison is on the
+      // serialised object, so a field in a different place reads as a disagreement.
+      acts: [...document.querySelectorAll('#vActs .act')].map((b) => ({
+        item: b.dataset.act, label: b.textContent, disabled: b.disabled, why: b.title,
+      })),
       menu: [...viewer.querySelectorAll('.menu .mi')].map((b) => ({
         item: b.dataset.item, label: b.textContent, disabled: b.disabled, why: b.title,
       })),

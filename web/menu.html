@@ -18,7 +18,12 @@
     --paper-3: #1e232b;
     --ink: #e8ecf1;
     --dim: #8b94a1;
-    --faint: #6d7683;
+    /* 4.63:1 on --paper-3, 5.59:1 on --paper-1 - the tile an unreachable entry sits on
+       - and 5.92:1 on the page. It was #6d7683, under the 4.5:1 floor on all four. The
+       identical value is in index.html and library.html and has to stay identical:
+       nav.css reads var(--faint) without declaring it, so one page raised on its own
+       makes the same nav item legible on one surface and not the next. */
+    --faint: #828c99;
     --line: rgba(255, 255, 255, 0.1);
     --line-2: rgba(255, 255, 255, 0.2);
     --line-3: rgba(255, 255, 255, 0.34);

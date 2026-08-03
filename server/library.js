@@ -61,6 +61,7 @@ export const VALID_HASH = /^sha256:[0-9a-f]{64}$/;
 // and now quote `openRefusals`, leaving `OPEN_REFUSALS.format` below and the editor's
 // `openTake`, which is handed a hello and never a manifest.
 import { PROJECT_VERSION, VALID_ID, captureFormatRefusal } from '../web/format.js';
+import { POLLED_NODE_FIELDS } from '../web/record-poll.js';
 
 export { PROJECT_VERSION };
 
@@ -419,6 +420,10 @@ export class NodeLink {
     this.url = url.replace(/\/$/, '');
     this.name = name;
     this.lastError = null;
+    // Null until the poll has spoken to the node once. A link that has answered
+    // nothing yet is not a link that has failed, so the first listing goes out and is
+    // refused by its own gate if the manifest is the half that is old.
+    this.buildRefusal = null;
   }
 
   async fetchJson(path, init) {
@@ -449,10 +454,32 @@ export class NodeLink {
    * The whole manifest and never take by take. Admitting the readable ones would hide
    * the rest behind a shelf that looks complete, and "some of that node's takes are
    * missing" is the failure a link is supposed to make impossible to have silently.
+   *
+   * **`signal` is the caller's request going away, and it is a signal rather than a
+   * timeout on purpose.** This crosses the network to have a directory walked and an
+   * index built per take, and a cold node measured 7m30s over 200 unindexed takes - so
+   * any bound short enough to catch a dead link is short enough to refuse the case the
+   * link exists for. What the caller does know is whether anybody is still waiting: a
+   * route hands in its own request's abort, and a node that accepts the connection and
+   * then says nothing is dropped the moment the browser gives up rather than held until
+   * it eventually settles. Without it the gallery's fifteen-second retry left one more
+   * handler and one more outbound socket parked on this machine every five seconds, for
+   * as long as the page stayed open.
    */
-  async takes() {
+  async takes(signal = null) {
+    // The poll's refusal, read here because this is the request that draws something.
+    // `recordState` is the only caller that learns the node's build is too old to be
+    // followed and it paints nothing itself, so a refusal left where it was found is
+    // one the operator never sees - the gallery would go on listing that node's takes
+    // beside a recorder state frozen at the first tick. Refused before the fetch rather
+    // than after it, because there is nothing to ask a node whose answers cannot be
+    // followed, and the reason lands in `lastError` where the shelf already prints it.
+    if (this.buildRefusal) {
+      this.lastError = this.buildRefusal;
+      return null;
+    }
     try {
-      const body = await this.fetchJson('/library/takes');
+      const body = await this.fetchJson('/library/takes', signal ? { signal } : undefined);
       // The hash is filtered beside the id because it is the other field of a node's
       // that reaches a path here. **A take still being shot advertises no hash at
       // all** - `describeTake` reports null on purpose, and `reconcile` keys those by
@@ -470,6 +497,90 @@ export class NodeLink {
     } catch (err) {
       this.lastError = err.message;
       return null;
+    }
+  }
+
+  /**
+   * Whether the node is shooting, and which take. Null when it cannot be reached.
+   *
+   * **The gallery on this machine is a view of both libraries and was following only
+   * one recorder.** `/library/all` reconciles the node's takes into the grid, so a
+   * take being written over there draws a tile here that says so and disables Open,
+   * Download, Rename and Remove behind it - but the only thing this machine polled to
+   * decide whether any of that had changed was its own `/record/state`, which on an
+   * editing station with no sensor never moves. The remote tile then went on refusing
+   * a take that finished minutes ago for as long as the page stayed open, which is the
+   * exact staleness the poll was added to end, surviving on the one machine the
+   * gallery is actually used from.
+   *
+   * **Two fields and not the node's whole state**, because this is a fingerprint
+   * rather than a readout: what is drawn about the node's takes comes from
+   * `/library/all`, and all this has to do is say when that answer is worth asking for
+   * again. Shipping the node's monitors and free space here would be a second copy of
+   * a record only that machine's own panel has a use for.
+   *
+   * **Bounded where `takes()` is not, and the cadence is the reason.** This one sits
+   * on a five-second poll, so a node that accepts a connection and then says nothing -
+   * a machine mid-reboot, a link that dropped without a reset - would stall every tick
+   * behind it and the gallery would stop following the recorder it can still reach.
+   * The others are one-shots an operator asked for and can see waiting. Three seconds
+   * is well past a LAN request that is going to answer and well under one tick.
+   */
+  async recordState() {
+    try {
+      const body = await this.fetchJson('/record/state', { signal: AbortSignal.timeout(3000) });
+      // **The same "two machines are two builds" refusal `takes()` makes, arriving at
+      // the second route.** The manifest gate up there is passed by the build
+      // immediately before this one, whose `/record/state` predates `writingId` and
+      // omits the key entirely - and `?? null` below would read that as a node that
+      // owns no take. It is a legal value for a recorder sitting idle, so nothing
+      // would look wrong: the fingerprint the poll computes is constant from the first
+      // tick, no remote start or stop can ever change it, and the gallery quietly
+      // stops rereading the library for the machine it is drawing half its grid from.
+      // Absent and "not writing" are two different facts and only one of them may be
+      // spelled `null`.
+      //
+      // Asked of `POLLED_NODE_FIELDS` rather than of `writingId` by name, because the
+      // poll is what decides which fields matter: a field added to that fingerprint
+      // tightens this by existing, where a name written out here is a second list to
+      // keep in step and the copy that goes stale is this one - the far side is the
+      // half nobody tests on a single machine.
+      const missing = POLLED_NODE_FIELDS.filter((f) => body[f] === undefined);
+      // **Its own field rather than `lastError`, and the reason is which way each one
+      // has to move.** `lastError` is written per listing and cleared by the next one
+      // that succeeds, so a refusal parked in it would either be wiped by the very next
+      // `/library/all` - which is what it has to survive to be read - or, if `takes()`
+      // returned early on it, would latch: nothing would fetch again, so nothing would
+      // clear it, and a node upgraded ten minutes later would stay refused until this
+      // process restarted. Set and cleared on every tick of the poll instead, so the
+      // refusal lasts exactly as long as the build that earns it and an upgrade heals
+      // the link within one cadence with nobody doing anything.
+      this.buildRefusal = missing.length === 0 ? null
+        : 'it is running an older build whose recorder state carries no '
+          + `${missing.join(', ')} - the gallery cannot follow a recorder it cannot ask, `
+          + 'so its takes are not listed here. Upgrade the node to this build.';
+      if (this.buildRefusal) {
+        return { name: this.name, reachable: false, recording: false, takeId: null, writingId: null };
+      }
+      return {
+        name: this.name,
+        reachable: true,
+        recording: Boolean(body.recording),
+        takeId: body.takeId ?? null,
+        // The node's own answer to "which take do you still own", carried across
+        // unchanged. The gallery on this machine draws that node's takes, so the
+        // window in which a tile may not offer Open is the node's window and not
+        // this one's - reading it off `recording` here would end the remote tile's
+        // refusal the moment the node's writing stopped, several seconds before its
+        // index existed.
+        writingId: body.writingId ?? null,
+      };
+    } catch {
+      // Deliberately not written to `lastError`. That field is what the gallery prints
+      // beside "unreachable", and it is set by the listing this side actually draws
+      // from - overwriting it here would let a poll's timeout replace the reason the
+      // library failed with a reason nothing on screen is about.
+      return { name: this.name, reachable: false, recording: false, takeId: null, writingId: null };
     }
   }
 }

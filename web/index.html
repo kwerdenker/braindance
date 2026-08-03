@@ -22,7 +22,14 @@
     --paper-1: #0d1014;
     --paper-2: #151920;
     --paper-3: #1e232b;
-    --faint: #6d7683;
+    /* 4.63:1 on --paper-3, which is the lightest surface it is ever read against, and
+       5.92:1 on the page. It was #6d7683, which is 3.43:1 there and 4.15:1 on the page
+       - under the 4.5:1 floor for body text on every one of the four. **Raise it here
+       and it is still wrong on the other two pages**: this token is declared
+       identically in library.html and menu.html, and nav.css styles the current
+       surface with var(--faint) while declaring it nowhere, so the shared stylesheet
+       already depends on all three saying the same thing. */
+    --faint: #828c99;
     --line-2: rgba(255, 255, 255, 0.2);
     --line-3: rgba(255, 255, 255, 0.34);
     --accent-low: rgba(90, 209, 196, 0.14);
@@ -348,6 +355,13 @@
   .tchip button[disabled] { color: var(--dim); cursor: default; }
   .tchip.warn, #tNote { border-color: var(--warn); color: var(--warn); }
   #tNote:empty, #tBehind:empty, #tExportNote:empty { display: none; }
+  /* `hidden` on a chip, which needs saying because `.tchip` already sets a display and
+     an author rule beats the `[hidden] { display: none }` in the browser's own sheet.
+     Without this a chip marked hidden stays on screen with nothing in it, which is the
+     shape of a control that looks available and does nothing. Written against the class
+     rather than against the one chip that needed it, so the next chip that hides is
+     covered by existing. */
+  .tchip[hidden] { display: none; }
 
   /* The dialog that asks which look values a preset is written with. A `<dialog>`
      rather than a positioned div, for the reason `library.js` gives beside the
@@ -492,13 +506,31 @@
      which is the payoff for putting them in a sidecar. Drawn in program time
      through the retime curve, because the ruler is program time and a mark is
      source time, and the two only coincide at rate 1 with no keys. */
+  /* The strip stays transparent to the pointer so a scrub that crosses a mark is
+     still a scrub, and each tick takes its own events back - the ticks are buttons
+     that seek to the mark, and a layer that swallowed nothing would have swallowed
+     the drag as well. */
   .tmarks { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
   .tmk { position: absolute; bottom: 2px; width: 5px; height: 5px; margin-left: -2.5px;
-    background: var(--accent); transform: rotate(45deg); }
+    padding: 0; border: 0; background: var(--accent); transform: rotate(45deg);
+    pointer-events: auto; cursor: pointer; }
   /* A mark the edit never reaches stacks at the right edge rather than being
      dropped: the moment is still in the footage, and a tick nobody can explain is
-     better than a tick that silently vanished when the curve was retimed. */
+     better than a tick that silently vanished when the curve was retimed.
+
+     **Above the two interaction states rather than below them, and the order is the
+     whole of it.** `.tmk.beyond` and `.tmk:hover` have the same specificity, so
+     whichever is written last wins - and with this rule underneath, a beyond mark kept
+     its resting colour while hovered and while focused. Focus was the worse half: the
+     rule below turns the native outline off on the grounds that the colour change says
+     the same thing, so a beyond tick answered a keyboard with no change of any kind. */
   .tmk.beyond { background: var(--faint); }
+  .tmk:hover { background: var(--ink); }
+  /* Rotated 45 degrees, so the focus ring would be a diamond around a diamond and
+     land under the neighbouring lane. Drawn as the same colour change hovering
+     gives, which is the state the ring would have been describing anyway - which is
+     only true while these sit after every rule that sets a resting colour. */
+  .tmk:focus-visible { outline: 0; background: var(--ink); }
 
   .tplayhead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--ink);
     pointer-events: none; z-index: 3; }
@@ -778,6 +810,20 @@
           <input id="tPresetFile" type="file" accept=".json,application/json" hidden></label>
         <label class="tchip">project<select id="tProject"><option value="">—</option></select>
           <button id="tProjectOpen" type="button">open</button><button id="tProjectSave" type="button">save</button></label>
+        <!-- The auto-save, offered back only when there is one to offer. Beside the
+             project picker because that is what it is, and a chip of its own rather
+             than an entry in that picker because the picker hides `__working__` on
+             purpose: it is always the newest document in the directory, so listing it
+             beside real projects offers "the thing you were just doing" under a name
+             that reads like a mistake.
+             A button and not a sentence telling somebody to edit the URL. The offer
+             began as text naming `?project=__working__`, which drops the `take` the
+             editor boots on, so following it literally left the query with no take in
+             it and the boot path sent the browser to the gallery - an instruction that
+             reads as a recovery path and is a way out of the page. `openTake` shows
+             this and `loadProjectNamed` is what it presses, which is the same door the
+             resume URL opens and therefore the same hash refusal on the way in. -->
+        <span class="tchip" id="tResume" hidden><b id="tResumeWhen"></b><button id="tResumeOpen" type="button">restore autosave</button></span>
         <label class="tchip">deliverable<select id="tDeliverable"><option value="">—</option></select>
           <button id="tDeliverableNew" type="button">new</button>
           <b id="tDeliverableReadout"></b></label>
