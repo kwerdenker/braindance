@@ -316,27 +316,65 @@ else, so applying one never moves your camera.
 
 ### Presets
 
-A preset is a document: `{ version, values }`, one number per look parameter. The five
-that ship are served read-only from `presets-builtin/` beside your own library in
-`presets/`, and they are marked with a `·` in the picker.
+A preset is a document: `{ version, values }`, and the keys it names are its scope. The
+five that ship are served read-only from `presets-builtin/` beside your own library in
+`presets/`, and they are marked with a `·` in the picker. Each of them names the whole
+look tag, which is one shape a preset can take rather than the only one — "just my grain
+and bloom" is a document naming two values, and applying it leaves everything it does not
+name where the grade left it.
+
+Saving and exporting both ask which values go in, with every box ticked, so the gesture
+that existed before that dialog writes what it always wrote and a sparse preset is
+something you go out of your way to author. The boxes carry the same headings the panel
+uses and are derived from the registry rather than listed beside it, so a parameter added
+later appears under its own heading by existing. A second statement of which parameter
+sits under which heading is the copy that drifts, and it would drift silently, because a
+parameter missing from that dialog is not an error anywhere — it is a value you can no
+longer choose to leave out.
+
+**The five reading weights tick and untick together, and the format refuses the document
+that would otherwise be assembled.** A file naming any reading has to name all five,
+because the ones it leaves out do not arrive as anything: they stay at whatever the clip
+was already wearing, so two fifths of a blend renders as a mixture nobody authored and
+nothing on screen says it is a mixture. A file naming none of them is the other case and
+is not a hole in a look — it is a look that is not about the reading, so what is on screen
+afterwards is the blend whoever was grading had already chosen. That is `format.js`'s
+argument for refusing a version 3 document, asked again of a document that passes the
+version gate.
+
+**A preset that describes part of a look does not stamp the clip.** Applying one writes
+its values and leaves the provenance where it was, and saving one does the same, because
+the stamp answers "what look is this clip wearing" and a document that set three of the
+fifty-four look values did not answer it. Recording it as the clip's origin would put a
+set of clips on one revision of a look they agree about only in the three values that file
+happened to carry — the drift the stamp exists to make visible, arriving as something the
+stamp says itself. A whole look stamps exactly as it always did, and the two surfaces that
+report an apply say which of the two happened instead of printing a revision either way.
 
 **Saving over a shipped name forks it rather than overwriting it.** The write lands in
 your library and shadows the built-in; delete the fork and the shipped look comes back.
 So the five are starting points you cannot damage, and re-grading one in a later release
 reaches everybody rather than only people who had not run the program yet.
 
-`export` writes the look on screen — not the document the picker happens to name, which
-are the same thing only until you move a slider — as `<name>.braindance-preset.json`.
-`import` reads one back. The bytes are the document, so a look is something you can keep
-in a repository, mail to somebody, or edit in a text editor.
+`export` goes through that same dialog and writes the look on screen — not the document
+the picker happens to name, which are the same thing only until you move a slider — as
+`<name>.braindance-preset.json`. `import` reads one back. The bytes are the document, so a
+look is something you can keep in a repository, mail to somebody, or edit in a text
+editor — and it is one dialog rather than two because a subset you could put in your
+library and not into a file would be a document shape that exists on one side of the
+export and not the other.
 
 An imported file is checked against the registry before it is saved and applied only
 after, which is what makes that safe: a scalar carrying a string fails at the key that is
 wrong instead of writing a plausible-looking look, and a file carrying `__proto__` is
 refused as an unknown parameter — and neither ever reaches the library, because the
 refusal happens before the write rather than after it. A file is the one door into the program that nothing upstream validates, so
-nothing about it is taken on trust — `editor-check` section 9 drives the whole round trip
-in a browser, and `import-skips-normalise` is the mutation that must break it.
+nothing about it is taken on trust — `editor-check` section 12 drives the whole round trip
+in a browser, and `import-skips-normalise` is the mutation that must break it. The subset
+half of that round trip is driven there too, through the rendered controls rather than
+through the function behind them: `picker-ignores-the-boxes` writes the whole look tag
+whatever was ticked, and `readings-tick-alone` gives each reading weight a box of its own,
+which authors a file this program then refuses to read.
 
 Documents from before the readings landed are version 3 and will not open. The
 conversion is total and lossless, so it is a one-shot over files rather than a second

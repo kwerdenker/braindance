@@ -130,6 +130,18 @@ per frame, each of which renders a pre-roll which evaluates, so the page never a
 never errors - it runs out of memory some minutes later, somewhere else. A bounded probe turns
 that into a sentence.
 
+**Its section 6e stands on something nobody wrote down until it nearly broke.** The two
+`page.click('.kf[aria-label="bloom keyframe"]')` calls need that diamond *visible*, and `bloom`
+lives in the `optical` panel group, which collapses when every parameter in it is at its
+default. They work only because 6e applies the Blackwall look first and that look moves `bloom`,
+`rgbSplit`, `scanlines` and `grain` off their defaults, so the group has derived itself open by
+the time the click lands. Nothing in either file says so, and the two ends can move
+independently: a look re-graded to leave `optical` alone, or a change to the reveal predicate,
+turns those clicks into thirty-second timeouts - which arrive as a crash with **zero failed
+assertions**, the shape this repo has twice recorded being written down as a bug found. If you
+touch either end, run `keyframe-check`; `editor-check` section 13c is the row that grades the
+mechanism itself.
+
 **`jobs-check`** spawns its own server and renders two real jobs through
 `tools/render-worker.mjs`, so it needs a GPU browser and ffprobe. `--no-render` drops both rows
 and says so - the queue rows are seconds, each render is about a minute.
@@ -423,6 +435,19 @@ and the two misses are recorded in the file** because each was NOT CAUGHT agains
 a fix removed: the rule they named had been made redundant by the two-row bar, which is worth
 knowing about the fix as well as about the check.
 
+**That sweep reaches into `<dialog>` as well as the strip and the panel, and what an uncovered
+control means depends on knowing it.** The selector names the element rather than any dialog's
+id, so a modal added later is asked about by existing rather than sitting outside every
+observation — which is what a body-level `<dialog>` does by default, since it is a sibling of
+`#panel` and not a descendant. **The load-bearing part is not visible from the selector: the
+dialog's rule is tested *ahead* of the panel's inside `covered()`.** The panel rule matches any
+checkbox under `#panel` and credits it to `registry-check`'s drop-one sweep, which drives
+sliders and knows nothing about a preset dialog, so the two rules in the other order hand the
+dialog's 54 checkboxes to a driver that never touches them and section 1 goes green over an
+untested surface. That is the misattribution the `DRIVER_RULES` array was re-keyed to prevent,
+arriving as an ordering rather than as an index. A row that reddens for a control inside a
+dialog is therefore a coverage failure like any other and not an artifact of the widening.
+
 Its `nav-at-the-foot` mutation is the control for section 1's second claim, that the way out of
 the editor is *reachable* rather than merely present. Its own two flaws — a probe in a dead zone
 and a probe that moved the page it measured — are in `docs/instruments.md`, because both are
@@ -445,6 +470,104 @@ block used to plant a trim at a flat `in: 20, out: 40`, which the clip clamp hol
 asserting the clamp instead. They are now read off the measured duration, and the one deliberate
 exception is `editor-check-past`, planted at 1.5x the duration precisely so that it misses.
 
+**Section 15 grades a feature whose whole design is that it stores almost nothing**, and its
+five controls exist because most of the ways it can be wrong are invisible from the panel.
+Whether a parameter group is open is derived — a group is open when any parameter in it carries
+keyframes or holds a value off its own default — and the only thing written down is a person
+disagreeing with that, in `localStorage` under `kinect.panelGroupsOpen`, deleted again the
+moment the derivation catches up with them.
+
+- **`group-never-reveals`** is the falsification control for the derived half: the predicate
+  answers "nobody has been here" whatever the document holds, so a group carrying live values
+  renders shut. It reddens **14 rows** and the shape of that set is what to read. The rows that
+  move a value, key a parameter or move a reading and expect the group to open carry the claim.
+  **The mark rows go red with them, and that is correct rather than collateral** — the mark is
+  keyed on the same rule the open state is, so a build that cannot tell whether a group is in
+  use cannot mark it as in use either. This document said the opposite for a while, describing
+  an abandoned draft that widened the mark to a condition of its own; those rows stayed green
+  under it, which read as precision and was really the second rule covering for the first. The
+  two store rows in 15f-bis go red as well, because both halves of the store rule are
+  comparisons against a derivation this build has frozen. What stays green is the toggle itself
+  — it still presses, the rows still hide and show — and the count on a shut header, which
+  walks `paramTouched` rather than this predicate. 15i's three go red for the reason one step
+  further out: that block needs a group that is genuinely in use and then shut, and on a build
+  where nothing is ever in use that fixture cannot be built at all. Its pinned-open half stays
+  green, which is what says the three are about the predicate rather than about reloading.
+- **`override-prunes-only-on-toggle`** is the control for the *stored* half, and it exists
+  because that half had none. `toggleGroup` compares what a person asked for against what the
+  document derives at the instant of the press, so pressing a toggle back is the one gesture
+  where the two agree by construction — and 15f pressed exactly that, then reported the whole
+  rule. The term that moves afterwards is the derivation, and nothing drove it: a group pinned
+  open while quiet stayed open forever with nothing in it, through a green section. This
+  mutation restores the pre-fix build exactly — the prune comes out of `refreshGroups` and goes
+  back into `toggleGroup` in one edit — so the toggle path keeps working and only 15f-bis's two
+  rows go red. A break that also failed 15f would not say which question was being asked.
+- **`prune-ignores-movement`** is the other half of the same control set, and it restores the
+  build the first attempt at that prune shipped: the comparison stays where it is and loses only
+  its condition that one of the two terms has *moved*. That condition is what the state a page
+  boots into needs. Before the take is open every look parameter sits at its default and there
+  are no tracks, so the derivation answers `false` for every group — a statement about there
+  being no document yet rather than about the document — and a build pruning on agreement alone
+  deletes every stored collapse on its way past that reading and writes the pruned map back. It
+  fails one-directionally and in the direction people use: a pin stores `true` against a derived
+  `false`, which is a disagreement at boot and survives, while a collapse stores `false` against
+  the same `false` and does not. It reddens **2 rows**, both in 15i, and the pin row beside them
+  stays green — a control that reddened both could not say which of the two it was asking about.
+- **`panel-rederives-per-write`** is the control for 13k, which is the one cost row in this file.
+  It takes the gate off in both places it lives, which between them are the build from before it
+  existed: `params.set` announces every write to the panel unconditionally again, and
+  `withoutRepaint` stops asking once on the way out. Both edits or neither — removing only the
+  condition would leave the `finally` asking as well, at one pass per frame more than any build
+  that ever shipped, and the arm would then be about a build nobody has. Measured, two rounds per
+  arm: **1.00 re-derivation per rendered frame at four keyed parameters and 1.00 at eight, against
+  4.00 and 8.00 mutated.** Those exact figures are what say the arm is the pre-gate build rather
+  than the condition alone, since the latter would answer 9 at eight keys.
+- **`reveal-ignores-tracks`** drops the keyframe term alone, and it is the one worth reading
+  twice. A parameter that is keyed *and* off its default opens the group either way, so this
+  mutation is invisible to every other row in the section: the fixture has to plant a track
+  whose keys are all at the parameter's own default, and assert the parked value really is
+  there, before the row means anything. Without the term the groups breathe open and shut as
+  the playhead crosses a curve's default, because the evaluator writes through `params.set` and
+  `params.get` therefore answers the evaluated value.
+- **`detail-ignores-the-reading`** puts `Reading · detail` back onto the default rule. It takes
+  the *reading* terms out of that group's closure and leaves `revealsItself('detail')` standing,
+  so tuning a parameter inside the group still opens it exactly as before — the loss is narrower
+  than this document once claimed, and precisely so: the group's seven parameters sit at the
+  shader literals they replaced, so on the default rule alone it stays shut whichever reading is
+  live, which is the one case its closure exists for. It reddens **three rows**; the first
+  carries the claim and the two below it are the fixture saying it could not establish a live
+  `detail` to test the store rule against. It was four until 15i stopped needing a `detail` that a
+  reading had opened: that block pins `detail` open while it is *quiet* now, which is a
+  disagreement whether or not the closure reads the readings.
+
+Two things about the section that are not obvious from reading it. **It reloads the page rather
+than opening a second one**, because `page.route` is installed per page — a second page would
+take the tree's own `main.js` and put two builds inside one measurement. That reload carries both
+polarities at once and they are not the same claim: the pin proves an override survives a reload
+at all, the collapse proves nothing pruned it against a document that had not loaded yet, and the
+row between them reads `kinect.panelGroupsOpen` straight back before anything touches the panel.
+`docs/instruments.md` carries why that row was once re-polarised onto the pin alone and why that
+was the wrong call. And **every press is conditional on the state the group is actually in**: under `group-never-reveals` every group is
+already shut, so a blind "press to collapse" would open one instead and the row would fail for a
+reason that has nothing to do with the mutation.
+
+**The rows are hidden with CSS and never removed from the document**, which is what keeps the
+panel checkable at all: section 1 counts a control per registry parameter with a plain
+`querySelectorAll`, blind to visibility by construction, so a build that collapsed by rebuilding
+the panel would pass every row above it and quietly stop being the registry. Each row in section
+13 reads the count in the document beside the count on the screen for that reason. The same rule
+is why `framing` is not collapsible and why section 15 spends an assertion saying so: its
+`after()` emits `#cropReset`, section 8 clicks it, and Playwright's click waits for visibility —
+so a collapsible `framing` turns a row eight sections back into a thirty-second timeout, which
+arrives as a crash carrying no failed assertion rather than as a finding.
+
+**`keyframe-check` depends on this feature without mentioning it.** Its section 6e clicks
+`.kf[aria-label="bloom keyframe"]`, `bloom` is in the `optical` group, and that click needs the
+group open. It works because 6e applies the Blackwall look first, which moves `bloom`, `rgbSplit`,
+`scanlines` and `grain` off their defaults — so the per-write refresh that opens a group is
+load-bearing for another tool's actionability and not only for the panel looking right. Run
+`keyframe-check` after touching the predicate.
+
 **`vendor-check` reads the built artifact as well as the source.** Sections 1-4 prove
 `third_party/` is upstream plus the declared edits; section 5 asserts the library actually
 installed at `vendor/prefix` carries `LIBFREENECT2_REG_THREADS`, the env override the threading
@@ -457,6 +580,19 @@ builds from upstream's own registration.cpp, rather than a doctored copy of ours
 FAIL. **What is still source-only is the sub-9 fix**, whose `& 0x1ff` compiles to an immediate
 and leaves nothing in the binary to look for; the tool says so rather than implying it covers
 both. Exit 2 where no prefix exists.
+
+**`sensor-view-check` exits 2 on a machine with no sensor attached, and that is the tool
+working rather than a regression** — worth writing down because it reads like one. Its section 5
+arm waits for `uniforms.focal.value.x !== 366`, which is a hello arriving over the socket, so a
+server whose grabber will not spawn leaves the boot default standing and the wait times out at
+25s. The tool answers `untested` and says "no sensor, no claim" instead of failing, which is the
+right reading and still exits 2. Everything else in the file runs: **section 6 is the only arm
+in the suite pointed at the recorder's panel** — 20 blocks, 54 parameters on both surfaces, the
+nine look groups hidden and then revealed by `extended settings` — so a change to the panel is
+still graded on both surfaces on a sensorless rig, and that section is what to read. One row in
+section 3 goes red there for a second environmental reason: it needs **two or more takes** with
+a hello to say that the library cannot tell a computed angle from a constant, and a `captures/`
+holding only `sample.knct` reports `1 takes`.
 
 **`level-check` needs no sensor and no capture, and that is a claim about what it can grade
 rather than a convenience.** It writes analytic planes — `z = c / (u . n)` along each pixel's
