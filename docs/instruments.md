@@ -55,6 +55,39 @@ fallback means an ffmpeg that failed to run prints NOT CAUGHT too, so what discr
 catch is the *pair*: NOT CAUGHT against the old row, `caught, as required` against the new one.
 A single run in either direction would not have said which.
 
+### A defect that moves a word rather than removing it, and two rows that asked whether it was there
+
+`library-check`'s colour-toggle-during-the-backoff section asserts that the *next* genuine
+grabber death is still reported `lost` and still counts toward the backoff table. Both rows read
+for a presence: `after.includes('lost')`, and the backoff line count being greater than the count
+taken before the toggle. Both passed the mutated build, so `--mutate exit-keeps-the-child-reference`
+reddened nothing at all — and `library-check` has no `NOT CAUGHT` branch, so it exited 0 and read
+as a clean pass rather than as the check being blind.
+
+What made the rows wrong is that the defect does not delete either signal. It **moves** them. The
+toggle landing on a stale `child` reference calls `stopGrabber` on a process that has already
+exited, and that announces a `lost` of its own; the respawn that follows still writes a backoff
+line. Measured side by side, the fixed build's status slice was `starting live lost` and the
+mutated build's was `lost starting live starting`, and the backoff counts went 1→2 fixed against
+0→1 mutated. Membership is true of both. "Greater than before" is true of both.
+
+The two fixes are the same fix in different clothes. The `lost` row now asks for **order** — the
+`lost` has to sit after the `live` that the respawn produced — which is what "the *next* failure"
+meant all along and which is incidentally robust against the previous death's `lost` arriving late
+and landing in the slice. The backoff row now asks for **one line per death**, `backoffAtRead ===
+exitsAtRead`, rather than for growth; the count taken before the toggle turned out to be a race in
+the fixture and is now reported rather than asserted on, since `scheduleRetry` writes its line just
+after the exit the poll loop watches for.
+
+Two things worth carrying forward. **When the thing under test is a sequence, a row that asks
+whether a value appears anywhere in that sequence has thrown away the only axis that discriminates**
+— ask where it appears relative to the event it is supposed to follow. And the diagnostic that had
+been deliberately left un-asserted is what caught this: the section prints the server's own
+`colour camera on - ...` line, and reading `restarting grabber` where a fixed build prints `takes
+effect on the next spawn` is what said the mutation had applied and reached the branch while the
+rows agreed with it. **A printed-not-asserted probe beside a claim is how you tell a control that
+missed from a fixture that never ran** — the two are indistinguishable from the assertion count.
+
 ### An A/B where one arm cleans up after the other measures nothing
 
 The version of that failure worth naming separately, because both arms run, both produce a
