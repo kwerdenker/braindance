@@ -74,7 +74,7 @@ import { REVEAL } from '../server/library.js';
 // construct or assert on has to carry the one this build writes, and a literal here
 // is a second copy of it - which is exactly what had to be hand-swept when the
 // readings dissolved the mode and the version moved from 3 to 4.
-import { PROJECT_VERSION } from '../web/format.js';
+import { PROJECT_VERSION, CAPTURE_FORMAT } from '../web/format.js';
 
 const argv = process.argv.slice(2);
 const flag = (name, fallback = null) => {
@@ -257,6 +257,23 @@ const MUTATIONS = {
   'accept-any-version': { file: 'web/main.js', edits: [[
     '  if (project.version !== PROJECT_VERSION) {',
     '  if (false) {',
+  ]] },
+  // **The capture format's band comes off.** A take whose hello declares a generation
+  // this build has never read is opened on this build's assumptions instead of being
+  // refused - which is the whole of the failure the format number exists to prevent,
+  // arrived at from the inside: one geometry model applied to two archives, silently.
+  //
+  // The edit is the accepting branch rather than the sentence, so the refusal below it
+  // survives as unreachable code and the mutated build still parses. It is in
+  // `web/format.js` because that is where the one predicate lives, and the interesting
+  // half of that is what it reaches: this file is imported by `server/library.js` on
+  // Node *and* served to both pages, so a single edit here reddens the server's
+  // `openable`, the gallery's badge and dead Open button, and the editor's own throw
+  // together. If it reddened only some of them, the band would have stopped being one
+  // predicate and become three that agree - which is what this control is for.
+  'open-ignores-format': { file: 'web/format.js', edits: [[
+    "  if (format === CAPTURE_FORMAT) return '';",
+    "  return ''; /* mutation: every generation opens on this build's assumptions */",
   ]] },
   // The retime guard comes off the file door. This is the door step 5 named and
   // left open, and a descending region does not merely fail - it can pass the
@@ -952,15 +969,28 @@ const SRC = sampleMessages();
  * `truncated` flag has something to report - the flag has been computed since step
  * 2 and read by nothing until this gallery.
  */
-function writeTake(dir, id, { frames = 8, withHello = true, truncate = false, startedAt = null } = {}) {
+function writeTake(dir, id, { frames = 8, withHello = true, truncate = false, startedAt = null, format = null } = {}) {
   const parts = [];
   if (withHello) {
     // The wall-clock capture date, which the frame stamps cannot supply: they are
     // `steady_clock`, monotonic since boot, right for frame spacing and useless for
-    // sorting a library.
-    const hello = startedAt === null
+    // sorting a library. And the capture format's generation, which is the same shape
+    // of field for the same reason - the sample predates both, so a hello carried
+    // through untouched is honestly a take from before either existed, which is the
+    // shape most of this fixture wants and one the gallery has to keep opening.
+    //
+    // Re-serialised only when something was asked for, and the asked-for keys land in
+    // this order, so a call that names neither writes the sample's own bytes back. The
+    // takes both machines hold are compared by content hash, and a helper that
+    // re-serialised unconditionally would leave that resting on `JSON.stringify` being
+    // stable rather than on the two files being the same file.
+    const stamped = {
+      ...(startedAt === null ? {} : { startedAt }),
+      ...(format === null ? {} : { format }),
+    };
+    const hello = Object.keys(stamped).length === 0
       ? SRC.hello
-      : Buffer.from(JSON.stringify({ ...JSON.parse(SRC.hello.toString('utf8')), startedAt }));
+      : Buffer.from(JSON.stringify({ ...JSON.parse(SRC.hello.toString('utf8')), ...stamped }));
     parts.push(encodeMessage(TYPE_HELLO, hello));
   }
   for (let i = 0; i < frames; i++) parts.push(SRC.frames[i % SRC.frames.length]);
@@ -1062,6 +1092,23 @@ function buildFixture() {
   // quantity cannot measure it however many of them there are.
   writeTake(macCaps, 'three-warning-take', { frames: 1, withHello: false, truncate: true });
 
+  // **Both ends of the capture format's band, and the second one is why there are two.**
+  //
+  // The first declares a generation this build has never read. Everything about it is a
+  // perfectly ordinary take - whole frames, a readable hello, intrinsics in range - and
+  // the only thing wrong with it is that nothing here knows what its numbers mean, which
+  // is exactly the case that has no other symptom.
+  //
+  // The second declares nothing at all, which is what `sample.knct` itself is and what
+  // every take shot before the field existed is. It is planted under its own name rather
+  // than left to the takes that happen to be generation zero for other reasons, because
+  // it is a claim in its own right and a claim wants a row that names it: a band written
+  // as "refuse anything unfamiliar" passes every assertion about the take above and
+  // condemns the entire existing archive, and a control that refused both would be
+  // proving only that the gallery can say no.
+  writeTake(macCaps, 'future-format-take', { frames: 6, format: CAPTURE_FORMAT + 1 });
+  writeTake(macCaps, 'generation-zero-take', { frames: 6 });
+
   // Mark counts the tile renders differently: none, exactly one, and several - plus
   // a mark at source zero and a mark past the end of the footage, which are the two
   // positions a fraction can get wrong without any of the middle ones noticing.
@@ -1121,8 +1168,32 @@ function stageServer() {
     const from = join(REPO, name);
     if (existsSync(from) && !existsSync(join(root, name))) symlinkSync(from, join(root, name));
   }
-  if (serverMutation) {
-    writeFileSync(join(root, serverMutation.file), serverMutation.body);
+  // **Every mutation is written into the staged tree, not only the server ones**, and
+  // it was `server/` only until the capture format's band needed breaking.
+  //
+  // `web/format.js` is the file that made the old arrangement wrong. `server/library.js`
+  // imports it by path - which is the entire reason the constant lives under `web/`,
+  // since the browser can only reach what the server serves and Node has no such
+  // constraint - so a mutation of it delivered to the page and not staged left the
+  // server deciding `openable` on the unmutated band. The control would then redden the
+  // page's rows and leave the server's green, which reads as a check having found a
+  // partial break in the product rather than as the harness having broken half the
+  // build. Both roots here are copies, so this writes into the scratch tree and never
+  // into the subject.
+  //
+  // **This is now also the delivery path for a page file**, and saying so matters
+  // because the comment here used to claim the route interception in `openPage` was the
+  // whole of it. `WEB_DIR` is `join(ROOT, 'web')` and `web/` is copied into the staged
+  // root, so a mutated page file staged here is what the server serves - the
+  // interception in `openPage` fulfils first and wins the race, but it is answering with
+  // the same `mutation.body` this wrote, so the two cannot disagree about what is under
+  // test. What the interception still does uniquely is map `library.html` onto `/gallery`
+  // and refuse a page file it has no URL for. Collapsing the two into one mechanism is
+  // worth doing and is deliberately not done here: it would put six page mutations this
+  // issue never touched through a new delivery path, and re-proving each of them for its
+  // own stated reason is a piece of work rather than a line.
+  if (mutation) {
+    writeFileSync(join(root, mutation.file), mutation.body);
   }
   return root;
 }
@@ -1533,6 +1604,21 @@ async function runChecks() {
     check(byId['one-frame-take'].frames === 1 && byId['one-frame-take'].openable === false,
       'a one-frame take lists, and says it cannot be bracketed');
     check(byId['local-clip'].openable === true, 'and an ordinary take is openable');
+    // The band, at the door the other three read. `format` is reported as the listing
+    // found it rather than as a boolean, because the refusal has to be able to name the
+    // generation - "unknown format" with no number is a sentence nobody can act on.
+    check(byId['future-format-take'].format === CAPTURE_FORMAT + 1
+      && byId['future-format-take'].openable === false,
+      'a take from a format this build does not read lists, says which generation wrote it, and says it cannot be opened',
+      `format ${JSON.stringify(byId['future-format-take'].format)}, openable ${byId['future-format-take'].openable}`);
+    // The half that stops the band from being "refuse anything unfamiliar", which would
+    // pass the row above while shutting every take on disk today out of the editor.
+    check(byId['generation-zero-take'].format === null
+      && byId['generation-zero-take'].openable === true,
+      'while a take whose hello declares no format at all is generation zero and opens, which is the whole existing archive',
+      `format ${JSON.stringify(byId['generation-zero-take'].format)}, openable ${byId['generation-zero-take'].openable}`);
+    check(byId['local-clip'].format === null && byId['no-hello-take'].format === null,
+      'and the field is null rather than absent on a take that carries no answer, so the page has one thing to read');
     check(byId['local-clip'].dateSource === 'hello'
       && Math.abs(byId['local-clip'].capturedAt - Date.UTC(2026, 6, 15, 18, 5)) < 1,
       'the wall-clock capture date comes off the hello where the take carries one');
@@ -2048,6 +2134,13 @@ async function runChecks() {
       'the Open on a take with no hello is disabled rather than a throw waiting to happen');
     check(one('local-clip').acts.find((a) => a.label === 'Open')?.disabled === false,
       'and an ordinary take opens');
+    // The same pair for the format band. Both, because a page that greyed every Open
+    // would pass the first of these on its own and the second is the one that says the
+    // refusal is about this take rather than about the button.
+    check(one('future-format-take').acts.find((a) => a.label === 'Open')?.disabled === true,
+      'the Open on a take from a format this build cannot read is disabled the same way');
+    check(one('generation-zero-take').acts.find((a) => a.label === 'Open')?.disabled === false,
+      'while a take that declares no format at all still opens');
 
     // Marks on the tile's scrub bar, at their source fraction. The two that a
     // fraction gets wrong on its own are checked by name: source zero has to land
@@ -2342,6 +2435,24 @@ async function runChecks() {
     check(warnTile.flags.includes('short') && /no frames/.test(warnMenu.note.match(/^.*no frames.*$/m)?.[0] ?? ''),
       'and a take with no whole frame says so rather than saying it has fewer than two',
       warnMenu.note.split('\n').find((l) => /frame/.test(l)) ?? '');
+    // The format band's badge and the sentence behind it, read the same way. The
+    // sentence is asserted to carry the generation it found rather than merely to
+    // mention a format, because the number is the only part of it an operator can do
+    // anything with - and it is built from the constant rather than written down, so
+    // this row moves with the band instead of having to be swept when it does.
+    const fmtTile = one('future-format-take');
+    const fmtMenu = await page.evaluate(`globalThis.__library.openMenu(${JSON.stringify(fmtTile.hash)})`);
+    check(fmtTile.flags.includes('format'),
+      'a take from a format this build cannot read carries a badge over its poster', fmtTile.flags.join(' ') || 'no badges');
+    check(new RegExp(`capture format ${CAPTURE_FORMAT + 1}\\b`).test(fmtMenu.note)
+      && new RegExp(`reads format ${CAPTURE_FORMAT}\\b`).test(fmtMenu.note),
+      'and the sentence in the menu names the generation it found and the one this build reads',
+      fmtMenu.note.replace(/\n/g, ' | ').slice(0, 130) || 'the menu says nothing');
+    const zeroTile = one('generation-zero-take');
+    check(!zeroTile.flags.includes('format'),
+      'while a take that declares no format carries no such badge, so the badge is about the generation and not about the key being absent',
+      zeroTile.flags.join(' ') || 'no badges');
+    await page.mouse.click(4, 4);
     const oneFrameTile = one('one-frame-take');
     check(oneFrameTile.flags.includes('short'),
       'while the one-frame take still carries the badge, so the row above is about the wording rather than about the badge going away',
@@ -2627,6 +2738,58 @@ async function runChecks() {
 
     check(errors.length === 0, 'the gallery raises no page errors', errors.slice(0, 2).join(' | '));
     await page.close();
+  }
+
+  // ------------------------------------------- 6f. the fourth door, in the editor
+  //
+  // **The gallery greying a button is not the take being refused.** Three of the four
+  // doors that read this band are on the listing - `openable` on the server, the badge
+  // and the dead Open on the page - and all three can be satisfied without the editor
+  // knowing anything, because a take is also reachable by typing its id into the URL,
+  // by a stale bookmark and by the menu's resume. So the row that matters is the one
+  // driven the way somebody arrives, and what it asserts is that the page did not enter
+  // the editing state rather than that it said something: `showTimelineError` writes to
+  // a note that a later message overwrites, and a take that opened *and* complained
+  // would pass a row reading only the note.
+  //
+  // Both takes through the same door, because a build that refused every take would
+  // pass the first of these and fail nobody's notice.
+  console.log('\n[library] the capture format band at the door the editor opens');
+  {
+    const refusedAt = editorPage(macUrl, 'future-format-take');
+    const { page: refused, errors: refusedErrors } = await openPage(browser, refusedAt, { width: 640, height: 400 });
+    // Taken at the moment it matches rather than read again afterwards, for the reason
+    // the preset rows below give: the note is one line and every later message
+    // overwrites it.
+    const held = await refused.waitForFunction(
+      '(() => { const t = document.getElementById("tNote")?.textContent ?? ""; return t.includes("capture format") ? t : null; })()',
+      null, { timeout: 30000 },
+    ).catch(() => null);
+    const note = held ? String(await held.jsonValue())
+      : await refused.evaluate('document.getElementById("tNote")?.textContent ?? ""');
+    check(new RegExp(`capture format ${CAPTURE_FORMAT + 1}\\b`).test(note),
+      'an editor handed a take from a format this build does not read says which generation it found',
+      note.slice(0, 140) || 'the note is empty');
+    check(await refused.evaluate("document.body.classList.contains('editing')") === false,
+      'and it does not open the take - the refusal is a door rather than a message beside an opened clip');
+    // The throw is what this page is about, so counting it as a finding would be
+    // asserting the scenario did not happen. Anything else still is one.
+    const strayed = refusedErrors.filter((e) => !/capture format/.test(e) && !/Failed to load resource/.test(e));
+    check(strayed.length === 0, 'and refusing it raises no page error beyond the refusal itself',
+      strayed.slice(0, 2).join(' | ') || 'none beyond the refusal');
+    await refused.close();
+
+    const { page: opened, errors: openedErrors } = await openPage(
+      browser, editorPage(macUrl, 'generation-zero-take'), { width: 640, height: 400 },
+    );
+    const editing = await opened.waitForFunction("document.body.classList.contains('editing')", null, { timeout: 30000 })
+      .then(() => true, () => false);
+    check(editing === true,
+      'while a take whose hello declares no format at all opens in the same editor, which is every take shot before the field existed',
+      editing ? 'editing' : await opened.evaluate('document.getElementById("tNote")?.textContent ?? "(no note)"'));
+    check(openedErrors.filter((e) => !/Failed to load resource/.test(e)).length === 0,
+      'and it opens without a page error', openedErrors.slice(0, 2).join(' | ') || 'none');
+    await opened.close();
   }
 
   // A library with no takes at all.

@@ -1001,12 +1001,18 @@ const shooting = (run) => async (req, res, args, query) => {
  * rather than by somebody remembering this function exists. A cost the refusal cannot
  * see is a cost it silently under-reports, and the only thing the refusal has going
  * for it is that its number is true.
+ *
+ * **Each kind is asked its own rule where that rule is written**, rather than having
+ * it restated here. The webcam's used to be a `!s.loopback` filter on this line, which
+ * left the copy in `server/webcam.js` carrying all of the reasoning and none of the
+ * behaviour - so the interleaved A/B that paragraph is waiting on would have been
+ * acted on in the dead one.
  */
 function consumersCostingTheTake() {
   return [
     ...attachedMonitors().filter(costsTheTake)
       .map((m) => ({ kind: 'monitor', at: `÷${m.divisor} ×${m.stride}` })),
-    ...webcam.describe().filter((s) => !s.loopback)
+    ...webcam.subscribersCostingTheTake()
       .map(() => ({ kind: 'webcam', at: 'the colour camera at full rate' })),
   ];
 }
