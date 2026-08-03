@@ -686,9 +686,11 @@ const MUTATIONS = {
   // `restoreProject` goes back to calling `params.spec` for its throw and discarding the
   // spec, so a document carrying a track on a view parameter opens - and `evaluateTracks`
   // has no tag filter, so that track calls `resize()` once per rendered frame. Reddens
-  // only the first row of section 14. The look-track row beside it stays green, which is
-  // what separates "the reader now reads the tag" from "the reader stopped taking
-  // tracks", and the unknown-name refusal is untouched.
+  // the first row of section 14 and the empty-view-track row below it, which is the same
+  // claim asked about the shape that used to walk past the check entirely. The two look
+  // rows beside them stay green, which is what separates "the reader now reads the tag"
+  // from "the reader stopped taking tracks", and the two unknown-name refusals stay green
+  // too because this mutation leaves `params.spec`'s own throw where it is.
   //
   // Anchored on the `const spec =` binding and the `if` that reads it rather than on
   // the bare call the revert produces: `params.spec(name);` on its own appears twice in
@@ -4605,9 +4607,13 @@ try {
   // else that a later section would report as its own failure.
   {
     const original = await page.evaluate('JSON.stringify(__kinect.library.serialiseProjectBody())');
-    const handTo = (name) => page.evaluate(`(() => {
+    // The keys are a parameter rather than a literal because the shape that walked past
+    // both refusals is an *empty* track, and a helper that can only plant a populated one
+    // cannot ask about it. Defaulted to the populated pair so the rows written before this
+    // was known say exactly what they said.
+    const handTo = (name, keys = [{ t: 0, value: 100 }, { t: 4, value: 140 }]) => page.evaluate(`(() => {
       const body = JSON.parse(${JSON.stringify(original)});
-      body.look.tracks[${JSON.stringify(name)}] = [{ t: 0, value: 100 }, { t: 4, value: 140 }];
+      body.look.tracks[${JSON.stringify(name)}] = ${JSON.stringify(keys)};
       try {
         __kinect.library.restoreProject(body);
         return { threw: false, message: null };
@@ -4626,6 +4632,30 @@ try {
     const look = await handTo('bloom');
     check(!look.threw, '  and one on a look parameter still loads, which is the shape the serialiser writes',
       look.threw ? `"${look.message}"` : 'accepted');
+    // **The same document with no keys in it, which is the shape that walked past both
+    // refusals.** `restoreProject` skipped an empty track before it asked the two
+    // questions, so `{"renderScale": []}` and a track under a name the registry has never
+    // heard of were both accepted by a reader that had just promised to refuse them - and
+    // accepted is the wrong word for what happened to them, because `serialiseProjectBody`
+    // filters the entry back out on the next commit. The document stopped saying what it
+    // said when it was opened, through the one shape with no edit in it to notice missing.
+    //
+    // Three rows rather than one, because "refuses an empty view track" on its own is also
+    // satisfied by a build that refuses every empty track: the name row says the older
+    // refusal still reaches this shape too, and the look row says empty is not itself what
+    // is being refused.
+    const emptyView = await handTo('renderScale', []);
+    check(emptyView.threw && /view/.test(emptyView.message ?? ''),
+      '  and an empty track on a view parameter is refused too, rather than skipped for being cheap to skip',
+      emptyView.threw ? `"${emptyView.message}"` : 'it was accepted');
+    const emptyUnknown = await handTo('notAParameterThisBuildKnows', []);
+    check(emptyUnknown.threw,
+      '  and so is an empty one under a name the registry has never heard of',
+      emptyUnknown.threw ? `"${emptyUnknown.message}"` : 'it was accepted');
+    const emptyLook = await handTo('bloom', []);
+    check(!emptyLook.threw,
+      '  while an empty one on a look parameter still loads, because empty is not what is being refused',
+      emptyLook.threw ? `"${emptyLook.message}"` : 'accepted');
     // Whatever the two above left behind, put back - and asserted rather than assumed,
     // because the build this matters on is the one that is deliberately wrong. On this
     // build the first is refused with nothing touched and the second replaces the

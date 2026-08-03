@@ -3408,7 +3408,6 @@ function restoreProject(project) {
   const restoredLook = [];
   for (const [name, keys] of Object.entries(project.look.tracks)) {
     if (!Array.isArray(keys)) throw new Error(`look track ${name} is not an array of keys`);
-    if (keys.length === 0) continue;
     // Names the registry does not know are refused rather than dropped. A track
     // silently discarded is an edit silently lost, and the file is more likely to
     // be from a build this one cannot read than to be harmlessly extra.
@@ -3438,6 +3437,18 @@ function restoreProject(project) {
         + 'without resizing the drawing buffer from inside the render loop',
       );
     }
+    // **Skipped only after it has been asked about, and the order is the whole of it.**
+    // This shortcut used to stand above both refusals, so `{"renderScale": []}` and a
+    // track under a name the registry has never heard of both walked straight past a
+    // reader that had just promised to refuse them. Nothing threw and nothing was kept:
+    // `serialiseProjectBody` filters the entry back out on the next commit, so the
+    // document quietly stopped saying what it said when it was opened - which is the
+    // "an edit silently lost" the comment above is about, arriving through the one shape
+    // that has no edit in it to notice missing.
+    //
+    // An empty track is still nothing to restore, so it is still skipped. The change is
+    // that it is skipped for being empty rather than for being cheap to skip.
+    if (keys.length === 0) continue;
     restoredLook.push([name, keys.map((k) => {
       const key = restoreKey(`track ${name}`, k);
       key.value = params.normalise(name, key.value);
