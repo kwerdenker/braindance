@@ -4980,16 +4980,19 @@ async function runChecks() {
     // library's own state can tell apart, since both would report the same take.
     await page.evaluate("document.querySelector('.tile').__quietProbe = 'planted'");
     const pollsAtProbe = polls;
-    // Longer than one cadence, so at least one tick has certainly been taken and
-    // answered while nothing about the recorder changed.
-    await new Promise((done) => { setTimeout(done, 6500); });
+    // Comfortably longer than one cadence rather than barely, because this row's
+    // meaning rests on a tick having happened: at 6.5s it came back with exactly one
+    // request and no headroom, and a five-second timer on a machine three other agents
+    // are also running checks on can drift further than that. A row whose control
+    // depends on scheduling luck is a row that teaches people to re-run.
+    await new Promise((done) => { setTimeout(done, 8500); });
     const quiet = await page.evaluate(`(() => ({
       probe: document.querySelector('.tile')?.__quietProbe ?? null,
       tiles: globalThis.__library.tiles().length,
     }))()`);
     check(polls > pollsAtProbe,
       'the poll is running, which is what makes the row below about the gate rather than about a page that stopped asking',
-      `${polls - pollsAtProbe} requests to /record/state in 6.5s`);
+      `${polls - pollsAtProbe} requests to /record/state in 8.5s`);
     check(quiet.probe === 'planted',
       'and a tick in which the recorder did not move replaces no tile - the menu an operator has open and the skim under their pointer both survive it',
       quiet.probe === 'planted' ? `${quiet.tiles} tiles, the same nodes` : 'the grid was rebuilt');
