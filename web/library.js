@@ -1663,10 +1663,23 @@ function paint() {
 // library, so the bound is there to catch a link that has died rather than to hurry a
 // listing that is working. Failing is enough, because a failed refresh is a transition
 // this poll has not seen - it says so and the next tick offers it again.
+//
+// **The bound belongs to the poll's refresh and to nothing else, and the first draft of
+// it put the bound in here where every caller got it.** There are three: the load below,
+// an operator action's refresh in `run`, and the poll. Only the poll has the single-
+// flight guard, so only the poll can turn one dead listing into a page that has stopped
+// asking - the other two fail an action or a load that somebody is watching, and would
+// rather wait than be cut off. That matters most on the load: a **cold** library is slow
+// for a legitimate reason, `cachedIndex` scans each file once and writes a `.idx` beside
+// it, and the first listing over 200 unindexed takes measured **7m30s** against the 2.4s
+// a second server took off those sidecars. Bounded at fifteen seconds, the one case this
+// page exists to get through would have been the case it refused.
 const LISTING_TIMEOUT_MS = 15000;
 
-async function refresh() {
-  library = await (await fetch('/library/all', { signal: AbortSignal.timeout(LISTING_TIMEOUT_MS) })).json();
+async function refresh({ bound = false } = {}) {
+  library = await (await fetch('/library/all', {
+    signal: bound ? AbortSignal.timeout(LISTING_TIMEOUT_MS) : undefined,
+  })).json();
   paint();
 }
 
@@ -1693,7 +1706,22 @@ for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => { filter = tab.dataset.filter; paint(); });
 }
 
-await refresh();
+// **A first listing that fails leaves a page that works, and that is the class rather
+// than the timeout that revealed it.** This is a top-level await, so anything it throws
+// ends the module here - before the poll is started and before `globalThis.__library`
+// exists. The bound above was one way to reach that and unbounding it closes only that
+// one: a node that resets the connection, a 500 out of `serveLibrary`, a listing that
+// parses as something other than JSON all end module evaluation identically, and what
+// the operator gets is a blank shelf with no error on it and no way to retry short of a
+// reload. Caught here, the page paints what it has, says what went wrong, and starts the
+// poll - which asks again every five seconds and repairs the grid the moment the library
+// can be read.
+try {
+  await refresh();
+} catch (err) {
+  say(`the library could not be read: ${err.message}`);
+  paint();
+}
 
 /**
  * The gallery stops being a snapshot taken at load.
@@ -1735,7 +1763,7 @@ await refresh();
 pollRecordState(async (state, changed) => {
   if (!changed) return;
   try {
-    await refresh();
+    await refresh({ bound: true });
   } catch (err) {
     say(`the library could not be reread: ${err.message}`);
     throw err;

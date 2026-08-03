@@ -276,14 +276,19 @@ const MUTATIONS = {
   //
   // The write and not the capture, because `resume-fetches-the-moving-name` already takes
   // the capture. Must redden only the row that reads the store after the press.
+  // The recovery write goes back to racing the auto-saves instead of queueing behind
+  // them, so an edit still on the wire can land after it and put itself back.
+  'resume-races-the-autosave': { file: 'web/main.js', edits: [[
+    'const kept = await writeWorking(accepted);',
+    "const kept = await fetch(`/projects/${WORKING_PROJECT}`, {\n"
+    + "      method: 'PUT',\n      headers: { 'Content-Type': 'application/json' },\n"
+    + '      body: JSON.stringify(accepted),\n    });',
+  ]] },
+
   'resume-restores-without-keeping': {
     file: 'web/main.js',
     edits: [[
-      "    const kept = await fetch(`/projects/${WORKING_PROJECT}`, {\n"
-      + "      method: 'PUT',\n"
-      + "      headers: { 'Content-Type': 'application/json' },\n"
-      + '      body: JSON.stringify(accepted),\n'
-      + '    });\n'
+      '    const kept = await writeWorking(accepted);\n'
       + "    if (!kept.ok) throw new Error(`restored on screen, but the auto-save could not be rewritten: ${(await kept.text().catch(() => '')).slice(0, 80)}`);\n",
       '',
     ]],
@@ -4927,6 +4932,61 @@ try {
     check(!afterRestore.shown,
       'and the offer withdraws once it has been taken, since restoring what is already on screen is a button that does nothing',
       `chip ${afterRestore.shown ? 'still shown' : 'hidden'}`);
+
+    // **And it is the last write, not merely a later one.** The auto-save is
+    // fire-and-forget and `DocumentStore.write` gives every write its own numbered
+    // scratch file before renaming, so two puts to one document both succeed and the one
+    // on disk is whichever `rename` finished last - which has nothing to do with which
+    // was asked for first. An edit made just before the operator presses Restore is
+    // exactly that case: it can still be on the wire, land after the recovery, and put
+    // the overwriting document straight back - after the page has said "restored the
+    // autosaved edit" and dropped the only other copy.
+    //
+    // The competing write is a real auto-save from a real control rather than a put from
+    // here, because what has to be ordered is the page's own write path. Held three
+    // seconds at the browser so it is unambiguously still in flight when the press lands:
+    // the mutated build's restore goes out immediately, finishes first, and the held
+    // auto-save then overwrites it.
+    await putDoc(WORKING, differing);
+    await reopen();
+    const armedOffer = await offerState();
+    let workingPuts = 0;
+    await page.route('**/projects/__working__', async (route) => {
+      if (route.request().method() !== 'PUT') { await route.continue(); return; }
+      workingPuts++;
+      if (workingPuts === 1) await new Promise((done) => { setTimeout(done, 3000); });
+      await route.continue();
+    });
+    // Any control that commits will do, so it is found rather than named - a row keyed to
+    // one parameter's id goes quiet the day that parameter is renamed, and what it needs
+    // is an auto-save on the wire rather than a particular edit.
+    const toggled = await page.evaluate(`(() => {
+      const box = document.querySelector('#panelBody input[type="checkbox"]');
+      if (!box) return null;
+      box.checked = !box.checked;
+      box.dispatchEvent(new Event('change', { bubbles: true }));
+      return box.id || 'a panel toggle';
+    })()`);
+    for (let i = 0; i < 12 && workingPuts === 0; i++) {
+      await new Promise((done) => { setTimeout(done, 100); });
+    }
+    // The fixture says whether it built the condition, because a press with nothing in
+    // flight is a press both builds survive - the row above it would then be reporting
+    // the ordering of one write.
+    check(toggled !== null && workingPuts === 1 && armedOffer.shown,
+      'an edit\'s auto-save is on the wire and the offer is up, which is the pair the row below needs rather than a press with nothing to race',
+      `toggled ${toggled ?? 'nothing - no committing control was found'}, ${workingPuts} auto-save in flight, chip ${armedOffer.shown ? 'shown' : 'hidden'}`);
+    await page.click('#tResumeOpen');
+    // Past the three-second hold and the write that follows it, so both have landed.
+    await new Promise((done) => { setTimeout(done, 6000); });
+    await page.unroute('**/projects/__working__');
+    const storedAfterRace = await page.evaluate(`(async () => {
+      const doc = await (await fetch('/projects/${WORKING}')).json();
+      return doc.body?.outputSize ?? null;
+    })()`);
+    check(storedAfterRace === differing.outputSize,
+      'and the recovery is written after the auto-saves already in flight, so an edit still on the wire cannot land behind it and put back the document the operator just recovered from',
+      `stored ${storedAfterRace} against the restored ${differing.outputSize}`);
 
     // **A neighbour that will not list must not take the recovery with it.** Opening a
     // take refreshes three libraries and lets all three fail softly, and the offer used

@@ -653,8 +653,30 @@ const MUTATIONS = {
   // hangs. The pile-up guard and the timeout are two halves of one arrangement: without
   // the bound, the guard turns one dead listing into a gallery that has stopped.
   'listing-never-times-out': { file: 'web/library.js', edits: [[
-    "await fetch('/library/all', { signal: AbortSignal.timeout(LISTING_TIMEOUT_MS) })",
-    "await fetch('/library/all')",
+    'signal: bound ? AbortSignal.timeout(LISTING_TIMEOUT_MS) : undefined,',
+    'signal: undefined,',
+  ]] },
+
+  // The bound goes back onto the first listing, where a cold library is slow for a
+  // legitimate reason and fifteen seconds is not enough to build 200 indexes.
+  'first-load-bounded': { file: 'web/library.js', edits: [[
+    'try {\n  await refresh();\n} catch (err) {\n  say(`the library could not be read',
+    'try {\n  await refresh({ bound: true });\n} catch (err) {\n  say(`the library could not be read',
+  ]] },
+
+  // The first listing goes back to being unguarded, so anything it throws ends module
+  // evaluation before the poll is started and before the page has a hook to drive.
+  'first-load-strands-the-page': { file: 'web/library.js', edits: [[
+    'try {\n  await refresh();\n} catch (err) {\n'
+    + '  say(`the library could not be read: ${err.message}`);\n  paint();\n}',
+    'await refresh();',
+  ]] },
+
+  // The listing route stops telling the node that its caller has gone, so a browser that
+  // gave up leaves the outbound fetch running here.
+  'listing-ignores-client-abort': { file: 'server/index.js', edits: [[
+    'await node.takes(untilCallerLeaves(req)) : null;\n  const takes = reconcile(',
+    'await node.takes() : null;\n  const takes = reconcile(',
   ]] },
 
   // Delete goes back to being offered while the node is unreachable, where the copy count
@@ -7377,7 +7399,126 @@ async function runChecks() {
       `${requestsBeforePress} requests before the press, ${requestsAfterPress} within 3s after it`);
     await post(`${liveUrl}/record/stop`);
     await slow.close();
+
+    // **The bound belongs to the poll, and the first listing is the case it must not
+    // reach.** A cold library is slow for a legitimate reason - `cachedIndex` scans each
+    // file once and writes a `.idx` beside it, measured at 7m30s over 200 unindexed takes
+    // against 2.4s for a second server off those sidecars - and the load is a top-level
+    // await, so a bound that fires there ends module evaluation before the poll starts
+    // and before `globalThis.__library` exists. What the operator gets is not a slow
+    // gallery but a blank one that never recovers.
+    //
+    // Eighteen seconds because the bound is fifteen: long enough that a bounded load has
+    // certainly given up, short enough not to pay for more than one of them. Held rather
+    // than made genuinely slow, since what is under test is which listing carries a
+    // deadline, not how fast an index builds.
+    const cold = await browser.newPage();
+    let coldListings = 0;
+    await cold.route('**/library/all', async (route) => {
+      coldListings++;
+      if (coldListings === 1) await new Promise((done) => { setTimeout(done, 18000); });
+      await route.continue();
+    });
+    await cold.goto(galleryPage(liveUrl), { waitUntil: 'domcontentloaded' });
+    let coldInstalled = true;
+    await cold.waitForFunction('globalThis.__library !== undefined', null, { timeout: 30000 })
+      .catch(() => { coldInstalled = false; });
+    const coldTiles = coldInstalled ? await cold.evaluate('globalThis.__library.tiles().length') : 0;
+    check(coldInstalled && coldTiles > 0,
+      'a first listing slower than the poll\'s own bound still paints, because a cold library is the case that listing exists to get through rather than a link to give up on',
+      coldInstalled ? `held 18s, ${coldTiles} tiles` : 'the page never installed its hook - module evaluation ended on the load');
+    await cold.close();
+
+    // **And the class the bound was only one way into.** Anything the first listing
+    // throws ends the module there, so a node that resets, a 500 out of `serveLibrary`
+    // and a body that is not JSON all leave the same blank shelf with no error on it.
+    // Answered with a 500 rather than aborted, because a refused request is the shape a
+    // reader would least expect to be fatal.
+    const broken = await browser.newPage();
+    let brokenListings = 0;
+    await broken.route('**/library/all', async (route) => {
+      brokenListings++;
+      if (brokenListings === 1) { await route.fulfill({ status: 500, body: 'the library is unavailable' }); return; }
+      await route.continue();
+    });
+    await broken.goto(galleryPage(liveUrl), { waitUntil: 'domcontentloaded' });
+    let brokenInstalled = true;
+    await broken.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 })
+      .catch(() => { brokenInstalled = false; });
+    check(brokenInstalled,
+      'and a first listing that fails outright leaves a page that still has its hook, rather than ending module evaluation on a top-level await',
+      brokenInstalled ? 'installed after a 500' : 'the page never installed its hook');
+    const repaired = brokenInstalled
+      ? await broken.evaluate('globalThis.__library.refresh().then(() => globalThis.__library.tiles().length).catch(() => -1)')
+      : -1;
+    check(repaired > 0,
+      'and it comes back on the next listing that works, so the failure costs a refresh rather than the session',
+      repaired === -1 ? 'no working refresh was reachable' : `${repaired} tiles after the next refresh`);
+    await broken.close();
     for (const p of servers.filter((sv) => sv.port === MAC_PORT + 1)) p.child.kill('SIGKILL');
+
+    // **A node that stops answering must not leave this machine holding the pair.**
+    // `serveLibrary` awaits `node.takes`, which crosses the network with no bound of its
+    // own - and once the gallery's listing is bounded, every retry that gives up leaves
+    // another handler here and another outbound socket over there, one pair per tick for
+    // as long as the page is open. The browser's abort cancels its own request and
+    // nothing else unless this process is told to pass it on.
+    //
+    // Driven with a plain `fetch` rather than through a page, because what is under test
+    // is what this server does when its caller leaves - a browser would only add a second
+    // place for the answer to come from. The node is a stub on a kernel-assigned port for
+    // the same reason the older-build stub is: anything spawned from `stageServer` runs
+    // the build under test and answers correctly by construction.
+    const deafHeld = [];
+    const deaf = await new Promise((done) => {
+      const srv = createServer((req, res) => {
+        if (req.url === '/library/takes') {
+          const seen = { closedAt: null, answered: false };
+          deafHeld.push(seen);
+          // `close` fires for a request that ended either way, so what it answered is
+          // recorded with it - a row that counted closes alone would read a completed
+          // request as a cancelled one.
+          req.on('close', () => { seen.closedAt = Date.now(); seen.answered = res.writableEnded; });
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' }).end('{"takes":[]}');
+      });
+      srv.listen(0, '127.0.0.1', () => done({ srv, url: `http://127.0.0.1:${srv.address().port}` }));
+    });
+    const deafUrl = await startServer(root, [
+      '--captures', macCaps, '--name', 'mac-deaf',
+      '--node', deaf.url, '--node-name', 'a-node-that-never-answers',
+    ], MAC_PORT + 11);
+    const heldBefore = deafHeld.length;
+    await fetch(`${deafUrl}/library/all`, { signal: AbortSignal.timeout(2000) }).catch(() => {});
+    const gaveUpAt = Date.now();
+    check(deafHeld.length > heldBefore,
+      'the listing really did reach the node and is being held there, which is what makes the row below about cancellation rather than about a request that never went out',
+      `${deafHeld.length - heldBefore} held at the node`);
+    const mine = deafHeld[deafHeld.length - 1];
+    for (let i = 0; i < 24 && mine && mine.closedAt === null; i++) {
+      await new Promise((done) => { setTimeout(done, 250); });
+    }
+    const freed = mine?.closedAt === null ? null : mine.closedAt - gaveUpAt;
+    check(mine != null && mine.closedAt !== null && mine.answered === false && freed < 1500,
+      'and a caller giving up drops the node fetch with it, so a listing nobody is waiting for stops costing a handler here and a socket over there',
+      mine?.closedAt === null ? 'the node still holds it 6s after the caller gave up'
+        : `dropped ${freed}ms after the caller gave up, unanswered`);
+    for (const p of servers.filter((sv) => sv.port === MAC_PORT + 11)) p.child.kill('SIGKILL');
+    deaf.srv.close();
+
+    // **Every route that awaits the node, and not the one where it was noticed.** The
+    // gallery is only the caller whose retry made the leak accumulate; a download, a
+    // removal and a mark sync await the same unbounded fetch behind a browser that can
+    // close at any point. Read off the source so a route added later is asked by
+    // existing, rather than off the four that were found.
+    const indexSrc = readFileSync(join(root, 'server/index.js'), 'utf8');
+    const nodeCalls = [...indexSrc.matchAll(/await node\.takes\(([^)]*)\)/g)].map((m) => m[1]);
+    const unsignalled = nodeCalls.filter((args) => !/untilCallerLeaves|signal/.test(args));
+    check(nodeCalls.length >= 4 && unsignalled.length === 0,
+      'and every route that awaits the node hands it the caller it is waiting for, so the next one written inherits the rule rather than being outside a list',
+      unsignalled.length ? `${unsignalled.length} of ${nodeCalls.length} pass nothing`
+        : `${nodeCalls.length} calls, all signalled`);
   }
 
   // ------------------------- 15. one token, three declarations, one shared stylesheet

@@ -613,9 +613,33 @@ function revealAvailability(req) {
   return { available: true, label, why: null };
 }
 
+/**
+ * A signal that fires when the caller hangs up, for handing to the node.
+ *
+ * **Every route that awaits the node passes one, and that is the class rather than the
+ * one route where it was noticed.** `node.takes` crosses the network to a machine that
+ * may accept a connection and then say nothing, and a handler awaiting it holds this
+ * process's socket and the outbound one for as long as that lasts - which, once the
+ * gallery's listing is bounded and retries, is another pair every five seconds for as
+ * long as the page is open. The gallery is only the route that made it accumulate; a
+ * download, a removal and a mark sync all await the same unbounded fetch, so a rule that
+ * covered the one would leave the next one added outside it. `library-check` walks the
+ * source for `node.takes(` and requires a signal at every call, so a route written later
+ * is asked by existing.
+ *
+ * `close` rather than `aborted`, because it fires for a connection that ended either way
+ * and an abort after the answer has gone out costs nothing - the fetch it would cancel
+ * has already settled.
+ */
+const untilCallerLeaves = (req) => {
+  const ctl = new AbortController();
+  req.on('close', () => ctl.abort());
+  return ctl.signal;
+};
+
 async function serveLibrary(req, res) {
   const here = await localTakes();
-  const there = node ? await node.takes() : null;
+  const there = node ? await node.takes(untilCallerLeaves(req)) : null;
   const takes = reconcile(here.takes, there);
   sendJson(res, {
     here: HERE_NAME,
@@ -736,7 +760,7 @@ async function serveRemoval(req, res, [id], kind) {
     sendJson(res, { error: `${id} is being recorded right now: stop the take before removing it` }, 409);
     return;
   }
-  const there = node ? await node.takes() : null;
+  const there = node ? await node.takes(untilCallerLeaves(req)) : null;
   const theirs = (there ?? []).find((t) => t.hash === (mine?.hash ?? body.hash));
 
   if (kind === 'reclaim') {
@@ -834,7 +858,7 @@ async function serveDownload(req, res, [id]) {
     sendJson(res, { error: 'no capture node is linked, so there is nothing to download from' }, 409);
     return;
   }
-  const there = await node.takes();
+  const there = await node.takes(untilCallerLeaves(req));
   if (there === null) {
     sendJson(res, { error: `${node.name} is unreachable: ${node.lastError}` }, 502);
     return;
@@ -925,7 +949,7 @@ async function serveMarkSync(req, res, [id]) {
     // library is built to handle, so the one place that reached for a filename
     // would be the one place the design does not hold.
     const here = (await localTakes()).takes.find((t) => t.id === id);
-    const theirTakes = await node.takes();
+    const theirTakes = await node.takes(untilCallerLeaves(req));
     const match = here && (theirTakes ?? []).find((t) => t.hash === here.hash);
     if (!match) {
       sendJson(res, { merged: 0, marks: await readMarks(path), note: `${node.name} does not hold this take` });

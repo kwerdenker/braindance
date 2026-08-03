@@ -449,10 +449,21 @@ export class NodeLink {
    * The whole manifest and never take by take. Admitting the readable ones would hide
    * the rest behind a shelf that looks complete, and "some of that node's takes are
    * missing" is the failure a link is supposed to make impossible to have silently.
+   *
+   * **`signal` is the caller's request going away, and it is a signal rather than a
+   * timeout on purpose.** This crosses the network to have a directory walked and an
+   * index built per take, and a cold node measured 7m30s over 200 unindexed takes - so
+   * any bound short enough to catch a dead link is short enough to refuse the case the
+   * link exists for. What the caller does know is whether anybody is still waiting: a
+   * route hands in its own request's abort, and a node that accepts the connection and
+   * then says nothing is dropped the moment the browser gives up rather than held until
+   * it eventually settles. Without it the gallery's fifteen-second retry left one more
+   * handler and one more outbound socket parked on this machine every five seconds, for
+   * as long as the page stayed open.
    */
-  async takes() {
+  async takes(signal = null) {
     try {
-      const body = await this.fetchJson('/library/takes');
+      const body = await this.fetchJson('/library/takes', signal ? { signal } : undefined);
       // The hash is filtered beside the id because it is the other field of a node's
       // that reaches a path here. **A take still being shot advertises no hash at
       // all** - `describeTake` reports null on purpose, and `reconcile` keys those by

@@ -3565,6 +3565,43 @@ function restoreProject(project) {
 // hundred.
 const UNDO_LIMIT = 100;
 
+/**
+ * Every write to the working document, in the order they were asked for.
+ *
+ * **The server does not order them and it is right not to.** `DocumentStore.write` gives
+ * each write its own numbered scratch file precisely so two overlapping puts to one
+ * document cannot share it, and then renames - so concurrent writes all succeed and the
+ * last `rename` to complete is the one on disk. Which that is has nothing to do with
+ * which was asked for first: they are separate connections doing separate disk work.
+ *
+ * That is fine for the auto-save on its own, where every write is a later state of the
+ * same document and losing a race costs one interaction's worth. It is not fine next to
+ * the recovery: the auto-save is fire-and-forget, so an edit made just before the
+ * operator presses Restore can still be in flight, land after the restore's write, and
+ * put the overwriting edit back - after the page has said "restored the autosaved edit"
+ * and dropped the only other copy. A reload then loses the work a second time, having
+ * twice reported it recovered.
+ *
+ * Chained rather than cancelled, because a write already on the wire cannot be recalled
+ * and the ordering is the whole requirement - the restore has to be last, not alone.
+ *
+ * **The chain carries no failure forward**, which is the difference between serialising
+ * and stopping: `.catch` on the link rather than on the returned promise means one
+ * auto-save that failed - a dropped connection, a 500 - leaves the next write to go out
+ * normally instead of silently ending persistence for the rest of the session. Callers
+ * still see their own rejection on what they were handed back.
+ */
+let workingWrites = Promise.resolve();
+function writeWorking(body) {
+  const wrote = workingWrites.then(() => fetch(`/projects/${WORKING_PROJECT}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }));
+  workingWrites = wrote.catch(() => {});
+  return wrote;
+}
+
 const history = {
   stack: [],
   // What the document looked like at the end of the last interaction. Comparing
@@ -3608,11 +3645,7 @@ const history = {
     // Auto-save the project after every change. Fire-and-forget: a failed save is
     // logged in the UI but it must not block the interaction that caused it.
     const workingBody = { ...serialiseProject(), take: { id: openTakeId, hash: openTakeHash } };
-    fetch(`/projects/${WORKING_PROJECT}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(workingBody),
-    }).then(async (res) => {
+    writeWorking(workingBody).then(async (res) => {
       if (!res.ok) {
         const text = await res.text().catch(() => '');
         say(`auto-save failed: ${text.slice(0, 80)}`);
@@ -10149,11 +10182,12 @@ ui.resumeOpen.addEventListener('click', async () => {
     // the single moment the operator asked for their work back. A failure here has to
     // reach them, and the snapshot is kept if it does - dropping it would throw away the
     // last copy on the way out of a failed save.
-    const kept = await fetch(`/projects/${WORKING_PROJECT}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(accepted),
-    });
+    //
+    // Through `writeWorking` and not straight to `fetch`, which is what makes it the last
+    // write rather than merely a later one: an auto-save from the edit that overwrote the
+    // offer can still be on the wire, and the server orders writes by whichever `rename`
+    // finishes first.
+    const kept = await writeWorking(accepted);
     if (!kept.ok) throw new Error(`restored on screen, but the auto-save could not be rewritten: ${(await kept.text().catch(() => '')).slice(0, 80)}`);
     ui.resume.hidden = true;
     offeredWorkingBody = null;
