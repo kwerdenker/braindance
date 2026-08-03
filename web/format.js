@@ -96,6 +96,99 @@ export function versionRefusal(what, version) {
 }
 
 /**
+ * The generation of the capture format this build writes and reads, in one place for
+ * the same reason the document's version is - except that the artifact it stamps
+ * cannot be re-authored.
+ *
+ * A project can be rebuilt from a look somebody still remembers and an index can be
+ * rebuilt from the capture it indexes. The capture is the shoot: whatever the room
+ * was doing at that moment exists as those bytes and nowhere else. So the argument
+ * `PROJECT_VERSION` makes - a build that cannot faithfully interpret a file refuses
+ * it rather than rendering somebody else's meaning silently - is the same argument
+ * here with the stakes moved, because a document read wrong can be read again and a
+ * take reprojected wrong is a take nobody will ever notice was reprojected wrong.
+ *
+ * The failure this exists for needs no adversary. Change the depth quantisation, or
+ * move `registration.undistortDepth` on the no-colour path, and every take written
+ * afterwards is byte-indistinguishable in *structure* from every take written before:
+ * same magic, same two message types, same hello keys. One geometry model then runs
+ * over two populations and the older half of the archive is quietly wrong, with
+ * nothing on screen to attribute it to.
+ *
+ * ---
+ *
+ * **Version 1 is the format as it settled**: u16 millimetre depth on the sensor's own
+ * 512x424 grid, colour registered into that grid, and the intrinsics in the hello. It
+ * is `1` rather than a larger number because nothing has moved the depth quantisation
+ * or the registration path since the format settled - a version field that lies is
+ * worse than none, so if a geometry change ever turns out to already be in the
+ * archive, this number is wrong and saying so is the only honest repair.
+ *
+ * **Three bands, and the first is the one that keeps the existing archive readable.**
+ *
+ * A hello carrying no `format` key at all is honestly generation zero and opens.
+ * Every take on disk today is one, the field cannot be added to them retroactively -
+ * nothing in this program rewrites a capture, deliberately - and `describeTake`
+ * already reads `startedAt` by exactly this presence-sniff for exactly this reason.
+ * Presence-sniffing works once, which is what this field is for: it is the last time
+ * an absent key has to mean anything.
+ *
+ * A hello carrying `CAPTURE_FORMAT` opens, because this build wrote it.
+ *
+ * Anything else is refused - a later number, or a `format` that is not a number at
+ * all. Refused rather than unprojected on this build's assumptions, and naming what
+ * it found, because a take from a generation this build has never heard of is
+ * geometry nobody can check, which is the same case the no-hello refusal covers one
+ * band earlier.
+ *
+ * **Bumping this number is a decision about every earlier one, and the comparison below
+ * is deliberately strict so that it cannot be made by default.** `format === CAPTURE_FORMAT`
+ * means the day this becomes 2, every generation-1 take is refused unless the same commit
+ * says what happens to them - an accept set, or a refusal somebody chose. That is the
+ * right way round for the one artifact that cannot be made again: locking the archive out
+ * should be something a person wrote down, never something that fell out of an increment.
+ */
+export const CAPTURE_FORMAT = 1;
+
+/**
+ * The sentence a take from a format this build cannot read gets, and the predicate
+ * behind it: empty when the take may be opened, the reason when it may not.
+ *
+ * One function rather than a comparison at each door, and `versionRefusal` above is
+ * the precedent - two doors saying different things about one file is how one of them
+ * ends up false. There are four doors here rather than two. `describeTake` decides
+ * `openable`, the gallery's badge says why, its dead Open button says why, and
+ * `openTake` refuses in the editor; the first three are cheap to satisfy by inlining
+ * a comparison, and an inlined comparison drifts the first time the band gains a
+ * member. It will gain one: recording HD colour into takes is a third message type,
+ * which is a format change by any reading.
+ *
+ * `what` is a noun phrase the caller owns, because the gallery is talking about a
+ * tile the reader is looking at and the editor is talking about an id in a URL.
+ */
+export function captureFormatRefusal(what, format) {
+  // **Absent and an explicit null are one answer, and that is a choice rather than a
+  // constraint.** JSON distinguishes them perfectly well and `'format' in hello` would
+  // read the difference, so the honest statement is what the difference would cost and
+  // buy. Costs: a second channel through the listing, since `describeTake` ships a value
+  // and not the key's presence, so the browser would need a declared-flag or a sentinel
+  // beside it. Buys: protection against a writer broken twice over - one that learned
+  // the field, stamps a literal null instead of a number, *and* moved the geometry. A
+  // null-stamping writer whose geometry is unchanged is opened on this build's
+  // assumptions, which is exactly what generation zero gets anyway.
+  //
+  // Refusing the literal null is the defensible other reading and costs no take on disk
+  // today, since none of them carry the key at all. It is written down here rather than
+  // settled because the wire cost is real and the hazard needs both failures at once.
+  if (format === null || format === undefined) return '';
+  if (format === CAPTURE_FORMAT) return '';
+  return `${what} was written in capture format ${JSON.stringify(format)} and this build reads `
+    + `format ${CAPTURE_FORMAT}: nothing here knows what geometry that generation recorded, and a `
+    + 'take is the one thing in this program that cannot be made again, so it is refused rather '
+    + 'than unprojected on assumptions that may not be its own';
+}
+
+/**
  * What may be a take id, a document name, or anything else this program joins to a
  * path - and it is here, beside the version, for the same delivery reason.
  *

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { PROJECT_VERSION, versionRefusal } from './format.js';
+import { PROJECT_VERSION, versionRefusal, captureFormatRefusal } from './format.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -10075,6 +10075,19 @@ async function openTake(id) {
     );
   }
   const hello = await res.json();
+  // **Which generation wrote this, before anything reads a field out of it.** Ahead of
+  // the bounds check below rather than beside it, because the two questions nest: that
+  // check asks whether these numbers are usable *as this build understands the record*,
+  // and a take from a format this build has never seen is one whose fields could be
+  // perfectly in range and mean something else. A gallery listing the same take has
+  // already greyed its Open button off this same sentence, and the two agreeing is the
+  // whole reason it is one function rather than two comparisons.
+  //
+  // Here rather than on the live socket, for the reason the paragraph above gives about
+  // the intrinsics: a live preview bakes nothing, and the file is where a record that
+  // cannot be trusted has already become permanent.
+  const wrongFormat = captureFormatRefusal(`take ${id}`, hello.format ?? null);
+  if (wrongFormat) throw new Error(wrongFormat);
   // Positive rather than finite, and inside the frame rather than merely a number.
   // `Number.isFinite(0)` is true, so a hello carrying `fx: 0` - the shape a writer
   // that recorded a field it never filled produces - passed a refusal written to

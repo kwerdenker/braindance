@@ -1,7 +1,10 @@
 #!/usr/bin/env node
-// Parses every JavaScript file this repo ships. Nothing else - no server, no browser,
-// no sensor, no dependencies - which is what makes it the one thing CI can run on a
-// fresh clone and mean it.
+// Parses every JavaScript file this repo ships, and asks the four questions about the
+// tree that need nothing to answer: that every tool is documented, that every cited
+// `docs/` page exists, that the `.knct` decoder specification still agrees with the
+// module it specifies, and that the hello the grabber emits is the hello the README
+// documents. No server, no browser, no sensor, no dependencies - which is what makes it
+// the one thing CI can run on a fresh clone and mean it.
 //
 //   node tools/syntax-check.mjs [--root <dir>]
 //
@@ -32,11 +35,32 @@ import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const argv = process.argv.slice(2);
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ROOT = argv.includes('--root') ? argv[argv.indexOf('--root') + 1] : REPO;
+
+// A literal source substitution in `server/protocol.js`, in the shape the other tools'
+// mutation tables use. It is applied to the copy the specification row actually imports,
+// so that row reads a genuinely moved constant rather than a comparison somebody nudged -
+// and the specification's own prose is left alone, which is the drift being simulated:
+// the code moved and the document did not.
+const MUTATIONS = {
+  'spec-drifts': {
+    from: 'export const TYPE_COLOR = 3;',
+    to: 'export const TYPE_COLOR = 4;',
+  },
+};
+
+// Resolved before anything runs, so a name nobody implemented costs a second rather than
+// a full parse of the tree and a verdict about the wrong thing.
+const mutateAt = argv.indexOf('--mutate');
+const mutation = mutateAt === -1 ? null : argv[mutateAt + 1];
+if (mutateAt !== -1 && !MUTATIONS[mutation]) {
+  console.log(`DID NOT RUN - no mutation named ${mutation ?? '(nothing was given)'}; this tool knows ${Object.keys(MUTATIONS).join(', ')}`);
+  process.exit(2);
+}
 
 // The server, the tools and the browser bundle. Everything else with a .js in it is
 // either vendored, built or a capture, and none of those are ours to parse.
@@ -203,9 +227,198 @@ if (!existsSync(DOC)) {
   }
 }
 
+// **And the `.knct` decoder specification has to agree with the module it specifies.**
+// Same family as the two blocks above - documentation checked against the tree rather than
+// asserted beside it - and here for the same reason they are: this tool needs nothing at
+// all, so the control costs a run of what CI already does.
+//
+// The take is the one irreplaceable artifact in the system, and issue #45 decided its exit
+// from this program is that specification rather than a point-cloud export. That makes the
+// specification load-bearing in a way prose usually is not here: it is the thing somebody
+// writes a reader from once nothing in this tree runs any more, and a constant that moved
+// while it did not would send them to a reader that is plausibly shaped and quietly wrong.
+//
+// **Enumerated from the module, not from a list.** Every numeric export has to appear in
+// the specification with its exact value, so a constant added next year is asked by
+// existing rather than added to a second table that drifts. The values come from importing
+// the module rather than from a regex over its source, because a constant that is computed
+// - `MAX_PAYLOAD_BYTES` is `8 * 1024 * 1024` - reads correctly one way and not the other.
+//
+// **Imported from a scratch copy in both arms, and that is not tidiness.** The clean run
+// and the mutated run have to differ only in the substitution; a row that imported the live
+// path when clean and a copy when mutated would be comparing two mechanisms and calling the
+// difference a catch.
+//
+// The control is `--mutate spec-drifts`, which moves `TYPE_COLOR` and leaves the prose.
+{
+  const SPEC_OPEN = '// ---- the .knct decoder specification';
+  const SPEC_SHUT = '// ---- end of the .knct decoder specification';
+  const rel = 'server/protocol.js';
+  const file = join(ROOT, rel);
+  if (!existsSync(file)) {
+    fail(`${rel} is missing, so the decoder specification has nothing to be checked against`);
+  } else {
+    let src = readFileSync(file, 'utf8');
+    if (mutation) {
+      const { from, to } = MUTATIONS[mutation];
+      // Refused rather than run. A mutation whose anchor has moved does nothing, and a run
+      // that does nothing comes back green - which gets recorded as the control passing.
+      if (!src.includes(from)) {
+        console.log(`DID NOT RUN - the ${mutation} anchor "${from}" is not in ${rel}, so nothing was mutated and this run would prove nothing`);
+        process.exit(2);
+      }
+      src = src.replace(from, to);
+    }
+    const open = src.indexOf(SPEC_OPEN);
+    const shut = src.indexOf(SPEC_SHUT);
+    let mod = null;
+    const scratch = mkdtempSync(join(tmpdir(), 'syntax-check-spec-'));
+    try {
+      // `.mjs` rather than `.js` beside a copied package.json: the parse mode has to be
+      // unambiguous here, and unlike the canary above this row is not trying to prove
+      // anything about how Node decides it.
+      const copy = join(scratch, 'protocol.mjs');
+      writeFileSync(copy, src);
+      mod = await import(pathToFileURL(copy).href);
+    } catch (err) {
+      fail(`${rel} could not be imported, so its exports could not be read: ${err.message}`);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+    const numbers = mod ? Object.entries(mod).filter(([, v]) => typeof v === 'number') : [];
+    if (open === -1 || shut === -1) {
+      fail(`${rel} carries no decoder specification block, so the archive's only written description of its own format is gone`);
+    } else if (numbers.length === 0) {
+      fail(`${rel} exports no numeric constant, so this assertion passed on nothing`);
+    } else {
+      const spec = src.slice(open, shut);
+      const wrong = [];
+      for (const [name, value] of numbers) {
+        const said = spec.match(new RegExp(`^//\\s+${name}\\s+(0x[0-9a-fA-F]+|\\d+)\\b`, 'm'));
+        if (!said) {
+          wrong.push(`${name} is exported as ${value} and the specification never gives it`);
+        } else if (Number(said[1]) !== value) {
+          wrong.push(`the specification says ${name} is ${said[1]} where the module exports ${value}`);
+        }
+      }
+      if (wrong.length) {
+        fail(`the .knct decoder specification disagrees with ${rel}: ${wrong.join('; ')}`);
+      } else {
+        console.log(`  spec/   all ${numbers.length} protocol constants match the .knct decoder specification`);
+      }
+    }
+  }
+}
+
+// **The hello the grabber emits and the hello the README documents have to be the same
+// set of keys, and the constant saying which generation wrote it has to be the same
+// number in both languages.**
+//
+// The prose block was nine keys against the thirteen actually emitted for long enough
+// that the four it omitted became the argument for this: `startedAt` is the only durable
+// capture date a take has, and somebody implementing a second producer against the
+// documented nine writes takes the library dates by file modification time instead - which
+// changes the first time a take is copied off the node, and degrades *quietly*, because
+// the fallback is legitimate and says `dateSource: 'mtime'` rather than failing.
+//
+// Three details decide whether this is an instrument or a green light wired to nothing,
+// and all three are the same rule as the three blocks above.
+//
+// **Both directions.** A key emitted and not documented is the failure that already
+// happened; a key documented and not emitted is somebody writing against a promise the
+// grabber does not keep, which is the same reader misled by the opposite mistake.
+//
+// **Scoped anchors, and an empty extraction is a failure rather than a pass.** A bare
+// `readme.includes('width')` is true of the word appearing anywhere in a 700-line file,
+// so the README side is cut to the `type 1 hello` stanza and stops at `type 2`, and the
+// grabber side to the one `snprintf` that builds the hello. Zero keys from either side
+// means the anchor moved and the comparison ran on nothing, which is exactly the shape
+// this tool's own header is about.
+//
+// **Read textually, never imported.** This tool takes `--root`, so an `import` would bind
+// the assertion to this checkout while claiming to have checked another tree - and the C++
+// constant could not be imported at all, which is the whole reason it needs watching: it
+// is unavoidably a second spelling of a JavaScript number, and nothing else in the repo
+// would notice the two drifting.
+//
+// The controls are run by hand, in the idiom the documentation and `docs/` blocks above
+// use. `--mutate` does exist on this tool, but the table behind it carries one entry and
+// that entry belongs to the specification row - so there is no named mutation for this
+// block, and saying so is the point: a reader who saw the flag and assumed it covered
+// every row here would take a green `--mutate spec-drifts` as a control over these
+// assertions, which it is not. Add a key to the grabber literal and not to the README,
+// then the other way round, then bump the constant in one language, and require a named
+// failure each time.
+{
+  const grabberPath = join(ROOT, 'native/grabber.cpp');
+  const readmePath = join(ROOT, 'README.md');
+  if (!existsSync(grabberPath) || !existsSync(readmePath)) {
+    fail('native/grabber.cpp or README.md is missing, so the hello the format claims to have cannot be tested against the one it emits');
+  } else {
+    const grabber = readFileSync(grabberPath, 'utf8');
+    const readme = readFileSync(readmePath, 'utf8');
+
+    // The literal that builds the hello, from the call to its closing paren. Anchored on
+    // the call rather than on the opening brace of the JSON, because the brace is a
+    // character that appears everywhere and the call appears once.
+    const callAt = grabber.indexOf('std::snprintf(hello, sizeof(hello),');
+    const literal = callAt === -1 ? '' : grabber.slice(callAt, grabber.indexOf(');', callAt));
+    // `\"name\":` as it is spelled in C++ source. The `%s` values between them cannot
+    // match, because a conversion specifier does not start with a letter.
+    const emitted = new Set([...literal.matchAll(/\\"([A-Za-z][A-Za-z0-9]*)\\":/g)].map((m) => m[1]));
+
+    // The stanza, and only the stanza: from the type 1 line to the type 2 line, then the
+    // braced list inside it. Splitting a brace on commas rather than scanning for words
+    // keeps the prose around it - "UTF-8 JSON, once, before any frame" - out of the set.
+    const stanzaAt = readme.indexOf('type 1  hello');
+    const stanza = stanzaAt === -1 ? '' : readme.slice(stanzaAt, readme.indexOf('type 2', stanzaAt));
+    const braced = stanza.match(/\{([^}]*)\}/);
+    const documented = new Set((braced?.[1] ?? '').split(',').map((k) => k.trim()).filter(Boolean));
+
+    if (emitted.size === 0) {
+      fail('no hello keys found in native/grabber.cpp - the snprintf anchor moved, so this comparison would have passed on nothing');
+    } else if (documented.size === 0) {
+      fail("no hello keys found in README.md's type 1 hello stanza - the anchor moved, so this comparison would have passed on nothing");
+    } else {
+      const undocumented = [...emitted].filter((k) => !documented.has(k)).sort();
+      const unemitted = [...documented].filter((k) => !emitted.has(k)).sort();
+      // Two failures rather than one, because which direction it broke in is the whole
+      // diagnosis: one is a writer that grew a key nobody was told about, the other is a
+      // reader promised a key that never arrives.
+      if (undocumented.length) {
+        fail(`the grabber's hello emits ${undocumented.join(', ')} and README.md's type 1 hello does not document ${undocumented.length === 1 ? 'it' : 'them'}`);
+      }
+      if (unemitted.length) {
+        fail(`README.md's type 1 hello documents ${unemitted.join(', ')} and the grabber does not emit ${unemitted.length === 1 ? 'it' : 'them'}`);
+      }
+      if (!undocumented.length && !unemitted.length) {
+        console.log(`  hello/  all ${emitted.size} keys emitted are documented, and back`);
+      }
+    }
+
+    // The format generation, in the two languages that have to agree about it. Anchored
+    // on the declaration in each rather than on any mention, so a comment naming the
+    // constant is not a second reading of its value.
+    const inJs = readFileSync(join(ROOT, 'web/format.js'), 'utf8').match(/^export const CAPTURE_FORMAT = (\d+);/m);
+    const inCpp = grabber.match(/^static const uint32_t CAPTURE_FORMAT = (\d+);/m);
+    if (!inJs || !inCpp) {
+      fail(`CAPTURE_FORMAT is not declared where this looked: ${inJs ? '' : 'web/format.js '}${inCpp ? '' : 'native/grabber.cpp'}`.trim()
+        + ' - one of the two declarations moved, and an undeclared constant cannot be compared with anything');
+    } else if (inJs[1] !== inCpp[1]) {
+      fail(`CAPTURE_FORMAT is ${inJs[1]} in web/format.js and ${inCpp[1]} in native/grabber.cpp - `
+        + 'the grabber would stamp a generation the band that reads it refuses, on every take shot after this');
+    } else {
+      console.log(`  format/ CAPTURE_FORMAT is ${inJs[1]} in both languages`);
+    }
+  }
+}
+
 console.log(`\n${total} JavaScript files, ${failed} failed`);
 // Said out loud because `npm test` runs this, and a green `npm test` that meant "the
-// suite passed" would be the most expensive wrong impression in the repo. Nothing here
-// executes a line of what it parsed.
+// suite passed" would be the most expensive wrong impression in the repo. **One thing here
+// executes rather than parses**, and it is named rather than buried: the specification row
+// imports a copy of `server/protocol.js`, which is a module of constants with no imports of
+// its own, and reads its exported values. Nothing is called and no behaviour is exercised.
+// Everything else is `node --check` and nothing runs.
 console.log('syntax only - no proof tool ran here; see CLAUDE.md "Proof tools" for the suite and what each of them needs');
 process.exit(failed ? 1 : 0);

@@ -34,10 +34,13 @@ so a saturated main thread slows the driver by exactly as much as it slows itsel
 quotient says more about the round trip than about the browser. Counting the page's own
 animation frames over the same drag gave 12.4/s, with a 10.0-18.1 spread across five rounds.
 
-**So install the counter in the page** — `globalThis.__raf` incremented from a
+**So install the counter in the page** — `globalThis.__orbitFrames` incremented from a
 `requestAnimationFrame` chain — and read a delta around the gesture. That is what the editor's
-new section 9 does and why it does it. The rule generalises past rAF: any figure derived from
-how long the driver's own loop took is a measurement of the driver.
+section 9 does and why it does it: `tools/editor-check.mjs` installs the chain before the drag
+and reads the count back beside `navigationRedraws`, so grep that identifier for a working copy
+rather than writing a second chain that competes for the very frames it is there to count. The
+rule generalises past rAF: any figure derived from how long the driver's own loop took is a
+measurement of the driver.
 
 And prefer a counter the page already keeps to a rate you compute. Across three runs of the
 same A/B the frame rate moved with whatever else the machine was doing, while the draft count
