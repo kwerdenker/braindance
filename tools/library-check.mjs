@@ -931,6 +931,27 @@ const MUTATIONS = {
     'export const OPEN_REFUSALS = {\n'
       + "  'wrong-format': () => 'this take was written by a generation of the format this build cannot read',\n",
   ]] },
+  // **One dimension of the grid stops being a literal while the other holds**, and the
+  // value is deliberately unchanged - `DEPTH_W - 88` is still 424, so every page still
+  // renders the same pixels and every message is still the same size. That is what
+  // makes it a control for the declaration rows and for nothing else: the only thing it
+  // can move is whether `424` is written down in the tree. A single regex over
+  // `512|424` is answered by the `512` still sitting two lines above and reports the
+  // grid as stated once, which is the row this splits in two.
+  'grid-loses-a-dimension': { file: 'web/format.js', edits: [[
+    'export const DEPTH_H = 424;',
+    'export const DEPTH_H = DEPTH_W - 88;',
+  ]] },
+  // **The link demands that every take name a refusal**, which refuses a node for being
+  // healthy: `openRefusals: []` is what an ordinary openable take sends, so this takes
+  // the link off for every library that has nothing wrong with it. It reddens the
+  // node's own rows and the arm holding the openable take, and it is the control for
+  // the fixture rather than for the gate - a positive arm carrying only a *refused*
+  // take passes this mutation while every real node goes dark.
+  'refusals-must-be-nonempty': { file: 'server/library.js', edits: [[
+    'const carriesRefusals = (take) => Array.isArray(take.openRefusals)\n',
+    'const carriesRefusals = (take) => Array.isArray(take.openRefusals)\n  && take.openRefusals.length > 0\n',
+  ]] },
   // **The link admits a manifest from the build before the refusals moved**, which is
   // the take that reconciles in looking like any other and then blanks the shelf while
   // the first remote tile paints. The gate rather than the sentence it sets, because
@@ -1629,9 +1650,21 @@ async function runChecks() {
   // grid under a row still printing green. That is the close-the-class rule failing in
   // the shape it is meant to catch: the enumeration was the files that exist rather
   // than the tree, and nothing about the row said which.
+  //
+  // **Each dimension asked for separately, because one regex over both cannot see one
+  // of them go missing.** A single `512|424` alternation answers "does this file
+  // mention the grid", and `web/format.js` mentions it as long as *either* number is
+  // still there - so a `DEPTH_H` that stopped being a literal, or drifted off 424 while
+  // `DEPTH_W` held, leaves the holder list reading exactly `['web/format.js']` and the
+  // row green over a build whose JavaScript no longer describes the sensor's frames.
+  // The duplication half was never at risk, since a file redeclaring either number
+  // lands in the list; it is the row's other half - its own failure message says "a
+  // grid that went missing" - that only fired when both went at once.
   console.log('\n[library] the sensor grid is declared once, and the tree is what says so');
   {
-    const grid = /(?<![\d.])(?:512|424)(?![\d.])/;
+    // A literal, with the guards that keep `512` out of `1512` and `4.24` alike.
+    const literal = (n) => new RegExp(`(?<![\\d.])${n}(?![\\d.])`);
+    const GRID = [['the depth width', 512], ['the depth height', 424]];
     // Relative paths under `base`, deepest last, as one flat list. Split out from the
     // row below so the falsification control underneath can run the same walker over a
     // tree it built, which is the only way to hold a traversal to its claim - a
@@ -1643,30 +1676,40 @@ async function runChecks() {
         ? sourcesUnder(base, `${dir}/${entry.name}`, `${prefix}${entry.name}/`)
         : [`${dir}/${entry.name}`]));
 
-    // The control, run before the row it controls: a tree whose only grid is one
-    // directory down. A walker that skips directories answers `[]` here and this goes
-    // red, where against the real `web/` and `server/` it would answer exactly what the
-    // row below wants and pass. Built under `.library-check` and left there with the
-    // rest of the run's scratch.
+    // The control, run before the row it controls: a tree whose grids are one directory
+    // down, one dimension per file. A walker that skips directories answers `[]` here
+    // and this goes red, where against the real `web/` and `server/` it would answer
+    // exactly what the rows below want and pass. Two files rather than one so the
+    // per-dimension search is exercised separately as well - a probe that planted both
+    // numbers together would be answered by either of them. Built under
+    // `.library-check` and left there with the rest of the run's scratch.
     const probeRoot = join(REPO, '.library-check', 'grid-probe');
     rmSync(probeRoot, { recursive: true, force: true });
-    mkdirSync(join(probeRoot, 'web', 'nested'), { recursive: true });
+    mkdirSync(join(probeRoot, 'web', 'nested', 'deeper'), { recursive: true });
     writeFileSync(join(probeRoot, 'web', 'flat.js'), 'export const NOTHING = 1;\n');
     writeFileSync(join(probeRoot, 'web', 'nested', 'buried.js'), 'export const W = 512;\n');
-    const probed = sourcesUnder(probeRoot, 'web').filter((rel) => grid.test(readFileSync(join(probeRoot, rel), 'utf8')));
-    check(eq(probed, ['web/nested/buried.js']),
-      'the walk this row uses reaches a file one directory down, so a grid buried in a subdirectory is found',
-      probed.join(' ') || 'the walk found nothing, which is a walk that stops at the top of the tree');
-
-    const holders = [];
-    for (const dir of ['web', 'server']) {
-      for (const rel of sourcesUnder(root, dir)) {
-        if (grid.test(withoutComments(shippedSource(rel)))) holders.push(rel);
-      }
+    writeFileSync(join(probeRoot, 'web', 'nested', 'deeper', 'further.js'), 'export const H = 424;\n');
+    const walked = sourcesUnder(probeRoot, 'web');
+    for (const [what, n] of GRID) {
+      const probed = walked.filter((rel) => literal(n).test(readFileSync(join(probeRoot, rel), 'utf8')));
+      const want = n === 512 ? ['web/nested/buried.js'] : ['web/nested/deeper/further.js'];
+      check(eq(probed, want),
+        `the walk this row uses reaches ${what} buried in a subdirectory rather than stopping at the top of the tree`,
+        probed.join(' ') || 'the walk found nothing');
     }
-    check(eq(holders, ['web/format.js']),
-      'the 512x424 grid appears as a literal in exactly one file across web/ and server/, and it is web/format.js',
-      holders.join(' ') || 'nothing holds it, which is a grid that went missing rather than a grid stated once');
+
+    // One row per dimension. The pair is what a grabber frame is, but "the grid is
+    // declared once" is two claims and only one of them can be answered by a match on
+    // either number.
+    const holdersOf = (n) => ['web', 'server'].flatMap(
+      (dir) => sourcesUnder(root, dir).filter((rel) => literal(n).test(withoutComments(shippedSource(rel)))),
+    );
+    for (const [what, n] of GRID) {
+      const holders = holdersOf(n);
+      check(eq(holders, ['web/format.js']),
+        `${n}, ${what}, appears as a literal in exactly one file across web/ and server/, and it is web/format.js`,
+        holders.join(' ') || `nothing holds ${n}, which is half a grid that went missing rather than a grid stated once`);
+    }
   }
 
   // ------------------------------------------------------------- 1. the manifest
@@ -1819,9 +1862,25 @@ async function runChecks() {
       hash: `sha256:${'cd'.repeat(32)}`,
       openRefusals: [{ key: 'short', why: 'a take needs two frames to bracket a position, so there is nothing here to play' }],
     };
+    // **And the take that carries none, which is nearly every take there is.** A
+    // refused take is the interesting shape and it is the wrong one to test a gate
+    // with: `openRefusals: []` is what an ordinary openable take from a current node
+    // sends, so a gate written as `length > 0` would take the link off for every
+    // healthy library while a positive arm holding only the refused take stayed green.
+    // The empty list is the case the code has to admit, so it is the case the fixture
+    // has to contain.
+    const openableShape = {
+      ...oldShape,
+      id: 'openable-on-this-build',
+      hash: `sha256:${'ef'.repeat(32)}`,
+      frames: 60,
+      durationSec: 4,
+      openable: true,
+      openRefusals: [],
+    };
 
     const old = await stub([oldShape]);
-    const current = await stub([newShape]);
+    const current = await stub([newShape, openableShape]);
     try {
       const oldLink = new NodeLink(old.url, 'old-node');
       const oldTakes = await oldLink.takes();
@@ -1836,9 +1895,16 @@ async function runChecks() {
       // entirely, which is the same failure one build further along.
       const currentLink = new NodeLink(current.url, 'current-node');
       const currentTakes = await currentLink.takes();
-      check(currentTakes?.length === 1 && currentTakes[0].id === 'shot-on-this-build',
+      check(eq((currentTakes ?? []).map((t) => t.id), ['shot-on-this-build', 'openable-on-this-build']),
         'a manifest that carries them passes, so the gate is a version band rather than the link switched off',
-        `${currentTakes === null ? 'null' : currentTakes.length} takes, error ${JSON.stringify(currentLink.lastError)}`);
+        `${currentTakes === null ? 'null' : currentTakes.map((t) => t.id).join(' ')}, error ${JSON.stringify(currentLink.lastError)}`);
+      // Named separately, because the two takes above fail for different reasons and a
+      // combined row would report the wrong one. An empty list is a *take with nothing
+      // wrong with it* rather than a take whose refusals went missing, and the gate has
+      // to tell those apart or a healthy node is refused for being healthy.
+      check(currentTakes?.some((t) => t.id === 'openable-on-this-build' && t.openRefusals.length === 0),
+        'and an openable take, whose refusal list is correctly empty, is not read as a manifest with none',
+        currentTakes === null ? `the whole manifest was refused: ${currentLink.lastError}` : 'it came through');
 
       // What the operator gets, which is the half a boundary test cannot see: the
       // gallery still paints, the local shelf is all there, and the line under the
@@ -2482,15 +2548,28 @@ async function runChecks() {
       `${at0.signature} then ${at90.signature}, means ${at0.mean.toFixed(2)} and ${at90.mean.toFixed(2)}`);
     const remoteHash = tiles.find((t) => t.state === 'remote')?.hash;
     check(remoteHash !== undefined, 'a remote take is present to skim');
-    await page.evaluate(`globalThis.__library.drawn(${JSON.stringify(remoteHash)})`);
-    const remote = await page.evaluate(`globalThis.__library.poster(${JSON.stringify(remoteHash)})`);
-    // Sixteen times fewer samples reach the canvas, so a decimated skim is
-    // measurably sparser rather than merely labelled as such. This is the arm the
-    // label alone cannot carry: a tile that said "decimated" and fetched a full
-    // frame would pass every assertion above it.
-    check(remote.mean > 0 && remote.mean < at0.mean * 0.5,
-      'a decimated skim is measurably sparser than a local one, not just labelled',
-      `local ${at0.mean.toFixed(1)} against remote ${remote.mean.toFixed(1)}`);
+    // **Skipped, with the row still counted, when the link is down**, the same shape
+    // the way-back anchor above already uses. Any mutation that takes the node off -
+    // `refusals-must-be-nonempty` is the one that found this - leaves the shelf with no
+    // remote tile, and `drawn(undefined)` then waits out its own timeout and throws
+    // `tile undefined never drew 1 frames`, which ended the run at 105 of 366 with
+    // eight rows correctly red and two hundred and sixty claims never measured. A
+    // control is supposed to redden what carries its claim; one that stops the run has
+    // the tool as its blast radius.
+    if (remoteHash !== undefined) {
+      await page.evaluate(`globalThis.__library.drawn(${JSON.stringify(remoteHash)})`);
+      const remote = await page.evaluate(`globalThis.__library.poster(${JSON.stringify(remoteHash)})`);
+      // Sixteen times fewer samples reach the canvas, so a decimated skim is
+      // measurably sparser rather than merely labelled as such. This is the arm the
+      // label alone cannot carry: a tile that said "decimated" and fetched a full
+      // frame would pass every assertion above it.
+      check(remote.mean > 0 && remote.mean < at0.mean * 0.5,
+        'a decimated skim is measurably sparser than a local one, not just labelled',
+        `local ${at0.mean.toFixed(1)} against remote ${remote.mean.toFixed(1)}`);
+    } else {
+      check(false, 'a decimated skim is measurably sparser than a local one, not just labelled',
+        'there is no remote tile to skim');
+    }
 
     // Every tab shows a count, and a count that disagreed with the tiles it filters
     // to would be the readout lying about the library rather than about a take.

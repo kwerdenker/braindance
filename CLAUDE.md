@@ -115,7 +115,11 @@ node tools/library-check.mjs --mutate open-decides-its-own-reason  # ... one tak
 node tools/library-check.mjs --mutate menu-decides-its-own-reason  # ... and the menu is a surface too
 node tools/library-check.mjs --mutate refusal-without-a-badge      # ... a reason the server declares and no page can badge
 node tools/library-check.mjs --mutate node-admits-an-old-manifest  # ... a node one build behind, refused at the link
+node tools/library-check.mjs --mutate refusals-must-be-nonempty    # ... and a healthy node not refused for being healthy
+                                                                   #     (wide: takes the link off, so it stops at 109 of 366 -
+                                                                   #      read the rows, not the total. docs/instruments.md says why)
 node tools/library-check.mjs --mutate grid-declared-twice          # ... and the sensor grid stated once
+node tools/library-check.mjs --mutate grid-loses-a-dimension       # ... both halves of it, each asked for on its own
 node tools/library-check.mjs --mutate tile-height-follows-content  # ... the gallery's geometry
 node tools/library-check.mjs --mutate poster-height-in-js          # ... and its poster's box
 node tools/library-check.mjs --mutate viewer-splat-one             # ... and the viewer's density

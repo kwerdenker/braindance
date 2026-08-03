@@ -120,6 +120,26 @@ page loads. **Whenever a row reads source rather than behaviour, ask by what mec
 mutation would reach the bytes that row reads**, and do not assume the answer is the same
 for every file the tool can mutate.
 
+### One regex over two constants cannot see one of them go missing
+
+The grid row asks whether the sensor's `512x424` is declared once, and its first spelling
+asked with a single `512|424` alternation. A file "holds the grid" if it matches, and
+`web/format.js` matches for as long as *either* number is still written down there — so a
+`DEPTH_H` that stopped being a literal, or drifted off 424 while `DEPTH_W` held, leaves the
+holder list reading exactly `['web/format.js']` and the row green over a tree whose
+JavaScript no longer describes the frames the grabber sends.
+
+The duplication half was never at risk: a second file redeclaring either number lands in
+the list and the row fails. It is the row's *other* half that could not fire — its own
+failure message says "a grid that went missing", and it only said that when both went at
+once. Two rows now, one per dimension, and `--mutate grid-loses-a-dimension` turns
+`DEPTH_H = 424` into `DEPTH_H = DEPTH_W - 88`: the value is unchanged, so every page draws
+the same pixels and every message is the same size, and the only thing it can move is
+whether `424` is written down. Measured: 366 assertions, exactly one failed, the height
+row, with the width row still green — which is the split being necessary rather than
+tidy. **When a row's subject is a pair, ask for each half separately, or the half that is
+still there answers for the one that is not.**
+
 ### An enumeration that walks a flat tree is the files that exist, not the tree
 
 The grid row above walks `web/` and `server/` rather than a list of the files that hold the
@@ -178,6 +198,31 @@ menu would have been fulfilled for requests that are not the menu. It matches on
 pathname now. **A claim that names more than one surface is not controlled until each
 surface has a mutation of its own, and the second control is usually what discovers that the
 delivery only ever worked for the first.**
+
+### A positive arm built from the interesting shape misses the ordinary one
+
+The version-skew row above has a second arm because a gate that refused every manifest
+would satisfy the refusal arm while taking the link off entirely. The first spelling of
+that arm served one take, and it was the *refused* one — a take carrying a nonempty
+`openRefusals`, because that is the shape the row is about. It is the wrong shape to test
+a gate with. `openRefusals: []` is what an ordinary openable take sends, which is nearly
+every take there is, so a gate written as `length > 0` would take the link off for every
+healthy library while an arm holding only the refused take stayed green. The fixture
+carries both now, and the empty-list case has a row that names it, because the two takes
+fail for different reasons and a combined row would report the wrong one.
+
+**The control for it is `--mutate refusals-must-be-nonempty`, and it is deliberately not
+a well-behaved one.** It reddens both arm rows, and then it reddens the node's own rows
+across the suite, because the bug it plants is exactly "every healthy node goes dark" and
+that is what that looks like from here — 109 assertions, 11 failed, where a clean run
+reaches 366. That is the blast-radius rule being broken knowingly rather than by accident:
+several sections assume a linked node holding remote takes, and the first of them,
+`drawn(undefined)`, waited out its own timeout and threw at 105. That one is guarded now,
+the same way the way-back anchor is; the next is the confirm dialog for a take in state
+`both`, and the ones after that are download, reclaim and delete. Guarding the class —
+**every section that needs the node surviving a node that is not there** — is worth doing
+and is not done. Until it is, read this control by which rows went red and not by the
+assertion total, which is the rule this repo already states for every check.
 
 ### Two machines on one network are two builds, and a rig that stages both cannot see it
 
