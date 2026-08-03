@@ -261,6 +261,33 @@ the same way the way-back anchor is; the next is the confirm dialog for a take i
 and is not done. Until it is, read this control by which rows went red and not by the
 assertion total, which is the rule this repo already states for every check.
 
+### A table indexed by a string off the wire has `Object.prototype` answering for it
+
+The version gate on `NodeLink` checks the *shape* of a node's manifest and deliberately not
+its vocabulary, so that a newer node can name a refusal this build has never heard of and
+have the tile badge the key as itself — visibly unmapped beating confidently wrong. That
+door is the point of the design, and the page's badge table was an ordinary object literal
+behind it. `BADGES['__proto__']` answers with `Object.prototype` rather than `undefined`, so
+the `?.` does not short-circuit, the call throws on a value that is not a function, and the
+gallery dies painting the tile — the same blank shelf the gate exists to prevent, arriving
+through the one door the gate was told to leave open. `constructor`, `toString` and
+`valueOf` are the quieter half: they are callable, so they badge a take `[object Object]`
+under a promise that an unmapped key reads as itself.
+
+`Object.create(null)` at the table, not a guard at the lookup, because the lookup is one
+today and the property that makes it safe belongs to the table. The same reading then
+applied to the instrument that checks it: the containment row asked `k in OPEN_REFUSALS`,
+and `in` walks the prototype chain, so a take arriving with `toString` would have been
+called a declared refusal. It is `Object.hasOwn` now. **An instrument asking `in` about keys
+that came off a wire is asking a question `Object.prototype` gets to answer.**
+
+The control drives it rather than reasoning about it: a stub node one build *ahead*, serving
+a take whose refusal key is `__proto__`, with a real server pointed at it and the real page
+loaded. `--mutate badges-inherit-from-object` puts the plain literal back and the row reports
+`TypeError: BADGES[refusal.key] is not a function`, the page never finishing its paint. Two
+rows, because surviving is not the claim — the second asks what the badge actually says, and
+that arm is the one the quieter half of the fault would fail.
+
 ### Two machines on one network are two builds, and a rig that stages both cannot see it
 
 `library-check` spawns its node and its editing machine out of one staged tree, so both

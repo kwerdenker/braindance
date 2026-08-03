@@ -931,6 +931,26 @@ const MUTATIONS = {
     'export const OPEN_REFUSALS = {\n'
       + "  'wrong-format': () => 'this take was written by a generation of the format this build cannot read',\n",
   ]] },
+  // **The badge table goes back to having a prototype**, which is where it was and
+  // which answers `BADGES['__proto__']` with `Object.prototype` instead of `undefined`.
+  // The `?.` then does not short-circuit and the call throws on a value that is not a
+  // function, so a refusal key chosen by another machine kills the shelf - through the
+  // one door the version gate is deliberately told to leave open, since the gate checks
+  // the shape of a manifest and not its vocabulary.
+  //
+  // The historical body rather than a minimal edit, for the same reason
+  // `open-decides-its-own-reason` uses one: what the row claims is that the table is
+  // safe to index with a string off the wire, not that one particular spelling of it is.
+  'badges-inherit-from-object': { file: 'web/library.js', edits: [[
+    'const BADGES = Object.assign(Object.create(null), {\n'
+      + "  'no-hello': () => 'no hello',\n"
+      + "  short: (take) => (take.frames === 0 ? 'no frames' : '< 2 frames'),\n"
+      + '});',
+    'const BADGES = {\n'
+      + "  'no-hello': () => 'no hello',\n"
+      + "  short: (take) => (take.frames === 0 ? 'no frames' : '< 2 frames'),\n"
+      + '};',
+  ]] },
   // **The scanner forgets to push a refusal it declares**, which leaves `no-hello` in
   // `OPEN_REFUSALS`, in the page's `BADGES`, and on no take that exists - a reason and a
   // badge for it that nothing can ever wear. It is the direction the containment row
@@ -1956,6 +1976,51 @@ async function runChecks() {
         'and the page names the node and says its build is the reason', JSON.stringify(line));
       await page.close();
       for (const p of servers.filter((sv) => sv.port === MAC_PORT + 1)) p.child.kill('SIGKILL');
+
+      // ---- and a node one build *ahead*, which is the door the gate leaves open
+      //
+      // **The gate is on the shape of a manifest and deliberately not on its
+      // vocabulary**, so that a newer node can name a reason this build has never heard
+      // of and have the tile badge the key as itself. That promise is what is tested
+      // here, and it had a hole in it: `BADGES[key]?.(take)` on an ordinary object
+      // literal answers `__proto__` with `Object.prototype`, so the `?.` does not
+      // short-circuit and the call throws on a value that is not a function. The
+      // gallery then dies painting the tile - the same blank shelf the version gate
+      // exists to prevent, arriving through the door the gate was told to leave open.
+      //
+      // `__proto__` because it is the one that throws. `constructor`, `toString` and
+      // `valueOf` are the quieter half of the same fault and badge a take
+      // `[object Object]`, so the second row asks what the badge actually says rather
+      // than only that the page survived.
+      const ahead = await stub([{
+        ...openableShape,
+        id: 'shot-on-a-newer-build',
+        hash: `sha256:${'12'.repeat(32)}`,
+        openable: false,
+        openRefusals: [{ key: '__proto__', why: 'this take is refused for a reason this build has never heard of' }],
+      }]);
+      try {
+        const aheadUrl = await startServer(root, ['--captures', macCaps, '--name', 'mac', '--node', ahead.url,
+          '--node-name', 'new-node', '--presets', join(WORK, 'presets'), '--projects', join(WORK, 'projects'),
+          '--builtin-presets', join(WORK, 'builtin-presets')], MAC_PORT + 8);
+        const { page: aheadPage, errors: aheadErrors } = await openPage(browser, galleryPage(aheadUrl));
+        const alive = await aheadPage.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 })
+          .then(() => true).catch(() => false);
+        const aheadTiles = alive ? await aheadPage.evaluate('globalThis.__library.tiles()') : [];
+        const strange = aheadTiles.find((t) => t.id === 'shot-on-a-newer-build');
+        check(alive && strange !== undefined && aheadErrors.length === 0,
+          'a refusal key this build has never heard of paints its tile rather than killing the shelf',
+          `${alive ? `${aheadTiles.length} tiles` : 'the page never finished painting'}, `
+            + `${aheadErrors.length} errors: ${aheadErrors.join(' | ')}`);
+        const badge = strange?.badges.find((b) => b.key === '__proto__');
+        check(badge?.short === '__proto__',
+          'and the badge reads the key itself, which is what visibly unmapped was promised to mean',
+          JSON.stringify(strange?.badges ?? null));
+        await aheadPage.close();
+        for (const p of servers.filter((sv) => sv.port === MAC_PORT + 8)) p.child.kill('SIGKILL');
+      } finally {
+        ahead.srv.close();
+      }
     } finally {
       old.srv.close();
       current.srv.close();
@@ -2528,7 +2593,12 @@ async function runChecks() {
     // the code in the direction the row above cannot see either.
     const liveKeys = [...new Set((await getJson(`${macUrl}/library/takes`)).takes
       .flatMap((t) => t.openRefusals.map((r) => r.key)))];
-    check(liveKeys.every((k) => k in OPEN_REFUSALS),
+    // `Object.hasOwn` and not `in`, which walks the prototype chain and would call a
+    // take arriving with `toString` or `constructor` a declared refusal. The same
+    // reading that took the prototype off the page's table, applied to the row that
+    // checks it: an instrument asking `in` about keys that come off a wire is asking a
+    // question `Object.prototype` gets to answer.
+    check(liveKeys.every((k) => Object.hasOwn(OPEN_REFUSALS, k)),
       'every refusal a take actually arrived with is one the table declares',
       `${liveKeys.join(' ')} against ${Object.keys(OPEN_REFUSALS).join(' ')}`);
     // And back the other way. `recording` is excluded by name and for a reason of fact

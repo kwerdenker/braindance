@@ -116,6 +116,7 @@ node tools/library-check.mjs --mutate menu-decides-its-own-reason  # ... and the
 node tools/library-check.mjs --mutate refusal-without-a-badge      # ... a reason the server declares and no page can badge
 node tools/library-check.mjs --mutate refusal-declared-but-never-pushed # ... and one nothing can ever earn
 node tools/library-check.mjs --mutate node-admits-an-old-manifest  # ... a node one build behind, refused at the link
+node tools/library-check.mjs --mutate badges-inherit-from-object   # ... and one build ahead, whose reason still badges
 node tools/library-check.mjs --mutate refusals-must-be-nonempty    # ... and a healthy node not refused for being healthy
                                                                    #     (wide: takes the link off, so it stops at 109 of 366 -
                                                                    #      read the rows, not the total. docs/instruments.md says why)

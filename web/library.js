@@ -132,11 +132,27 @@ const post = (url, body) => jsonOf(url, {
  * would have been badged "no hello" over a take that has one. Visibly unmapped beats
  * confidently wrong, and `library-check` asserts the two tables agree rather than
  * leaving it to be noticed.
+ *
+ * **No prototype, because the keys come off the wire and `Object.prototype` answers to
+ * some of them.** A refusal key is a string another machine chose - `NodeLink` gates
+ * the *shape* of a manifest and deliberately not its vocabulary, so that a newer node
+ * can name a reason this build has never heard of and get the fallback above - and an
+ * ordinary object literal answers `BADGES['__proto__']` with its own prototype rather
+ * than with `undefined`. The `?.` then does not short-circuit, the call throws on a
+ * value that is not a function, and the gallery dies painting the tile: the same blank
+ * shelf the version gate exists to prevent, arriving through the door the gate was
+ * told to leave open. `constructor`, `toString` and `valueOf` do not throw and are
+ * worse, badging a take `[object Object]` under a promise that an unmapped key reads
+ * as itself.
+ *
+ * Fixed at the table rather than at the one lookup, because the lookup is one today
+ * and the property that makes it safe belongs to the table. `Object.keys` still sees
+ * exactly the two entries, which is what `badgeKeys()` reports.
  */
-const BADGES = {
+const BADGES = Object.assign(Object.create(null), {
   'no-hello': () => 'no hello',
   short: (take) => (take.frames === 0 ? 'no frames' : '< 2 frames'),
-};
+});
 
 /**
  * The warnings a take carries, short enough for a badge and long enough to act on.
