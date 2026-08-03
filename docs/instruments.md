@@ -26,6 +26,68 @@ growth bound. When you write a proof tool, ask what a broken implementation woul
 to still pass it, and close that. **Every proof tool needs a falsification control**:
 something that must FAIL if the thing under test were not actually doing the work.
 
+### The passthrough row that hashed a served part against the set of served parts
+
+`vcam-check` section 2 claimed "the bytes served are the bytes emitted", with a comment above
+it saying in as many words that anything decoding and re-encoding on the way through would fail
+it. It could not. `frame` was taken off the end of `sub.parts`, `jpegHash` was the hash of
+`frame`, and the row then asked whether anything in `sub.parts` hashed to `jpegHash` — which
+`frame` does, being one of them. The other half of the conjunction was `served.length === 64`,
+true of every sha256 hex digest there has ever been. The whole row reduced to "the emit log is
+not empty", and the log was read and then never compared against anything.
+
+The reason it was written that way was real and was even stated in the comment: the emit log's
+third column hashes the whole payload, which for a colour message is a u64 stamp then the JPEG,
+and the stamp moves per frame, so the logged hash can never equal the hash of a served part.
+Faced with two sides that could not be compared, the row hashed one side against itself. **When
+the two ends of a comparison do not share a quantity, make the writer log one — do not hash
+around the problem.** The fix was a fourth column carrying the sha256 of the part body, passed
+in at the call site because the wire layout belongs there and `note` should not have to know
+that type 3 puts a stamp before its JPEG.
+
+`hd-reencodes-in-flight` is the control, and it was written *before* the fix and run against the
+unfixed row on purpose: `[vcam] 22 assertions, 0 failed`, `NOT CAUGHT`, with every row in
+section 2 green including both of the ones that exist to catch it. That output is the finding.
+Two things it taught that generalise. The mutation has to be memoised, because a synchronous
+1920x1080 re-encode per message starves the stream until `a frame was served at all` reddens
+instead — a control that fires for a neighbouring reason is not a control. And its ffmpeg
+fallback means an ffmpeg that failed to run prints NOT CAUGHT too, so what discriminates a real
+catch is the *pair*: NOT CAUGHT against the old row, `caught, as required` against the new one.
+A single run in either direction would not have said which.
+
+### A defect that moves a word rather than removing it, and two rows that asked whether it was there
+
+`library-check`'s colour-toggle-during-the-backoff section asserts that the *next* genuine
+grabber death is still reported `lost` and still counts toward the backoff table. Both rows read
+for a presence: `after.includes('lost')`, and the backoff line count being greater than the count
+taken before the toggle. Both passed the mutated build, so `--mutate exit-keeps-the-child-reference`
+reddened nothing at all — and `library-check` has no `NOT CAUGHT` branch, so it exited 0 and read
+as a clean pass rather than as the check being blind.
+
+What made the rows wrong is that the defect does not delete either signal. It **moves** them. The
+toggle landing on a stale `child` reference calls `stopGrabber` on a process that has already
+exited, and that announces a `lost` of its own; the respawn that follows still writes a backoff
+line. Measured side by side, the fixed build's status slice was `starting live lost` and the
+mutated build's was `lost starting live starting`, and the backoff counts went 1→2 fixed against
+0→1 mutated. Membership is true of both. "Greater than before" is true of both.
+
+The two fixes are the same fix in different clothes. The `lost` row now asks for **order** — the
+`lost` has to sit after the `live` that the respawn produced — which is what "the *next* failure"
+meant all along and which is incidentally robust against the previous death's `lost` arriving late
+and landing in the slice. The backoff row now asks for **one line per death**, `backoffAtRead ===
+exitsAtRead`, rather than for growth; the count taken before the toggle turned out to be a race in
+the fixture and is now reported rather than asserted on, since `scheduleRetry` writes its line just
+after the exit the poll loop watches for.
+
+Two things worth carrying forward. **When the thing under test is a sequence, a row that asks
+whether a value appears anywhere in that sequence has thrown away the only axis that discriminates**
+— ask where it appears relative to the event it is supposed to follow. And the diagnostic that had
+been deliberately left un-asserted is what caught this: the section prints the server's own
+`colour camera on - ...` line, and reading `restarting grabber` where a fixed build prints `takes
+effect on the next spawn` is what said the mutation had applied and reached the branch while the
+rows agreed with it. **A printed-not-asserted probe beside a claim is how you tell a control that
+missed from a fixture that never ran** — the two are indistinguishable from the assertion count.
+
 ### An A/B where one arm cleans up after the other measures nothing
 
 The version of that failure worth naming separately, because both arms run, both produce a
@@ -518,6 +580,29 @@ user-facing surface should have at least one arm pointed at that surface.** Sect
 browser; `bind-ignores-grid` and `expand-shifts-by-a-block` are one control each, and the
 second exists because the first reddens every row and a control that fails everything cannot
 say which row carries the claim.
+
+**A fourth, and this time the skipped object was a kind of client no tool had ever created.**
+The recorder refuses to start a take while a webcam subscriber is pulling ~50Mbit/s over the
+same radio the depth packets are competing for, and the rule implementing that refusal had no
+arm anywhere in the suite. Not because anybody excluded it — because every proof tool in this
+repo subscribes over `127.0.0.1` to a server started with no `--host`, so `Webcam.isLoopback`
+was true by construction and the filter picking out costing subscribers ran against the empty
+array in every run of every check. Deleting the rule outright would have changed nothing any of
+them observed, and it had in fact already half-happened: the predicate shipped twice, and the
+copy carrying the whole docstring about the exemption being inherited by argument rather than
+measured had no callers at all.
+
+That is the shape worth taking away. The first three skipped objects were things nobody looked
+at; this one was a *state of the system* nobody could reach, because the way every tool
+connects made one branch unreachable. **Ask what your fixtures make impossible, not only what
+your probes omit** — a constant that every arm happens to share is an exclusion nobody wrote
+down. `guard-check` and `monitor-check` had both already solved it for their own claims, by
+widening the server with `--host 0.0.0.0` and connecting over this machine's own non-internal
+IPv4, so the technique was in the repo and simply had not been pointed here. `vcam-check`
+section 6 does that now, with `refusal-ignores-webcam` as the control and an operator accepting
+the cost as the positive twin, since an arm built only out of refusals passes against a server
+that refuses everything. On a machine with no second address it exits 2 as UNPROVEN rather than
+passing, because the arm cannot mean anything there.
 
 ## Close the class, not the instance — and have the check enumerate it
 

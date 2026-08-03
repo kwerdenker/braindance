@@ -116,7 +116,7 @@ export class Webcam {
   }
 
   /**
-   * Whether the take is paying for this webcam.
+   * The subscribers the take is paying for.
    *
    * **The loopback exemption is inherited by argument here, not by measurement, and
    * that distinction is worth keeping.** The WebSocket monitors' exemption was
@@ -126,9 +126,21 @@ export class Webcam {
    * same pipe, and the same reasoning is not the same measurement. Nothing here reads
    * as if it had been measured; the interleaved A/B for this stream on a capture node
    * has not been run.
+   *
+   * **This is the one place that rule is written**, which is what makes the paragraph
+   * above worth keeping: the recorder's refusal used to repeat the same test inline,
+   * so whoever ran that A/B would have edited the copy carrying the reasoning and
+   * found that nothing happened. It returns the subscribers rather than a boolean so
+   * the refusal can name one consumer per costing subscriber without knowing what
+   * makes one costly.
+   *
+   * Named for the subscribers rather than for the question, because the name that asks
+   * the question outright already belongs to a different rule about a different
+   * consumer - the monitors' divisor and stride test in `server/index.js` - and a
+   * reader should not have to work out which of the two they are looking at.
    */
-  costsTheTake() {
-    return [...this.subscribers].some((s) => !s.loopback);
+  subscribersCostingTheTake() {
+    return this.describe().filter((s) => !s.loopback);
   }
 
   /**

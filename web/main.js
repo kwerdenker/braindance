@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { PROJECT_VERSION, versionRefusal } from './format.js';
+import { PROJECT_VERSION, versionRefusal, captureFormatRefusal } from './format.js';
 import { pollRecordState } from './record-poll.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -5900,6 +5900,9 @@ const ui = {
   project: document.getElementById('tProject'),
   projectOpen: document.getElementById('tProjectOpen'),
   projectSave: document.getElementById('tProjectSave'),
+  resume: document.getElementById('tResume'),
+  resumeWhen: document.getElementById('tResumeWhen'),
+  resumeOpen: document.getElementById('tResumeOpen'),
   recGo: document.getElementById('recGo'),
   recMark: document.getElementById('recMark'),
   recNote: document.getElementById('recNote'),
@@ -8342,12 +8345,22 @@ async function importPresetFile(file) {
  * and it left the working document unreachable: opening the same take again gave a
  * fresh clip with no sign that a session's work was sitting on disk beside it.
  *
+ * **A control rather than a sentence, and that is a repair.** This first offered the
+ * document as text naming `?project=__working__`, which is not a path anybody can
+ * follow: the editor boots on `?take=`, so replacing the query with that one leaves it
+ * with no take in it and the boot path sends the browser to the gallery. An
+ * instruction that reads as a recovery and is a way out of the page is worse than no
+ * offer, because the work is still there and the operator now believes they tried.
+ * So the offer is a button and it presses `loadProjectNamed`, which is the same door
+ * the resume URL opens - the same hash refusal on the way in, and no navigation at all.
+ *
  * **No extra request.** The list arrives with every document's body already on it, so
  * the stamp this needs is in hand at the moment the take opens - and a fetch here
- * would put a round trip in the path of every take opening for the sake of a note
- * that usually has nothing to say.
+ * would put a round trip in the path of every take opening for the sake of an offer
+ * that usually has nothing to make.
  */
 function offerWorkingDocument(projects) {
+  ui.resume.hidden = true;
   const working = projects?.find((doc) => doc.name === WORKING_PROJECT);
   if (!working) return;
   // **Matched on hash rather than on id.** A rename frees the old id and a later take
@@ -8364,8 +8377,11 @@ function offerWorkingDocument(projects) {
   delete body.history;
   delete body.take;
   if (JSON.stringify(body) === history.baseline) return;
-  say(`this take has autosaved work from ${new Date(working.savedAt).toLocaleString()}`
-    + ` - open it with ?project=${WORKING_PROJECT}`);
+  // When, because "there is autosaved work" is not enough to decide with: an operator
+  // who stopped an hour ago and one who lost the tab a minute ago want opposite things
+  // from this button, and the stamp is the only thing that tells them apart.
+  ui.resumeWhen.textContent = `autosaved ${new Date(working.savedAt).toLocaleString()}`;
+  ui.resume.hidden = false;
 }
 
 async function refreshProjects() {
@@ -9848,6 +9864,22 @@ ui.projectOpen.addEventListener('click', async () => {
   }
 });
 
+// The auto-save, through the same door a named project goes through rather than
+// through one of its own - so the hash refusal, the paused playhead and the restored
+// undo stack are the behaviour that is already proved rather than a second copy of it.
+// The offer withdraws itself on success because the document on screen is now the one
+// it was offering, and an offer to restore what is already there is a button that
+// looks like it does something.
+ui.resumeOpen.addEventListener('click', async () => {
+  try {
+    await loadProjectNamed(WORKING_PROJECT);
+    ui.resume.hidden = true;
+    say('restored the autosaved edit');
+  } catch (err) {
+    showTimelineError(err);
+  }
+});
+
 ui.deliverable.addEventListener('change', async () => {
   const name = ui.deliverable.value;
   if (!name) return;
@@ -10088,6 +10120,19 @@ async function openTake(id) {
     );
   }
   const hello = await res.json();
+  // **Which generation wrote this, before anything reads a field out of it.** Ahead of
+  // the bounds check below rather than beside it, because the two questions nest: that
+  // check asks whether these numbers are usable *as this build understands the record*,
+  // and a take from a format this build has never seen is one whose fields could be
+  // perfectly in range and mean something else. A gallery listing the same take has
+  // already greyed its Open button off this same sentence, and the two agreeing is the
+  // whole reason it is one function rather than two comparisons.
+  //
+  // Here rather than on the live socket, for the reason the paragraph above gives about
+  // the intrinsics: a live preview bakes nothing, and the file is where a record that
+  // cannot be trusted has already become permanent.
+  const wrongFormat = captureFormatRefusal(`take ${id}`, hello.format ?? null);
+  if (wrongFormat) throw new Error(wrongFormat);
   // Positive rather than finite, and inside the frame rather than merely a number.
   // `Number.isFinite(0)` is true, so a hello carrying `fx: 0` - the shape a writer
   // that recorded a field it never filled produces - passed a refusal written to

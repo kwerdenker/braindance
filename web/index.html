@@ -307,6 +307,13 @@
   .tchip button[disabled] { color: var(--dim); cursor: default; }
   .tchip.warn, #tNote { border-color: var(--warn); color: var(--warn); }
   #tNote:empty, #tBehind:empty, #tExportNote:empty { display: none; }
+  /* `hidden` on a chip, which needs saying because `.tchip` already sets a display and
+     an author rule beats the `[hidden] { display: none }` in the browser's own sheet.
+     Without this a chip marked hidden stays on screen with nothing in it, which is the
+     shape of a control that looks available and does nothing. Written against the class
+     rather than against the one chip that needed it, so the next chip that hides is
+     covered by existing. */
+  .tchip[hidden] { display: none; }
 
   .tlanes { flex: 1; min-height: 0; display: grid; grid-template-columns: 96px minmax(0, 1fr); }
   .tcol { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -703,6 +710,20 @@
           <input id="tPresetFile" type="file" accept=".json,application/json" hidden></label>
         <label class="tchip">project<select id="tProject"><option value="">—</option></select>
           <button id="tProjectOpen" type="button">open</button><button id="tProjectSave" type="button">save</button></label>
+        <!-- The auto-save, offered back only when there is one to offer. Beside the
+             project picker because that is what it is, and a chip of its own rather
+             than an entry in that picker because the picker hides `__working__` on
+             purpose: it is always the newest document in the directory, so listing it
+             beside real projects offers "the thing you were just doing" under a name
+             that reads like a mistake.
+             A button and not a sentence telling somebody to edit the URL. The offer
+             began as text naming `?project=__working__`, which drops the `take` the
+             editor boots on, so following it literally left the query with no take in
+             it and the boot path sent the browser to the gallery - an instruction that
+             reads as a recovery path and is a way out of the page. `openTake` shows
+             this and `loadProjectNamed` is what it presses, which is the same door the
+             resume URL opens and therefore the same hash refusal on the way in. -->
+        <span class="tchip" id="tResume" hidden><b id="tResumeWhen"></b><button id="tResumeOpen" type="button">restore autosave</button></span>
         <label class="tchip">deliverable<select id="tDeliverable"><option value="">—</option></select>
           <button id="tDeliverableNew" type="button">new</button>
           <b id="tDeliverableReadout"></b></label>

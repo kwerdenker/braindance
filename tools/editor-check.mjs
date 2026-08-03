@@ -976,31 +976,48 @@ let untested = null;
 // with each remaining group credited to the wrong driver. Deleting the `#modes` rule
 // when the shading modes became registry parameters is exactly that edit, and nothing
 // would have failed. A key cannot slide.
+//
+// **`match` is the implementation and `covered()` walks it, which is the second repair
+// on this array.** Every rule here used to carry a `match` written against a DOM element
+// and `covered()` re-spelled the same condition against the serialized row, so the field
+// was decoration: adding a rule with a `match` and no matching branch below produced a
+// rule that matched nothing and said nothing, which is exactly what the mark rule did
+// when it arrived. Two spellings of one condition where only one is executed is not a
+// cross-check, it is a place to write a rule that does not exist. So a match takes the
+// serialized row, and the row carries whatever a rule needs to ask about.
+//
+// Order is precedence, and `look` is last on purpose: it is the widest rule and would
+// otherwise claim controls the narrower ones are the honest attribution for. That only
+// moves which driver a covered control is credited to, and crediting a program-out
+// select to the look sweep is a wrong answer that reads like a right one.
 const DRIVER_RULES = [
-  {
-    key: 'look',
-    what: 'a look parameter slider or checkbox',
-    by: "registry-check's drop-one sweep proves each one reaches the pixels",
-    match: (el) => el.closest('#panel') && (el.type === 'range' || el.type === 'checkbox')
-      && !el.closest('#sensorGroup, #monitorGroup, #recordGroup, #recLookGroup'),
-  },
   {
     key: 'keyframe',
     what: 'a keyframe toggle',
     by: 'keyframe-check, and section 5 here deletes what it creates',
-    match: (el) => el.classList.contains('kf') && el.id !== 'tRateKey',
+    match: (row) => row.kf && row.id !== 'tRateKey',
   },
   {
     key: 'recorder',
     what: 'a recorder-surface control',
     by: 'sensor-view-check section 6 and library-check',
-    match: (el) => el.closest('#recordGroup, #recLookGroup, #sensorGroup, #monitorGroup, #extendedRow'),
+    match: (row) => inGroup(row, '#recordGroup', '#recLookGroup', '#sensorGroup', '#monitorGroup', '#extendedRow'),
+  },
+  {
+    key: 'output',
+    what: 'a program-out control',
+    // Named because it is driven, not because it is exempt. `vcam-check` section 5
+    // opens the operator surface and the source together, moves both of these, and
+    // asserts the source's drawing buffer and its camera actually followed - which is
+    // the only place they can be checked, since what they change is a different page.
+    by: 'vcam-check section 5 sets both from the operator page and reads the source',
+    match: (row) => inGroup(row, '#programOutGroup'),
   },
   {
     key: 'camera',
     what: 'a camera-composition control',
     by: 'keyframe-check drives the path; sensor-view-check drives `sensor view`',
-    match: (el) => el.closest('#cameraGroup') || el.id === 'camSensor',
+    match: (row) => inGroup(row, '#cameraGroup') || row.id === 'camSensor',
   },
   {
     key: 'mark',
@@ -1011,26 +1028,30 @@ const DRIVER_RULES = [
     // covered, and a tick that seeks to the wrong second is a covered control that
     // does the wrong thing.
     by: 'section 14 presses a tick under a non-unity rate and reads where the playhead landed',
-    match: (el) => el.classList.contains('tmk'),
+    match: (row) => row.mark,
   },
   {
     key: 'nav',
     what: 'navigation out of the editor',
     by: 'sensor-view-check and library-check follow both links, and the rows below '
       + 'assert where the nav sits and where its two anchors go',
-    match: (el) => el.closest('#navRow'),
+    match: (row) => inGroup(row, '#navRow'),
   },
   {
-    key: 'output',
-    what: 'a program-out control',
-    // Named because it is driven, not because it is exempt. `vcam-check` section 5
-    // opens the operator surface and the source together, moves both of these, and
-    // asserts the source's drawing buffer and its camera actually followed - which is
-    // the only place they can be checked, since what they change is a different page.
-    by: 'vcam-check section 5 sets both from the operator page and reads the source',
-    match: (el) => el.closest('#programOutGroup'),
+    key: 'look',
+    what: 'a look parameter slider or checkbox',
+    by: "registry-check's drop-one sweep proves each one reaches the pixels",
+    match: (row) => inGroup(row, '#panel') && (row.type === 'range' || row.type === 'checkbox'),
   },
 ];
+
+/** Whether a swept control sits inside any of these ancestors. */
+// Above the rules rather than beside `covered()`, because the rules call it and a
+// `const` read before its own declaration is a TDZ error rather than a hoisted function.
+// Hoisted for that reason and no other.
+function inGroup(row, ...groups) {
+  return groups.some((g) => row.groups.includes(g));
+}
 
 // Named one at a time, because each of these is a control this file presses itself.
 const DRIVER_IDS = {
@@ -1052,6 +1073,7 @@ const DRIVER_IDS = {
   tProject: 'library-check opens a project and compares the document',
   tProjectOpen: 'library-check',
   tProjectSave: 'library-check',
+  tResumeOpen: 'section 13 - plants an autosave, presses it, and reads the restored document back',
   tDeliverable: 'library-check, and section 6 here plants a long name in it',
   tDeliverableNew: 'library-check',
   tExportName: 'section 7 - names the file and refuses a path',
@@ -1212,14 +1234,31 @@ try {
   //
   // The sweep is over what the page actually contains rather than over a list kept
   // here, which is the only version of this that survives somebody adding a button.
+  //
+  // **One mark first, because a mark tick is a control that exists only when the take
+  // has a mark.** The fixture take carries none, so a sweep taken as the page loads
+  // finds no tick, and "no instance of this class" and "this class is not swept" are
+  // the same reading - which is exactly how a rule written for the ticks sat here
+  // matching nothing. Planting one makes the class observable, and it is the same
+  // door sections 4, 10 and 13 already use: `setMarks` writes no sidecar, so this
+  // does not edit the take it measures.
+  await page.evaluate("__kinect.editor.setMarks([{ id: 'sweep', sourceMs: 2000, label: 'sweep' }])");
   const sweep = await page.evaluate(`(${((rules) => {
     // Anchors are in the list because the way out of this surface is two of them.
     // They were buttons calling `location.href` until the nav moved into the panel
     // head, and a selector naming only the form controls would have watched them
     // leave the sweep rather than fail - the "passes by disappearing" shape this
     // file's own section 1 exists to refuse.
+    // `.tlanes` is in the list because the ruler's mark ticks are buttons and live
+    // there. A selector naming only the strip and the panel swept neither of them, so
+    // the rule written for them matched nothing and the sweep went on reporting every
+    // control covered - a control the page renders, pressable, and outside the
+    // enumeration entirely. That is the same "passes by disappearing" shape the
+    // anchors above are in the list for, arriving through the container instead of
+    // through the element name.
     const els = [...document.querySelectorAll('.tbar input, .tbar select, .tbar button, .tbar a, '
-      + '#panel input, #panel select, #panel button, #panel a')];
+      + '#panel input, #panel select, #panel button, #panel a, '
+      + '.tlanes input, .tlanes select, .tlanes button, .tlanes a')];
     return els.map((el) => ({
       id: el.id || null,
       tag: el.tagName,
@@ -1230,23 +1269,30 @@ try {
         '#sensorGroup', '#monitorGroup', '#extendedRow', '#programOutGroup']
         .filter((g) => el.closest(g)),
       kf: el.classList.contains('kf'),
+      mark: el.classList.contains('tmk'),
       label: (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 24),
     }));
   }).toString()})()`);
 
-  const RULE = Object.fromEntries(DRIVER_RULES.map((r) => [r.key, r.by]));
-  const inGroup = (row, ...groups) => groups.some((g) => row.groups.includes(g));
   const covered = (row) => {
     if (row.id && DRIVER_IDS[row.id]) return `named: ${DRIVER_IDS[row.id]}`;
     if (row.ease) return 'rule: an ease preset, section 5 presses all five';
-    if (row.kf && row.id !== 'tRateKey') return RULE.keyframe;
-    if (inGroup(row, '#recordGroup', '#recLookGroup', '#sensorGroup', '#monitorGroup', '#extendedRow')) return RULE.recorder;
-    if (inGroup(row, '#programOutGroup')) return RULE.output;
-    if (inGroup(row, '#cameraGroup') || row.id === 'camSensor') return RULE.camera;
-    if (inGroup(row, '#navRow')) return RULE.nav;
-    if (inGroup(row, '#panel') && (row.type === 'range' || row.type === 'checkbox')) return RULE.look;
-    return null;
+    return DRIVER_RULES.find((rule) => rule.match(row))?.by ?? null;
   };
+
+  // **A rule that matches nothing on the page it is written for.** The mark rule
+  // arrived like that and nothing said so: `covered()` never consulted it, the ticks
+  // were outside the selector, and the entry read as coverage while enforcing none.
+  // A rule is a claim that a class of control exists and is driven, so a rule with no
+  // instance is either a control that has been removed - in which case delete the rule
+  // and the section it names - or a sweep that cannot see it, which is the case this
+  // row was written by. Asked of every key rather than of the one that broke, because
+  // the next rule added is asked by existing.
+  const barren = DRIVER_RULES.filter((rule) => !sweep.some((row) => rule.match(row)));
+  check(barren.length === 0,
+    'every rule in the driver table matches a control the page actually renders, so a rule cannot claim coverage it never reaches',
+    barren.length ? `${barren.length} matching nothing: ${barren.map((r) => r.key).join(', ')}`
+      : DRIVER_RULES.map((r) => `${r.key} ${sweep.filter((row) => r.match(row)).length}`).join(', '));
 
   const unknown = sweep.filter((row) => !covered(row));
   note(`${sweep.length} interactive controls on the editor`,
@@ -4320,10 +4366,23 @@ try {
     const openId = await page.evaluate('__kinect.library.takeId()');
     check(typeof openHash === 'string' && openHash.length > 20,
       'the open take has a content hash, which is what the resume offer joins on', String(openHash).slice(0, 24));
-    const noDocument = await text('#tNote');
-    check((noDocument ?? '') === '',
+    // The offer as an operator meets it: a chip that is either there or not, with the
+    // stamp that decides whether they want it. Read as the pair rather than as the
+    // text, because a chip left on screen carrying nothing and a chip correctly hidden
+    // are the same string and opposite states.
+    const offerState = () => page.evaluate(`(() => {
+      const chip = document.getElementById('tResume');
+      return {
+        shown: !chip.hidden && chip.getBoundingClientRect().width > 0,
+        when: document.getElementById('tResumeWhen').textContent,
+        button: Boolean(document.getElementById('tResumeOpen')),
+      };
+    })()`);
+
+    const noDocument = await offerState();
+    check(!noDocument.shown,
       'a take opened with no working document beside it offers nothing, which is what makes the rows below about the document',
-      `"${(noDocument ?? '').slice(0, 60)}"`);
+      `chip ${noDocument.shown ? 'shown' : 'hidden'}, "${noDocument.when}"`);
 
     // The working document as the auto-save writes it: the whole project, stamped with
     // the take. `differ` changes one field away from the value a fresh open gives, and
@@ -4346,12 +4405,12 @@ try {
     await putDoc(OTHER, { ...JSON.parse(JSON.stringify(fresh)), take: { id: 'some-other-take', hash: foreignHash } });
     await reopen();
 
-    const offered = await text('#tNote');
-    check(/autosaved work/.test(offered ?? ''),
+    const offered = await offerState();
+    check(offered.shown && offered.button && /autosaved/.test(offered.when),
       'a working document stamped with this take\'s hash is offered back when it differs from the clip on screen',
-      `"${(offered ?? '').slice(0, 90)}"`);
-    // The precondition, in its own row and asked of the list rather than of the note.
-    // Read off the note it would pass on an empty string, which is the answer a red row
+      `chip ${offered.shown ? 'shown' : 'hidden'}, "${offered.when}"`);
+    // The precondition, in its own row and asked of the list rather than of the chip.
+    // Read off the chip it would pass on a hidden one, which is the answer a red row
     // above produces - so it would agree with any failure instead of ruling one out.
     const listedWorking = await page.evaluate(`(async () => {
       const list = (await (await fetch('/projects')).json()).projects ?? [];
@@ -4361,6 +4420,23 @@ try {
     check(listedWorking.there && listedWorking.stamped === openHash,
       'and the library listed the working document carrying this take\'s hash, so the row above is about the offer rather than about a store that answered nothing',
       `${listedWorking.there ? 'listed' : 'absent'}, stamped ${String(listedWorking.stamped).slice(0, 24)}`);
+
+    // **And pressing it puts the work back, which is the only thing the offer is for.**
+    // This is the row the first version of the feature could not have passed: the offer
+    // was a sentence naming `?project=__working__`, and following it literally replaces
+    // the query the editor boots on, drops the `take`, and lands on the gallery. An
+    // offer whose recovery path leaves the page is worse than no offer, so what is
+    // asserted here is the document on screen afterwards rather than the words.
+    await page.click('#tResumeOpen');
+    await settle();
+    const restored = await page.evaluate('__kinect.keyframes.project()');
+    check(restored.outputSize === differing.outputSize,
+      'and pressing it restores the autosaved document onto the open take, without leaving the page for a URL that would drop the take',
+      `${restored.outputSize} against the autosave's ${differing.outputSize} and the fresh clip's ${fresh.outputSize}`);
+    const afterRestore = await offerState();
+    check(!afterRestore.shown,
+      'and the offer withdraws once it has been taken, since restoring what is already on screen is a button that does nothing',
+      `chip ${afterRestore.shown ? 'still shown' : 'hidden'}`);
 
     await page.selectOption('#tProject', OTHER);
     await page.click('#tProjectOpen');
@@ -4402,18 +4478,18 @@ try {
     // material it was never authored against.
     await putDoc(WORKING, workingBody({ id: openId, hash: foreignHash }));
     await reopen();
-    const wrongFootage = await text('#tNote');
-    check(!/autosaved work/.test(wrongFootage ?? ''),
+    const wrongFootage = await offerState();
+    check(!wrongFootage.shown,
       'a working document carrying this take\'s id and different footage\'s hash is not offered',
-      `"${(wrongFootage ?? '(nothing)').slice(0, 90)}"`);
+      `chip ${wrongFootage.shown ? 'shown' : 'hidden'}, "${wrongFootage.when}"`);
 
     // ---- reload three: the same document that is already on screen
     await putDoc(WORKING, workingBody({ id: openId, hash: openHash }, false));
     await reopen();
-    const sameAsScreen = await text('#tNote');
-    check(!/autosaved work/.test(sameAsScreen ?? ''),
+    const sameAsScreen = await offerState();
+    check(!sameAsScreen.shown,
       'and neither is one that matches the clip on screen, since restoring what is already there is not an offer',
-      `"${(sameAsScreen ?? '(nothing)').slice(0, 90)}"`);
+      `chip ${sameAsScreen.shown ? 'shown' : 'hidden'}, "${sameAsScreen.when}"`);
 
     await dropDoc(WORKING);
     await dropDoc(OTHER);

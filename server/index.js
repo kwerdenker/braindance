@@ -1001,12 +1001,18 @@ const shooting = (run) => async (req, res, args, query) => {
  * rather than by somebody remembering this function exists. A cost the refusal cannot
  * see is a cost it silently under-reports, and the only thing the refusal has going
  * for it is that its number is true.
+ *
+ * **Each kind is asked its own rule where that rule is written**, rather than having
+ * it restated here. The webcam's used to be a `!s.loopback` filter on this line, which
+ * left the copy in `server/webcam.js` carrying all of the reasoning and none of the
+ * behaviour - so the interleaved A/B that paragraph is waiting on would have been
+ * acted on in the dead one.
  */
 function consumersCostingTheTake() {
   return [
     ...attachedMonitors().filter(costsTheTake)
       .map((m) => ({ kind: 'monitor', at: `÷${m.divisor} ×${m.stride}` })),
-    ...webcam.describe().filter((s) => !s.loopback)
+    ...webcam.subscribersCostingTheTake()
       .map(() => ({ kind: 'webcam', at: 'the colour camera at full rate' })),
   ];
 }
@@ -1282,7 +1288,15 @@ const serveSensorHealth = (req, res) => sendJson(res, {
   dropped: droppedTotal,
   // The first spawn is a start rather than a respawn, which is the number somebody
   // reading this is after: on a healthy node it is zero for the life of the process.
-  respawns: Math.max(0, grabberSpawns - 1),
+  // The restarts somebody asked for come off it for the same reason - a colour toggle
+  // stops a healthy grabber, and a flapping count an operator can raise by ticking a
+  // checkbox is not a health reading.
+  respawns: Math.max(0, grabberSpawns - 1 - grabberRestarts),
+  // Beside it rather than folded into it, because the subtraction above would otherwise
+  // be lossy in the direction that hides work: a node that has restarted forty times
+  // for forty colour toggles and never once for a fault reads zero respawns, and the
+  // reading that says why is gone. Two numbers, two questions.
+  restarts: grabberRestarts,
 });
 /**
  * What the recorder is doing, and what the monitors attached to it would cost.
@@ -1298,6 +1312,14 @@ const serveRecordState = async (req, res) => {
   const costly = consumersCostingTheTake();
   sendJson(res, {
     ...recorder.state,
+    // **The linked node's recorder, beside this machine's own.** The gallery polls this
+    // route to decide whether the library is worth rereading, and the library it draws
+    // spans both machines - so on an editing station with a `--node`, which is the
+    // machine the gallery is actually used from, every fact this route reported was
+    // about a recorder that station does not have. A take started and finished on the
+    // node changed nothing here, and its tile went on refusing Open for as long as the
+    // page stayed up. Null on the node itself, which has no `--node` of its own.
+    node: node ? await node.recordState() : null,
     storage: await remaining(CAPTURES_DIR, recordingRate()),
     monitors: {
       cap: RECORDING_CAP,
@@ -1783,6 +1805,17 @@ let droppedTotal = 0;
 // nothing at all about how many times the sensor has already dropped. Two numbers
 // because they are two questions, not one number written down twice.
 let grabberSpawns = 0;
+
+// And how many of those starts somebody asked for. A colour toggle stops a perfectly
+// healthy grabber and spawns another, which is a configuration change rather than a
+// sensor fault - so counting it with the rest turns "this node is flapping" into a
+// number an operator produces by ticking a checkbox, and the endpoint's own claim that
+// a healthy node reads zero stops being true. Counted where the exit is *consumed*
+// rather than where the restart is armed: `restarting` can be set and never read - the
+// exit handler's comment carries the window that does it - and an arm that never
+// becomes a spawn would subtract a respawn that did happen, which is the wrong
+// direction to be wrong in.
+let grabberRestarts = 0;
 
 let sensorState = 'starting';
 
@@ -2367,6 +2400,28 @@ function startLive() {
 
     child.on('exit', (code, signal) => {
       console.error(`[server] grabber exited (code=${code} signal=${signal})`);
+      // **The reference goes with the process, the same identity test and for the same
+      // reason the `error` handler above uses.** Nothing here used to clear it, so for
+      // the whole respawn backoff - `RESTART_DELAYS[attempt]`, a full second on the
+      // first failure, and 250ms after an ordinary colour restart - `child` was a
+      // truthy `ChildProcess` that had already exited. A colour toggle landing in that
+      // window passed `applyCamera`'s guard against the corpse, armed `restarting`, and
+      // called `stopGrabber` on something that can neither be signalled nor exit again,
+      // so nothing ever consumed the flag. What eventually read it was the *next*
+      // grabber's genuine failure: it took the requested-restart branch below, returned
+      // before `scheduleRetry`, and so the sensor was never reported lost and the
+      // backoff table started over. An ordinary double-click on the colour checkbox is
+      // enough to reach it.
+      //
+      // `child === proc` rather than an unconditional null, because a later spawn may
+      // already own the reference by the time a slow exit arrives, and clearing it then
+      // would hide the grabber that is actually running from the toggle and from
+      // `stopGrabber`. With every process-specific callback clearing only its own,
+      // `child` means the grabber running now - which is what makes `applyCamera`'s
+      // decision correct by construction rather than by when it happens to be read.
+      // At the top with the two nullings below, because every exit path matters and the
+      // restart branch returns before the rest of the handler runs.
+      if (child === proc) child = null;
       // **The hello goes with the grabber that sent it.** `/record/start` stamps the
       // take it opens with whatever is in here, and between a grabber exiting and the
       // next one handshaking that is the *previous* grabber's - so a take started
@@ -2394,8 +2449,12 @@ function startLive() {
       recorder.split().catch((err) => console.error(`[recorder] ${err.message}`));
       if (shuttingDown) return;
       if (restarting) {
-        // Asked for, not a failure - so it does not count toward the backoff.
+        // Asked for, not a failure - so it does not count toward the backoff, and for
+        // the same reason it does not count toward the respawns `/sensor/health`
+        // reports. This is the one place that knows the difference: `spawnGrabber`
+        // sees every road to a running grabber and none of them carry why.
         restarting = false;
+        grabberRestarts++;
         const delay = killedHard ? RESPAWN_AFTER_KILL_MS : RESPAWN_AFTER_CLEAN_MS;
         killedHard = false;
         setTimeout(spawnGrabber, delay);
@@ -2426,13 +2485,19 @@ function startLive() {
       // **`restarting` is a claim about an exit that is coming, so it is only armed when
       // there is a child whose exit it describes.** With none - the window between a
       // failed spawn nulling `child` and the backoff's timer firing, which on a machine
-      // where the binary is missing is most of the time - `stopGrabber` returns on the
-      // spot, no exit is ever emitted, and the flag stays set for the life of the
+      // where the binary is missing is most of the time, and the same window after an
+      // ordinary exit, which the handler above now nulls through - `stopGrabber` returns
+      // on the spot, no exit is ever emitted, and the flag stays set for the life of the
       // process. What eventually reads it is the *next* grabber's exit, after a clean
       // handshake and however many minutes of good footage: that exit is a real failure,
       // and the restart branch takes it, returns before `scheduleRetry`, and so leaves
       // the sensor status reading `live` with nothing running while the backoff skips a
       // step. One toggle at the wrong moment, one silently mishandled failure later.
+      //
+      // Which is why this reads `child` at all rather than a flag of its own: every
+      // callback that owns a process clears the reference when that process is gone, so
+      // the question "is there a grabber running to restart" is the identity of what is
+      // in there, and a corpse cannot answer it yes.
       //
       // Nothing is lost by not arming it. The setting itself reaches the grabber through
       // `buildArgs` on the spawn the backoff has already scheduled, which is the same

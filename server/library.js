@@ -49,10 +49,15 @@ export { VALID_ID };
 // function asserts.
 export const VALID_HASH = /^sha256:[0-9a-f]{64}$/;
 
-// Two constants, shared with the page rather than restated here. See web/format.js
-// for what version 1 means and why it is a version rather than an authored buffer
-// height; re-exported so callers on this side have one import to reach for.
-import { PROJECT_VERSION, VALID_ID } from '../web/format.js';
+// Two constants and one predicate, shared with the page rather than restated here. See
+// web/format.js for what version 1 means and why it is a version rather than an authored
+// buffer height; re-exported so callers on this side have one import to reach for.
+//
+// `captureFormatRefusal` is imported rather than the number it compares against, and
+// that is the whole point of it: four doors decide whether a take may be opened and this
+// is one of them, so what travels between them is the decision rather than a constant
+// each is free to compare its own way.
+import { PROJECT_VERSION, VALID_ID, captureFormatRefusal } from '../web/format.js';
 
 export { PROJECT_VERSION };
 
@@ -189,6 +194,10 @@ async function describeTake(dir, file, recording) {
       dateSource: 'mtime',
       truncated: false,
       hasHello: null,
+      // Null with the rest of them, and for the same reason: the hello is at the head
+      // of a file this is deliberately not reading, so a take mid-write has no answer
+      // here rather than an answer that happens to be the current generation.
+      format: null,
       hello: null,
       openable: false,
       recording: true,
@@ -212,6 +221,15 @@ async function describeTake(dir, file, recording) {
   // own modification time, and says which it used rather than presenting a guess
   // as a record.
   const fromHello = Number.isFinite(hello?.startedAt) && hello.startedAt > 0;
+  // What generation of the format wrote this take, carried up to the gallery as it was
+  // found rather than coerced into a number. A hello saying `"format": "banana"` is a
+  // writer this build has no idea about, and reporting that as null would file it with
+  // the takes that honestly declare nothing - which is the one band that opens.
+  const format = hello?.format ?? null;
+  // The band, asked once here and answered for every door on this side. It is a
+  // sentence rather than a boolean so the page can say *which* generation it found
+  // without deriving the refusal a second time.
+  const formatRefusal = captureFormatRefusal(`take ${id}`, format);
   return {
     id,
     file,
@@ -232,14 +250,21 @@ async function describeTake(dir, file, recording) {
     // screen can show. The tile has to say that rather than offering an Open
     // button that throws.
     hasHello: Boolean(index.hello),
+    // Beside `hasHello` and `dateSource` rather than inside the four-value `hello`
+    // subset below, because it is a fact about the file and not one of the intrinsics -
+    // and because that subset carries its own argument for shipping four values and no
+    // more, which this would quietly widen.
+    format,
     // The intrinsics, so a poster can unproject the take rather than draw a picture
     // of the sensor's grid. Only these four: a gallery has no use for the serial or
     // the firmware, and shipping a node's whole hello to every browser that lists a
     // directory is more of that node's record than the listing needs.
     hello: hello ? { fx: hello.fx, fy: hello.fy, cx: hello.cx, cy: hello.cy } : null,
     // Two frames is the floor for a pair source, so a shorter take lists and
-    // refuses to open. Named here rather than discovered in the editor.
-    openable: Boolean(index.hello) && stamps.length >= 2,
+    // refuses to open. Named here rather than discovered in the editor - and the
+    // format band joins the same expression rather than becoming a second one, so a
+    // gallery that offers Open and an editor that throws on it cannot come apart.
+    openable: Boolean(index.hello) && stamps.length >= 2 && formatRefusal === '',
     recording: false,
     marks,
   };
@@ -317,6 +342,45 @@ export class NodeLink {
     } catch (err) {
       this.lastError = err.message;
       return null;
+    }
+  }
+
+  /**
+   * Whether the node is shooting, and which take. Null when it cannot be reached.
+   *
+   * **The gallery on this machine is a view of both libraries and was following only
+   * one recorder.** `/library/all` reconciles the node's takes into the grid, so a
+   * take being written over there draws a tile here that says so and disables Open,
+   * Download, Rename and Remove behind it - but the only thing this machine polled to
+   * decide whether any of that had changed was its own `/record/state`, which on an
+   * editing station with no sensor never moves. The remote tile then went on refusing
+   * a take that finished minutes ago for as long as the page stayed open, which is the
+   * exact staleness the poll was added to end, surviving on the one machine the
+   * gallery is actually used from.
+   *
+   * **Two fields and not the node's whole state**, because this is a fingerprint
+   * rather than a readout: what is drawn about the node's takes comes from
+   * `/library/all`, and all this has to do is say when that answer is worth asking for
+   * again. Shipping the node's monitors and free space here would be a second copy of
+   * a record only that machine's own panel has a use for.
+   *
+   * **Bounded where `takes()` is not, and the cadence is the reason.** This one sits
+   * on a five-second poll, so a node that accepts a connection and then says nothing -
+   * a machine mid-reboot, a link that dropped without a reset - would stall every tick
+   * behind it and the gallery would stop following the recorder it can still reach.
+   * The others are one-shots an operator asked for and can see waiting. Three seconds
+   * is well past a LAN request that is going to answer and well under one tick.
+   */
+  async recordState() {
+    try {
+      const body = await this.fetchJson('/record/state', { signal: AbortSignal.timeout(3000) });
+      return { name: this.name, reachable: true, recording: Boolean(body.recording), takeId: body.takeId ?? null };
+    } catch {
+      // Deliberately not written to `lastError`. That field is what the gallery prints
+      // beside "unreachable", and it is set by the listing this side actually draws
+      // from - overwriting it here would let a poll's timeout replace the reason the
+      // library failed with a reason nothing on screen is about.
+      return { name: this.name, reachable: false, recording: false, takeId: null };
     }
   }
 }
