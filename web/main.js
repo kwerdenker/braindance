@@ -2705,7 +2705,34 @@ function setActiveDeliverable(deliverable) {
   activeDeliverable = deliverable;
 }
 
+// What a clip bound is allowed to be, asked in one place because two callers need the
+// same answer and a second copy of it is the drift this design keeps refusing.
+//
+// `null` is a statement rather than a time, and it is only ever legal at the out point:
+// there it means "to the end", which has to survive a retime that lengthens the program
+// and so cannot be written down as a number. At the in point, and for anything else that
+// is not a finite number, there is no reading to recover - so it is refused.
+function clipBoundOrThrow(value, which) {
+  if (value === null && which === 'out') return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  throw new Error(
+    `the clip's ${which} point is ${JSON.stringify(value) ?? String(value)}, which is not a program `
+    + 'time: a trim carries finite seconds, and holding a value that is not one inside the program '
+    + 'spreads it through both bounds and leaves the transport no range at all',
+  );
+}
+
 function applyDeliverable(deliverable) {
+  // **Asked before anything is touched, so a document this program cannot read is refused
+  // whole rather than half-adopted.** `setClipInOut` below is the door that refuses a
+  // bound, and refusing there is what covers the marker drags and the rate rescale too -
+  // but by the time it runs, `setActiveDeliverable` has already made this document the
+  // active one, so a throw from inside it would leave a refused document's output size
+  // and codec sitting on a clip whose cuts it never got to write. Asking the same
+  // predicate here first is a second call site rather than a second rule, which is the
+  // distinction that matters: there is still one answer to what a clip bound is.
+  clipBoundOrThrow(deliverable.in, 'in');
+  clipBoundOrThrow(deliverable.out, 'out');
   // Before anything is written, because what follows replaces the cuts and the output
   // rate wholesale - see `dropRateGesture` for why this is not `takeTransport`.
   dropRateGesture();
@@ -2722,8 +2749,23 @@ function applyDeliverable(deliverable) {
 
 function setClipInOut(values) {
   const { in: inn, out } = values;
-  if (inn !== undefined) clipIn = inn;
-  if (out !== undefined) clipOut = out;
+  // **Refused before either binding is written, because the clamp below is arithmetic and
+  // arithmetic on something that is not a number does not fail - it spreads.** An `in` of
+  // `"start"` makes `Math.min(clipIn, dur)` NaN, and the `Math.max(clipIn, ...)` that holds
+  // the out point up then carries that NaN into a bound which was perfectly good: both ends
+  // are gone, `clipOutSec` answers NaN, and `frameAt` resolves every position to NaN. The
+  // getter this clamp was put in front of coerced instead - `Number(clipIn) || 0` read a
+  // malformed `in` as zero and left a valid `out` alone - so clamping without refusing first
+  // is strictly worse than what it replaced, on exactly the documents it exists to survive.
+  //
+  // `undefined` is not that case and must not be refused: it is how the two marker drags say
+  // which end they mean, and a drag writes one bound while the other keeps whatever it held.
+  // A document has no such reading, which is why `applyDeliverable` asks the same question
+  // about both of its fields and gets a refusal where this gets a pass.
+  const nextIn = inn === undefined ? undefined : clipBoundOrThrow(inn, 'in');
+  const nextOut = out === undefined ? undefined : clipBoundOrThrow(out, 'out');
+  if (nextIn !== undefined) clipIn = nextIn;
+  if (nextOut !== undefined) clipOut = nextOut;
   // **Held inside the program that is open, because the two getters the transport reads
   // this through are not symmetric.** `clipOutSec` is bounded above by the take's
   // duration and `clipInSec` is bounded below by zero and above by nothing, so an `in`

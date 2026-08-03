@@ -60,6 +60,7 @@
 //   node tools/editor-check.mjs --mutate release-seeks-past-target --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate pin-keeps-orbit-armed  --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate clip-range-unclamped   --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate clip-bound-coerces-nonnumeric --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate resize-skips-repaint   --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate restore-accepts-view-track --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate export-ignores-name              # must FAIL
@@ -632,6 +633,36 @@ const MUTATIONS = {
       + '  }\n',
       '',
     ]],
+  },
+
+  // The program stops asking what a clip bound is, at both of the places that ask, so a
+  // bound that is not a number is clamped instead of refused - which is arithmetic, so it
+  // spreads: the in point becomes NaN and the `Math.max` holding the out point up carries
+  // it into that one too. Reddens the five `editor-check-bad` rows in section 7 and nothing
+  // else in the block - the fifth being the drain, which finds nothing to take out of the
+  // page-error sweep because a build that does not refuse says nothing to the console.
+  // The three `editor-check-past` rows above them stay green on purpose,
+  // and that is the separation this control exists to make: the clamp itself still works,
+  // and what is missing is the refusal in front of it. Both edits are needed for the defect
+  // to come back at all - either question on its own still catches the document - which is
+  // why this is one mutation rather than two.
+  'clip-bound-coerces-nonnumeric': {
+    file: 'web/main.js',
+    edits: [
+      [
+        "  clipBoundOrThrow(deliverable.in, 'in');\n"
+        + "  clipBoundOrThrow(deliverable.out, 'out');\n",
+        '',
+      ],
+      [
+        "  const nextIn = inn === undefined ? undefined : clipBoundOrThrow(inn, 'in');\n"
+        + "  const nextOut = out === undefined ? undefined : clipBoundOrThrow(out, 'out');\n"
+        + '  if (nextIn !== undefined) clipIn = nextIn;\n'
+        + '  if (nextOut !== undefined) clipOut = nextOut;\n',
+        '  if (inn !== undefined) clipIn = inn;\n'
+        + '  if (out !== undefined) clipOut = out;\n',
+      ],
+    ],
   },
 
   // `resize()` goes back to reallocating the drawing buffer and drawing nothing into it,
@@ -2612,6 +2643,12 @@ try {
   await putDeliverable('editor-check-near', { ...baseDeliverable, name: 'editor-check-near', in: 2, out: 8 });
   await putDeliverable('editor-check-far', { ...baseDeliverable, name: 'editor-check-far', in: farIn, out: farOut });
   await putDeliverable('editor-check-past', { ...baseDeliverable, name: 'editor-check-past', in: pastIn, out: pastOut });
+  // And one whose `in` is not a time at all, which is the other thing a document written by
+  // a build this one cannot read looks like. It carries a *valid* `out` on purpose: the
+  // failure this separates is not that a bad bound is bad, it is that clamping one spreads
+  // it - `Math.max(clipIn, ...)` holds the out point up against the in point, so a single
+  // unusable field takes a perfectly good one with it.
+  await putDeliverable('editor-check-bad', { ...baseDeliverable, name: 'editor-check-bad', in: 'start', out: farOut });
   await page.evaluate('__kinect.editor.refreshDeliverables?.()');
   // What the menu looked like before this block touched it. Restored at the end, because
   // the selected name is drawn in a chip on the two-row bar and a longer one reflows it -
@@ -2743,9 +2780,79 @@ try {
     '  and the readout beside the markers names a time the take has, rather than one it does not',
     `#tInOut reads ${adopted.readout} of a ${adopted.duration.toFixed(3)}s program`);
 
+  // **A bound that is not a program time, refused rather than clamped into one.** The clamp
+  // above is arithmetic, and arithmetic does not refuse a value that is not a number - it
+  // spreads it. An `in` of `"start"` clamps to NaN, the `Math.max` that holds the out point
+  // up against it carries the NaN into a bound that was good, and `clipOutSec` and `frameAt`
+  // both stop answering with numbers. That is worse than the getter the clamp was put in
+  // front of, which coerced a malformed `in` to zero and left `out` alone, so the clamp had
+  // to learn to refuse before it clamps.
+  //
+  // The range is cleared first because the block above deliberately leaves it collapsed at
+  // the end of the program, where `frameAt` is a constant for a reason that is correct. A
+  // row about a frozen `frameAt` run from there would be green on every build.
+  await page.locator('#tClearRange').click();
+  await settle();
+  const beforeBad = await page.evaluate(`(() => {
+    const t = __kinect.timeline.transport();
+    return { in: t.clipInSec, out: t.clipOutSec };
+  })()`);
+  await pick('editor-check-bad');
+  // The two probe positions come off the *duration*, not off the clip range, so they are
+  // still two distinct program times on a build where the range has gone to NaN. Reading
+  // them off `clipOutSec` would have made the row assert nothing there: NaN times anything
+  // is NaN, and both probes would land on the same non-answer for the same reason.
+  const bad = await page.evaluate(`(() => {
+    const t = __kinect.timeline.transport();
+    return {
+      in: t.clipInSec,
+      out: t.clipOutSec,
+      early: t.frameAt(t.duration * 0.25),
+      late: t.frameAt(t.duration * 0.75),
+      note: document.getElementById('tNote').textContent.trim(),
+    };
+  })()`);
+  check(Number.isFinite(bad.in) && Number.isFinite(bad.out),
+    '  and a deliverable whose in point is not a number leaves the transport a range that is still two times',
+    `clipInSec ${bad.in}, clipOutSec ${bad.out}`);
+  check(near(bad.out, beforeBad.out, 1e-6),
+    '  and the out point it keeps is the one the clip already had, so the document was refused rather than repaired',
+    `clipOutSec ${bad.out} against ${beforeBad.out} before the document was chosen`);
+  // The composed function rather than its inputs, because that is what the transport moves
+  // on and it is what a bound reading NaN actually breaks. Two positions half a program
+  // apart resolving to one frame is the freeze this whole block is named for.
+  check(Number.isFinite(bad.early) && Number.isFinite(bad.late) && bad.early !== bad.late,
+    '  and frameAt still resolves two positions half a program apart to two different frames',
+    `frameAt(0.25) ${bad.early}, frameAt(0.75) ${bad.late}`);
+  // The operator's half. A document that is refused and says nothing is a menu selection
+  // that appears to have worked, which is the same silence the clamp itself was fixing.
+  check(/not a program time/.test(bad.note),
+    '  and the refusal is said out loud rather than leaving the menu looking like it took',
+    `#tNote reads ${JSON.stringify(bad.note)}`);
+  // `showTimelineError` also writes the refusal to `console.error`, and the sweep at the end
+  // of this file asserts the page said nothing at all - so this block has to take its own
+  // noise back out or it reddens a row fifteen sections away that is about something else.
+  //
+  // **Drained here and asserted on the way out, rather than excused at the sweep.** A filter
+  // added down there would be a standing exemption: it would go on covering whatever the
+  // page said next that happened to match, and a refusal that stopped happening would take
+  // the exemption with it silently. Taking exactly what this block provoked, and failing if
+  // that is not exactly one thing, means the drain is a claim about the refusal rather than
+  // a hole in the sweep - and everything else the page said stays in for the sweep to find.
+  //
+  // This is also why the block drives the deliverable menu rather than calling
+  // `applyDeliverable` behind it the way section 14 drives `restoreProject`. The menu is the
+  // door a document from another build actually arrives through, and the console write is
+  // part of what arriving through it does.
+  const drained = errors.filter((e) => /not a program time/.test(e));
+  for (const e of drained) errors.splice(errors.indexOf(e), 1);
+  check(drained.length === 1,
+    '  and it reaches the console exactly once, which is what this block takes back out of the page-error sweep',
+    `${drained.length} drained: ${drained.map((e) => e.slice(0, 60)).join(' | ') || 'nothing'}`);
+
   await focusStage();
   await page.evaluate(`(async () => {
-    for (const n of ['editor-check-near', 'editor-check-far', 'editor-check-past']) {
+    for (const n of ['editor-check-near', 'editor-check-far', 'editor-check-past', 'editor-check-bad']) {
       // The content type is required on every write route, delete included - the origin
       // rule refuses a request that does not declare one, which is a 200 carrying an
       // error rather than a network failure, so a cleanup without it fails silently.

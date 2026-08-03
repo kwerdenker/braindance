@@ -547,6 +547,35 @@ every tab the key `''`: the sweep reported four controls it could not name and f
 naming nothing, both rows red, neither of them about the page. It looks exactly like a real
 enumeration failure.
 
+### A row that provokes a refusal writes into a channel a later row sweeps
+
+The third variant of the two sections above, and the one that arrives by post rather than in
+person: the probe does not disturb what *it* samples, it disturbs what something fifteen
+sections away samples. `editor-check` ends by asserting that the page said nothing at all -
+`errors.length === 0`, fed by both `pageerror` and `console` at type `error`. Section 7 then
+grew a block that hands the deliverable menu a document whose `in` point is not a time, which
+is the whole point of it, and `showTimelineError` writes every refusal it shows the operator to
+`console.error` as well. Every row the new block wrote was green and the sweep went red: 252
+assertions, one failure, and the failure quoting the string the new block had just planted.
+
+**The repair is a drain that asserts, not an exemption that does not.** A filter at the sweep is
+the obvious move and it is the one rule 5 is about - a deliberate exclusion, carrying its own
+justification, that stops anybody looking twice. It would also be *standing* rather than local:
+it would go on covering whatever the page said next that happened to match, and a build where
+the refusal stopped happening would take the exemption with it in complete silence, because a
+filter that removes nothing is indistinguishable from a filter that removed the thing it was
+written for. The block takes its own entry out instead and asserts that it took exactly one,
+which turns the noise into a claim about the refusal: `clip-bound-coerces-nonnumeric` reddens
+that row too, `0 drained: nothing`, because a build that does not refuse says nothing to the
+console.
+
+The temptation next door is to stop driving the door. Section 14 hands `restoreProject` a
+document it must reject from inside a page-side `try`/`catch`, so the throw never reaches the
+console at all - and copying that here would have made the problem disappear along with the
+test. The menu is the door a document from another build actually arrives through, and writing
+to the console is part of what arriving through it does. **When an instrument's own noise
+collides with a sweep, move the noise, never the sweep.**
+
 ## What do my arms agree about
 
 **When one probe turns out to be blind to something, ask what all of them are blind to
