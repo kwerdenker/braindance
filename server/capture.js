@@ -22,6 +22,20 @@ import { open, readFile, writeFile, rename, stat } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { basename, resolve } from 'node:path';
 import { MAGIC, HEADER_BYTES, TYPE_HELLO, TYPE_FRAME, MAX_PAYLOAD_BYTES } from './protocol.js';
+// The depth grid every frame in this format carries, and the only reason it is
+// named on the server at all: the decimation below has to know the shape of the
+// array it is sampling down, and a divisor applied to a flat byte count would
+// take every k-th sample along one axis and none along the other. Checked against
+// the frame's own declared length before anything is sampled, so a capture whose
+// grid is not this one is refused rather than shredded.
+//
+// Imported rather than declared, and not re-exported: nothing outside this file
+// reached for the pair even while it was exported, so the `export ... from` that
+// `server/library.js` needs for `VALID_ID` - where the constant is both imported and
+// passed on, because `export ... from` puts nothing in local scope - would be a door
+// nobody uses. A second grabber or a different device changes `web/format.js` and
+// `native/grabber.cpp`, and nothing in between.
+import { DEPTH_H, DEPTH_W } from '../web/format.js';
 
 export const INDEX_VERSION = 2;
 
@@ -29,14 +43,6 @@ export const INDEX_VERSION = 2;
 // overhead, small enough that the scan's working set does not track file size.
 const SCAN_CHUNK = 4 * 1024 * 1024;
 
-// The depth grid every frame in this format carries, and the only reason it is
-// named on the server at all: the decimation below has to know the shape of the
-// array it is sampling down, and a divisor applied to a flat byte count would
-// take every k-th sample along one axis and none along the other. Checked against
-// the frame's own declared length before anything is sampled, so a capture whose
-// grid is not this one is refused rather than shredded.
-export const DEPTH_W = 512;
-export const DEPTH_H = 424;
 
 // What a frame run is read in. Bounded on purpose: a run can be the whole take,
 // and the point of this module is that no read is ever the size of the file.

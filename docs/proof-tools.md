@@ -288,6 +288,22 @@ held, `startServer` throws if its own child exits instead of listening, and it r
 outside the declared span so a section added at `+17` is a failure rather than a hole. Pass
 `--node-port`/`--mac-port` a range nothing else holds.
 
+**Two more collisions inside the span, and both were silent.** An offset two sections both
+reach for binds without complaint, because the first holder is dead by the time the second
+starts — what is left is two entries for one port, and every `servers.find((s) => s.port ===
+n)` in the tool answers with whichever was pushed first, which is the dead one. Measured when
+it happened: the respawn-backoff section read another section's log and reported `0 exits`
+against a log carrying twenty-two deaths, which reads as a finding about the supervisor and is
+a finding about the reading. `startServer` drops the stale entry at the claim now — not at the
+lookup, because a section that only starts a server and never reads its log still poisons the
+one that does — and keeps it on a retired list the cleanup still walks.
+
+The other is a `--node-port` chosen *inside* the mac span, which the free check deduplicates
+away: both pass, the run starts, the node binds the shared offset first and is still live when
+a section reaches it, and the retire path then drops a running server off the cleanup list. The
+operator sees an EADDRINUSE several sections in, naming neither the overlap nor the node. It is
+a fact about the arguments, so `reservePorts` now answers it from the arguments and exits 2.
+
 **Three rows in it are flaky under machine contention, and they are written down here so the
 next person does not spend the afternoon on an innocent change.** Two are in the
 marks-on-the-scrubber section and are the same race: `and it is stamped in source milliseconds
@@ -344,15 +360,32 @@ rather than left to the takes that are generation zero incidentally, since a ban
 archive out of the editor.
 
 `--mutate open-ignores-format` is the control and it edits one line of `web/format.js`, which is
-the point of it rather than an implementation detail. Four doors decide whether a take may be
-opened — `openable` in `describeTake`, the badge and the dead Open button in the gallery, and
-`openTake` in the editor — and three of them are cheap to satisfy by inlining a comparison, which
-would pass every row here and drift the first time the band gains a member. So the assertion the
-mutation really carries is the *count*: it reddens **6 of 365**, one row per door plus the
-gallery's menu sentence and the editor's editing state, and the takes that must stay green stay
-green — both `no-hello-take` rows, `local-clip`'s `dateSource === 'hello'`, and all four
-generation-zero rows. A mutation that reddened fewer would mean the band had quietly become
-several predicates that agree.
+the point of it rather than an implementation detail. **There were four doors deciding whether a
+take may be opened and there are two**, which is the change the refusal table made: `openable` in
+`describeTake` and the gallery's badge and dead Open button were three separate comparisons, and
+the last two now quote `openRefusals` instead. What is left is `OPEN_REFUSALS.format`, which
+delegates the sentence, and `openTake` in the editor, which is handed a hello and never a
+manifest — so `format.js` is still where the band lives, and a comparison inlined at either door
+would still pass every row here and drift the first time the band gains a member.
+
+So the assertion the mutation really carries is the *count*: it reddens **8 of 392** — the
+listing's `openable`, the refusal the take carries, the two-table containment row, the gallery's
+badge and its Open button, the menu's sentence, and the editor's note and its refusal to open.
+The count grew when the surfaces stopped deriving, which is the right direction: quoting one
+sentence in five places means a band that stops refusing is visible in five places rather than in
+one. The takes that must stay green stay green — both `no-hello-take` rows, `local-clip`'s
+`dateSource === 'hello'`, and all four generation-zero rows. A mutation that reddened fewer would
+mean the band had quietly become several predicates that agree.
+
+**Its opposite number is `--mutate openable-recomputes-the-band`**, which puts the band back to
+being a term in `openable` rather than an entry in the table, and it exists because
+`openable` is false either way. Every row asking whether the future-format take opens passes a
+build where the band decides for itself again — measured: 5 of 392, and the three rows that
+brought the band into this suite are all still green under it. What reddens is what the take
+*carries*: the refusal itself, the containment row now declaring a `format` nothing produces, the
+badge over the poster and the sentence in the menu. **When a merge collapses two derivations into
+one, the row that proves it needs a mutation that restores the other — the shared predicate
+cannot tell them apart, which is why they were able to disagree.**
 
 Reaching all four needed the harness to stage `web/` mutations rather than leaving them to the
 browser route interception, because `server/library.js` imports `format.js` by path: served to
@@ -420,7 +453,24 @@ the editor is *reachable* rather than merely present. Its own two flaws — a pr
 and a probe that moved the page it measured — are in `docs/instruments.md`, because both are
 instances of rules that were already written down.
 
-**Section 13 grades a feature whose whole design is that it stores almost nothing**, and its
+**Sections 13 and 14 need the state the sections before them leave, and both say so in their
+own terms.** Section 13 counts lit pixels across a resize, and it presses "sensor view" first
+rather than measuring whatever twelve sections of orbiting and exporting happened to leave —
+inherited, the same claim measured 1543 lit pixels on one run and 89,625 on another, which is a
+row whose margin depends on what ran before it. It also takes the chrome off, because the camera
+path and the top-down inset live on a second canvas that `placeChrome` repaints regardless, and
+those are exactly the pixels a blank-stage build still has. Section 14 hands documents to
+`restoreProject` and asserts its own cleanup landed, because the build it matters on is the one
+that accepts what it should refuse: a `renderScale` track surviving into section 15 is
+`resize()` once per rendered frame there, which arrives as a hang rather than as a row.
+
+**Its deliverable rows size their fixtures off the take rather than writing numbers down.** The
+block used to plant a trim at a flat `in: 20, out: 40`, which the clip clamp holds inside a
+30.362s sample — so the row meaning to assert that the menu applies a trim would have been
+asserting the clamp instead. They are now read off the measured duration, and the one deliberate
+exception is `editor-check-past`, planted at 1.5x the duration precisely so that it misses.
+
+**Section 15 grades a feature whose whole design is that it stores almost nothing**, and its
 five controls exist because most of the ways it can be wrong are invisible from the panel.
 Whether a parameter group is open is derived — a group is open when any parameter in it carries
 keyframes or holds a value off its own default — and the only thing written down is a person
@@ -436,22 +486,22 @@ moment the derivation catches up with them.
   use cannot mark it as in use either. This document said the opposite for a while, describing
   an abandoned draft that widened the mark to a condition of its own; those rows stayed green
   under it, which read as precision and was really the second rule covering for the first. The
-  two store rows in 13f-bis go red as well, because both halves of the store rule are
+  two store rows in 15f-bis go red as well, because both halves of the store rule are
   comparisons against a derivation this build has frozen. What stays green is the toggle itself
   — it still presses, the rows still hide and show — and the count on a shut header, which
-  walks `paramTouched` rather than this predicate. 13i's three go red for the reason one step
+  walks `paramTouched` rather than this predicate. 15i's three go red for the reason one step
   further out: that block needs a group that is genuinely in use and then shut, and on a build
   where nothing is ever in use that fixture cannot be built at all. Its pinned-open half stays
   green, which is what says the three are about the predicate rather than about reloading.
 - **`override-prunes-only-on-toggle`** is the control for the *stored* half, and it exists
   because that half had none. `toggleGroup` compares what a person asked for against what the
   document derives at the instant of the press, so pressing a toggle back is the one gesture
-  where the two agree by construction — and 13f pressed exactly that, then reported the whole
+  where the two agree by construction — and 15f pressed exactly that, then reported the whole
   rule. The term that moves afterwards is the derivation, and nothing drove it: a group pinned
   open while quiet stayed open forever with nothing in it, through a green section. This
   mutation restores the pre-fix build exactly — the prune comes out of `refreshGroups` and goes
-  back into `toggleGroup` in one edit — so the toggle path keeps working and only 13f-bis's two
-  rows go red. A break that also failed 13f would not say which question was being asked.
+  back into `toggleGroup` in one edit — so the toggle path keeps working and only 15f-bis's two
+  rows go red. A break that also failed 15f would not say which question was being asked.
 - **`prune-ignores-movement`** is the other half of the same control set, and it restores the
   build the first attempt at that prune shipped: the comparison stays where it is and loses only
   its condition that one of the two terms has *moved*. That condition is what the state a page
@@ -461,7 +511,7 @@ moment the derivation catches up with them.
   deletes every stored collapse on its way past that reading and writes the pruned map back. It
   fails one-directionally and in the direction people use: a pin stores `true` against a derived
   `false`, which is a disagreement at boot and survives, while a collapse stores `false` against
-  the same `false` and does not. It reddens **2 rows**, both in 13i, and the pin row beside them
+  the same `false` and does not. It reddens **2 rows**, both in 15i, and the pin row beside them
   stays green — a control that reddened both could not say which of the two it was asking about.
 - **`panel-rederives-per-write`** is the control for 13k, which is the one cost row in this file.
   It takes the gate off in both places it lives, which between them are the build from before it
@@ -486,7 +536,7 @@ moment the derivation catches up with them.
   shader literals they replaced, so on the default rule alone it stays shut whichever reading is
   live, which is the one case its closure exists for. It reddens **three rows**; the first
   carries the claim and the two below it are the fixture saying it could not establish a live
-  `detail` to test the store rule against. It was four until 13i stopped needing a `detail` that a
+  `detail` to test the store rule against. It was four until 15i stopped needing a `detail` that a
   reading had opened: that block pins `detail` open while it is *quiet* now, which is a
   disagreement whether or not the closure reads the readings.
 
@@ -506,7 +556,7 @@ panel checkable at all: section 1 counts a control per registry parameter with a
 `querySelectorAll`, blind to visibility by construction, so a build that collapsed by rebuilding
 the panel would pass every row above it and quietly stop being the registry. Each row in section
 13 reads the count in the document beside the count on the screen for that reason. The same rule
-is why `framing` is not collapsible and why section 13 spends an assertion saying so: its
+is why `framing` is not collapsible and why section 15 spends an assertion saying so: its
 `after()` emits `#cropReset`, section 8 clicks it, and Playwright's click waits for visibility —
 so a collapsible `framing` turns a row eight sections back into a thirty-second timeout, which
 arrives as a crash carrying no failed assertion rather than as a finding.

@@ -112,6 +112,21 @@ node tools/export-check.mjs --url http://localhost:8080   # step 6: resolution, 
 node tools/export-check.mjs --mutate pointsize-absolute   # ... and must FAIL mutated
 node tools/library-check.mjs                              # step 7: library, recorder, routes
 node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL
+node tools/library-check.mjs --mutate open-decides-its-own-reason  # ... one take, one refusal, whichever surface asks
+node tools/library-check.mjs --mutate menu-decides-its-own-reason  # ... and the menu is a surface too
+node tools/library-check.mjs --mutate refusal-without-a-badge      # ... a reason the server declares and no page can badge
+node tools/library-check.mjs --mutate refusal-declared-but-never-pushed # ... and one nothing can ever earn
+node tools/library-check.mjs --mutate openable-recomputes-the-band # ... and a band that decides for itself beside the table
+node tools/library-check.mjs --mutate recording-decides-openable-itself # ... and the take being written, which answered twice
+node tools/library-check.mjs --mutate node-admits-an-old-manifest  # ... a node one build behind, refused at the link
+node tools/library-check.mjs --mutate badges-inherit-from-object   # ... and one build ahead, whose reason still badges
+node tools/library-check.mjs --mutate refusals-must-be-nonempty    # ... and a healthy node not refused for being healthy
+                                                                   #     (wide: takes the link off, so it stops at 125 of 392 -
+                                                                   #      read the rows, not the total. docs/instruments.md says why)
+node tools/library-check.mjs --mutate grid-declared-twice          # ... and the sensor grid stated once
+node tools/library-check.mjs --mutate grid-declared-in-another-spelling # ... whatever notation the second one is in
+node tools/library-check.mjs --mutate grid-declared-with-a-leading-dot # ... including the one with no leading digit
+node tools/library-check.mjs --mutate grid-loses-a-dimension       # ... both halves of it, each asked for on its own
 node tools/library-check.mjs --mutate tile-height-follows-content  # ... the gallery's geometry
 node tools/library-check.mjs --mutate poster-height-in-js          # ... and its poster's box
 node tools/library-check.mjs --mutate viewer-splat-one             # ... and the viewer's density
@@ -180,6 +195,11 @@ node tools/editor-check.mjs --mutate pause-keeps-resume --no-render   # ... and 
 node tools/editor-check.mjs --mutate bounds-compare-off-grid --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate detent-in-rate-units --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate zoom-pans-at-the-clamp --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate clip-range-unclamped --no-render # ... a trim the program cannot hold
+node tools/editor-check.mjs --mutate clip-bound-coerces-nonnumeric --no-render # ... and a trim that is not a time at all
+node tools/editor-check.mjs --mutate refusal-strands-the-picker --no-render # ... and the menu that named what was refused
+node tools/editor-check.mjs --mutate resize-skips-repaint --no-render # ... and the picture a resize clears
+node tools/editor-check.mjs --mutate restore-accepts-view-track --no-render # ... and a track the writer never writes
 node tools/editor-check.mjs --mutate prune-ignores-movement --no-render # ... a stored collapse, against the boot it has to survive
 node tools/editor-check.mjs --mutate panel-rederives-per-write --no-render # ... and what the panel costs the render path
 node tools/editor-check.mjs --mutate envelope-unchecked --no-render     # ... the half of a preset document nothing used to read
@@ -253,7 +273,8 @@ registry and exits 2 when it cannot reach it, because it proves the gate by npm'
 rather than by reading a config key:
 
 ```
-node tools/syntax-check.mjs                          # every JS file this repo ships parses
+node tools/syntax-check.mjs                          # every JS file this repo ships parses, and the two
+                                                     #   constants the two languages cannot share agree
 node tools/syntax-check.mjs --mutate spec-drifts     # ... and the .knct decoder specification must FAIL when a constant moves under it
 node tools/release-gate-check.mjs                    # the .npmrc supply-chain gate is actually armed
 node tools/release-gate-check.mjs --mutate wrong-unit # ... and must FAIL (also: no-gate, absent)
