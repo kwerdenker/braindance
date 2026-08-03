@@ -6078,20 +6078,25 @@ async function runChecks() {
       stateRequests++;
       const answered = await route.fetch();
       const body = await answered.text();
-      await new Promise((done) => { setTimeout(done, 4000); });
+      await new Promise((done) => { setTimeout(done, 3000); });
       await route.fulfill({ status: answered.status(), body, headers: answered.headers() });
     });
     await slow.goto(recorderPage(liveUrl), { waitUntil: 'domcontentloaded' });
     await slow.waitForFunction("document.getElementById('recGo') !== null", null, { timeout: 30000 });
     // Pressed while one is in flight, which is the whole condition. The first tick goes
-    // out at load and takes four seconds to come back, so a click one second in is
-    // inside it without having to race anything.
-    await new Promise((done) => { setTimeout(done, 1000); });
+    // out at load and takes three seconds to come back, so a click 1.2s in is inside it
+    // without having to race anything.
+    await new Promise((done) => { setTimeout(done, 1200); });
     const requestsBeforePress = stateRequests;
     await slow.click('#recGo');
-    // Comfortably under the five-second cadence, so an extra request in this window is
-    // the button's own and cannot be the interval's.
-    await new Promise((done) => { setTimeout(done, 2500); });
+    // **Long enough for the rerun to have gone out, and short enough that the cadence
+    // has not.** The rerun is chained onto the request in flight, so it cannot be
+    // observed before that one comes back - the first draft of this row measured 2.5s
+    // after a press made 1s into a 4s response and found nothing on a correct build,
+    // which is a fixture that closed its window before the thing it was watching for.
+    // The in-flight response lands at about 3.2s and the rerun goes out behind it; the
+    // interval's first fire is at 5s and skips anyway while that rerun runs.
+    await new Promise((done) => { setTimeout(done, 3000); });
     const requestsAfterPress = stateRequests;
     const started = await getJson(`${liveUrl}/record/state`);
     check(started.recording === true,
