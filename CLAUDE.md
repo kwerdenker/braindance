@@ -91,8 +91,9 @@ change, with a clean control taken on an idle machine.
 
 ## Proof tools
 
-Each takes a running server and exits non-zero on failure. `docs/proof-tools.md` says what
-each one needs.
+Each exits non-zero on failure. What a tool needs before it will run varies — a server already
+listening, one it spawns for itself, or nothing at all — and the notes under the list say which
+is which. `docs/proof-tools.md` says what else each one needs.
 
 ```
 node tools/determinism-check.mjs                    # step 1: same program time, same image
@@ -204,8 +205,17 @@ node tools/jobs-check.mjs --mutate claim-ignores-renderer # ... and must FAIL mu
 ```
 
 `jobs-check` needs a GPU browser and ffprobe and renders one real job through
-`tools/render-worker.mjs`; `--no-render` drops that row. `guard-check`, `library-check`,
-`level-check` and `vcam-check` spawn their own servers. `export-check` needs ffmpeg and ffprobe.
+`tools/render-worker.mjs`; `--no-render` drops that row. **Six spawn their own servers and need
+none running** — `guard-check` on 8321, `jobs-check` on 8231, `level-check` on 8377,
+`monitor-check` on 8341, `vcam-check` on 8361, and `library-check` across the span described
+below — so what each of those needs is a free port rather than a server, and the distinction is
+not bookkeeping: a tool that finds a stranger already listening on its port is answered by the
+stranger, and asserts against whatever fixture that process staged rather than the one this run
+staged, which is a green run proving nothing. `sensor-view-check` does both — it takes `--url`
+against a running server for most of its run and spawns a private one on 8131 for the section
+that needs its own capture. `library-check` is the only one of any of them that asks the kernel
+first and refuses, so everywhere else the `pgrep` below is the check. `export-check` needs
+ffmpeg and ffprobe.
 `level-check` needs neither a sensor nor a capture — it plants analytic planes straight into
 the depth texture, which is what lets it grade the plane fit against a normal it chose.
 

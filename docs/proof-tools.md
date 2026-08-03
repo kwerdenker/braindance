@@ -15,9 +15,10 @@ Counted rather than recalled:
 - **Seven exit non-zero on a catch and say `NOT CAUGHT` when they miss**: `guard-check`,
   `jobs-check`, `editor-check`, `monitor-check`, `sensor-view-check`, `level-check`,
   `vcam-check`.
-- **Three invert it**: `vendor-check`, `registration-check` and `registry-check`, where caught
-  is exit **0** with `caught, as required (N assertions fired)` and exit **1** is `NOT CAUGHT`.
-  Anything gating on "non-zero means caught" reads a genuine miss by these three as a catch.
+- **Four invert it**: `vendor-check`, `registration-check`, `registry-check` and
+  `release-gate-check`, where caught is exit **0** with `caught, as required (N assertions
+  fired)` and exit **1** is `NOT CAUGHT`.
+  Anything gating on "non-zero means caught" reads a genuine miss by these four as a catch.
   `registry-check` joined this group rather than the first deliberately, because all three of
   its outcomes have their own code: it exits **2** with `DID NOT RUN` on a crash, on the same
   reading `registration-check` reserves 2 for. `level-check` and `vcam-check` separate the same
@@ -26,10 +27,15 @@ Counted rather than recalled:
   That is not hypothetical — two of its four mutations reddened their intended row and *then* died on
   Playwright's `Target page, context or browser has been closed`, and without the crash handler
   each would have exited non-zero having asserted the right thing for the wrong reason.
+  `release-gate-check` is here because its header says it follows `vendor-check` and its code
+  does: it prints the assertion count and exits 0 on a catch, and 1 with `NOT CAUGHT` on a miss.
+  It is the one tool in this census that carries mutations without appearing in the fourteen
+  below, for the reason given there — so an agent who goes looking for it under Mutations and
+  gives up reads it by the majority convention, which is backwards for exactly this tool.
 - **Four have no `NOT CAUGHT` branch at all** and simply exit on their failure count:
   `timeline-check`, `export-check`, `keyframe-check`, `library-check`. **A mutation these four
   fail to catch exits 0**, which reads as a clean pass rather than as the check being blind.
-  That is the same direction as the inverted pair and it is silent rather than merely
+  That is the same direction as the inverting group above and it is silent rather than merely
   confusing, so it is the worse of the two shapes.
 
 Which is why the rule is worded the way it is: count failed assertions, never exit codes — and
@@ -51,11 +57,20 @@ same way. The convention was reached independently several times and it is one r
 `--mutate <name>` serves a deliberately broken `main.js` into the running server, or for the
 two vendoring tools rebuilds a deliberately broken source tree.
 
-**Fourteen tools carry mutations** — editor, export, guard, jobs, keyframe, level, library,
-monitor, registration, registry, sensor-view, timeline, vcam and vendor — and all of them refuse
-a mutation whose text they cannot find exactly once, because a replacement that silently
-matched nothing would run the unmutated page and be recorded as the check having missed a bug
-it was never shown.
+**Fourteen tools carry mutations by one of those two mechanisms** — editor, export, guard, jobs,
+keyframe, level, library, monitor, registration, registry, sensor-view, timeline, vcam and
+vendor — and all of them refuse a mutation whose text they cannot find exactly once, because a
+replacement that silently matched nothing would run the unmutated page and be recorded as the
+check having missed a bug it was never shown.
+
+**That qualifier is load-bearing, because the exit-code census above has fifteen entries and
+this list has fourteen names.** `release-gate-check` is the difference, and it carries three
+mutations — `wrong-unit`, `no-gate` and `absent` — by a third mechanism: each is a whole
+`.npmrc`, written into a scratch directory npm is then asked to resolve a package from, so there
+is no source text to match and nothing for the refusal above to be about. Both numbers are
+right because they count different things, so do not reconcile them — a fifteenth name in this
+list would claim a delivery that tool does not use, and dropping it from the census leaves the
+tool whose convention is easiest to read backwards as the one nothing documents.
 
 **A mutation is a piece of source text, so a mutation stops matching the moment the code it
 names is edited** — three of `timeline-check`'s nine had to be re-anchored when step 5 rewrote
@@ -89,7 +104,11 @@ that into a sentence.
 **`jobs-check`** spawns its own server and renders one real job through
 `tools/render-worker.mjs`, so it needs a GPU browser and ffprobe. `--no-render` drops that row
 and says so - the queue rows are seconds, the render row is a minute. Its mutation runs use
-`--no-render` because all five are queue semantics.
+`--no-render` because every mutation it declares is queue semantics, and none of them needs a
+rendered frame to be caught. Take the names from the tool's own refusal rather than from a count
+written here - this sentence used to carry one and it was wrong, which is what a count in prose
+beside a list that grows does to itself, and enumerating from the refusal is what `sweep-all`
+already does for the same reason.
 
 **The worker reads its renderer class out of the browser it will render in and cannot be told
 one.** `channel: 'chromium'` rather than the bundled headless shell, which has no GPU and falls
@@ -301,10 +320,11 @@ report milliseconds from an arm that lost frames.
 
 **`sweep-all` says "every mutation of every tool" and drives four of the fourteen that carry
 mutations.** Its `TOOLS` is `['library', 'timeline', 'keyframe', 'export']`, so editor, guard,
-jobs, monitor, registration, registry, sensor-view, vcam and vendor are outside the sweep a merge waits on -
-and the file's own header is an argument against exactly this shape, since it takes each tool's
-mutation *names* from that tool's refusal specifically so no list has to agree with anything.
-The names are enumerated and the tools are not. The nine that are missing each need something
+jobs, level, monitor, registration, registry, sensor-view, vcam and vendor are outside the sweep
+a merge waits on - and the file's own header is an argument against exactly this shape, since it
+takes each tool's mutation *names* from that tool's refusal specifically so no list has to agree
+with anything. The names are enumerated and the tools are not. The ten that are missing each
+need something
 the sweep does not currently arrange - a private server, a GPU browser, a built prefix - so
 wiring them is real work rather than a longer array.
 
