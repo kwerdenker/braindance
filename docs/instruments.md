@@ -370,6 +370,34 @@ attribute value ends at whitespace and a capture reading it to the `>` answers
 `text/javascript defer`, which is in no list of anything. Same failure as the missing MIME
 types and from the same direction: a running script's body dropped.
 
+### A comment that was true when written, and false one commit later
+
+The scan's own paragraph said legacy octal could be ignored: `01000` is 512, it is a
+SyntaxError in a module, and every file walked here is a module. Both halves were true when
+that was written. The second stopped being true the day the same check began reading
+`<script>` bodies out of pages — an **untyped** script is a *classic* script, classic
+scripts are sloppy mode, and there the form is legal and means 512. So a page could declare
+the width as `01000`, the browser would agree it was 512, and the scan would record 1000
+and report the grid as stated once.
+
+Nothing announced it. The comment was not edited into being wrong; the *code around it*
+grew a case its premise excluded, which is the version of documentation drift that no
+amount of care while writing prevents. **When you widen what a check accepts, re-read the
+exclusions it already carries — each one is a claim about the old input set.**
+
+The fix is to read the form rather than to rewrite the sentence, since the excuse for
+skipping it is gone. Only a leading zero followed by octal digits: `08` and `09` are the
+legacy *decimal* forms and mean eight and nine, `0` alone is zero, and anything with a dot
+or an exponent is decimal — all three fall out of the pattern rather than needing a case of
+their own.
+
+Its neighbour in the same round is the same shape one layer out. `\btype` was matching the
+`type` in `data-type`, because a word boundary sits between `-` and `type` as happily as
+after `<script` — so a page carrying `<script data-type="application/json">` had its body
+read as JSON and dropped, while the browser, seeing no `type` attribute at all, ran it. An
+attribute begins at whitespace or at the start of the attribute list, and `\b` is not that
+boundary however much it looks like one.
+
 ### The grid that is declared twice on purpose, in two languages that cannot share one
 
 Everything above is about the sensor grid being stated once. It cannot be. `native/grabber.cpp`

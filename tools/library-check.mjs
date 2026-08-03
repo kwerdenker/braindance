@@ -1361,7 +1361,20 @@ const numbersIn = (src) => {
     // branch above has already taken it whole.
     if (/\d/.test(c) || (c === '.' && /\d/.test(src[i + 1] ?? ''))) {
       const [token] = NUM.exec(src.slice(i));
-      values.push(Number(token.replace(/n$/, '').replace(/_/g, '')));
+      // **Legacy octal, read as octal.** `01000` is 512 to a browser and 1000 to
+      // `Number`, and the comment that used to sit here said the form could be ignored
+      // because every file walked is a module and a module makes it a SyntaxError. That
+      // stopped being true when this began reading `<script>` bodies: an untyped script is
+      // a *classic* script, which is sloppy mode, where the form is legal and means 512.
+      // A comment asserting a property the code no longer has is the failure this file
+      // exists to refuse, so the form is handled rather than the sentence rewritten.
+      //
+      // Only a leading zero followed by octal digits: `08` and `09` are the legacy
+      // *decimal* forms and mean eight and nine, `0` alone is zero, and anything carrying
+      // a dot or an exponent is decimal - all three fall out of the pattern rather than
+      // needing a case.
+      const digits = token.replace(/n$/, '').replace(/_/g, '');
+      values.push(/^0[0-7]+$/.test(digits) ? parseInt(digits, 8) : Number(digits));
       i += token.length;
       prev = '0';
       prevWord = '';
@@ -2164,9 +2177,12 @@ async function runChecks() {
     // outside what this claims, and saying so is the difference between a bound and a
     // hole.
     //
-    // Legacy octal - `01000`, which is 512 - is not in the pattern because it is a
-    // SyntaxError in a module, and every file walked here is one. `syntax-check` is what
-    // holds that.
+    // Legacy octal - `01000`, which is 512 - **is** read, and this paragraph used to say
+    // the opposite: that the form could be ignored because a module makes it a SyntaxError
+    // and every file walked is a module. The second half stopped being true the day this
+    // began reading `<script>` bodies, because an untyped script is a classic script and
+    // classic scripts are sloppy mode. `numbersIn` handles it, and the case file records
+    // that the sentence outlived its reason by one commit.
     const declares = (source, n) => numbersIn(source).includes(n);
 
     // **The JavaScript in a file, because this is a claim about JavaScript.** The walk
@@ -2217,7 +2233,13 @@ async function runChecks() {
     // afterwards, because a quoted value may legitimately contain a space and an unquoted
     // one may not, and that is exactly the difference a shared pattern cannot carry.
     const SCRIPT = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
-    const TYPE_ATTR = /\btype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]*))/i;
+    // **Anchored on an attribute boundary and not on `\b`**, because a word boundary sits
+    // between `-` and `type` as happily as it sits after `<script`. A page carrying
+    // `<script data-type="application/json">` has no `type` attribute at all, so the
+    // browser runs its body as a classic script - and the match found `data-type`, read
+    // JSON, and dropped it. An attribute starts at whitespace or at the start of the
+    // attribute list, and nowhere else.
+    const TYPE_ATTR = /(?:^|\s)type\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]*))/i;
     const isJs = (attrs) => {
       const m = TYPE_ATTR.exec(attrs);
       const type = (m?.[1] ?? m?.[2] ?? m?.[3] ?? '').trim().toLowerCase();
@@ -2330,9 +2352,17 @@ async function runChecks() {
     // The unquoted form with an attribute behind it is on the same page, because it fails
     // the same way and for the same reason - a value read past its end is a value that
     // matches nothing, and the body of a running script is dropped.
+    // Four scripts and one of them is not code. The two below the first are the ways a
+    // block that *runs* gets mistaken for one that does not: an attribute merely ending in
+    // `type`, which a word boundary matches and an attribute boundary does not, and no
+    // `type` at all, which is a classic script - sloppy mode, where `0650` is octal and
+    // means 424. Every one of them declares the height, so the page has to hold it, and
+    // the JSON block declares the width, so the page must not hold that.
     writeFileSync(join(probeRoot, 'web', 'legacy-page.html'),
       '<script type="application/x-javascript; charset=utf-8">const H = 424;</script>\n'
       + '<script type=text/javascript defer>const H2 = 424;</script>\n'
+      + '<script data-type="application/json">const H3 = 424;</script>\n'
+      + '<script>const H4 = 0650;</script>\n'
       + '<script type="application/json">{"width": 512}</script>\n');
     const walked = sourcesUnder(probeRoot, 'web');
     // Sorted per directory and depth-first, which is the order `sourcesUnder` produces
