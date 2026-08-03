@@ -125,11 +125,14 @@ const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 // would run the unmutated build and be recorded as this tool having missed a bug it
 // was never shown.
 //
-// Server files and page files both appear here, in one table. The server ones are
-// possible because this check spawns its own servers out of a copied tree; the page
-// ones are served into the browser by route. One namespace, because the safety
-// property is the refusal and splitting it would make it possible to have two rules
-// about it.
+// Server files and page files both appear here, in one table, and they are delivered the
+// same single way: `stageServer` writes the mutated file into the copied tree, and the
+// server spawned out of that tree is what serves it. Page files were once fulfilled
+// separately, by a Playwright route interception, and that second mechanism is gone
+// rather than dormant - see `stageServer` for why two paths delivering the same bytes was
+// a hazard, and `requireMutationDelivered` for the refusal that replaced it. One
+// namespace, because the safety property is the refusal and splitting it would make it
+// possible to have two rules about it.
 
 // **The reveal mutation has to break the branch this platform actually runs.** It
 // edited the Darwin entry only, so on Linux or Windows the staged server kept its own
@@ -935,10 +938,17 @@ const pageMutation = mutation && mutation.file.startsWith('web/') ? mutation : n
 //
 // This is unavoidably a second spelling of that table, and it is **checked rather than
 // trusted**: `requireMutationDelivered` fetches this URL and requires the bytes back to
-// be the ones this run staged, so a page that moved, gained a second address or stopped
-// being served fails the run by name instead of loading unmutated. That is the whole
-// difference from the mechanism this replaced, which could match nothing and say so to
-// nobody.
+// be the ones this run staged, so a page that moved or stopped being served fails the run
+// by name instead of loading unmutated. That is the whole difference from the mechanism
+// this replaced, which could match nothing and say so to nobody.
+//
+// Moved or removed, and **not a second address gained**, which one fetch of one URL
+// cannot see: `/gallery` would go on answering with the staged bytes and this would pass.
+// The narrower claim is the true one and it is also the sufficient one, because every
+// navigation in this file reaches the gallery through `galleryPage`, so the address this
+// checks is the address under test - an alias nothing opens delivers nothing. Written out
+// because the wider claim was here first, and a comment promising a guarantee its check
+// does not make is the failure this file exists to refuse.
 const PAGE_URLS = { 'library.html': '/gallery' };
 const urlForPageFile = (file) => PAGE_URLS[file] ?? `/${file}`;
 const serverMutation = mutation && mutation.file.startsWith('server/') ? mutation : null;
@@ -1272,6 +1282,19 @@ function stopServers() {
   for (const { child } of servers) child.kill('SIGKILL');
 }
 
+// **The backstop for every way out that does not reach the `finally`.** A spawned server
+// is not killed by its parent leaving - it is reparented and goes on holding the port -
+// and this suite is the one thing that cannot survive that, because `reservePorts` asks
+// the kernel and refuses, so one orphan turns every later run in every worktree into an
+// exit 2 naming a port nobody can find the owner of. The `finally` at the foot covers the
+// checks; it does not cover the refusal in `requireMutationDelivered`, a `startServer`
+// that throws with the node server already up, or a `chromium.launch` that fails before
+// the `try` is entered. Registered here rather than at each of those, because the list is
+// the wrong thing to maintain - the next exit added below is covered by existing.
+// Synchronous, which `exit` requires, and killing an already-dead child is a no-op, so it
+// costs nothing on the path that did run the `finally`.
+process.on('exit', stopServers);
+
 /**
  * Refuses the run when a page mutation did not reach the browser, and it is exit 2
  * rather than a failed assertion.
@@ -1305,13 +1328,19 @@ async function requireMutationDelivered(base) {
     served = null;
     status = err.message;
   }
+  // `Buffer.byteLength` and not `.length`, because a JavaScript string is counted in
+  // UTF-16 code units and every page here is served as UTF-8: `library.html` is 25,206
+  // bytes and 25,187 units, so the shorter number printed under the word *bytes* is one
+  // nothing on the wire ever measured. The comparison above stays a string compare - the
+  // round trip through UTF-8 is exact, so it already answers the question - and it is only
+  // the evidence that had to stop mislabelling itself.
   if (served === pageMutation.body) {
-    console.log(`[library] ${MUTATE} delivered: ${url} serves the mutated ${file} (${served.length} bytes)`);
+    console.log(`[library] ${MUTATE} delivered: ${url} serves the mutated ${file} (${Buffer.byteLength(served)} bytes)`);
     return;
   }
   console.error(`[library] refusing to run: ${MUTATE} edits web/${file} and ${url} did not answer with it.`);
-  console.error(`[library] the server answered ${status} with ${served === null ? 'nothing' : `${served.length} bytes`}, `
-    + `where the staged file is ${pageMutation.body.length}.`);
+  console.error(`[library] the server answered ${status} with ${served === null ? 'nothing' : `${Buffer.byteLength(served)} bytes`}, `
+    + `where the staged file is ${Buffer.byteLength(pageMutation.body)}.`);
   console.error('[library] a page mutation that does not arrive leaves the unmutated page under test and every row '
     + 'passing, which reads as this tool having missed a bug it was never shown - so the run stops here rather than '
     + 'reporting one. Either the page moved to a URL PAGE_URLS does not name, or the server stopped serving it.');
