@@ -363,8 +363,11 @@ nothing. `CAPTURE_FORMAT` is read textually out of `web/format.js` and `native/g
 required equal, because this tool takes `--root` and an import would bind the assertion to this
 checkout while claiming to have checked another tree.
 
-Its three controls are run by hand, in the idiom the `tools/` and `docs/` blocks already use,
-because this tool carries no `--mutate` harness. Add a key to the grabber literal and not to the
+Its three controls are run by hand, in the idiom the `tools/` and `docs/` blocks already use.
+This tool does carry a `--mutate` harness, but its table holds one entry and that entry belongs
+to the specification row below, so nothing here has a named mutation — which is worth stating
+rather than leaving to be inferred, since a reader who saw the flag would otherwise read a green
+`--mutate spec-drifts` as a control over these assertions too. Add a key to the grabber literal and not to the
 README; add one to the README the grabber does not emit; bump the constant in one language. Each
 must fail naming what it found — measured, in that order: `the grabber's hello emits exposure and
 README.md's type 1 hello does not document it`, `README.md's type 1 hello documents exposure and
@@ -456,6 +459,27 @@ is named in `CLAUDE.md`, which is why the invocation list lives there rather tha
 added later is asked by existing, and the falsification control is adding a tool without
 documenting it.
 
+**Its third row is the `.knct` decoder specification**, the page at the top of
+`server/protocol.js` that issue #45 decided is a take's exit from this program instead of a
+point-cloud export. That makes it load-bearing in a way prose here usually is not: it is what
+somebody writes a reader from once nothing in this tree runs, so a constant that moved while it
+did not would send them to a reader that is plausibly shaped and quietly wrong. The row reads the
+specification's number table against the module's exports and fails on any disagreement. Two
+choices in it are the whole of why it means anything. The exports are **enumerated rather than
+listed**, so every numeric export has to appear in the specification and a constant added next
+year is asked by existing rather than added to a second table that drifts. And the values are
+read by **importing** the module rather than by a regex over its source, because
+`MAX_PAYLOAD_BYTES` is `8 * 1024 * 1024` and reads correctly one way and not the other.
+
+The control is `--mutate spec-drifts`, which substitutes `TYPE_COLOR = 3` for `4` and leaves the
+prose where it is. Both arms import through a scratch copy of the file rather than the clean arm
+importing the live path — they have to differ only in the substitution, or the run is comparing
+two mechanisms and calling the difference a catch. An anchor it cannot find and a mutation name it
+does not know both exit 2 rather than running, for the reason the exit-code section above gives.
+Mutation-tested three ways beyond its own control: a numeric export added to `protocol.js` and
+left out of the table reddens it, the specification block deleted reddens it, and a number edited
+in the table while the code stays put reddens it.
+
 **`prof-summary.mjs <profile> [warmup]`** reads `grabber --profile` output and flags any run
 under 29.5fps as contended, because the segment timings from a run that dropped frames are
 noise. That floor belongs to a profiling run that writes nothing — see the gate paragraph in
@@ -513,6 +537,32 @@ than 30.** So size fixtures by *frame count*, not duration: five minutes of its 
 1.38 GB where a real full-rate five-minute take is 4.42 GB. A fixture is the sample looped with
 rewritten monotonic stamps — real depth and real JPEGs, only the u64 at payload offset 8 moves.
 Say so whenever a number rests on one.
+
+**`fake-grabber` honours `--no-color` and `--no-low-light`, and reports any argument it does
+not know.** It ignored both for its whole life, which mattered because they are not the
+operator's flags — the server appends them to the grabber's argv out of `camera`, so eight of
+`library-check`'s servers were running colour-off and being answered with a `"color":true`
+hello over frames still carrying full JPEGs. That is a stream the real sensor cannot produce
+under the arguments it was given, and the mirror image of it — a hello claiming colour over a
+take with no JPEG — is a state the server treats as corruption. Under `--no-color` the hello
+now says `"color":false`, and `"lowLight":false` with it: `native/grabber.cpp` reports
+`lowLight` as the **conjunction**, so colour off makes it false whatever the second flag said,
+and a fixture watching only for `--no-low-light` reproduces the same defect one field over
+while looking fixed. Every payload is rewritten once at load — the `colorBytes` u32 at offset
+4 zeroed and the payload truncated to `16 + depthBytes` — because `server/capture.js` refuses
+a frame whose two declared lengths do not describe it, so both edits are needed or nothing
+parses.
+
+**The depth it emits is real recorded sensor depth under both flags**, which is the whole
+value of this fixture. What it still deliberately does not do is simulate a sensor: the
+cadence is a flag, colour is dropped rather than re-shot, and `--pipeline`, `--log`,
+`--quality`, `--min-depth` and `--max-depth` are accepted and ignored because there is no
+device here to apply them to. Anything else in argv gets one line on stderr naming it and the
+stream runs on — **reported, never refused**, because `buildArgs` appends `--pipeline` on a
+server that was given one and a fixture that rejected a legitimate spawn would break that
+path. That line proves the fixture noticed a flag, never that it acted on one; the behavioural
+claims belong to `monitor-check`'s colour-off section, which watches the wire and the page
+separately.
 
 The registration corpus is gitignored like every other capture. Regenerate it with the sensor
 attached, and vary the scene while it runs - a hand near the lens, a person against a far wall,

@@ -30,10 +30,81 @@ import { MessageParser, TYPE_HELLO, TYPE_FRAME, TYPE_COLOR, encodeMessage } from
 import { CAPTURE_FORMAT } from '../web/format.js';
 
 const argv = process.argv.slice(2);
+
+// **One table of every argument this fixture knows, and the only enumeration of them.**
+// `--no-color` was dropped in silence for the whole life of this file, because `flag()`
+// scanned argv for the names it happened to care about and nothing anywhere said an
+// argument had gone unread. The server hands it over a two-hop chain - `--no-color` on a
+// server's command line initialises `camera.color` false, and `buildArgs` appends
+// `--no-color` to the grabber's argv from that - so eight servers were running in a
+// colour-off configuration and being answered with full JPEGs under a hello declaring
+// `"color":true`, which is a stream the real sensor cannot produce under the arguments it
+// was given. The server treats the mirror image of that state, a hello claiming colour
+// over a take carrying no JPEG, as corruption worth nulling a hello for.
+//
+// Whether an entry takes a following value lives here too, so `--pipeline gl` reads as an
+// argument and its value rather than as a flag followed by an unknown token.
+//
+// `ignored` marks an argument this fixture reads and deliberately does nothing with, in
+// the register of the `low-light` note on the stdin handler below: there is no device here
+// to apply it to, and refusing it would make this fixture reject a spawn the server
+// legitimately performs.
+const ARGUMENTS = {
+  '--source': { value: true },
+  '--fps': { value: true },
+  '--die-after': { value: true },
+  '--burst': { value: true },
+  '--frames': { value: true },
+  '--tag': { value: true },
+  '--emit-log': { value: true },
+  '--hd': { value: false },
+  // The two the server appends out of `camera`, and the reason this table exists.
+  '--no-color': { value: false },
+  '--no-low-light': { value: false },
+  // `buildArgs` appends this whenever the server was given a pipeline, so it arrives on a
+  // perfectly legitimate spawn. There is no depth processor here to pick.
+  '--pipeline': { value: true, ignored: true },
+  // These four reach a real grabber only through the operator's own `--grabber` string,
+  // which for this fixture is always this fixture's own flags. They are named for that
+  // reason and for no other - not because anything here could honour them.
+  '--log': { value: true, ignored: true },
+  '--quality': { value: true, ignored: true },
+  '--min-depth': { value: true, ignored: true },
+  '--max-depth': { value: true, ignored: true },
+};
+
+// Both readers go through the table rather than beside it, so this file holds one list of
+// arguments and a second one cannot drift out of step with it. A name absent from the
+// table is a mistake in this file rather than in the argv, so it throws.
+const argument = (name) => {
+  if (!Object.hasOwn(ARGUMENTS, name)) throw new Error(`[fake-grabber] ${name} is read but missing from ARGUMENTS`);
+  return ARGUMENTS[name];
+};
 const flag = (name, fallback = null) => {
+  argument(name);
   const i = argv.indexOf(name);
   return i >= 0 && i + 1 < argv.length ? argv[i + 1] : fallback;
 };
+const given = (name) => { argument(name); return argv.includes(name); };
+
+// **Reported, never refused**, and that direction is the whole of the decision. `buildArgs`
+// appends `--pipeline` on a server that was given one, so a fixture that rejected an
+// argument it did not recognise would break a spawn the server is entitled to make; but an
+// argument silently dropped is how the colour-off half of the live path stayed unreachable
+// by every proof tool in this repo. So it says so and streams on.
+//
+// This closes the class rather than the instance: a third flag added to `buildArgs` next
+// year is reported by existing, instead of being swallowed the way `--no-color` was. It is
+// a report and not a driver - it proves this fixture noticed a flag, never that it acted on
+// one, and the behavioural claims belong to the rows that watch the stream.
+for (let i = 0; i < argv.length; i++) {
+  const known = Object.hasOwn(ARGUMENTS, argv[i]) ? ARGUMENTS[argv[i]] : null;
+  if (!known) {
+    process.stderr.write(`[fake-grabber] ignoring ${argv[i]}, which this fixture does not know\n`);
+    continue;
+  }
+  if (known.value) i++;
+}
 
 const SOURCE = flag('--source', 'captures/sample.knct');
 const FPS = Number(flag('--fps', '60'));
@@ -83,7 +154,13 @@ const EMIT_LOG = flag('--emit-log', '');
 // whole picture and still cannot produce the margin. `vcam-check` asserts the margin
 // and nothing but the margin, and `--mutate hd-upscales-registered` is the arm that
 // has to fail on it.
-const HD = argv.includes('--hd');
+const HD = given('--hd');
+// **The colour camera, which the server switches off at boot with `--no-color` and mid-shoot
+// from the editor's checkbox.** A real grabber parses both of these off argv and reports both
+// in its handshake, so a fixture that ignored them answered a colour-off configuration with a
+// stream no sensor could have produced.
+const COLOR = !given('--no-color');
+const LOW_LIGHT = !given('--no-low-light');
 // Where the marker lives, as a fraction of width taken off each side. 0.12 is wide
 // enough to survive 4:2:0 chroma subsampling and JPEG ringing at the boundary, and
 // narrow enough that the middle is still most of the picture.
@@ -131,6 +208,34 @@ if (HD) {
   process.stderr.write(`[fake-grabber] HD fixture ready: ${hdFrame.length} bytes, `
     + `${margin}px magenta left margin and cyan right\n`);
 }
+
+// **Colour comes off the frames themselves, once, here.** A hello saying `"color":false`
+// over payloads still carrying JPEGs would be the same lie one layer down, and it is the
+// lie the viewer cannot detect: `handleFrame` only reaches `pumpColorDecode` when a frame
+// declares `colorBytes > 0`, so the frames are what decide whether the colour path runs at
+// all.
+//
+// Both edits are needed or nothing parses - `server/capture.js` refuses a frame whose two
+// declared lengths do not describe it - so the count is zeroed *and* the bytes are dropped.
+//
+// **The depth stays real recorded sensor depth**, which is the whole value of this fixture:
+// synthesising depth to make the flag easy would trade away the one property that makes a
+// browser-driven suite worth running at all.
+//
+// After the HD build and before anything emits, in that order and no other. The build above
+// reads the source's colour block and exits 1 when the first frame carries none, and
+// `encode()` below has to read the truncated array.
+if (!COLOR) {
+  for (let i = 0; i < frames.length; i++) {
+    const payload = frames[i];
+    const depthBytes = payload.readUInt32LE(0);
+    const trimmed = Buffer.from(payload.subarray(0, 16 + depthBytes));
+    trimmed.writeUInt32LE(0, 4);
+    frames[i] = trimmed;
+  }
+  process.stderr.write(`[fake-grabber] colour off: ${frames.length} frames carry depth only, `
+    + `${frames[0].length} bytes each\n`);
+}
 // Off until asked, exactly as the real grabber is, so a check that never sends the
 // command sees no type 3 - which is what makes "it is emitted only on request" a
 // thing the fixture can be wrong about rather than a claim in a comment.
@@ -148,6 +253,16 @@ process.stdin.on('data', (chunk) => {
     const line = stdinPending.slice(0, nl).replace(/\r$/, '');
     stdinPending = stdinPending.slice(nl + 1);
     if (line === 'hd-color on' || line === 'hd-color off') {
+      // Mirrors `requestHdColor`, which returns early whenever `camera.color` is false and
+      // so never sends either command to a colour-off grabber. Refused here as well rather
+      // than trusted, because type 3 is the *colour camera's* own picture and a colour-off
+      // grabber has no colour camera to photograph with - a fixture that answered anyway
+      // would be manufacturing the one thing this flag is supposed to remove. Both
+      // directions, because the server gates both.
+      if (!COLOR) {
+        process.stderr.write('[fake-grabber] refusing hd colour: colour is off on this grabber\n');
+        continue;
+      }
       if (!HD) {
         process.stderr.write('[fake-grabber] refusing hd colour: started without --hd\n');
         continue;
@@ -168,9 +283,26 @@ process.stdin.resume();
 // would make every take the suite records generation zero - which is a real shape and
 // the wrong one to write here, because a *writer* that declares nothing is exactly the
 // second producer this repo's own README nearly taught somebody to build.
+//
+// The colour flags are stamped on the same principle and are the half of this that is
+// easy to get backwards. **`lowLight` is the conjunction, not the negation of its own
+// flag**: `native/grabber.cpp` reports `(wantColor && lowLight) ? "true" : "false"`, so a
+// grabber given `--no-color` alone - which is exactly what the server produces, since
+// `camera.lowLight` stays true and `--no-low-light` is therefore never appended - says
+// `"lowLight":false`. A fixture that only watched for `--no-low-light` would still say
+// `true`, reproducing this same defect one field over while looking fixed.
+//
+// **It is written only when something settles it**, because the sample's hello carries nine
+// keys and `lowLight` is not among them: it predates the field the same way it predates
+// `format`. Adding a further key to a colour-on hello would move every take's content hash -
+// the key the library joins two machines on - across eight servers this change is not about,
+// so the colour-on stream stays byte-identical to what the format stamp left it.
+const lowLightSettled = !COLOR || !LOW_LIGHT || 'lowLight' in sourceHello;
 const hello = Buffer.from(JSON.stringify({
   ...sourceHello,
   format: CAPTURE_FORMAT,
+  ...(COLOR ? {} : { color: false }),
+  ...(lowLightSettled ? { lowLight: COLOR && LOW_LIGHT && (sourceHello.lowLight ?? true) } : {}),
   startedAt: Date.now(),
   ...(TAG ? { tag: TAG } : {}),
 }));

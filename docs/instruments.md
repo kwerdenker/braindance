@@ -204,6 +204,113 @@ machine it fires eight, all of them the intended row. So a throw is now `crashed
 verdict and before `untested`. **Read which assertions fired, not how many** — and a proof
 tool must never count its own crash as a finding in either direction.
 
+### Reverting a probe with `git checkout --` deletes the thing under test when it is uncommitted
+
+Found while mutation-testing the `.knct` specification row in `syntax-check`. The row was new
+and so was the specification it reads, both of them uncommitted, and each probe ended in
+`git checkout -- server/protocol.js` to undo the damage. That restores the file to `HEAD`, which
+in this state means restoring the version with no specification in it at all. So the first probe
+was valid, the revert silently removed the feature, and the two probes after it ran against a
+file that no longer had anything to check — both went red, both for the wrong reason, and both
+would have been recorded as catches by anybody reading only the count. One of them additionally
+reported `Identifier 'MAGIC' has already been declared`, which is the shape of a probe whose
+own edit is malformed rather than a finding, and is the tell that should stop the run.
+
+`git stash` is already forbidden here for a different reason, and the same replacement covers
+this one: **copy the file outside the repository, probe, and restore from the copy**, then
+`diff` the restore against it and re-run the clean arm to confirm it is green again. The rule
+in `CLAUDE.md` about taking a baseline is written for a measurement, and it applies unchanged to
+mutating an instrument you have not committed yet. The cheaper version of the same protection is
+to commit the instrument before probing it, so that a revert has something to revert to.
+
+### A mutation is source text, and nothing was checking that the text still existed
+
+Three declared controls could not run at all, and had not been able to for a long time.
+`editor-check --mutate space-unbound` anchored on `if (timeline.playing) timeline.pause();`
+where the branch now reads `pauseTransport()` — renamed in `51c7c9d`, sixty commits before
+this was found. `keyframe-check --mutate undo-on-input` anchored on a listener whose local
+was renamed `el` to `input`; one word killed the control that proves a slider drag is one
+undo step rather than two hundred. `library-check --mutate marks-ignore-retime` anchored on
+the line converting a mark through the retime curve, which had been *copied* to the minimap,
+so it matched twice and the tool refused it.
+
+**The two shapes of refusal disagree, and the disagreement runs the dangerous way.**
+`editor-check` resolves its mutation inside a `try` and reports `DID NOT RUN` with exit 2,
+which is the honest answer. `keyframe-check` and `library-check` call `mutatedSource` at
+module top level with nothing catching it, so a run prints a stack trace and exits 1 with no
+`FAIL` row, no assertion count and no verdict line — which is indistinguishable from a caught
+mutation to anything reading exit codes, and `keyframe-check`'s throw happens after
+`chromium.launch`, so it leaves a browser behind as well.
+
+**Neither is the real lesson.** `timeline.pause()` had not vanished from the tree; it moved
+off the line the mutation cared about, and still exists elsewhere in `web/main.js`. Nothing
+casual would have spotted any of the three. The class is that every anchor in this suite is
+one rename away from the same silence, and the only thing that would have noticed was
+`sweep-all`, which needs a server, a browser and hours — the right verdict at the wrong
+latency, since it is what a merge waits on rather than what tells you your control is dead
+while you are leaning on it.
+
+**This had already happened once and was closed as an instance.** The comment above
+`undo-includes-view` in `tools/keyframe-check.mjs` records a previous re-anchoring in these
+words: the line it named moved, "so the old text matched nothing and the tool refused the
+mutation - correctly, and silently as far as anything reading only the exit code was
+concerned." That instance was fixed and the class was left open, and three more went stale
+behind it.
+
+So `syntax-check` now walks every tool's `MUTATIONS` table and asserts each anchor matches
+its target file **exactly once**. It costs nothing, needs no server and runs in CI. The table
+is read without executing the tool, by cutting the source at the end of the declaration,
+appending an export and importing that prefix from inside `tools/` so the tool's own relative
+imports still resolve; a prefix that does not import fails the row rather than being read as
+"this tool has no table". Targets resolve by the entry's *shape*, never by the tool's name,
+and an unrecognised seventh shape fails naming the tool instead of being skipped. Measured at
+`907b87f`: 239 anchors across 13 tables, of 15 declared.
+
+**A duplicate is as stale as a miss, and that is the half a naive row drops.** The real defect
+here was `marks-ignore-retime` matching *two* sites, so a row asking "does this text appear"
+rather than "exactly once" sails straight past the thing that prompted the work while looking
+thorough. Both controls exist for that reason: `anchor-matches-twice` duplicates an anchored
+line into its target file, and `anchor-goes-stale` changes one character inside a `from`
+string. Each must redden the anchor row **and nothing else** — a control that reddens the
+whole tool says nothing about which question the tool was asking.
+
+**One thing this does not close.** `library-check`'s `reveal-drops-the-path` resolves its edit
+through `process.platform`, so a macOS developer and a Linux CI run check different strings
+and neither checks the third. And the minimap's copy of the mark conversion still has no
+control over it at all: `markTicks()` only ever reads the ruler strip, so that second site
+could stop going through the retime curve entirely and every row in the suite would stay
+green. Two sites doing one conversion is what made this anchor stale in the first place.
+
+**And reading a table by importing the tool's prefix made this row need what the tool needs,
+which CI found and a developer's machine cannot.** The cut ran from the top of the file so that a
+table referencing a const beside it would still resolve, and it dragged two things with it: the
+tool's own `import ... from 'ws'`, which CI has not installed because this tool is documented as
+needing nothing at all, and the tool's top-level *work* - `export-check` and `registry-check` both
+resolve a commit with `git log -S` while their module body runs, so reading their tables walked the
+whole history of `web/main.js` and threw outright in a tree extracted without its `.git`. Four
+tables went unread on CI, at 137 anchors against 248 here.
+
+The row was loud about it, four FAIL lines and the fallen count, which is why the count is in the
+summary line at all - but the summary still read `all 137 ... match once`, true of what it read and
+indistinguishable from a clean row. **A count is only honest beside what it could not count**, so
+an unread table is now named in that same sentence. The cut itself is the declaration alone, which
+reads fifteen of the sixteen with no imports and no side effects at all, falling back to the
+package-stripped prefix for the one table that references a neighbouring const. Verified where it
+failed: a tree extracted with neither `node_modules` nor `.git` reads all 248 in 14 tables, in 5.7s
+against minutes.
+
+**And the shape inference was wrong within days, which is the argument for normalising rather
+than for a better guess.** A bare `{ from, to }` had a single declarer, `registry-check`, which
+edits the browser bundle - so the resolver read the shape as meaning `web/main.js`. Then
+`syntax-check` grew a `spec-drifts` control of its own in the same shape against
+`server/protocol.js`, and the row went looking for `export const TYPE_COLOR = 3;` in the bundle,
+found nothing, and reported a control that works perfectly as an anchor that had gone stale. The
+merge that brought the two together is what surfaced it, and it is a false positive rather than a
+missed defect, so it is the cheap direction of the same mistake. The fix is `spec-drifts` moving
+to `{ file, edits }` and declaring its own target, not the resolver learning a second tool's
+name: a resolver that knows which tool is asking is the hardcoded list this row exists to
+replace.
+
 ### A mutation can erase its own evidence
 
 `plant-open-take` originally appended its foreign bytes through a second file descriptor.
