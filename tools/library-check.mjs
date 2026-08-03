@@ -1318,6 +1318,14 @@ const numbersIn = (src) => {
       i = j;
       continue;
     }
+    // **`++` and `--` are transparent to the value question**, and taking them one
+    // character at a time got that wrong: each `+` left `prev` as `+`, which is not the
+    // end of a value, so the slash in `counter++ / 512` read as a regex and swallowed the
+    // rest of the line - the silent direction, and the whole point of a scan is that it is
+    // not doing that. Leaving `prev` alone is what makes it right in both positions:
+    // postfix keeps the value its operand already ended, and prefix keeps whatever came
+    // before it, since the operand it binds to sets `prev` a moment later anyway.
+    if ((c === '+' || c === '-') && src[i + 1] === c) { i += 2; continue; }
     // A regex only where a value cannot already have ended - or after one of the words
     // that cannot be followed by division, which is what makes `return /512/` a pattern
     // and `total / 512` a quotient. `}` stays the ambiguous case resolved toward
@@ -2201,9 +2209,18 @@ async function runChecks() {
       'text/javascript1.5', 'text/jscript', 'text/livescript', 'text/x-ecmascript',
       'text/x-javascript',
     ]);
+    // **An unquoted attribute value ends at whitespace, and reading it to the `>` swallows
+    // the attributes after it.** `<script type=text/javascript defer>` is valid markup that
+    // every browser runs, and a capture stopping only at a quote or a bracket answered
+    // `text/javascript defer`, which is in no list of anything - so the body was dropped.
+    // The three quoting forms are matched as three alternatives rather than by stripping
+    // afterwards, because a quoted value may legitimately contain a space and an unquoted
+    // one may not, and that is exactly the difference a shared pattern cannot carry.
     const SCRIPT = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+    const TYPE_ATTR = /\btype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]*))/i;
     const isJs = (attrs) => {
-      const type = /\btype\s*=\s*["']?([^"'>]*)/i.exec(attrs)?.[1]?.trim().toLowerCase();
+      const m = TYPE_ATTR.exec(attrs);
+      const type = (m?.[1] ?? m?.[2] ?? m?.[3] ?? '').trim().toLowerCase();
       if (!type || type === 'module') return true;
       return JS_MIME.has(type.split(';')[0].trim());
     };
@@ -2262,7 +2279,14 @@ async function runChecks() {
     // one of those wrong.
     writeFileSync(join(probeRoot, 'web', 'nested', 'edge-forms.js'),
       'export const W = .512e3;\n'
-      + 'export const rows = () => { return /424/; };\n');
+      + 'export const rows = () => { return /424/; };\n'
+      // A postfix operator directly before a division, which is the other way the slash
+      // question gets answered by a character instead of a token: `++` taken one `+` at a
+      // time leaves the scan looking at an operator, an operator is not the end of a
+      // value, and the division reads as a regex that swallows to the end of the line.
+      // It sits in this file because that is the file whose 512 must be found - a scan
+      // that swallows here loses the declaration two lines up as well.
+      + 'export const step = (counter) => counter++ / 512;\n');
     writeFileSync(join(probeRoot, 'web', 'nested', 'deeper', 'further.js'), 'export const H = 424;\n');
     writeFileSync(join(probeRoot, 'web', 'nested', 'deeper', 'scientific.js'), 'export const H = 4.24e2;\n');
     // **The literal text a module carries, which is the same fact as the paragraph in the
@@ -2303,8 +2327,12 @@ async function runChecks() {
     // only the four modern essences loses the first and a check that reads anything in a
     // `<script>` gains the second. The charset parameter is on it because the spec matches
     // the essence and a check comparing the whole attribute would drop this too.
+    // The unquoted form with an attribute behind it is on the same page, because it fails
+    // the same way and for the same reason - a value read past its end is a value that
+    // matches nothing, and the body of a running script is dropped.
     writeFileSync(join(probeRoot, 'web', 'legacy-page.html'),
       '<script type="application/x-javascript; charset=utf-8">const H = 424;</script>\n'
+      + '<script type=text/javascript defer>const H2 = 424;</script>\n'
       + '<script type="application/json">{"width": 512}</script>\n');
     const walked = sourcesUnder(probeRoot, 'web');
     // Sorted per directory and depth-first, which is the order `sourcesUnder` produces

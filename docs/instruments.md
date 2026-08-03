@@ -364,7 +364,38 @@ JavaScript over-reports loudly where dropping it goes unseen.
 The probe's second page carries executable code under a type nobody writes any more and a
 JSON block under a type that is not code, so it has to be a holder of one number and not
 the other: a check knowing only the modern four loses the first, and a check reading
-anything inside a `<script>` gains the second.
+anything inside a `<script>` gains the second. It also carries the unquoted form with an
+attribute behind it — `<script type=text/javascript defer>` — because an unquoted
+attribute value ends at whitespace and a capture reading it to the `>` answers
+`text/javascript defer`, which is in no list of anything. Same failure as the missing MIME
+types and from the same direction: a running script's body dropped.
+
+### The grid that is declared twice on purpose, in two languages that cannot share one
+
+Everything above is about the sensor grid being stated once. It cannot be. `native/grabber.cpp`
+holds `DW`/`DH` and is C++, so it cannot import `web/format.js` — the second declaration
+has to exist, and every row in `library-check` is structurally unable to see it, because
+that walk is `web/` and `server/` and could not honestly be anything else.
+
+**Two unavoidable declarations are not a drift problem solved by deleting one; they are a
+drift problem solved by comparing them.** `syntax-check` already did exactly this for
+`CAPTURE_FORMAT` and the grid is the same shape, so it is the same eight lines. What drift
+costs is worth naming, because it is not a wrong picture: the grabber emits a depth block
+of its own size, `server/capture.js` measures every frame against `DEPTH_W * DEPTH_H`, and
+so every frame is refused at the parser with the sensor working perfectly — a node that
+starts and serves nothing.
+
+Anchored on the *declaration* in each language and never on a mention, which matters more
+here than it did for the format constant: `grabber.cpp` also holds `char hello[512]`, a
+buffer with nothing to do with the sensor, and a search for the number would find it.
+Falsified by hand, since this row is in `syntax-check` and that tool carries no mutation
+table: `DH` moved to 423 fails with `DEPTH_H is 424 in web/format.js and DH is 423 in
+native/grabber.cpp`, and restoring it returns the run to 39 files and 0 failed.
+
+**The general form is worth more than the instance.** When a row proves a property within
+one language, ask what the same property looks like at the edge of that language — and
+whether the thing on the other side is a copy that must agree, rather than a copy that
+should not exist.
 
 ### An enumeration that walks a flat tree is the files that exist, not the tree
 
