@@ -367,6 +367,40 @@ writer's own log rather than from an artifact the reader creates. **Before polli
 condition, ask what the polling call itself writes, opens or caches** - anything that lists,
 scans or indexes a directory something else is writing is a candidate.
 
+### A fix can be a probe with an observer effect, and the same rule catches it
+
+The section above is about an instrument that disturbs what it samples. The same failure has
+a second home nobody looks for it in — **a fix placed at a door, where the disturbance is the
+fix**. `resize()` reallocates the drawing buffer and never drew into it, so a parked editor's
+stage went black on every path that resized it, and the fix is a `requestRepaint()` on
+`resize()`'s last line: at the door rather than at the seven callers, which is this repo's own
+rule about closing the class.
+
+It was still wrong as first written, and by exactly the mechanism above. **Most calls to
+`resize()` do not resize anything.** `rebuildLanes` runs it on every lane rebuild, so every
+rate change reaches it through `timingChanged` -> `lanesChanged` with the strip the height it
+already was — and asking for a repaint there is a second accurate seek on top of the one the
+gesture's own release issues. Measured: 2 seeks for one held arrow key against 1, which is the
+seek storm the speed control was rewritten to avoid, arriving through a door opened for
+something else. It cost the take as well, three runs out of three, because the release resumes
+playback behind its seek and the repaint's seek put the playhead back on the frame the resume
+had just left.
+
+Two things are worth keeping from how it was found. The row that caught it was **not** either
+of the new rows written for the fix — it was section 4's existing play-intent row, which went
+red in a `--no-render` run and green in the full one, and read exactly like a flake. What
+settled it was the row *above* it printing a number rather than a verdict: `2 seeks for 6
+repeats` against HEAD's `1`. **A row that reports a count beside its pass is what lets the
+neighbouring boolean be diagnosed instead of re-run.**
+
+And the guard that fixed it rests on a fact about a browser rather than about this build — a
+same-size `setSize` reallocates nothing, so a conditional repaint is safe. That is the shape of
+premise that quietly stops being true, so it is asserted rather than trusted: `editor-check`
+section 13 fires a `resize` event with the window unchanged and requires the picture to still
+be there. Measured, 158,247 lit pixels before and exactly 158,247 after, against 0 across a
+resize that moved the buffer 1298x730 -> 1084x610. **When a fix is conditional on a platform
+behaviour, the condition is a claim and needs its own row.**
+
 **A fixture that has never held the shape under test cannot measure it, and the gallery's
 tile heights are the plainest case of that yet.** Every take in `library-check`'s fixture
 carried at most one warning — truncated, or no hello, or under two frames — so a
@@ -518,6 +552,24 @@ user-facing surface should have at least one arm pointed at that surface.** Sect
 browser; `bind-ignores-grid` and `expand-shifts-by-a-block` are one control each, and the
 second exists because the first reddens every row and a control that fails everything cannot
 say which row carries the claim.
+
+**A fourth, and this time the skipped object was reachable through a hook that answers a
+neighbouring question.** `editor-check`'s deliverable block drove exactly the shape that
+freezes the transport — a saved trim adopted from the menu — and asserted through
+`__kinect.editor.clipRange()`, which returns the raw `clipIn`/`clipOut` document fields. The
+transport does not move on those. It reads `clipInSec` and `clipOutSec`, two getters that were
+not symmetric, so a trim past the program's end made the pair cross and `frameAt` composed to a
+constant: every position the editor could ask for came back as one frame, and `exportClip`
+computed both of its bounds through it and wrote a one-frame file. The block passed identically
+either way, because the fields it read were the ones the document held rather than the ones the
+picture came from.
+
+The tell is that `clipRange()` is not wrong. It returns what it is named for, and the fix left
+it alone — the new rows read the transport instead, because the two are different questions.
+**A hook that answers a question adjacent to the claim is worse than no hook**, since it makes
+the row look grounded: the arm is reading live state through a real seam, and the state it
+reads simply is not the one the behaviour depends on. Ask what the *subject* reads, not what is
+convenient to read about it.
 
 ## Close the class, not the instance — and have the check enumerate it
 

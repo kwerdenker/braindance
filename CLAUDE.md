@@ -172,6 +172,9 @@ node tools/editor-check.mjs --mutate pause-keeps-resume --no-render   # ... and 
 node tools/editor-check.mjs --mutate bounds-compare-off-grid --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate detent-in-rate-units --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate zoom-pans-at-the-clamp --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate clip-range-unclamped --no-render # ... a trim the program cannot hold
+node tools/editor-check.mjs --mutate resize-skips-repaint --no-render # ... and the picture a resize clears
+node tools/editor-check.mjs --mutate restore-accepts-view-track --no-render # ... and a track the writer never writes
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated

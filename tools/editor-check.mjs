@@ -59,6 +59,9 @@
 //   node tools/editor-check.mjs --mutate orbit-arms-stale-position --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate release-seeks-past-target --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate pin-keeps-orbit-armed  --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate clip-range-unclamped   --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate resize-skips-repaint   --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate restore-accepts-view-track --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate export-ignores-name              # must FAIL
 //
 // `--no-render` drops the real-export rows and says so in the verdict, the way
@@ -607,6 +610,79 @@ const MUTATIONS = {
   // The clip bounds go back to being compared in seconds against a playhead that is a
   // frame, so a playhead sitting on a cut reads as outside it after every rescale.
   // Reddens the boundary seek-count row and leaves the interior one green.
+  // The clip range goes back to being written through unchecked, so a deliverable whose
+  // `in` lands past the end of the program leaves `clipInSec` above `clipOutSec` and
+  // `frameAt` composing to a constant. Reddens the three rows in section 7's deliverable
+  // block that adopt `editor-check-past` and read the pair off the transport. The three
+  // rows above them stay green on purpose: they are about the menu applying a trim and
+  // about a held gesture, both of which this leaves working, and a control that reddened
+  // them too would be naming a different defect. Rows further down the file can go red
+  // behind it - a frozen `frameAt` is frozen for whatever seeks next - which is why the
+  // rows are read rather than counted.
+  'clip-range-unclamped': {
+    file: 'web/main.js',
+    edits: [[
+      '  if (timeline) {\n'
+      + '    const dur = timeline.duration;\n'
+      + '    clipIn = Math.max(0, Math.min(clipIn, dur));\n'
+      + '    // `null` still means "to the end", which is a different statement from a number that\n'
+      + '    // happens to equal the duration: "whole clip" has to survive a retime that lengthens\n'
+      + '    // the program, and a duration written in here would freeze it at today\'s length.\n'
+      + '    if (clipOut !== null) clipOut = Math.max(clipIn, Math.min(clipOut, dur));\n'
+      + '  }\n',
+      '',
+    ]],
+  },
+
+  // `resize()` goes back to reallocating the drawing buffer and drawing nothing into it,
+  // which leaves a parked stage black behind the chrome overlay. Reddens the three
+  // resize rows in section 13 and nothing in section 9 or 11 - and that pair staying
+  // green is the point of the control rather than a bonus: green section 9 says the call
+  // did not become a per-frame pump, and green section 11 says it did not un-throttle
+  // the splitter drag. Section 13's same-size row stays green too, and that is the third
+  // thing this separates: a `resize()` that reallocates nothing needs no repaint either
+  // way, so a control that reddened that row would be naming the guard rather than the
+  // repaint.
+  'resize-skips-repaint': {
+    file: 'web/main.js',
+    edits: [[
+      '  const buffer = renderer.getDrawingBufferSize(new THREE.Vector2());\n'
+      + '  if (buffer.x !== wasBuffer.x || buffer.y !== wasBuffer.y) requestRepaint();\n',
+      '',
+    ]],
+  },
+
+  // `restoreProject` goes back to calling `params.spec` for its throw and discarding the
+  // spec, so a document carrying a track on a view parameter opens - and `evaluateTracks`
+  // has no tag filter, so that track calls `resize()` once per rendered frame. Reddens
+  // only the first row of section 14. The look-track row beside it stays green, which is
+  // what separates "the reader now reads the tag" from "the reader stopped taking
+  // tracks", and the unknown-name refusal is untouched.
+  //
+  // Anchored on the `const spec =` binding and the `if` that reads it rather than on
+  // the bare call the revert produces: `params.spec(name);` on its own appears twice in
+  // `main.js` - once here and once in the parameter-value walk below it - so a mutation
+  // written the other way round would match twice and refuse to run.
+  'restore-accepts-view-track': {
+    file: 'web/main.js',
+    edits: [
+      [
+        '    const spec = params.spec(name);',
+        '    params.spec(name);',
+      ],
+      [
+        "    if (spec.tag !== 'look') {\n"
+        + '      throw new Error(\n'
+        + '        `the track on ${JSON.stringify(name)} is on a ${spec.tag} parameter: a project carries `\n'
+        + "        + 'look tracks only, which is what this build writes and the only kind it can evaluate '\n"
+        + "        + 'without resizing the drawing buffer from inside the render loop',\n"
+        + '      );\n'
+        + '    }\n',
+        '',
+      ],
+    ],
+  },
+
   'bounds-compare-off-grid': {
     file: 'web/main.js',
     edits: [[
@@ -2514,9 +2590,28 @@ try {
   await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
   await page.evaluate(`__kinect.keyframes.setTracks({ bloom: [{ t: 2, value: 0.2 }, { t: 6, value: 0.9 }] })`);
   await settle();
+  // **The far trim is read off the take rather than written down, and the third one is
+  // written to miss it deliberately.** `setClipInOut` holds a trim inside the program
+  // that is open, so the flat 20s..40s this block used to plant came back as
+  // 20s..30.362s on the sample and the row below would have been asserting the clamp
+  // where it means to assert the menu. Two thirds and nine tenths of the way along keep
+  // it as far from the near one's 2s..8s as the old pair were - which is all the swap
+  // rows need of it - and keep it inside the program at every rate this block reaches,
+  // including the 2x the gesture holds, where 40s would have been clamped mid-gesture.
+  //
+  // `editor-check-past` is the one that misses: a trim starting half a program past the
+  // end, which is what a deliverable authored against a longer take or a slower rate
+  // looks like when it arrives here. It is planted with the other two rather than in a
+  // block of its own so that it is cleaned up by the same loop.
+  const takeDur = (await read()).duration;
+  const farIn = takeDur * (2 / 3);
+  const farOut = takeDur * 0.9;
+  const pastIn = takeDur * 1.5;
+  const pastOut = takeDur * 2;
   const baseDeliverable = await page.evaluate('({ ...__kinect.library.activeDeliverable() })');
   await putDeliverable('editor-check-near', { ...baseDeliverable, name: 'editor-check-near', in: 2, out: 8 });
-  await putDeliverable('editor-check-far', { ...baseDeliverable, name: 'editor-check-far', in: 20, out: 40 });
+  await putDeliverable('editor-check-far', { ...baseDeliverable, name: 'editor-check-far', in: farIn, out: farOut });
+  await putDeliverable('editor-check-past', { ...baseDeliverable, name: 'editor-check-past', in: pastIn, out: pastOut });
   await page.evaluate('__kinect.editor.refreshDeliverables?.()');
   // What the menu looked like before this block touched it. Restored at the end, because
   // the selected name is drawn in a chip on the two-row bar and a longer one reflows it -
@@ -2528,10 +2623,10 @@ try {
     return { value: el.value, options: [...el.options].map((o) => o.value) };
   })()`);
   // And where the playhead was. `setClipInOut` seeks when the new trim excludes it, so
-  // choosing a deliverable at 20s..40s moves it - and section 8 renders its crop rows at
-  // the playhead, so a different frame there is a different depth slab and its numbers
-  // move. They moved: the near-slab row printed 0.337 before this block existed and 0.123
-  // after, on a build whose cropping had not changed at all.
+  // choosing a deliverable two thirds of the way along moves it - and section 8 renders
+  // its crop rows at the playhead, so a different frame there is a different depth slab
+  // and its numbers move. They moved: the near-slab row printed 0.337 before this block
+  // existed and 0.123 after, on a build whose cropping had not changed at all.
   const playheadBefore = await page.evaluate('__kinect.timeline.transport().programSec');
   const pick = async (name) => {
     await page.evaluate(`(() => {
@@ -2548,8 +2643,9 @@ try {
   };
 
   const far = await pick('editor-check-far');
-  check(near(far.in ?? -1, 20, 1e-6) && near(far.out ?? -1, 40, 1e-6),
-    'choosing a deliverable puts its trim on the clip', JSON.stringify(far));
+  check(near(far.in ?? -1, farIn, 1e-6) && near(far.out ?? -1, farOut, 1e-6),
+    'choosing a deliverable puts its trim on the clip',
+    `${JSON.stringify(far)}, wanted in ${farIn.toFixed(4)} out ${farOut.toFixed(4)}`);
   // The gesture begins here, holding `far`'s cuts, and the near one lands under it.
   await page.evaluate(`(() => {
     const el = document.getElementById('tRate');
@@ -2588,9 +2684,68 @@ try {
     '  and the gesture that continues rescales that trim rather than writing the old one back',
     `${JSON.stringify(afterSwap)}, wanted in ${wantIn.toFixed(4)} out ${wantOut.toFixed(4)}`);
 
+  // **A trim the program cannot hold, read off the transport rather than off the
+  // document.** `clipRange()` returns the raw `clipIn`/`clipOut` fields, and those are
+  // not what the transport moves on: it reads `clipInSec` and `clipOutSec`, and those
+  // two getters were not symmetric. `clipOutSec` was held down to the take's duration
+  // and `clipInSec` was held up to zero and to nothing else, so a deliverable whose
+  // `in` landed past the program's end made the pair cross - and `frameAt`, which is
+  // `frameOf(max(clipInSec, min(clipOutSec, t)))`, then composed to a constant. Every
+  // position the editor can ask for came back as one frame, and `exportClip` computed
+  // both of its bounds through it, so the file it wrote was one frame long with the
+  // `if (to < from)` guard unable to fire and the readout still naming a range.
+  //
+  // The rows below therefore go through `transport()` for the pair and through
+  // `clipRange()` only where the raw field is the thing being asserted. The old rows in
+  // this block pass identically on a build with the clamp removed, which is what makes
+  // this one worth its own three assertions rather than an extra term on one of theirs.
+  //
+  // The rate goes back to 1 first so the numbers are about the take rather than about
+  // the gesture two rows above: a slower rate only makes the program shorter, so the
+  // trim would miss either way, but a row whose precondition depends on where the last
+  // one left the slider is a row that reads as a different failure when it moves.
+  await page.evaluate(`__kinect.keyframes.setRetime({ rate: 1, keys: [] })`);
+  await settle();
+  const pastDur = (await read()).duration;
+  check(pastIn > pastDur,
+    'the planted trim really does begin past the end of the program, or nothing below is about it',
+    `in ${pastIn.toFixed(3)}s against a ${pastDur.toFixed(3)}s program`);
+  await pick('editor-check-past');
+  const adopted = await page.evaluate(`(() => {
+    const t = __kinect.timeline.transport();
+    return {
+      in: t.clipInSec,
+      out: t.clipOutSec,
+      duration: t.duration,
+      readout: document.getElementById('tInOut').textContent.trim(),
+    };
+  })()`);
+  check(adopted.in <= adopted.out,
+    '  and adopting it leaves the transport a range that runs forwards, which is the pair frameAt reads',
+    `clipInSec ${adopted.in.toFixed(3)}s, clipOutSec ${adopted.out.toFixed(3)}s, program ${adopted.duration.toFixed(3)}s`);
+  const pastRange = await range();
+  check((pastRange.in ?? -1) <= adopted.duration + 1e-6 && (pastRange.out ?? -1) <= adopted.duration + 1e-6,
+    '  and the document it wrote names times the take has, both ends of it',
+    `${JSON.stringify(pastRange)} against a ${adopted.duration.toFixed(3)}s program`);
+  // The operator's half of the same fact. `paintStripPositions` clamps where it *draws*
+  // the two markers, so both of them sit at the right-hand end either way and the strip
+  // cannot tell you which build you are on - the numeric readout beside it is the one
+  // surface where the document's claim is printed rather than clipped.
+  const readoutSec = (text) => {
+    const [m, s] = text.split(':');
+    return Number(m) * 60 + Number(s);
+  };
+  // A millisecond of slack rather than a float epsilon: `timecode` rounds to three
+  // decimals, so a duration that rounds *up* would fail an exact comparison against a
+  // build doing exactly the right thing. The number this separates from is fifteen
+  // seconds away.
+  check(readoutSec(adopted.readout) <= adopted.duration + 1e-3,
+    '  and the readout beside the markers names a time the take has, rather than one it does not',
+    `#tInOut reads ${adopted.readout} of a ${adopted.duration.toFixed(3)}s program`);
+
   await focusStage();
   await page.evaluate(`(async () => {
-    for (const n of ['editor-check-near', 'editor-check-far']) {
+    for (const n of ['editor-check-near', 'editor-check-far', 'editor-check-past']) {
       // The content type is required on every write route, delete included - the origin
       // rule refuses a request that does not declare one, which is a 200 carrying an
       // error rather than a network failure, so a cleanup without it fails silently.
@@ -4183,9 +4338,211 @@ try {
     await cleanupPresets();
   }
 
-  // ================================ 13. the pinned drive takes the loop away with it
+  // ================================ 13. a reallocated drawing buffer still has a picture in it
 
-  console.log('\n[13] pinning the drive drops what the loop was going to serve');
+  console.log('\n[13] resizing the stage while the playhead is parked leaves a picture on it');
+
+  // **`resize()` reallocates the drawing buffer, which clears it, and a parked editor
+  // has no clock that would draw into it again.** `tickNow` returns immediately on
+  // `!playing` and `pumpParkedDraft` returns with nothing armed, so the stage stayed
+  // black until something unrelated happened to seek - the window resize, the three
+  // splitter entries, the render-scale slider, the export-size menu and `rebuildLanes`
+  // all reached it, and none of them asked for a repaint. `resize-skips-repaint` is the
+  // control, and it deletes the one call at the end of `resize()` rather than any
+  // caller, because the fix is at the door.
+  //
+  // **Chrome is taken off first, and that is the row rather than tidiness.** The camera
+  // path and the top-down inset live on a separate 2D canvas that `placeChrome` goes on
+  // repainting perfectly happily, which is exactly what the operator sees on the broken
+  // build: an overlay floating over an opaque black stage. Left on, that overlay is lit
+  // pixels inside the stage's box and it would carry this row on a build whose picture
+  // is gone. Section 8 already left it off; this says so rather than inheriting it.
+  //
+  // Measured as a density rather than a count, because the two arms change the box: a
+  // narrower window is a smaller letterbox, so the same picture is fewer pixels and a
+  // raw count would read the shrink as a loss. Against the pre-resize frame rather than
+  // for bit-equality, for the reason section 8 records - two screenshots of one clip are
+  // not bit-identical, and asserting that they are would be asserting determinism, which
+  // is another tool's claim.
+  {
+    await page.evaluate('__kinect.keyframes.chrome.set(false)');
+    await page.evaluate('__kinect.timeline.transport().pause()');
+    await page.evaluate('__kinect.timeline.transport().seek(12)');
+    // The picture this section counts is put there rather than inherited, and pressing
+    // "sensor view" is how: it poses the camera at the sensor's own origin with a
+    // frustum fitted to the sensor's rectangle, so the whole cloud is in frame by
+    // construction. Inherited, it was whatever twelve sections of orbiting, exporting
+    // and preset importing happened to leave - 1543 lit pixels of 947 thousand on one
+    // run against 89 thousand on another, which is a row whose margin depends on what
+    // ran before it rather than on the claim it makes.
+    await page.locator('#camSensor').click();
+    await settle();
+    await new Promise((r) => setTimeout(r, 150));
+    const density = async () => {
+      const box = await page.locator('#stage').boundingBox();
+      const n = await lit();
+      return { all: n.all, per: n.all / Math.max(1, box.width * box.height), box };
+    };
+    // Waited on rather than slept through: `setViewportSize` returns before the page's
+    // own `resize` listener has run, and a `settled()` that arrives first finds nothing
+    // scheduled and reports an idle page one macrotask before the work starts. Watching
+    // the counter the door increments is what closes that, and it doubles as evidence
+    // the arm went through the door it names.
+    const throughResize = async (label, act) => {
+      const was = await page.evaluate('__kinect.editor.stageResizes()');
+      await act();
+      await page.waitForFunction(`__kinect.editor.stageResizes() > ${was}`, null, { timeout: 15000 })
+        .catch(() => { throw new Error(`${label} never reached resize()`); });
+      await settle();
+      await new Promise((r) => setTimeout(r, 150));
+    };
+
+    // The bar is set from measurement rather than from what a full frame would look
+    // like, and it is set low on purpose. **The blank build measures exactly 0.00%**, so
+    // the separation this row needs is not a matter of degree - what the threshold is
+    // for is that a section arriving on an empty view reports the absence as its own
+    // precondition failing rather than as the stage rows passing on nothing. Measured
+    // from the sensor-view pose at 12s: 0.84% on a full run and 9.46% under
+    // `--no-render`, where section 7's export has not been through the look. The order
+    // of magnitude between those two is why this is not written any tighter.
+    const beforeResize = await density();
+    check(beforeResize.per > 0.001,
+      'the parked stage carries a picture before anything resizes, or nothing below is about a resize',
+      `${beforeResize.all} lit pixels at ${(beforeResize.per * 100).toFixed(2)}% of `
+      + `${Math.round(beforeResize.box.width)}x${Math.round(beforeResize.box.height)}, `
+      + `on the ${await page.evaluate('__kinect.viewCamera() === __kinect.freeCamera ? "free" : "program"')} camera`);
+
+    // **The premise the repaint's guard rests on, asserted rather than trusted.**
+    // `resize()` only asks for the picture back when the drawing buffer's size actually
+    // moved, because most calls do not move it - `rebuildLanes` runs it on every lane
+    // rebuild, so every rate change reaches it with the strip the height it already was,
+    // and a repaint there is a second accurate seek on top of the one the gesture's own
+    // release issues. That guard is only safe while a same-size `setSize` reallocates
+    // nothing, which is a fact about `WebGLRenderTarget` and about Chrome's canvas
+    // rather than about this build. So it is measured here: a `resize` event with the
+    // window unchanged, and the picture has to still be there afterwards. The day this
+    // row goes red the guard is wrong and the stage goes black on the paths nothing
+    // else covers.
+    const bufferOf = () => page.evaluate(`(() => {
+      const gl = __kinect.renderer.getContext();
+      return { w: gl.drawingBufferWidth, h: gl.drawingBufferHeight, resizes: __kinect.editor.stageResizes() };
+    })()`);
+    const bufBefore = await bufferOf();
+    await page.evaluate('window.dispatchEvent(new Event("resize"))');
+    await settle();
+    await new Promise((r) => setTimeout(r, 150));
+    const bufSame = await bufferOf();
+    const sameSize = await density();
+    check(bufSame.resizes > bufBefore.resizes && bufSame.w === bufBefore.w && bufSame.h === bufBefore.h
+      && sameSize.all === beforeResize.all,
+      '  and a resize that reallocates nothing leaves it alone, which is what lets the repaint be conditional',
+      `${bufSame.resizes - bufBefore.resizes} resizes, buffer ${bufBefore.w}x${bufBefore.h} -> `
+      + `${bufSame.w}x${bufSame.h}, lit ${beforeResize.all} -> ${sameSize.all}`);
+
+    await throughResize('the window resize', () => page.setViewportSize({
+      width: VIEWPORT.width - 220, height: VIEWPORT.height - 120,
+    }));
+    const afterWindow = await density();
+    check(afterWindow.per > beforeResize.per * 0.5,
+      'a window resize with the playhead parked leaves the stage drawn rather than blank',
+      `${afterWindow.all} lit pixels at ${(afterWindow.per * 100).toFixed(2)}% density `
+      + `against ${beforeResize.all} at ${(beforeResize.per * 100).toFixed(2)}%`);
+    await throughResize('the window restore', () => page.setViewportSize(VIEWPORT));
+
+    // The render-scale slider, and it is the subtle half. It is tagged `view`, and
+    // `paramWritten` deliberately withholds the repaint every other parameter gets -
+    // so the registry's single write path ran `apply`, which destroyed the buffer, and
+    // then took the early return that was written on the premise that resizing the
+    // buffers was already the work. Driven through `params.set` because that is the
+    // door the slider's own `input` listener uses.
+    const scaleWas = await page.evaluate("__kinect.params.get('renderScale')");
+    await throughResize('the render-scale write', () => page.evaluate("__kinect.params.set('renderScale', 130)"));
+    const afterScale = await density();
+    check(afterScale.per > beforeResize.per * 0.5,
+      '  and so does a render-scale write, which is the one door that asks for no repaint of its own',
+      `${afterScale.all} lit pixels at ${(afterScale.per * 100).toFixed(2)}% density, render % 130`);
+    await throughResize('the render-scale restore',
+      () => page.evaluate(`__kinect.params.set('renderScale', ${scaleWas})`));
+    const restored = await density();
+    check(restored.per > beforeResize.per * 0.5,
+      '  and the stage the next section inherits is a drawn one',
+      `${restored.all} lit pixels at ${(restored.per * 100).toFixed(2)}%, render % back to ${scaleWas}`);
+  }
+
+  // ================================ 14. a project carries look tracks and nothing else
+
+  console.log('\n[14] a project is refused a track on a parameter it must not carry');
+
+  // **The writer filtered the track set and the reader did not, and the tag was sitting
+  // in the reader's hand unread.** `serialiseProjectBody` writes
+  // `params.names('look').filter(...)`, so a track on `renderScale` or `spin` is a shape
+  // no build of this program has ever written - but `restoreProject` called
+  // `params.spec(name)` purely for its throw-on-unknown side effect and discarded the
+  // spec it got back, and both of those are names the registry knows.
+  //
+  // What accepting one cost is why this row exists rather than a note about tidiness.
+  // `evaluateTracks` has no tag filter and runs inside `renderProgramFrame`, so a
+  // `renderScale` track is `resize()` once per rendered frame - and where the value
+  // moves, `composer.setSize` disposes and recreates the render targets and, through
+  // `AfterimagePass`, the trails accumulator, between two consecutive frames of a
+  // pre-roll that exists to build exactly that accumulator up. The seek stops
+  // reproducing the playback it is defined to reproduce, and the document quietly stops
+  // round-tripping at the same time, because the serialiser filters the track back out
+  // on the next commit.
+  //
+  // Driven straight at `restoreProject`, which is exposed raw and deliberately for this:
+  // reaching it through a successful save-and-load could never hand it a document the
+  // serialiser refuses to write. The body is the *current* document with one track added
+  // rather than a fixture built here, so that a build which accepts it is left holding
+  // the clip it already had plus the track - which is the damage this names, and nothing
+  // else that a later section would report as its own failure.
+  {
+    const original = await page.evaluate('JSON.stringify(__kinect.library.serialiseProjectBody())');
+    const handTo = (name) => page.evaluate(`(() => {
+      const body = JSON.parse(${JSON.stringify(original)});
+      body.look.tracks[${JSON.stringify(name)}] = [{ t: 0, value: 100 }, { t: 4, value: 140 }];
+      try {
+        __kinect.library.restoreProject(body);
+        return { threw: false, message: null };
+      } catch (err) {
+        return { threw: true, message: String(err?.message ?? err) };
+      }
+    })()`);
+    const viewTrack = await handTo('renderScale');
+    check(viewTrack.threw && /view/.test(viewTrack.message ?? ''),
+      'a project carrying a track on a view parameter is refused, and the refusal names the tag',
+      viewTrack.threw ? `"${viewTrack.message}"` : 'it was accepted');
+    // The other half of the same claim, and the reason the refusal reads the tag rather
+    // than a list of names: a track on a look parameter is the shape the serialiser
+    // writes, and it has to keep loading. A build that had simply stopped accepting
+    // tracks would pass the row above and fail this one.
+    const look = await handTo('bloom');
+    check(!look.threw, '  and one on a look parameter still loads, which is the shape the serialiser writes',
+      look.threw ? `"${look.message}"` : 'accepted');
+    // Whatever the two above left behind, put back - and asserted rather than assumed,
+    // because the build this matters on is the one that is deliberately wrong. On this
+    // build the first is refused with nothing touched and the second replaces the
+    // document with itself plus a bloom track; on the mutated build the first one lands
+    // too, and a `renderScale` track surviving into the next section is `resize()` once
+    // per rendered frame there. A cleanup that silently failed would hand that to
+    // section 15 as a hang nobody could attribute to this block.
+    const cleaned = await page.evaluate(`(() => {
+      try {
+        __kinect.library.restoreProject(JSON.parse(${JSON.stringify(original)}));
+        return { threw: null, tracks: __kinect.keyframes.names() };
+      } catch (err) {
+        return { threw: String(err?.message ?? err), tracks: __kinect.keyframes.names() };
+      }
+    })()`);
+    await settle();
+    check(cleaned.threw === null && !cleaned.tracks.includes('renderScale'),
+      '  and the document this section handed over is put back, carrying neither track it planted',
+      cleaned.threw ? `the restore threw "${cleaned.threw}"` : `tracks: ${cleaned.tracks.join(', ') || 'none'}`);
+  }
+
+  // ================================ 15. the pinned drive takes the loop away with it
+
+  console.log('\n[15] pinning the drive drops what the loop was going to serve');
 
   // The third state that strands an armed position, and the only one `pumpParkedDraft`
   // cannot notice on its own: `drive.pin` calls `setAnimationLoop(null)`, so that
