@@ -225,6 +225,38 @@ row, with the width row still green — which is the split being necessary rathe
 tidy. **When a row's subject is a pair, ask for each half separately, or the half that is
 still there answers for the one that is not.**
 
+### A search for a number that searches for its digits is a search for one spelling
+
+The third thing wrong with the same row, found by review rather than by a failure. Having
+split the alternation into one regex per dimension, each was still
+`(?<![\d.])512(?![\d.])` — decimal digits with guards either side to keep `512` out of
+`1512` and `4.24`. That is a matcher for a *spelling* wearing the name of the number. A
+module redeclaring the width as `512.0` is rejected by the trailing guard, and `0x200`,
+`5.12e2`, `0b1000000000` and `5_12` are never looked at at all. Each of them is a second
+declaration of the sensor's geometry sitting under a row reporting one, which is exactly
+the drift the row exists to refuse.
+
+Closed by tokenising every JavaScript numeric literal and comparing its **value**, so the
+spellings stop being a list to keep up with — the boundary guards go with it, because
+`1512` tokenises whole and answers 1512. The bound is stated in the code rather than left
+to be discovered: this sees a literal in any notation and does not see an *expression* that
+computes the value, so `256 * 2` and `DEPTH_W - 88` are invisible to it. Legacy octal
+`01000` is left out because it is a SyntaxError in a module and `syntax-check` holds that.
+
+**The control is the part worth copying.** `grid-declared-in-another-spelling` plants the
+same second declaration as `grid-declared-twice` with nothing changed but the notation —
+`0x200` and `4.24e2` — and both mutations are kept, because they fail differently: one is
+caught by any matcher and the other only by one that compares values. Verified rather than
+argued, by running both matchers over both planted lines: the old one catches
+`grid-declared-twice` on both dimensions and misses `grid-declared-in-another-spelling` on
+both, where the new one catches all four. A control every version of the instrument passes
+is not a control for the change.
+
+The probe tree gained the same treatment, one file per dimension per spelling plus a file
+of near misses — `1512`, `4.24`, `0x201` — and the rows assert the whole matched list
+rather than membership, so a matcher that grew *looser* than the regex it replaced fails
+without needing a row of its own.
+
 ### An enumeration that walks a flat tree is the files that exist, not the tree
 
 The grid row above walks `web/` and `server/` rather than a list of the files that hold the

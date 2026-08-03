@@ -1056,6 +1056,19 @@ const MUTATIONS = {
     '  const depthKB = Math.ceil(DEPTH_W / state.divisor) * Math.ceil(DEPTH_H / state.divisor) * 2 / 1000;',
     '  const depthKB = Math.ceil(512 / state.divisor) * Math.ceil(424 / state.divisor) * 2 / 1000;',
   ]] },
+  // **The same second declaration, spelled so a search for the digits cannot see it.**
+  // `0x200` is 512 and `4.24e2` is 424, so this is `grid-declared-twice` with nothing
+  // changed but the notation - the line computes the same number and renders the same
+  // pixels. It is the control for the row's matcher rather than for the row: the version
+  // of this check that searched for decimal digits with boundary guards passes this
+  // mutation and reports the grid as declared once, which is a second implementation of
+  // the sensor's geometry under a green row. Its sibling above stays, because the two
+  // fail differently - that one is caught by any matcher and this one only by a matcher
+  // that compares values.
+  'grid-declared-in-another-spelling': { file: 'web/main.js', edits: [[
+    '  const depthKB = Math.ceil(DEPTH_W / state.divisor) * Math.ceil(DEPTH_H / state.divisor) * 2 / 1000;',
+    '  const depthKB = Math.ceil(0x200 / state.divisor) * Math.ceil(4.24e2 / state.divisor) * 2 / 1000;',
+  ]] },
   // The loopback gate comes off the one route in this program that starts a process,
   // so a browser across the link opens a window on a machine nobody is standing at.
   'reveal-answers-any-caller': { file: 'server/index.js', edits: [[
@@ -1900,8 +1913,36 @@ async function runChecks() {
   // grid that went missing" - that only fired when both went at once.
   console.log('\n[library] the sensor grid is declared once, and the tree is what says so');
   {
-    // A literal, with the guards that keep `512` out of `1512` and `4.24` alike.
-    const literal = (n) => new RegExp(`(?<![\\d.])${n}(?![\\d.])`);
+    // **Every numeric literal, compared by value.** The first spelling of this searched
+    // for the decimal digits with guards either side - `(?<![\d.])512(?![\d.])`, which
+    // keeps `512` out of `1512` and `4.24` - and that is a matcher for one *spelling* of a
+    // number wearing the name of the number. A module redeclaring the width as `512.0` is
+    // rejected by the trailing guard, `0x200` and `5.12e2` are never looked at, and each
+    // of them is a second declaration of the grid sitting under a row reporting one. The
+    // guards are not needed once the comparison is by value, because `1512` tokenises as
+    // `1512` and answers 1512.
+    //
+    // Bounded on purpose, and the boundary is where a reader would otherwise assume more:
+    // this sees a literal in any spelling and does not see an *expression* that computes
+    // the value. `256 * 2` is invisible to it and so is `DEPTH_W - 88`, which is what
+    // `grid-loses-a-dimension` plants - that mutation is a control for the missing-grid
+    // half of the row below rather than for this. A declaration written as arithmetic is
+    // outside what this claims, and saying so is the difference between a bound and a
+    // hole.
+    //
+    // Legacy octal - `01000`, which is 512 - is not in the pattern because it is a
+    // SyntaxError in a module, and every file walked here is one. `syntax-check` is what
+    // holds that.
+    const NUMERIC = new RegExp([
+      '(?<![\\w$.])(?:',
+      '0[xX][\\dA-Fa-f](?:_?[\\dA-Fa-f])*',       // hex
+      '|0[oO][0-7](?:_?[0-7])*',                  // octal
+      '|0[bB][01](?:_?[01])*',                    // binary
+      '|\\d(?:_?\\d)*(?:\\.(?:\\d(?:_?\\d)*)?)?(?:[eE][+-]?\\d(?:_?\\d)*)?', // decimal
+      ')n?',
+    ].join(''), 'g');
+    const declares = (source, n) => [...source.matchAll(NUMERIC)]
+      .some((m) => Number(m[0].replace(/n$/, '').replace(/_/g, '')) === n);
     const GRID = [['the depth width', 512], ['the depth height', 424]];
     // Relative paths under `base`, deepest last, as one flat list. Split out from the
     // row below so the falsification control underneath can run the same walker over a
@@ -1917,22 +1958,44 @@ async function runChecks() {
     // The control, run before the row it controls: a tree whose grids are one directory
     // down, one dimension per file. A walker that skips directories answers `[]` here
     // and this goes red, where against the real `web/` and `server/` it would answer
-    // exactly what the rows below want and pass. Two files rather than one so the
+    // exactly what the rows below want and pass. Separate files rather than one so the
     // per-dimension search is exercised separately as well - a probe that planted both
     // numbers together would be answered by either of them. Built under
     // `.library-check` and left there with the rest of the run's scratch.
+    //
+    // **Each dimension is planted twice, once in decimal and once in a spelling that is
+    // the same number**, because the walk is not the only thing this arm holds - it is
+    // also the only control the matcher has, and a matcher that reads digits passes a
+    // probe written in digits. Hex for the width and scientific notation for the height,
+    // so a matcher handling one spelling and not the other reddens one row rather than
+    // being covered by the dimension it does handle.
+    //
+    // And a file of near misses, which is what stops the value comparison from being
+    // *looser* than the regex it replaced: `1512` and `4.24` are the two the old guards
+    // existed for, and `0x201` is the same trap one spelling along. The rows below assert
+    // the whole matched list rather than membership in it, so this file appearing in one
+    // is a failure without needing a row of its own.
     const probeRoot = join(REPO, '.library-check', 'grid-probe');
     rmSync(probeRoot, { recursive: true, force: true });
     mkdirSync(join(probeRoot, 'web', 'nested', 'deeper'), { recursive: true });
     writeFileSync(join(probeRoot, 'web', 'flat.js'), 'export const NOTHING = 1;\n');
+    writeFileSync(join(probeRoot, 'web', 'near-misses.js'),
+      'export const WIDE = 1512;\nexport const SMALL = 4.24;\nexport const HEX = 0x201;\n');
     writeFileSync(join(probeRoot, 'web', 'nested', 'buried.js'), 'export const W = 512;\n');
+    writeFileSync(join(probeRoot, 'web', 'nested', 'hexadecimal.js'), 'export const W = 0x200;\n');
     writeFileSync(join(probeRoot, 'web', 'nested', 'deeper', 'further.js'), 'export const H = 424;\n');
+    writeFileSync(join(probeRoot, 'web', 'nested', 'deeper', 'scientific.js'), 'export const H = 4.24e2;\n');
     const walked = sourcesUnder(probeRoot, 'web');
+    // Sorted per directory and depth-first, which is the order `sourcesUnder` produces
+    // and the order these are written in.
+    const WANT = {
+      512: ['web/nested/buried.js', 'web/nested/hexadecimal.js'],
+      424: ['web/nested/deeper/further.js', 'web/nested/deeper/scientific.js'],
+    };
     for (const [what, n] of GRID) {
-      const probed = walked.filter((rel) => literal(n).test(readFileSync(join(probeRoot, rel), 'utf8')));
-      const want = n === 512 ? ['web/nested/buried.js'] : ['web/nested/deeper/further.js'];
-      check(eq(probed, want),
-        `the walk this row uses reaches ${what} buried in a subdirectory rather than stopping at the top of the tree`,
+      const probed = walked.filter((rel) => declares(readFileSync(join(probeRoot, rel), 'utf8'), n));
+      check(eq(probed, WANT[n]),
+        `the walk this row uses reaches ${what} buried in a subdirectory, in every spelling of the number and in no near miss of it`,
         probed.join(' ') || 'the walk found nothing');
     }
 
@@ -1940,12 +2003,12 @@ async function runChecks() {
     // declared once" is two claims and only one of them can be answered by a match on
     // either number.
     const holdersOf = (n) => ['web', 'server'].flatMap(
-      (dir) => sourcesUnder(root, dir).filter((rel) => literal(n).test(withoutComments(shippedSource(rel)))),
+      (dir) => sourcesUnder(root, dir).filter((rel) => declares(withoutComments(shippedSource(rel)), n)),
     );
     for (const [what, n] of GRID) {
       const holders = holdersOf(n);
       check(eq(holders, ['web/format.js']),
-        `${n}, ${what}, appears as a literal in exactly one file across web/ and server/, and it is web/format.js`,
+        `${n}, ${what}, is a literal in exactly one file across web/ and server/ however it is spelled, and it is web/format.js`,
         holders.join(' ') || `nothing holds ${n}, which is half a grid that went missing rather than a grid stated once`);
     }
   }

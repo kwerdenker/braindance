@@ -122,6 +122,7 @@ node tools/library-check.mjs --mutate refusals-must-be-nonempty    # ... and a h
                                                                    #     (wide: takes the link off, so it stops at 109 of 366 -
                                                                    #      read the rows, not the total. docs/instruments.md says why)
 node tools/library-check.mjs --mutate grid-declared-twice          # ... and the sensor grid stated once
+node tools/library-check.mjs --mutate grid-declared-in-another-spelling # ... whatever notation the second one is in
 node tools/library-check.mjs --mutate grid-loses-a-dimension       # ... both halves of it, each asked for on its own
 node tools/library-check.mjs --mutate tile-height-follows-content  # ... the gallery's geometry
 node tools/library-check.mjs --mutate poster-height-in-js          # ... and its poster's box
