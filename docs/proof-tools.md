@@ -139,11 +139,12 @@ for the thing it names.
 
 **`hd-upscales-registered` reddens neighbouring rows on a contended machine, and that is a
 defect in the control rather than a finding about the code.** It runs a synchronous 1920x1080
-ffmpeg scale on the server's event loop *per colour message*, so the stream starves — measured
-over four runs at load averages 25 to 95, its four named rows fired every time while `and the
-subscriber is actually being served parts` and `the take carries a hello and frames` each fired
-in two of them and neither fired in the other two. Read the four named rows and treat a fifth
-in section 1 or 3 as the harness competing for the machine. Memoising it the way
+ffmpeg scale on the server's event loop *per colour message*, so the stream starves — over four
+`--no-browser` runs on one Mac spanning one-minute load averages of about 25 to about 95, its
+four named rows fired in all four, `and the subscriber is actually being served parts` fired in
+two, `the take carries a hello and frames` fired in two, and exactly one run showed neither.
+Read the four named rows and treat a fifth in section 1 or 3 as the harness competing for the
+machine. Memoising it the way
 `hd-reencodes-in-flight` is memoised would fix the starvation, but not for free: the registered
 image varies across the fixture's 284-frame loop, so a memoised upscale serves one constant
 frame and `and nothing re-encoded it on the way through` would go green — which is a decision
@@ -175,6 +176,13 @@ rows that assert the refusal — never the third, which is the operator acceptin
 a take that was already permitted stays permitted. Section 1's `a loopback subscriber does not
 refuse the take` is a row that mutation makes *more* true, which is why it could never have
 stood in for the arm that creates a remote one.
+
+**That row is the control for the other direction**, and it was tested rather than reasoned
+about. `Webcam.subscribersCostingTheTake` is written as a filter over `describe()`, so a
+`describe()` that stopped publishing `loopback` would silently make it return every subscriber
+and charge every proof tool in this repo for its own localhost connection. Forcing the rule to
+`return this.describe()` reddens three rows — the section 1 one by name, and the two in section
+3 that need a take to start with a loopback webcam attached.
 
 **`guard-check`** spawns its own servers and needs none running. It exits 2 when the machine has
 no non-internal IPv4, because "not listening on the network" is only a claim if there is a
