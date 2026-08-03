@@ -86,10 +86,30 @@ per frame, each of which renders a pre-roll which evaluates, so the page never a
 never errors - it runs out of memory some minutes later, somewhere else. A bounded probe turns
 that into a sentence.
 
-**`jobs-check`** spawns its own server and renders one real job through
-`tools/render-worker.mjs`, so it needs a GPU browser and ffprobe. `--no-render` drops that row
-and says so - the queue rows are seconds, the render row is a minute. Its mutation runs use
-`--no-render` because all five are queue semantics.
+**`jobs-check`** spawns its own server and renders two real jobs through
+`tools/render-worker.mjs`, so it needs a GPU browser and ffprobe. `--no-render` drops both rows
+and says so - the queue rows are seconds, each render is about a minute.
+
+**Its mutation runs are no longer all `--no-render`, and reading them as though they were is
+how a control gets recorded as green without running.** Every one but `heartbeat-stops-on-first-error`
+is queue semantics and wants `--no-render`; that one names a line in the worker's beat, is
+reached only by a render, and needs the browser and about two minutes. No count is written down
+here, because the sentence this replaced carried one and it was stale — the table is the list.
+
+**The worker under test is the staged copy, not the repo's.** `jobs-check` copies `server/`,
+`web/` and `tools/render-worker.mjs` into `.jobs-check/root` and spawns from there, because a
+mutation naming a file nothing runs reports a miss that is really a control that never applied.
+
+**The heartbeat row runs the whole render through a forwarding proxy**, which destroys the
+socket on the first `POST /jobs/<id>/heartbeat` without answering - `ECONNRESET` at the
+worker's `fetch`, the one class of failure that is neither a 409 nor a status code. A worker
+has one `--url`, so the proxy also carries the page load and the export WebSocket, handling
+`upgrade` by piping the raw sockets both ways with the headers verbatim - `Host` included,
+since the page's `Origin` names the proxy and `originAllowed` compares the two. If that row
+fails with anything about the export, the page or a closed target, the proxy is the suspect and
+the finding is not the heartbeat. What discriminates is the record's `heartbeat` against its
+`claimed`: `claim` stamps them equal, so a worker that gave up on the first failure finishes
+`done` exactly like a healthy one and only the timestamp says it went quiet.
 
 **The worker reads its renderer class out of the browser it will render in and cannot be told
 one.** `channel: 'chromium'` rather than the bundled headless shell, which has no GPU and falls
@@ -298,5 +318,12 @@ block is carried through untouched` and `divisor 4 lands at the ~80KB`), because
 measure a JPEG the stand-in does not contain, and a sample whose hello carries `startedAt`
 fails the file-date fallback row, because the fixture depends on some takes having no wall
 clock. Neither is a defect in the build. Say which sample a run used when reporting its
-verdict — a run against a stand-in is 317 of 319 by construction, and reporting it as a pass
-or as two failures without naming the fixture is wrong in both directions.
+verdict — a run against a stand-in fails the rows named above by construction, and reporting it
+as a pass or as unexplained failures without naming the fixture is wrong in both directions.
+
+**The total is not written down here any more, and that is deliberate.** This sentence used to
+carry one — "317 of 319" — and it was stale by twenty-eight the day it was next read, because
+the total moves whenever a section is added and nothing was walking it. The number to compare a
+run against is the one a baseline on the same tree prints: **352 assertions on darwin against
+the real 138MB sample at the commit that added section 4f**, which is the figure to re-measure
+rather than to trust.

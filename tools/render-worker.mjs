@@ -33,10 +33,15 @@ const NAME = flag('--name', 'worker');
 const MAX = Number(flag('--max', has('--once') ? '1' : '16'));
 const IDLE_EXIT = has('--drain');
 const POLL_MS = Number(flag('--poll', '2000'));
+// How often a running claim says it is still there. A flag with the shipped value as
+// its default, the way `JobStore`'s constructor already takes `staleMs` defaulting to
+// `STALE_MS`, so a check can drive the loop fast without the worker growing a second
+// code path that only checks run down.
+const BEAT_MS = Number(flag('--beat', '15000'));
 
 if (has('--help')) {
   console.log(`usage: render-worker.mjs [--url URL] [--name NAME] [--once | --max N]
-                        [--drain] [--poll MS]
+                        [--drain] [--poll MS] [--beat MS]
 
   Claims render jobs and runs them in headless Chrome, reporting each outcome
   back to the queue. The renderer class it claims with is read out of the
@@ -159,6 +164,10 @@ try {
     errors.length = 0;
     let beat = null;
     let leaseLost = false;
+    // Out here with `beat` rather than inside the try, so the two teardown paths below
+    // and the loop itself all stop it the same way. Three spellings of the same two
+    // lines is how one of them ends up being the one that forgets to null it.
+    const stopBeating = () => { if (beat) { clearInterval(beat); beat = null; } };
     try {
       // Reopened per job rather than once, because two jobs in a queue are two
       // edits and nothing says they are against the same footage. The page reloads
@@ -186,23 +195,73 @@ try {
       // **Says it is alive while it renders, because the queue's only alternative
       // is believing a dead worker forever.** A render runs for minutes or hours
       // by design, so nothing can time a job out on duration - what the queue
-      // expires is silence, and this is the noise. Cheap and unconditional: if it
-      // fails the render still runs, and the job goes stale, which is the safe
-      // direction.
+      // expires is silence, and this is the noise.
+      //
+      // **A dropped connection is not silence, and turning one into silence is what
+      // this loop used to do.** The beat was armed with a catch that cleared the
+      // interval on any rejection and never re-armed it, and the only thing that can
+      // reach that catch is a transport failure - a 409 is handled below, and an HTTP
+      // 500 resolves with a status rather than throwing. So one `ECONNRESET` on a
+      // reused keep-alive socket, one DNS hiccup, one moment of `EHOSTUNREACH` on a
+      // worker pointed at a remote `--url`, and a still-rendering job went quiet for
+      // the rest of its life with `leaseLost` false and the render carrying on. That
+      // is not cosmetic: `JobStore.requeue` refuses a running job only while it has
+      // spoken inside `STALE_MS`, on the premise that a live render would have spoken,
+      // so a worker gone silent while alive removes the premise and the documented
+      // rescue hands a live render to a second worker.
+      //
+      // So a failure is retried, and only a budget of them gives up. Seven at the
+      // default 15s beat is 105s of consecutive failure against the queue's 120s
+      // `STALE_MS`, which is deliberately inside it: past that the queue is about to
+      // declare this claim dead anyway and there is nothing left to keep alive. Any
+      // single success resets the count, because what matters is a run of failures
+      // rather than a tally of them. `--beat` scales the wall clock of that budget
+      // with it, which is how the check drives it in seconds - anything that moves the
+      // interval, the budget or `STALE_MS` moves whether a worker can outlive an
+      // outage its own queue is about to time it out for.
+      const BEAT_BUDGET = 7;
+      let missed = 0;
       const heartbeat = async () => {
         if (leaseLost) return;
         const res = await post(`/jobs/${job.id}/heartbeat`, { lease: job.lease });
         if (res.status === 409) {
           // The lease is gone: the job was requeued or finished by something else.
-          // The render cannot be interrupted mid-frame, but we stop before the
-          // finish report so the queue does not accept an outcome from a dead claim.
           leaseLost = true;
-          if (beat) { clearInterval(beat); beat = null; }
+          stopBeating();
           console.error(`[worker] ${job.id} heartbeat refused: ${res.body?.error ?? 'lease lost'}`);
+          // **And the render stops, which takes interrupting the page from outside.**
+          // `exportClip` has no cancel - adding one is a change to `web/main.js` rather
+          // than to this worker - so the blunt version is to navigate the one page away,
+          // which destroys the execution context and rejects the in-flight
+          // `page.evaluate` into the catch below. Blunt and honest about it: the partial
+          // output is lost and the GPU stops, which is the right trade for an outcome
+          // the queue is going to refuse on the lease anyway. Without it the worker
+          // rendered on for however long was left and threw its own time away.
+          page.goto('about:blank').catch(() => { /* the page may already be gone */ });
+          return;
         }
+        // A 5xx did not land either, so it counts the same way a dropped socket does -
+        // the record's `heartbeat` is what `requeue` reads, and it did not move.
+        if (res.status !== 200) throw new Error(`the queue answered ${res.status}`);
+        missed = 0;
       };
-      beat = setInterval(() => { heartbeat().catch((e) => { if (beat) { clearInterval(beat); beat = null; } console.error(`[worker] ${job.id} heartbeat: ${e.message}`); }); }, 15_000);
+      const missedBeat = (message) => {
+        missed++;
+        console.error(`[worker] ${job.id} heartbeat failed (${missed}/${BEAT_BUDGET}): ${message}`);
+        if (missed < BEAT_BUDGET) return;
+        stopBeating();
+        console.error(`[worker] ${job.id} ${BEAT_BUDGET} heartbeats failed in a row - the render carries on and the job goes stale, which is the safe direction`);
+      };
+      // One handler for the interval and for the first beat both, so the retry policy
+      // has exactly one place to be wrong and one place for a control to name.
+      const beatOnce = () => { heartbeat().catch((err) => missedBeat(err.message)); };
+      beat = setInterval(beatOnce, BEAT_MS);
       beat.unref?.();
+      // Beaten once here rather than one interval from now. A claim used to say nothing
+      // at all for its first fifteen seconds, and a job whose very first beat rejected
+      // never beat at all - so the record carried a `claimed` and no `heartbeat`, which
+      // is exactly the shape of a worker that died on the claim.
+      beatOnce();
 
       // The project travels *in the job* rather than by name. That is what makes a
       // job self-contained: a name would resolve to whatever is in the store when
@@ -266,11 +325,11 @@ try {
       });
       if (fin.status !== 200) throw new Error(`the queue refused the report: ${fin.body.error}`);
       console.log(`[worker] ${job.id} done ${result.output} ${result?.frames ?? ''} frames`);
-      if (beat) { clearInterval(beat); beat = null; }
+      stopBeating();
     } catch (err) {
       failed++;
       const message = String(err.message ?? err);
-      if (beat) { clearInterval(beat); beat = null; }
+      stopBeating();
       console.error(`[worker] ${job.id} failed: ${message}`);
       // Reported, not swallowed. A job left `running` by a worker that walked away
       // is the state nothing can tell from a job still being rendered.
