@@ -6015,13 +6015,24 @@ async function runChecks() {
     // is what keeps a slow machine from reading as a catch.
     await new Promise((done) => { setTimeout(done, 21000); });
     const heldCount = heldForever.length;
-    check(ticksSeen >= 3,
-      'the page went on polling the recorder while its listing hung, which is what makes the row below about the listings rather than about a page that stopped',
-      `${ticksSeen} ticks to /record/state in 21s`);
+    const listingsWhileHung = hungListings;
     check(heldCount === 1,
-      'and it has exactly one listing in flight however long that one takes - a refresh that has not come back is the question already being asked, not a reason to ask it again every five seconds',
+      'it has exactly one listing in flight however long that one takes - a refresh that has not come back is the question already being asked, not a reason to ask it again every five seconds',
       `${heldCount} listings left hanging, ${hungListings} requested in total`);
+    // **The liveness half is that it comes back, not that it kept polling.** The guard
+    // holds for the whole tick, so while a handler hangs the recorder is not asked
+    // either - which is right, since the answer would have nowhere to go, and is why a
+    // row counting `/record/state` during the hang reads two and means nothing. What
+    // proves the page was alive rather than dead is that clearing the hang starts a
+    // listing again: the abort makes the handler throw, the fingerprint stays where it
+    // was, and the next tick offers the same transition. One row, both properties - the
+    // guard releases and the retry underneath it still works.
     for (const route of heldForever) await route.abort('connectionfailed').catch(() => {});
+    await new Promise((done) => { setTimeout(done, 11000); });
+    check(hungListings > listingsWhileHung,
+      'and it asks again once that one is out of the way, so the single listing above is a poll waiting rather than a poll that died',
+      `${listingsWhileHung} listings while it hung, ${hungListings} after it cleared,`
+      + ` ${ticksSeen} ticks to /record/state throughout`);
     await hung.close();
     for (const p of servers.filter((sv) => sv.port === MAC_PORT + 1)) p.child.kill('SIGKILL');
   }
