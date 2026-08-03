@@ -76,7 +76,28 @@ const stamp = (ms) => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 };
 
-let library = { takes: [], node: null, here: '?', reveal: { available: false, label: null, why: null } };
+// **Every field `paint` reads, because `paint` can now run against it.** This is what the
+// page holds before the first listing lands, and until the load was allowed to fail it
+// was never drawn - so `storage` being absent cost nothing and stayed absent. The moment
+// a failed first listing paints an empty shelf instead of ending module evaluation,
+// `paint` reads `library.storage.label` off `undefined` and throws from inside the very
+// catch that was meant to keep the page alive, stranding it exactly as before for a
+// second reason. `remaining` reports the same fields, so what the page draws before it
+// has asked and what it draws after are one shape rather than two.
+//
+// `secondsLeft` at `Infinity` rather than zero: the readout below turns red under fifteen
+// minutes, and a page that has not asked yet has not been told the card is nearly full.
+let library = {
+  takes: [],
+  node: null,
+  here: '?',
+  storage: {
+    // A dash rather than a sentence, because the readout reads `<label> left at current
+    // settings` and any phrase here becomes a claim inside it.
+    freeBytes: null, bytesPerSec: null, secondsLeft: Infinity, label: '—', error: null,
+  },
+  reveal: { available: false, label: null, why: null },
+};
 let filter = 'all';
 
 // **Written to both status lines, because a modal covers one of them.** `#note` sits
