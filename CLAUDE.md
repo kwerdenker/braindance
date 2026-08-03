@@ -114,6 +114,7 @@ node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL
 node tools/library-check.mjs --mutate open-decides-its-own-reason  # ... one take, one refusal, whichever surface asks
 node tools/library-check.mjs --mutate menu-decides-its-own-reason  # ... and the menu is a surface too
 node tools/library-check.mjs --mutate refusal-without-a-badge      # ... a reason the server declares and no page can badge
+node tools/library-check.mjs --mutate refusal-declared-but-never-pushed # ... and one nothing can ever earn
 node tools/library-check.mjs --mutate node-admits-an-old-manifest  # ... a node one build behind, refused at the link
 node tools/library-check.mjs --mutate refusals-must-be-nonempty    # ... and a healthy node not refused for being healthy
                                                                    #     (wide: takes the link off, so it stops at 109 of 366 -

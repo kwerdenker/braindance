@@ -199,9 +199,23 @@ no take provokes and no page badges — a mutation the old row could not have ca
 nothing it read would have changed. **A row asserting two enumerations agree has to reach
 both enumerations; a sample of one of them is a row about the sample.**
 
-Its neighbour is the other direction and is one line: every key a take actually arrived with
-has to be in the table, or the declaration has drifted off the code the way the page's table
-did.
+**Its neighbour was written as the other direction and asserted the same one**, which is the
+part worth keeping. The comment promised that every key in the table is one the scanner can
+produce, and the code asked that every key a take arrived with is declared. Those are
+opposite containments, and only the second was being checked — so a refusal added to
+`OPEN_REFUSALS` and to the page's `BADGES` with the `describeTake` branch that pushes it
+forgotten would stay green forever: a declared reason, a badge for it, and no take that can
+ever wear either. A comment that describes a stronger check than the line under it is worse
+than no comment, because it is the thing a reader checks instead of the code.
+
+Both directions now, and `recording` is excluded from the second by a fact rather than for
+convenience: no take on that server is being written, so the response cannot carry that key
+however correct the scanner is, and it is proven where it can be proven — in the section that
+stands a recorder up. The cost is deliberate and belongs to whoever adds the next refusal: it
+now needs a fixture take that provokes it, because a reason nothing here can reach is a reason
+nothing here is testing. `--mutate refusal-declared-but-never-pushed` deletes the `no-hello`
+push and leaves the key declared and badged; 368 assertions, five failed, and they are one
+fact arriving in five places.
 
 ### A claim about "whichever surface asks" needs a control per surface
 

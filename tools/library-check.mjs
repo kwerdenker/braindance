@@ -931,6 +931,23 @@ const MUTATIONS = {
     'export const OPEN_REFUSALS = {\n'
       + "  'wrong-format': () => 'this take was written by a generation of the format this build cannot read',\n",
   ]] },
+  // **The scanner forgets to push a refusal it declares**, which leaves `no-hello` in
+  // `OPEN_REFUSALS`, in the page's `BADGES`, and on no take that exists - a reason and a
+  // badge for it that nothing can ever wear. It is the direction the containment row
+  // could not see while it only asked that what arrived was declared, and it is the
+  // ordinary way this breaks: a refusal is added to the table and to the page, and the
+  // branch that would produce it is written last or not at all.
+  //
+  // Aimed at the push rather than at the table. A mutation adding a key to the table
+  // reddens the badge row as well - `refusal-without-a-badge` does, measured, both rows
+  // - and two rows red for two different reasons cannot say which was carrying the
+  // claim. Neither control is isolated, and this one is not either: five rows go, and
+  // they are all one fact arriving in five places, which is the take with no hello no
+  // longer saying it cannot be opened. Read them as one.
+  'refusal-declared-but-never-pushed': { file: 'server/library.js', edits: [[
+    "  if (!index.hello) openRefusals.push(refusal('no-hello'));\n",
+    '',
+  ]] },
   // **One dimension of the grid stops being a literal while the other holds**, and the
   // value is deliberately unchanged - `DEPTH_W - 88` is still 424, so every page still
   // renders the same pixels and every message is still the same size. That is what
@@ -2501,14 +2518,33 @@ async function runChecks() {
     check(serverKeys.length > 0 && unbadged.length === 0,
       'every refusal the server can send has a badge on the page, so a reason added later is asked by existing',
       `server ${serverKeys.join(' ')} against page ${badgeKeys.join(' ')}`);
-    // And the declaration is not a list nothing reads: every key in it has to be a key
-    // the scanner can actually produce, or the row above is comparing the page against
-    // an enumeration that has drifted off the code the way the page's table did.
+    // **Both directions, because they are two different bugs and one of them was
+    // claimed rather than checked.** The comment here used to promise that every key in
+    // the table is one the scanner can produce and then assert the containment the
+    // other way round, which proves only that what arrived was declared. Under that
+    // row, a refusal added to `OPEN_REFUSALS` and to `BADGES` with the `describeTake`
+    // branch that pushes it forgotten stays green forever - a declared reason and a
+    // badge for it that no take can ever wear, which is the enumeration drifting off
+    // the code in the direction the row above cannot see either.
     const liveKeys = [...new Set((await getJson(`${macUrl}/library/takes`)).takes
       .flatMap((t) => t.openRefusals.map((r) => r.key)))];
     check(liveKeys.every((k) => k in OPEN_REFUSALS),
-      'and every refusal a take actually arrived with is one the table declares',
+      'every refusal a take actually arrived with is one the table declares',
       `${liveKeys.join(' ')} against ${Object.keys(OPEN_REFUSALS).join(' ')}`);
+    // And back the other way. `recording` is excluded by name and for a reason of fact
+    // rather than convenience: no take on this server is being written, so this
+    // response cannot carry that key however correct the scanner is. It is proven to
+    // arrive where it can arrive - the section that stands a recorder up and reads the
+    // tile it draws - and a row here pretending otherwise would be asserting against
+    // the fixture rather than against the code.
+    //
+    // What this puts on whoever adds the next refusal is a fixture take that provokes
+    // it, which is the intended cost: a reason nothing here can reach is a reason
+    // nothing here is testing.
+    const unreachable = Object.keys(OPEN_REFUSALS).filter((k) => k !== 'recording' && !liveKeys.includes(k));
+    check(unreachable.length === 0,
+      'and every refusal the table declares is one some take here actually arrives with, so a branch forgotten in the scanner is not a badge nobody can earn',
+      unreachable.length ? `declared and never produced: ${unreachable.join(' ')}` : liveKeys.join(' '));
 
     // Marks on the tile's scrub bar, at their source fraction. The two that a
     // fraction gets wrong on its own are checked by name: source zero has to land
