@@ -374,13 +374,25 @@ export class NodeLink {
   async recordState() {
     try {
       const body = await this.fetchJson('/record/state', { signal: AbortSignal.timeout(3000) });
-      return { name: this.name, reachable: true, recording: Boolean(body.recording), takeId: body.takeId ?? null };
+      return {
+        name: this.name,
+        reachable: true,
+        recording: Boolean(body.recording),
+        takeId: body.takeId ?? null,
+        // The node's own answer to "which take do you still own", carried across
+        // unchanged. The gallery on this machine draws that node's takes, so the
+        // window in which a tile may not offer Open is the node's window and not
+        // this one's - reading it off `recording` here would end the remote tile's
+        // refusal the moment the node's writing stopped, several seconds before its
+        // index existed.
+        writingId: body.writingId ?? null,
+      };
     } catch {
       // Deliberately not written to `lastError`. That field is what the gallery prints
       // beside "unreachable", and it is set by the listing this side actually draws
       // from - overwriting it here would let a poll's timeout replace the reason the
       // library failed with a reason nothing on screen is about.
-      return { name: this.name, reachable: false, recording: false, takeId: null };
+      return { name: this.name, reachable: false, recording: false, takeId: null, writingId: null };
     }
   }
 }

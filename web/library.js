@@ -1609,6 +1609,25 @@ async function refresh() {
   paint();
 }
 
+/**
+ * The listing just painted, said back in the shape `/record/state` answers in, so the
+ * poll can compare its first tick against the grid rather than against nothing.
+ *
+ * Read off `local` and `remote` rather than off the reconciled record, because those
+ * are the two recorders the poll asks and the reconciled `recording` flag is whichever
+ * side won the spread. A take mid-write has no hash and so is never merged, which is
+ * why one of the two is always the whole answer for its machine.
+ */
+const believedFromLibrary = () => ({
+  writingId: library.takes.find((t) => t.local?.recording)?.local.id ?? null,
+  node: library.node
+    ? {
+      reachable: library.node.reachable,
+      writingId: library.takes.find((t) => t.remote?.recording)?.remote.id ?? null,
+    }
+    : null,
+});
+
 for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => { filter = tab.dataset.filter; paint(); });
 }
@@ -1634,11 +1653,19 @@ await refresh();
  * The failure is reported rather than swallowed, on the line the unreachable node
  * already uses: a gallery that quietly stopped following the recorder looks exactly
  * like a gallery with nothing to follow.
+ *
+ * **Seeded with what the grid on screen already says, because the listing above and
+ * the poll's first tick are two reads of a moving world.** A take that stopped between
+ * them left the paint saying "being written" and every fingerprint from then on saying
+ * "nothing is" - all identical, so nothing ever changed, and the tile refused to open a
+ * finished take for as long as the page stayed up. The seed makes the first tick a
+ * comparison against the paint rather than against nothing, so the disagreement is
+ * caught on the tick that finds it.
  */
 pollRecordState((state, changed) => {
   if (!changed) return;
   refresh().catch((err) => say(`the library could not be reread: ${err.message}`));
-});
+}, believedFromLibrary());
 
 // What a check reads. Every number here comes from the library's own state rather
 // than from the DOM, except the mark ticks - those are read back off the page on

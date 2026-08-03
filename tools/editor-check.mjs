@@ -234,6 +234,43 @@ const MUTATIONS = {
     ]],
   },
 
+  // The autosave offer goes back to being withheld whenever any part of the library
+  // failed to list. That gate was right while the offer was a sentence written through
+  // `say`, which would have painted over the note naming what broke - and wrong the
+  // moment it became a button, since a button overwrites nothing and what the gate now
+  // does is throw away the only control that reaches `__working__`, a document the
+  // project picker deliberately does not show, because an unrelated presets directory
+  // was pointed one level too high.
+  //
+  // Must redden only the row about a broken neighbour. Every other row in section 13
+  // lists cleanly, so the gate and the fix agree across all of them - which is exactly
+  // how this survived a section that had already asserted the offer twelve ways.
+  'resume-waits-for-every-list': {
+    file: 'web/main.js',
+    edits: [[
+      '  if (listed.projects) offerWorkingDocument(listed.projects);',
+      '  if (!unavailable.length) offerWorkingDocument(listed.projects);',
+    ]],
+  },
+
+  // AltGr goes back to being read as the ctrl+alt it arrives as. On a German, Nordic or
+  // Polish layout `[` and `]` are AltGr presses and Windows delivers AltGr by setting
+  // both of those bits, so the modifier guard returns before the mark-stepping keys can
+  // run and this program advertises two shortcuts nobody on those layouts can press.
+  //
+  // Must redden the AltGr row and leave the row beside it - plain ctrl+alt on a layout
+  // that needs no composing, which is still not ours - green. A mutation that only
+  // widened the guard would pass the first and fail the second, which is why both are
+  // there.
+  'shortcuts-reject-altgr': {
+    file: 'web/main.js',
+    edits: [[
+      "  const composed = e.key.length === 1 && e.getModifierState('AltGraph');\n"
+      + '  if ((e.metaKey || e.ctrlKey || e.altKey) && !composed) return;',
+      '  if (e.metaKey || e.ctrlKey || e.altKey) return;',
+    ]],
+  },
+
   'plant-unswept-control': {
     file: 'web/index.html',
     edits: [[
@@ -4444,6 +4481,34 @@ try {
       'and the offer withdraws once it has been taken, since restoring what is already on screen is a button that does nothing',
       `chip ${afterRestore.shown ? 'still shown' : 'hidden'}`);
 
+    // **A neighbour that will not list must not take the recovery with it.** Opening a
+    // take refreshes three libraries and lets all three fail softly, and the offer used
+    // to be withheld unless every one of them came back. That was right while the offer
+    // was a sentence written through `say`, which would have painted over the note
+    // naming what broke - and it stopped being right the moment the offer became a
+    // button, because a button overwrites nothing. What the gate did instead was strand
+    // the only control that reaches `__working__`, which the project picker deliberately
+    // does not list, on a station whose `--builtin-presets` pointed one directory too
+    // high. The autosave was there, intact, stamped with this take, and unreachable.
+    //
+    // The presets route is refused at the page's edge rather than by misconfiguring a
+    // server, so the failure is exactly one list and the row can say which.
+    await putDoc(WORKING, workingBody({ id: openId, hash: openHash }));
+    await page.route('**/presets', (route) => route.fulfill({
+      status: 500, contentType: 'application/json', body: '{"error":"the presets directory is not there"}',
+    }));
+    await reopen();
+    const brokenNote = await page.evaluate("document.getElementById('tNote').textContent");
+    const offeredAnyway = await offerState();
+    await page.unroute('**/presets');
+    check(/library unavailable/.test(brokenNote) && /presets/.test(brokenNote),
+      'a presets list that refuses is reported by name, which is what makes the row below about the gate rather than about a request that quietly worked',
+      `note "${brokenNote.slice(0, 100)}"`);
+    check(offeredAnyway.shown && offeredAnyway.button,
+      'and the autosave is offered anyway, because the projects list is the only one the offer is made of and a broken neighbour is not a reason to hide the work',
+      `chip ${offeredAnyway.shown ? 'shown' : 'hidden'}, "${offeredAnyway.when}"`);
+    await reopen();
+
     await page.selectOption('#tProject', OTHER);
     await page.click('#tProjectOpen');
     await page.waitForFunction("document.getElementById('tNote').textContent.includes('different footage')",
@@ -4585,6 +4650,53 @@ try {
     check(near(back, geometry.program[0], TOL),
       'and the previous-mark key walks back the way it came',
       `${back.toFixed(3)}s against ${geometry.program[0].toFixed(3)}s`);
+
+    // **And the layouts those two keys are actually typed on.** `[` and `]` are
+    // unmodified only on a US or UK keyboard. On German, Nordic and Polish layouts they
+    // are AltGr presses, and Windows delivers AltGr by setting ctrl and alt together -
+    // so the guard that rejects command modifiers rejected the character as well, and
+    // the two keys this section just asserted were unreachable for most of Europe. The
+    // rows above cannot see it, because Playwright presses the US key.
+    //
+    // Dispatched rather than pressed, because that is the only way to say AltGr from
+    // here: `page.keyboard` has no modifier for it, while `KeyboardEventInit` carries
+    // `modifierAltGraph` and Chromium reports it back through `getModifierState`. Both
+    // halves are asserted - the composed press has to work and the bare ctrl+alt press
+    // has to go on being refused - because a guard simply deleted would pass the first.
+    const pressComposed = async (key, altGraph) => {
+      await page.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: ${JSON.stringify(key)}, ctrlKey: true, altKey: true,
+        modifierAltGraph: ${altGraph}, bubbles: true, cancelable: true,
+      }))`);
+      await settle();
+      return (await read()).programSec;
+    };
+    await page.evaluate('__kinect.timeline.transport().seek(0)');
+    await settle();
+    await focusStage();
+    const altGr = await pressComposed(']', true);
+    check(near(altGr, geometry.program[0], TOL),
+      'the next-mark key works when it is typed with AltGr, which is how a German, Nordic or Polish keyboard types it at all',
+      `${altGr.toFixed(3)}s against ${geometry.program[0].toFixed(3)}s`);
+    const plainCtrlAlt = await pressComposed(']', false);
+    check(near(plainCtrlAlt, altGr, TOL),
+      'and the same two bits without AltGraph behind them move nothing, so the guard still hands ctrl+alt to the browser it belongs to',
+      `${plainCtrlAlt.toFixed(3)}s, unmoved from ${altGr.toFixed(3)}s`);
+    // The other half of the guard, in the direction the widening could have broken it:
+    // AltGr held over a key that is a command rather than a character is the right-hand
+    // Alt being used as a modifier, and that is still not ours.
+    const altGrArrow = await page.evaluate(`(() => {
+      const before = __kinect.timeline.transport().programSec;
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'ArrowRight', ctrlKey: true, altKey: true, modifierAltGraph: true,
+        bubbles: true, cancelable: true,
+      }));
+      return before;
+    })()`);
+    await settle();
+    check(near((await read()).programSec, altGrArrow, TOL),
+      'and a named key under the same modifier is still the browser\'s, since AltGr only composes characters and there is no character here',
+      `${(await read()).programSec.toFixed(3)}s against ${altGrArrow.toFixed(3)}s`);
 
     const legend = await page.evaluate('__kinect.editor.shortcuts()');
     check(/\[\/\]/.test(legend),

@@ -2454,10 +2454,19 @@ function startLive() {
         // reports. This is the one place that knows the difference: `spawnGrabber`
         // sees every road to a running grabber and none of them carry why.
         restarting = false;
-        grabberRestarts++;
         const delay = killedHard ? RESPAWN_AFTER_KILL_MS : RESPAWN_AFTER_CLEAN_MS;
         killedHard = false;
-        setTimeout(spawnGrabber, delay);
+        // **Counted beside the spawn it excuses rather than here, where it is learned.**
+        // `respawns` is `grabberSpawns - 1 - grabberRestarts`, so incrementing on the
+        // exit and leaving the matching spawn a quarter of a second to a second and a
+        // half away makes that subtraction run one ahead of itself for the whole gap -
+        // a node that had genuinely lost its sensor once read one respawn, then zero
+        // while an operator's colour toggle was in flight, then one again. A health
+        // number that dips to zero over a real earlier failure is worse than one that
+        // never noticed it, because somebody looking in that second is told the node is
+        // well. Both halves move in the same tick now, so the reading has no gap to
+        // pass through.
+        setTimeout(() => { grabberRestarts++; spawnGrabber(); }, delay);
         return;
       }
       scheduleRetry();

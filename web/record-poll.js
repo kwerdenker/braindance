@@ -44,10 +44,19 @@ const EVERY_MS = 5000;
 /**
  * What a tick has to differ in for the answer drawn from it to be worth redrawing.
  *
- * The recording flag and the take id, on both machines - the two facts that decide
- * what a gallery tile is allowed to say about a take, asked of this server's recorder
- * and of the linked node's. Frame counts and free space move constantly and are
- * deliberately not in it, or the flag would be true on every tick and mean nothing.
+ * The take each recorder still owns, on both machines - the one fact that decides what
+ * a gallery tile is allowed to say about a take. Frame counts and free space move
+ * constantly and are deliberately not in it, or the flag would be true on every tick
+ * and mean nothing.
+ *
+ * **`writingId` rather than the recording flag and the take id, and the difference is
+ * the several seconds between them.** A take stops being recorded well before it stops
+ * being the recorder's: the stream still has to flush, the marks still have to land and
+ * the index and the content hash - which are what make the take a gallery entry at all
+ * - are built after that. The flag went false at the front of that window, so a gallery
+ * following it reread the library into the middle of a close and drew Download, Rename
+ * and Remove over a take with no hash yet. `writingId` spans the whole of it, so the
+ * one repaint this poll pays for lands where the answer actually changed.
  *
  * **Both recorders, because the gallery is a view of both libraries.** A station with
  * a `--node` draws the node's takes into the same grid, and it is the machine the
@@ -58,8 +67,8 @@ const EVERY_MS = 5000;
  * dropping or coming back changes what is on screen.
  */
 const fingerprint = (state) => [
-  state.recording, state.takeId ?? '',
-  state.node ? `${state.node.reachable}:${state.node.recording}:${state.node.takeId ?? ''}` : '',
+  state.writingId ?? '',
+  state.node ? `${state.node.reachable}:${state.node.writingId ?? ''}` : '',
 ].join('|');
 
 /**
@@ -67,18 +76,30 @@ const fingerprint = (state) => [
  *
  * `changed` is true when this tick's fingerprint differs from the previous one's.
  *
- * **The first tick reports `changed: false`**, because the flag is a difference
- * between two observations and there has only been one. A first tick claiming a change
- * would make every caller that gates on it do its expensive thing once at load, which
- * on the gallery is a full repaint of a grid that was drawn a moment ago.
+ * **`believed` is what the caller has already drawn, and passing it is what makes the
+ * first tick able to answer at all.** Without it the first tick has nothing to compare
+ * against and must report `changed: false`, which is a hole rather than a caution: the
+ * gallery reads `/library/all`, paints a take as being written, and only then asks the
+ * recorder - so a take that stopped inside that gap is stopped in every fingerprint
+ * this poll will ever compute, none of them differ, and the tile goes on refusing to
+ * open a finished take until somebody reloads the page. Seeded, the first tick is a
+ * comparison like every other one, against the world the caller actually drew.
+ *
+ * It is a state-shaped object rather than a fingerprint string, and it goes through
+ * the same `fingerprint` above, so there is one expression of what counts as a change
+ * rather than a caller's copy of it to drift.
+ *
+ * A caller with nothing painted yet passes nothing, and gets the old behaviour: the
+ * first tick reports no change, because a first tick claiming one would make it do its
+ * expensive thing once at load for no reason.
  *
  * Returns the tick itself, so a caller that has just changed something - pressing
  * record is the case - can ask again immediately instead of waiting out the cadence.
  * That is the same poll rather than a second one: it updates the same `previous`, so
  * the tick it displaces cannot report a change that has already been seen.
  */
-export function pollRecordState(saw) {
-  let previous = null;
+export function pollRecordState(saw, believed = null) {
+  let previous = believed === null ? null : fingerprint(believed);
   const tick = async () => {
     let state;
     try {

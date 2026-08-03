@@ -6980,7 +6980,18 @@ addEventListener('keydown', (e) => {
   if (!EDITING || !timeline) return;
   // A modifier other than shift means the key belongs to the browser or the OS.
   // Shift is ours: it is the difference between a frame and a second.
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  //
+  // **AltGr is not one of those modifiers - it is how a character gets typed.** On a
+  // German, Nordic or Polish layout `[` and `]` are AltGr presses, and Windows delivers
+  // AltGr as ctrl+alt, so a guard reading those two bits returned before the mark keys
+  // below could run and this program advertised two shortcuts nobody on those layouts
+  // could press. The test is whether the press produced a character or a command:
+  // `e.key` is already the composed one, so a single character under AltGr means the
+  // modifier did its composing job and the key that came out is ours, while
+  // `ArrowRight` under the same two bits is the right-hand Alt being used as a command
+  // modifier and is still not.
+  const composed = e.key.length === 1 && e.getModifierState('AltGraph');
+  if ((e.metaKey || e.ctrlKey || e.altKey) && !composed) return;
 
   const step = (frames) => {
     pauseTransport();
@@ -10219,10 +10230,18 @@ async function openTake(id) {
   // somewhere honest to land rather than an empty document.
   history.begin();
   // After `begin`, because the offer is about whether the auto-save differs from the
-  // clip on screen and `baseline` is that clip serialised. Skipped when any part of
-  // the library failed to list, so the offer cannot write over the sentence naming
-  // what is broken - a note nobody can see is the failure this whole change is about.
-  if (!unavailable.length) offerWorkingDocument(listed.projects);
+  // clip on screen and `baseline` is that clip serialised.
+  //
+  // **Gated on the projects list alone, and deliberately not on the other two.** The
+  // offer used to be withheld whenever any part of the library failed to list, back
+  // when it was a sentence written through `say` that would have painted over the note
+  // naming what was broken. It is a button now - `offerWorkingDocument` writes
+  // `#tResume` and nothing else - so there is nothing left for it to overwrite, and
+  // what the old gate actually did was throw away the one control that can reach
+  // `__working__` because an unrelated `--builtin-presets` pointed at the wrong
+  // directory. That document is deliberately absent from the project picker, so
+  // withholding this button is withholding the only road back to the operator's work.
+  if (listed.projects) offerWorkingDocument(listed.projects);
   await timeline.seek(0);
   // Two things per frame, and the second is not an afterthought: with the playhead
   // parked `tick` returns immediately, so this is the only clock a paused editor has.
