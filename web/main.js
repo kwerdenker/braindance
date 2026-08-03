@@ -8438,6 +8438,24 @@ async function refreshDeliverables() {
   return list;
 }
 
+/**
+ * Moves the picker and the record of what it is naming together.
+ *
+ * **Because a refusal has to be able to put the picker back, and there is nothing else
+ * that knows where back is.** A `change` event arrives with `value` already moved, so the
+ * previous selection is gone by the time anything can object to the new one - and
+ * `activeDeliverable` cannot stand in for it, since `saveDeliverable` PUTs the document as
+ * it is and stamps no name into it. Kept on the element rather than in a module binding so
+ * there is one object holding both halves and no second copy to fall out of step.
+ *
+ * Every adoption goes through here, which is what makes the revert below mean "the one the
+ * clip is actually on" rather than "the one somebody remembered to record".
+ */
+function showAdoptedDeliverable(name) {
+  ui.deliverable.value = name;
+  ui.deliverable.dataset.adopted = name;
+}
+
 async function saveDeliverable(name, deliverable) {
   const res = await fetch(`/deliverables/${encodeURIComponent(name)}`, {
     method: 'PUT',
@@ -9903,8 +9921,20 @@ ui.deliverable.addEventListener('change', async () => {
     if (doc.error) throw new Error(doc.error);
     applyDeliverable(doc.body);
     history.commit();
+    showAdoptedDeliverable(name);
     ui.note.textContent = `deliverable ${name}`;
   } catch (err) {
+    // **Put the picker back on what the clip is actually on.** `applyDeliverable` refuses a
+    // document whose cuts are not program times, and it refuses it before it has replaced
+    // anything - so the clip, the export size and the readout beside the picker all still
+    // describe the deliverable that was there before. The picker was the one surface left
+    // naming the refused one, and the two disagreeing is worse than either: the readout says
+    // one thing, the control says another, and the file that comes out of a render afterwards
+    // matches the readout while carrying the name the operator can see in the menu.
+    //
+    // The message stays on `#tNote` either way, so this is not a refusal being swallowed - it
+    // is the refusal being told in one place instead of contradicted in a second.
+    ui.deliverable.value = ui.deliverable.dataset.adopted ?? '';
     showTimelineError(err);
   }
 });
@@ -9916,7 +9946,9 @@ ui.deliverableNew.addEventListener('click', async () => {
   try {
     await saveDeliverable(name, activeDeliverable);
     await refreshDeliverables();
-    ui.deliverable.value = name;
+    // Through the same door as the menu's own adoption: what was just saved *is* what the
+    // clip is on, so this is the selection a later refusal has to be able to come back to.
+    showAdoptedDeliverable(name);
     ui.note.textContent = `saved deliverable ${name}`;
   } catch (err) {
     showTimelineError(err);

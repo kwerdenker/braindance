@@ -176,6 +176,7 @@ node tools/editor-check.mjs --mutate detent-in-rate-units --no-render # ... and 
 node tools/editor-check.mjs --mutate zoom-pans-at-the-clamp --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate clip-range-unclamped --no-render # ... a trim the program cannot hold
 node tools/editor-check.mjs --mutate clip-bound-coerces-nonnumeric --no-render # ... and a trim that is not a time at all
+node tools/editor-check.mjs --mutate refusal-strands-the-picker --no-render # ... and the menu that named what was refused
 node tools/editor-check.mjs --mutate resize-skips-repaint --no-render # ... and the picture a resize clears
 node tools/editor-check.mjs --mutate restore-accepts-view-track --no-render # ... and a track the writer never writes
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows

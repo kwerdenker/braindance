@@ -61,6 +61,7 @@
 //   node tools/editor-check.mjs --mutate pin-keeps-orbit-armed  --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate clip-range-unclamped   --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate clip-bound-coerces-nonnumeric --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate refusal-strands-the-picker --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate resize-skips-repaint   --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate restore-accepts-view-track --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate export-ignores-name              # must FAIL
@@ -663,6 +664,27 @@ const MUTATIONS = {
         + '  if (out !== undefined) clipOut = out;\n',
       ],
     ],
+  },
+
+  // The refusal goes back to leaving the picker on the document it just refused, so the menu
+  // names a configuration the clip is not on while the readout beside it names the one it is.
+  // Reddens *both* picker rows in section 7, and the first draft of this comment claimed it
+  // reddened only the first - measured 2 assertions, not 1, which is worth leaving written
+  // down. Removing the revert leaves the picker sitting on the refused name, and that fails
+  // both questions at once: it is the refused one, and it is not the adopted one. The second
+  // row still earns its place, because it is aimed at a different wrong build - one that
+  // reverts the picker to *something*, which would pass the first row while naming a
+  // deliverable the clip is not on. No mutation here produces that build; the row is the
+  // standing guard against a fix written that way later.
+  //
+  // The five `editor-check-bad` rows above stay green, because the refusal itself still
+  // happens - this control removes what the page *says* about it, not the refusing.
+  'refusal-strands-the-picker': {
+    file: 'web/main.js',
+    edits: [[
+      "    ui.deliverable.value = ui.deliverable.dataset.adopted ?? '';\n",
+      '',
+    ]],
   },
 
   // `resize()` goes back to reallocating the drawing buffer and drawing nothing into it,
@@ -2846,6 +2868,24 @@ try {
   // `applyDeliverable` behind it the way section 14 drives `restoreProject`. The menu is the
   // door a document from another build actually arrives through, and the console write is
   // part of what arriving through it does.
+  // **And the control that names the selection is put back on what the clip is on.** The
+  // refusal happens before `applyDeliverable` replaces anything, so the trim, the export size
+  // and the readout beside the picker all still describe the deliverable that was already
+  // there - which left the picker as the one surface naming the refused one. Two surfaces
+  // disagreeing is worse than either being wrong: a render afterwards matches the readout
+  // while the menu shows the name of a configuration that was never adopted.
+  //
+  // Read off `#tDeliverable` rather than off any hook, because the element is the claim.
+  const picker = await page.evaluate(`(() => {
+    const el = document.getElementById('tDeliverable');
+    return { value: el.value, adopted: el.dataset.adopted ?? '' };
+  })()`);
+  check(picker.value !== 'editor-check-bad',
+    '  and the picker is not left naming the deliverable that was refused',
+    `#tDeliverable reads ${JSON.stringify(picker.value)}`);
+  check(picker.value === picker.adopted,
+    '  and it names the one the clip is actually on, rather than merely something else',
+    `#tDeliverable ${JSON.stringify(picker.value)} against the adopted ${JSON.stringify(picker.adopted)}`);
   const drained = errors.filter((e) => /not a program time/.test(e));
   for (const e of drained) errors.splice(errors.indexOf(e), 1);
   check(drained.length === 1,
