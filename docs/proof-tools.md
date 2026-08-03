@@ -101,6 +101,29 @@ rather than pinning jobs to.
 (`--no-browser` drops it and says so). It writes takes into its own staged tree, so it never
 touches `captures/`.
 
+**It also needs this machine to have a non-internal IPv4, and exits 2 when it has none.**
+Section 6 is the only arm in the repo that creates a webcam subscriber which is not on
+loopback, and it makes one the way `guard-check` does: a server widened with `--host 0.0.0.0`
+and a subscriber arriving on this machine's own LAN address. Without a second address there is
+nothing the loopback exemption can be asked about, so the run prints `UNPROVEN` naming the
+missing address rather than passing quietly — `guard-check`'s answer to the same condition,
+not `monitor-check`'s, which turns it into a failed assertion. Both exit-2 reasons carry their
+own remedy now, because the verdict line used to append playwright's advice to whatever it was
+given and would have told an operator missing a LAN address to install a browser.
+
+**Its own server-readiness wait is on the sensor rather than on a constant**, and that was a
+bug rather than a nicety. `viewer on` is printed inside `httpServer.listen`'s callback, which
+is before the grabber has been spawned at all, and this grabber reads a 138MB capture and runs
+a 1080p ffmpeg encode first — measured at 3.8 to 4.7 seconds on a loaded Mac and never under a
+second on an idle one, against the 400ms the tool used to allow. Sections 2, 3 and 4 were all
+questioning a server with no sensor behind it, so the endpoint 503'd, no take gathered a frame,
+and every row read as a finding about the webcam. `start()` now polls `/record/state` until
+`webcam.available`, which is the right flag because `server/webcam.js` only ever clears it on a
+hello with colour on, and reads without subscribing — which section 1 needs, since its first
+row is about what happens while nothing is subscribed. That row was the second casualty: it
+passed on an empty emit log, which is as true of a grabber that never started as of one running
+with colour off.
+
 **Its discriminator is geometry rather than resolution, and that is the whole design of the
 tool.** The webcam's claim is that it serves the colour camera and not the registered 512x424
 image the point cloud is textured with — and an implementation that upscaled the registered
@@ -109,9 +132,57 @@ colour camera sees 84.1° where the registered frustum sees 70.6°, so a real co
 content down the sides that no upscale can invent. `fake-grabber --hd` builds the fixture as
 *the registered frame upscaled* plus a magenta left margin and a cyan right one, so a cheating
 implementation matches most of the picture and still fails on the 12% at each edge. Run
-`--mutate hd-upscales-registered` and read which rows fire: the two margin rows and the
-re-encode row, and nothing else. `--mutate hd-reaches-recorder` fires the two rows about the
-take. A control that failed on a neighbouring row would not be a control for the thing it names.
+`--mutate hd-upscales-registered` and read which rows fire: the two margin rows, the
+passthrough row and the re-encode row. `--mutate hd-reaches-recorder` fires the two rows about
+the take, and only those. A control that failed on a neighbouring row would not be a control
+for the thing it names.
+
+**`hd-upscales-registered` reddens neighbouring rows on a contended machine, and that is a
+defect in the control rather than a finding about the code.** It runs a synchronous 1920x1080
+ffmpeg scale on the server's event loop *per colour message*, so the stream starves — over four
+`--no-browser` runs on one Mac spanning one-minute load averages of about 25 to about 95, its
+four named rows fired in all four, `and the subscriber is actually being served parts` fired in
+two, `the take carries a hello and frames` fired in two, and exactly one run showed neither.
+Read the four named rows and treat a fifth in section 1 or 3 as the harness competing for the
+machine. Memoising it the way
+`hd-reencodes-in-flight` is memoised would fix the starvation, but not for free: the registered
+image varies across the fixture's 284-frame loop, so a memoised upscale serves one constant
+frame and `and nothing re-encoded it on the way through` would go green — which is a decision
+about what that control is for, not a tidy-up, and it has not been taken here.
+
+**The margins say the picture is right and only the emit log says the bytes are.**
+`--mutate hd-reencodes-in-flight` decodes the colour payload and re-encodes it at the same size
+and a comparable quality, so every geometric row still passes and exactly one fires: `every
+served part is the same JPEG the writer emitted`. It fires because the writer's emit log now
+carries a fourth column, the sha256 of the part body a reader receives, which is what makes
+comparing the two ends possible at all — a colour payload is a u64 stamp then the JPEG, the
+stamp moves per frame, and the row that used to be here hashed a served part against the set of
+served parts and was therefore true whenever a part arrived. Both readers of that log
+destructure positionally and ignore the fourth column, so adding it changed no behaviour; if a
+fifth is ever wanted, that is the moment to give the log a header line instead.
+
+The mutation memoises its re-encode, and that is load-bearing rather than an optimisation: a
+synchronous 1920x1080 re-encode per message starves the stream until `a frame was served at all`
+reddens instead, and a control that fires for a neighbouring reason is not a control. The memo
+costs nothing in fidelity because the fixture's colour payload carries one constant HD frame.
+Its own falsification is the pair: the same mutation printed NOT CAUGHT with 0 failed against
+the row as it stood before, and prints `caught, as required` with 1 failed after — which is
+also what discriminates a real catch from ffmpeg having silently failed, since the mutation
+falls back to the original bytes when it cannot run.
+
+**`--mutate refusal-ignores-webcam`** deletes the webcam clause from
+`consumersCostingTheTake`, leaving the monitors one, and must fire exactly the two section 6
+rows that assert the refusal — never the third, which is the operator accepting the cost, since
+a take that was already permitted stays permitted. Section 1's `a loopback subscriber does not
+refuse the take` is a row that mutation makes *more* true, which is why it could never have
+stood in for the arm that creates a remote one.
+
+**That row is the control for the other direction**, and it was tested rather than reasoned
+about. `Webcam.subscribersCostingTheTake` is written as a filter over `describe()`, so a
+`describe()` that stopped publishing `loopback` would silently make it return every subscriber
+and charge every proof tool in this repo for its own localhost connection. Forcing the rule to
+`return this.describe()` reddens three rows — the section 1 one by name, and the two in section
+3 that need a take to start with a loopback webcam attached.
 
 **`guard-check`** spawns its own servers and needs none running. It exits 2 when the machine has
 no non-internal IPv4, because "not listening on the network" is only a claim if there is a

@@ -177,9 +177,21 @@ process.stderr.write(`[fake-grabber] streaming ${frames.length} looped frames at
 // has logged everything the reader could possibly have received and never less. The
 // other order would let a frame reach the recorder that this file does not vouch
 // for, and the check reading it would report a take carrying a frame nobody emitted.
-const note = (type, payload) => {
+// The fourth column is the hash of the *body* a reader downstream receives, which for
+// a colour message is the JPEG without the stamp in front of it. It exists because the
+// payload hash cannot serve that purpose: the stamp moves per frame, so a check
+// comparing what the webcam served against what this file logged would never find a
+// match and had been hashing served parts against each other instead - an assertion
+// whose two sides came out of the same object, true whenever a part arrived at all.
+//
+// Passed in by the caller rather than sliced out of `payload` here, because the wire
+// layout belongs at the call site: `note` would otherwise have to know that type 3
+// puts a u64 before its JPEG and type 2 does not. Callers with no separate body write
+// a `-`, which has no space in it, so both readers' positional destructuring holds.
+const note = (type, payload, body = null) => {
   if (!EMIT_LOG) return;
-  appendFileSync(EMIT_LOG, `${type} ${payload.length} ${createHash('sha256').update(payload).digest('hex')}\n`);
+  const sha = (b) => createHash('sha256').update(b).digest('hex');
+  appendFileSync(EMIT_LOG, `${type} ${payload.length} ${sha(payload)} ${body ? sha(body) : '-'}\n`);
 };
 
 const encode = () => {
@@ -201,7 +213,9 @@ const encodeHd = () => {
   const payload = Buffer.alloc(8 + hdFrame.length);
   payload.writeBigUInt64LE(BigInt(origin + Math.round((n * 1000) / FPS)), 0);
   hdFrame.copy(payload, 8);
-  note(TYPE_COLOR, payload);
+  // The JPEG on its own as well as the payload, because the JPEG is what the webcam
+  // hands a subscriber and so the only thing the two ends can be compared on.
+  note(TYPE_COLOR, payload, hdFrame);
   return encodeMessage(TYPE_COLOR, payload);
 };
 
