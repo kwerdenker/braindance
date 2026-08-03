@@ -188,6 +188,9 @@ node tools/level-check.mjs --mutate region-follows-tilt   # ... and must FAIL mu
 node tools/level-check.mjs --mutate sensor-view-ignores-tilt # ... and must FAIL mutated
 node tools/level-check.mjs --mutate level-writes-zero     # ... and must FAIL mutated
 node tools/level-check.mjs --mutate level-order-swapped   # ... and must FAIL mutated
+node tools/level-check.mjs --mutate level-selection-ignores-point # ... and must FAIL mutated
+node tools/level-check.mjs --mutate pointer-levels-the-centre # ... the press's own position, one link earlier
+node tools/level-check.mjs --mutate reset-keeps-roll      # ... and must FAIL mutated
 node tools/vcam-check.mjs                                 # the output to OBS: the colour camera, the take it must not touch, and the source's picture
 node tools/vcam-check.mjs --mutate hd-upscales-registered # ... and must FAIL mutated
 node tools/vcam-check.mjs --mutate hd-reaches-recorder    # ... and must FAIL mutated

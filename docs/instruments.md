@@ -291,6 +291,35 @@ curve. The probes were moved onto the knees and onto an eased ramp and the same 
 fails four. Ask what the wrong implementation would agree with, and probe somewhere it
 cannot.
 
+### A probe can be in the right place and still start one link past the break
+
+`level-check` section 5 graded floor selection on a frame with two different planes planted
+in it, pressed each side, and checked the two rotations differed — which is the probe placed
+exactly where its answer is different, and it was still blind to half of what it was named
+for. Every one of those arms called `levelAtStagePoint` directly and passed its own
+coordinate, so all of them began *after* the step that turns a press into a coordinate. The
+sole gesture through the real control pressed the exact centre of a frame carrying one plane,
+and a frame of one plane answers the same whatever point reaches it. So a `pointerdown`
+handler that computed `view` and then handed the middle of the frame to a correct hook passed
+the whole section: measured, on the shipped tool, at 33 assertions and 0 failed.
+
+The existing `level-selection-ignores-point` did not cover it either, and the reason is worth
+keeping. That mutation discards the coordinate *inside* the hook, one link below where the
+arms attach, so they see it; the handler sits one link above them, where nothing was looking.
+**A hook exposed for testing is a seam, and a seam has two sides — arms that all attach on
+the same side of it measure one of them.** The fix drove the split plant through `#camLevel`
+and `#stage` at 0.35 and 0.65 of the stage's own width, graded which plane each press landed,
+and added `pointer-levels-the-centre` as the control: it now reddens 2 of 36 and the run still
+finishes, the left press writing the right plane's `32/45` because the seam between the two
+planted planes falls on the right half.
+
+One row of that set passes under the mutation and is kept anyway. The *right*-side press is
+answered correctly by a centre-passing build, since the centre lands on that plane by
+construction — so the left-side row and the two-presses-differ row are what carry the claim,
+and the right-side row exists to say the gesture works on both ends rather than to catch
+anything. **Ask of a control set which member would still be green under the mutation, and do
+not mistake it for redundancy: it is measuring a different thing.**
+
 ### `nav-at-the-foot` stood in a dead zone and then moved the page it measured
 
 Both flaws at once, in one probe, and both were found by running the mutation and reading

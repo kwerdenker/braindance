@@ -244,11 +244,12 @@ sets of camera intrinsics and no accelerometer, so there is no gravity vector an
 straighten it by. `tilt` and `roll` under Framing rotate the *room* rather than the camera,
 which is what makes it one setting instead of four: the turntable's pole, the top-down inset,
 auto-orbit's axis and the exported frame all come level together, where a camera that merely
-rolled itself would leave the other three canted. Aim a flat surface into the middle of the
-frame and press **level to centre** to have the pair derived from it — a ceiling works as well
-as a floor, since the fit takes whichever of the surface's two normals disagrees less with the
-vertical already in force. Two angles and not three: the third would be yaw about the room's
-vertical, which is what dragging on the picture already does.
+rolled itself would leave the other three canted. Press **select floor**, then click a flat
+floor or ceiling plane in the picture to derive the pair from that surface. The button and
+`Escape` both cancel an armed selection. **Reset rotation** takes both axes back to zero.
+A ceiling levels the same way as a floor, since the fit takes whichever of the surface's two
+normals disagrees less with the vertical already in force. Two angles and not three: the third
+would be yaw about the room's vertical, which is what dragging on the picture already does.
 
 The crop faces and the region stay in sensor metres through all of it. They are tested before
 the model matrix, so a box shrunk onto a subject stays on that subject when the room is levelled

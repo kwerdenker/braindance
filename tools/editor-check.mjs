@@ -988,9 +988,10 @@ const DRIVER_IDS = {
   tExport: 'section 6 asserts it is reachable, section 7 renders with it',
   tExportSave: 'section 7 - the saved copy, against a stubbed picker',
   cropReset: 'section 8 - opens the crop box again and the planes are read back',
-  camLevel: 'level-check section 5 - clicks this element and reads the pair, the slider '
-    + 'and the note back; it drives the button rather than the function behind it, which '
-    + 'is the distinction this whole section exists to enforce',
+  camLevel: 'level-check section 5 - arms this element, clicks the stage and reads the pair, '
+    + 'the slider, the note and the spent mode back; it drives both parts of the gesture '
+    + 'rather than the function behind them, which is the distinction this whole section exists to enforce',
+  camLevelReset: 'level-check section 5 - clicks this element and reads both axes and both sliders at neutral',
 };
 
 // ------------------------------------------------------------------- the page

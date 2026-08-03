@@ -45,6 +45,7 @@
      boundary is invisible - which makes it a guide nobody can use. An outline rather
      than a border because it must not enter the layout the letterbox just computed. */
   #stage { outline: 1px solid rgba(120, 220, 210, 0.28); }
+  body.selecting-level #stage { cursor: crosshair; outline-color: var(--accent); }
 
   /* Two boxes rather than one scrolling box, and the split is what makes the way out
      of this surface reachable. The panel fills the window's height and its content is

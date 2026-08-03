@@ -173,6 +173,10 @@ rather than a convenience.** It writes analytic planes — `z = c / (u . n)` alo
 own ray — straight into the depth texture, so it knows the normal of every surface it plants
 and can mark the plane fit against the answer. A fixture take would have given it a surface
 nobody knows the normal of, and the fit would then only ever have been asserted against itself.
+Section 5 also plants different planes on the left and right of one frame, selects each side,
+and checks the two resulting rotations. A full frame of one plane cannot distinguish a selected
+point from a hard-coded centre. The same section drives the reset button and reads both axes and
+both sliders back at neutral.
 
 **Its staged tree deliberately has no `native/`, and that is the reason it works.** A live
 socket wipes a planted frame in well under a second — an arriving frame swaps the two depth
