@@ -1342,7 +1342,11 @@ const numbersIn = (src) => {
         i++;
       }
       i++;
-      prev = '/';
+      // **A finished regex is a value**, and leaving `prev` as the slash that closed it
+      // said the opposite - so `/x/ / 512` read the second slash as another opener and
+      // swallowed the number. `)` stands for "a value ended here" the same way it does
+      // after a call, which is what the question below actually asks.
+      prev = ')';
       prevWord = '';
       continue;
     }
@@ -2232,7 +2236,13 @@ async function runChecks() {
     // The three quoting forms are matched as three alternatives rather than by stripping
     // afterwards, because a quoted value may legitimately contain a space and an unquoted
     // one may not, and that is exactly the difference a shared pattern cannot carry.
-    const SCRIPT = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+    // **A start tag ends at the first unquoted `>`.** Reading to the first `>` of any kind
+    // ends the tag inside `<script data-note=">">`, which leaves the attribute's closing
+    // quote at the head of the body - so the scan opens a string on it, runs to the next
+    // quote, and eats the declaration behind it. Quoted runs are matched as units for the
+    // same reason the type attribute is: a quoted value may contain the character that
+    // would otherwise terminate what it sits in.
+    const SCRIPT = /<script\b((?:"[^"]*"|'[^']*'|[^>"'])*)>([\s\S]*?)<\/script>/gi;
     // **Anchored on an attribute boundary and not on `\b`**, because a word boundary sits
     // between `-` and `type` as happily as it sits after `<script`. A page carrying
     // `<script data-type="application/json">` has no `type` attribute at all, so the
@@ -2308,7 +2318,11 @@ async function runChecks() {
       // value, and the division reads as a regex that swallows to the end of the line.
       // It sits in this file because that is the file whose 512 must be found - a scan
       // that swallows here loses the declaration two lines up as well.
-      + 'export const step = (counter) => counter++ / 512;\n');
+      + 'export const step = (counter) => counter++ / 512;\n'
+      // A finished regex divided by something, which is the third way the slash question
+      // gets answered wrongly: the slash that *closed* a pattern is not the slash that
+      // could open one, and treating it as the latter swallows what follows.
+      + 'export const ratio = /x/ / 512;\n');
     writeFileSync(join(probeRoot, 'web', 'nested', 'deeper', 'further.js'), 'export const H = 424;\n');
     writeFileSync(join(probeRoot, 'web', 'nested', 'deeper', 'scientific.js'), 'export const H = 4.24e2;\n');
     // **The literal text a module carries, which is the same fact as the paragraph in the
@@ -2363,6 +2377,10 @@ async function runChecks() {
       + '<script type=text/javascript defer>const H2 = 424;</script>\n'
       + '<script data-type="application/json">const H3 = 424;</script>\n'
       + '<script>const H4 = 0650;</script>\n'
+      // An attribute whose value contains the character that ends a start tag. A tag
+      // matcher stopping at the first `>` of any kind hands the body a leading quote,
+      // which opens a string that runs over the declaration behind it.
+      + '<script data-note=">">const H5 = 424;</script>\n'
       + '<script type="application/json">{"width": 512}</script>\n');
     const walked = sourcesUnder(probeRoot, 'web');
     // Sorted per directory and depth-first, which is the order `sourcesUnder` produces

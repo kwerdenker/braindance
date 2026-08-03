@@ -370,6 +370,39 @@ attribute value ends at whitespace and a capture reading it to the `>` answers
 `text/javascript defer`, which is in no list of anything. Same failure as the missing MIME
 types and from the same direction: a running script's body dropped.
 
+### Eight rounds of one seam, and what that says about hand-rolling a lexer
+
+The scan that answers "is this number written in the code" has now been corrected eight
+times, and every correction was the same sentence: a question about a *token* answered
+with a *character*. Leading-dot numbers, `return /re/`, postfix `++`, legacy octal,
+`\btype` inside `data-type`, an unquoted attribute running past its end, a quoted `>`
+ending a start tag, and a finished regex divided by something. Each was real, each was
+silent, and each was found by review rather than by a run.
+
+**That is the honest cost of a hand-rolled lexer, and it is worth stating rather than
+hiding behind the fixes.** The alternative was never a regex — a regex over a language is
+strictly worse — it was a dependency, and this repo has no parser and adds packages under
+a supply-chain gate. The scan is a hundred lines and every failure it has had is in the
+loud-or-silent taxonomy already written here, so the choice is defensible. But a reader
+arriving next year should know the shape: the property is easy to state, and the *scanner*
+is the part that is hard, and it will keep having edges.
+
+Two things make the cost bearable, and both are worth copying to any similar instrument:
+
+**The failures divide into loud and silent, and the design leans one way on purpose.** A
+misread that scans something which is not code over-reports and fails a clean tree, which
+somebody sees. A misread that skips something which *is* code goes unseen under a green
+row. Every ambiguous decision in the scan is resolved toward the first, and the one case
+left genuinely ambiguous — a `/` after `}` — is documented as such.
+
+**The probe files are the real arm, not the mutation table.** Most of these forms cannot be
+planted in the tree the mutations edit: octal is a SyntaxError in a module, no page here
+carries a `data-type` attribute, and a mutation of a file under `tools/` would be staged
+where nothing runs. So the probe carries them, it asserts the *whole matched list* rather
+than membership, and each planted file sits on one dimension's list and off the other's —
+which makes both a missed form and an over-read form fail, with no row of its own for
+either.
+
 ### A comment that was true when written, and false one commit later
 
 The scan's own paragraph said legacy octal could be ignored: `01000` is 512, it is a
