@@ -281,6 +281,24 @@ control over it at all: `markTicks()` only ever reads the ruler strip, so that s
 could stop going through the retime curve entirely and every row in the suite would stay
 green. Two sites doing one conversion is what made this anchor stale in the first place.
 
+**And reading a table by importing the tool's prefix made this row need what the tool needs,
+which CI found and a developer's machine cannot.** The cut ran from the top of the file so that a
+table referencing a const beside it would still resolve, and it dragged two things with it: the
+tool's own `import ... from 'ws'`, which CI has not installed because this tool is documented as
+needing nothing at all, and the tool's top-level *work* - `export-check` and `registry-check` both
+resolve a commit with `git log -S` while their module body runs, so reading their tables walked the
+whole history of `web/main.js` and threw outright in a tree extracted without its `.git`. Four
+tables went unread on CI, at 137 anchors against 248 here.
+
+The row was loud about it, four FAIL lines and the fallen count, which is why the count is in the
+summary line at all - but the summary still read `all 137 ... match once`, true of what it read and
+indistinguishable from a clean row. **A count is only honest beside what it could not count**, so
+an unread table is now named in that same sentence. The cut itself is the declaration alone, which
+reads fifteen of the sixteen with no imports and no side effects at all, falling back to the
+package-stripped prefix for the one table that references a neighbouring const. Verified where it
+failed: a tree extracted with neither `node_modules` nor `.git` reads all 248 in 14 tables, in 5.7s
+against minutes.
+
 **And the shape inference was wrong within days, which is the argument for normalising rather
 than for a better guess.** A bare `{ from, to }` had a single declarer, `registry-check`, which
 edits the browser bundle - so the resolver read the shape as meaning `web/main.js`. Then

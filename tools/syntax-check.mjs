@@ -470,6 +470,33 @@ if (!existsSync(DOC)) {
   // than letting it sit in `tools/` looking like something this repo ships.
   const PROBE = join(ROOT, 'tools', '.mutation-table-probe.mjs');
 
+  // **The declaration alone, and the whole prefix only when the declaration will not stand
+  // up on its own.** Taking the prefix from the top of the file was the obvious cut and it
+  // was wrong twice over, both of them found by running this somewhere other than a
+  // developer's machine.
+  //
+  // It made the row need what the *tool* needs. This tool is documented as needing nothing
+  // at all, and CI installs no dependencies, so `import ... from 'ws'` in the prefix meant
+  // four tables could not be read there while all sixteen read here - 137 anchors against
+  // 248. The row said so, four FAIL lines and the fallen count, which is the loud direction
+  // and is why the count is in the summary line at all.
+  //
+  // Worse, it *executed* the tool's top-level work. `export-check` and `registry-check` both
+  // resolve a commit with `git log -S` while their module body runs, so reading their tables
+  // shelled out to git over the whole history of `web/main.js` - a walk this row has no
+  // business doing, and one that throws outright in a tree extracted without its `.git`.
+  //
+  // So the declaration is cut on its own, which reads fifteen of the sixteen with no imports
+  // and no side effects. The sixteenth is `library-check`, whose table references a
+  // `REVEAL_EDIT` const beside it; that one falls back to the prefix with installed-package
+  // imports struck out, because a `node:` builtin and a relative path both resolve in a tree
+  // nobody ran `npm install` in and a bare package name does not. A table is data, so a
+  // package is the one thing it can never legitimately need.
+  const withoutPackages = (prefix) => prefix.replace(
+    /^import\s[^;]*?from\s+'([^']+)';$/gm,
+    (line, spec) => (/^[./]|^node:/.test(spec) ? line : ''),
+  );
+
   /** What a single entry anchors on, or why it anchors on nothing, or null for unknown. */
   const shapeOf = (spec) => {
     if (Array.isArray(spec)) {
@@ -506,7 +533,7 @@ if (!existsSync(DOC)) {
     return targets.get(path);
   };
 
-  let tablesDeclared = 0, tablesWithAnchors = 0, anchorsChecked = 0, stale = 0;
+  let tablesDeclared = 0, tablesWithAnchors = 0, anchorsChecked = 0, stale = 0, unreadable = 0;
   const anchorless = [];
   for (const name of readdirSync(join(ROOT, 'tools')).filter((f) => PARSES.test(f)).sort()) {
     const source = readFileSync(join(ROOT, 'tools', name), 'utf8');
@@ -519,17 +546,32 @@ if (!existsSync(DOC)) {
       continue;
     }
     let table = null;
-    try {
-      writeFileSync(PROBE, `${source.slice(0, end + 3)}\nexport { MUTATIONS };\n`);
-      // Cache-busted, because fifteen tools are imported through one filename and Node
-      // would otherwise hand back the first tool's table fourteen more times - which
-      // would read as every anchor matching and is the quietest possible way for this
-      // row to pass on nothing.
-      ({ MUTATIONS: table } = await import(`file://${PROBE}?tool=${encodeURIComponent(name)}`));
-    } catch (err) {
-      fail(`${name}: its MUTATIONS table could not be read - ${String(err.message).split('\n')[0]}`);
-    } finally {
-      rmSync(PROBE, { force: true });
+    // The declaration on its own first, then the prefix behind it. Both attempts are the
+    // same mechanism reading the same table, and only the first failing puts the tool's own
+    // module body on the path - so a tool that grows a top-level `git log` or a package
+    // import costs this row nothing until its table also starts needing a neighbour.
+    const cuts = [
+      source.slice(declared.index, end + 3),
+      withoutPackages(source.slice(0, end + 3)),
+    ];
+    for (const [attempt, cut] of cuts.entries()) {
+      try {
+        writeFileSync(PROBE, `${cut}\nexport { MUTATIONS };\n`);
+        // Cache-busted, because sixteen tools are imported through one filename and Node
+        // would otherwise hand back the first tool's table fifteen more times - which
+        // would read as every anchor matching and is the quietest possible way for this
+        // row to pass on nothing. The attempt is in the key as well, so a fallback is not
+        // answered by the cached failure of the cut it is falling back from.
+        ({ MUTATIONS: table } = await import(`file://${PROBE}?tool=${encodeURIComponent(name)}&cut=${attempt}`));
+        break;
+      } catch (err) {
+        if (attempt === cuts.length - 1) {
+          unreadable++;
+          fail(`${name}: its MUTATIONS table could not be read - ${String(err.message).split('\n')[0]}`);
+        }
+      } finally {
+        rmSync(PROBE, { force: true });
+      }
     }
     if (!table) continue;
 
@@ -570,11 +612,19 @@ if (!existsSync(DOC)) {
   }
   if (anchorsChecked === 0) {
     fail('no mutation anchors were checked at all, so this assertion passed on nothing - the tables moved or this scan is looking in the wrong place');
-  } else if (stale) {
+  } else if (stale || unreadable) {
     // Counted separately from the total rather than folded into it, because "239
     // checked" beside three FAIL lines is the number a reader needs and "all 239 match"
     // over the top of them would be this row asserting the very thing it just disproved.
-    console.log(`  anchors/ ${anchorsChecked} checked in ${tablesWithAnchors} tables of ${tablesDeclared} declared, ${stale} not matching exactly once`);
+    //
+    // A table that could not be read at all belongs in the same sentence, and it took a
+    // control to notice that it was not there: with `library-check` unreadable the line
+    // above still said "all 174 match once", which is true of what it read and reads as a
+    // clean row over a FAIL. The number that is missing is the point - it was 248.
+    const parts = [];
+    if (stale) parts.push(`${stale} not matching exactly once`);
+    if (unreadable) parts.push(`${unreadable} table${unreadable === 1 ? '' : 's'} unread, so this count is short by however many ${unreadable === 1 ? 'it' : 'they'} held`);
+    console.log(`  anchors/ ${anchorsChecked} checked in ${tablesWithAnchors} tables of ${tablesDeclared} declared, ${parts.join(', ')}`);
   } else {
     console.log(`  anchors/ all ${anchorsChecked} in ${tablesWithAnchors} tables match once, of ${tablesDeclared} declared`);
   }
