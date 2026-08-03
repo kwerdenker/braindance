@@ -276,6 +276,32 @@ than 30.** So size fixtures by *frame count*, not duration: five minutes of its 
 rewritten monotonic stamps — real depth and real JPEGs, only the u64 at payload offset 8 moves.
 Say so whenever a number rests on one.
 
+**`fake-grabber` honours `--no-color` and `--no-low-light`, and reports any argument it does
+not know.** It ignored both for its whole life, which mattered because they are not the
+operator's flags — the server appends them to the grabber's argv out of `camera`, so eight of
+`library-check`'s servers were running colour-off and being answered with a `"color":true`
+hello over frames still carrying full JPEGs. That is a stream the real sensor cannot produce
+under the arguments it was given, and the mirror image of it — a hello claiming colour over a
+take with no JPEG — is a state the server treats as corruption. Under `--no-color` the hello
+now says `"color":false`, and `"lowLight":false` with it: `native/grabber.cpp` reports
+`lowLight` as the **conjunction**, so colour off makes it false whatever the second flag said,
+and a fixture watching only for `--no-low-light` reproduces the same defect one field over
+while looking fixed. Every payload is rewritten once at load — the `colorBytes` u32 at offset
+4 zeroed and the payload truncated to `16 + depthBytes` — because `server/capture.js` refuses
+a frame whose two declared lengths do not describe it, so both edits are needed or nothing
+parses.
+
+**The depth it emits is real recorded sensor depth under both flags**, which is the whole
+value of this fixture. What it still deliberately does not do is simulate a sensor: the
+cadence is a flag, colour is dropped rather than re-shot, and `--pipeline`, `--log`,
+`--quality`, `--min-depth` and `--max-depth` are accepted and ignored because there is no
+device here to apply them to. Anything else in argv gets one line on stderr naming it and the
+stream runs on — **reported, never refused**, because `buildArgs` appends `--pipeline` on a
+server that was given one and a fixture that rejected a legitimate spawn would break that
+path. That line proves the fixture noticed a flag, never that it acted on one; the behavioural
+claims belong to `monitor-check`'s colour-off section, which watches the wire and the page
+separately.
+
 The registration corpus is gitignored like every other capture. Regenerate it with the sensor
 attached, and vary the scene while it runs - a hand near the lens, a person against a far wall,
 something occluding something further - because the occlusion filter only does work at depth

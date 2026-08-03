@@ -176,6 +176,7 @@ node tools/monitor-check.mjs                              # step 9: the monitor'
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate expand-shifts-by-a-block   # ... and must FAIL mutated
+node tools/monitor-check.mjs --mutate colour-off-keeps-the-texture # ... the cloud stops wearing the last JPEG
 node tools/sensor-view-check.mjs                          # the intrinsics a take was shot with, against a build that assumes them
 node tools/sensor-view-check.mjs --mutate fov-hardcoded   # ... and must FAIL mutated
 node tools/sensor-view-check.mjs --mutate no-repaint      # ... and must FAIL mutated
