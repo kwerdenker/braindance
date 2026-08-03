@@ -339,9 +339,21 @@ const MUTATIONS = {
   ]] },
   // Marks are drawn at their source fraction rather than through the retime curve,
   // which is identical at rate 1 with no keys and wrong everywhere else.
+  //
+  // **It reaches the ruler strip, and that is the only site it could usefully reach.**
+  // The rows below read `markTicks()`, which reads `#tMarks .tmk` - the strip `paintMarks`
+  // fills - so the minimap's copy of this same conversion has no assertion over it and a
+  // mutation landing there would redden nothing while looking identical from outside.
+  //
+  // Re-anchored: the conversion was copied to the minimap, so the bare line matched twice
+  // and `mutatedSource` threw at module top level - a stack trace, exit 1 and no assertion
+  // count at all, which is the failure shape that reads as a catch. It now carries the
+  // following line, because the two sites differ only in indentation and the four-space
+  // form is a substring of the six-space one. Two sites doing one conversion is the reason
+  // this went stale; see `docs/instruments.md`.
   'marks-ignore-retime': { file: 'web/main.js', edits: [[
-    '    const program = retime.programSecAt(mark.sourceMs / 1000);',
-    '    const program = mark.sourceMs / 1000;',
+    "    const program = retime.programSecAt(mark.sourceMs / 1000);\n    const el = document.createElement('span');",
+    "    const program = mark.sourceMs / 1000;\n    const el = document.createElement('span');",
   ]] },
   // The gallery skims a remote take at full resolution, promising a smoothness the
   // link does not have.

@@ -713,11 +713,17 @@ const MUTATIONS = {
   // The space bar stops reaching the transport. Everything else about the keyboard
   // stays, so this reddens the transport rows and leaves the stepping and range rows
   // alone - which is what makes it diagnostic of its own term.
+  //
+  // Re-anchored: the pause half of this branch became `pauseTransport()` in `51c7c9d`,
+  // and `timeline.pause()` did not vanish from the tree, it moved off the line this
+  // mutation cared about - so nothing casual would have spotted it while the control sat
+  // dead for sixty commits. `syntax-check`'s anchor row is what now asks the question
+  // cheaply; see `docs/instruments.md`.
   'space-unbound': {
     file: 'web/main.js',
     edits: [[
       '      // Or the page scrolls under the strip.\n      e.preventDefault();\n'
-      + '      if (timeline.playing) timeline.pause();\n'
+      + '      if (timeline.playing) pauseTransport();\n'
       + '      else timeline.play().catch(showTimelineError);\n      return;',
       '      // Or the page scrolls under the strip.\n      e.preventDefault();\n      return;',
     ]],

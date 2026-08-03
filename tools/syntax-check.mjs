@@ -46,10 +46,19 @@ const ROOT = argv.includes('--root') ? argv[argv.indexOf('--root') + 1] : REPO;
 // so that row reads a genuinely moved constant rather than a comparison somebody nudged -
 // and the specification's own prose is left alone, which is the drift being simulated:
 // the code moved and the document did not.
+//
+// **`{ file, edits }` rather than the bare `{ from, to }` it was written as**, and the file
+// is named here rather than left to the anchor row below to infer. That row resolves a
+// target from the entry's *shape*, and a bare `{ from, to }` had exactly one declarer -
+// `registry-check`, which edits `web/main.js` - so the shape was reading as "the browser
+// bundle". This entry made that inference wrong the moment it landed: the row went looking
+// for `export const TYPE_COLOR = 3;` in `web/main.js`, found none, and reported this
+// control as an anchor that had gone stale. The shape says nothing about the file, so the
+// entry has to, which is the normalisation the row's own header asks for.
 const MUTATIONS = {
   'spec-drifts': {
-    from: 'export const TYPE_COLOR = 3;',
-    to: 'export const TYPE_COLOR = 4;',
+    file: 'server/protocol.js',
+    edits: [['export const TYPE_COLOR = 3;', 'export const TYPE_COLOR = 4;']],
   },
 };
 
@@ -260,7 +269,7 @@ if (!existsSync(DOC)) {
   } else {
     let src = readFileSync(file, 'utf8');
     if (mutation) {
-      const { from, to } = MUTATIONS[mutation];
+      const [[from, to]] = MUTATIONS[mutation].edits;
       // Refused rather than run. A mutation whose anchor has moved does nothing, and a run
       // that does nothing comes back green - which gets recorded as the control passing.
       if (!src.includes(from)) {
@@ -410,6 +419,214 @@ if (!existsSync(DOC)) {
     } else {
       console.log(`  format/ CAPTURE_FORMAT is ${inJs[1]} in both languages`);
     }
+  }
+}
+
+// **A mutation is a piece of source text, and until this row nothing checked that the
+// text still existed.** Every claim this suite makes about the tree is proved by running
+// a mutation and reading which assertions fired, so a mutation whose anchor no longer
+// matches proves nothing at all - and it fails in the direction that reads as success.
+// Of the three found when this row was written, two threw at module top level: a stack
+// trace, a non-zero exit and **zero failed assertions**, which is precisely what a caught
+// mutation looks like to anything reading exit codes instead of counting failures. The
+// third refused politely with exit 2. `docs/instruments.md` carries the case file, and
+// the previous instance of this same drift was closed at `keyframe-check`'s
+// `undo-includes-view` without closing the class - which is how three more went stale.
+//
+// **A duplicate is as stale as a miss**, and that is the half a naive row drops. The
+// defect that prompted this was an anchor matching *two* sites, because one conversion
+// had been copied to a second place, and a row asking "does this text appear" rather than
+// "exactly once" sails straight past it while looking thorough.
+//
+// Nothing here executes a tool. The table is read by cutting the tool's source at the end
+// of the declaration, appending an export, and importing that prefix from inside `tools/`
+// so the tool's own relative imports still resolve. Two properties of that cut were
+// measured rather than assumed: no tool that declares a table does side-effectful
+// top-level work above the declaration, and the terminator is the first `};` at column
+// zero, because no table body contains a line starting there. The second is an invariant
+// rather than a guarantee, so a prefix that does not import fails the row instead of being
+// quietly read as "this tool has no table".
+//
+// The target file is resolved from each entry's *shape* rather than from the tool's name,
+// because a hardcoded list of tools is the exact failure `sweep-all`'s header records from
+// its own shell ancestor: four arrays that would have run 59 of 78 mutations and printed
+// "all caught". There are six shapes, which is five more than there should be - and the
+// honest fix is normalising them onto `{ file, edits }`, which this row is the regression
+// test for. A seventh fails naming the tool rather than being skipped, because a
+// deliberate exclusion arrives with a justification that stops anybody looking twice.
+//
+// Last of the three rows on purpose: it is the only one that writes a file into `tools/`,
+// so a crash that leaks the prefix cannot make the same run's documentation row fail for a
+// reason that has nothing to do with the tree.
+{
+  const DECLARATION = /^const MUTATIONS = \{$/m;
+  // Where a shape that does not carry its own target points. Both are facts about the
+  // shape rather than about any tool: a bare `[from, to]` pair is only ever the C++
+  // registration mutation, and the three JavaScript shapes all edit the browser bundle.
+  const MAIN = 'web/main.js';
+  const REGISTRATION = 'third_party/libfreenect2/src/registration.cpp';
+  // One name reused for every extraction, so a crash can leak at most one file, and
+  // dotted-and-suffixed so the documentation row above catches it on the next run rather
+  // than letting it sit in `tools/` looking like something this repo ships.
+  const PROBE = join(ROOT, 'tools', '.mutation-table-probe.mjs');
+
+  // **The declaration alone, and the whole prefix only when the declaration will not stand
+  // up on its own.** Taking the prefix from the top of the file was the obvious cut and it
+  // was wrong twice over, both of them found by running this somewhere other than a
+  // developer's machine.
+  //
+  // It made the row need what the *tool* needs. This tool is documented as needing nothing
+  // at all, and CI installs no dependencies, so `import ... from 'ws'` in the prefix meant
+  // four tables could not be read there while all sixteen read here - 137 anchors against
+  // 248. The row said so, four FAIL lines and the fallen count, which is the loud direction
+  // and is why the count is in the summary line at all.
+  //
+  // Worse, it *executed* the tool's top-level work. `export-check` and `registry-check` both
+  // resolve a commit with `git log -S` while their module body runs, so reading their tables
+  // shelled out to git over the whole history of `web/main.js` - a walk this row has no
+  // business doing, and one that throws outright in a tree extracted without its `.git`.
+  //
+  // So the declaration is cut on its own, which reads fifteen of the sixteen with no imports
+  // and no side effects. The sixteenth is `library-check`, whose table references a
+  // `REVEAL_EDIT` const beside it; that one falls back to the prefix with installed-package
+  // imports struck out, because a `node:` builtin and a relative path both resolve in a tree
+  // nobody ran `npm install` in and a bare package name does not. A table is data, so a
+  // package is the one thing it can never legitimately need.
+  const withoutPackages = (prefix) => prefix.replace(
+    /^import\s[^;]*?from\s+'([^']+)';$/gm,
+    (line, spec) => (/^[./]|^node:/.test(spec) ? line : ''),
+  );
+
+  /** What a single entry anchors on, or why it anchors on nothing, or null for unknown. */
+  const shapeOf = (spec) => {
+    if (Array.isArray(spec)) {
+      // Both array shapes are pairs, so `Array.isArray` alone cannot tell them apart -
+      // it is the first element that says which. Read it wrong and every registration
+      // anchor reports hundreds of hits, which is loud and still wrong.
+      if (typeof spec[0] === 'string') return { file: REGISTRATION, from: [spec[0]] };
+      if (Array.isArray(spec[0])) return { file: MAIN, from: spec.map(([from]) => from) };
+      return null;
+    }
+    if (typeof spec === 'function') return { anchorless: 'functions that redirect the oracle' };
+    if (spec === null || typeof spec === 'string') return { anchorless: 'whole replacement file bodies' };
+    if (typeof spec === 'object') {
+      if (typeof spec.file === 'string' && Array.isArray(spec.edits)) {
+        return { file: spec.file, from: spec.edits.map(([from]) => from) };
+      }
+      // `registry-check`'s shape, and it is the last entry in the tree that names no file.
+      // It is left resolving to the bundle rather than made to declare one, because this
+      // row's job is to report the shapes that exist rather than to require a rewrite of a
+      // tool it is checking - but the inference is a guess about a tool, which is the thing
+      // the rest of this resolver refuses to do, and it has already been wrong once.
+      // Anything new belongs in `{ file, edits }`.
+      if (typeof spec.from === 'string') return { file: MAIN, from: [spec.from] };
+    }
+    return null;
+  };
+
+  const targets = new Map();
+  const targetSource = (path) => {
+    if (!targets.has(path)) {
+      const full = join(ROOT, path);
+      targets.set(path, existsSync(full) ? readFileSync(full, 'utf8') : null);
+    }
+    return targets.get(path);
+  };
+
+  let tablesDeclared = 0, tablesWithAnchors = 0, anchorsChecked = 0, stale = 0, unreadable = 0;
+  const anchorless = [];
+  for (const name of readdirSync(join(ROOT, 'tools')).filter((f) => PARSES.test(f)).sort()) {
+    const source = readFileSync(join(ROOT, 'tools', name), 'utf8');
+    const declared = DECLARATION.exec(source);
+    if (!declared) continue;
+    tablesDeclared++;
+    const end = source.indexOf('\n};', declared.index);
+    if (end === -1) {
+      fail(`${name} declares a MUTATIONS table with no terminator at column zero, so its anchors cannot be read`);
+      continue;
+    }
+    let table = null;
+    // The declaration on its own first, then the prefix behind it. Both attempts are the
+    // same mechanism reading the same table, and only the first failing puts the tool's own
+    // module body on the path - so a tool that grows a top-level `git log` or a package
+    // import costs this row nothing until its table also starts needing a neighbour.
+    const cuts = [
+      source.slice(declared.index, end + 3),
+      withoutPackages(source.slice(0, end + 3)),
+    ];
+    for (const [attempt, cut] of cuts.entries()) {
+      try {
+        writeFileSync(PROBE, `${cut}\nexport { MUTATIONS };\n`);
+        // Cache-busted, because sixteen tools are imported through one filename and Node
+        // would otherwise hand back the first tool's table fifteen more times - which
+        // would read as every anchor matching and is the quietest possible way for this
+        // row to pass on nothing. The attempt is in the key as well, so a fallback is not
+        // answered by the cached failure of the cut it is falling back from.
+        ({ MUTATIONS: table } = await import(`file://${PROBE}?tool=${encodeURIComponent(name)}&cut=${attempt}`));
+        break;
+      } catch (err) {
+        if (attempt === cuts.length - 1) {
+          unreadable++;
+          fail(`${name}: its MUTATIONS table could not be read - ${String(err.message).split('\n')[0]}`);
+        }
+      } finally {
+        rmSync(PROBE, { force: true });
+      }
+    }
+    if (!table) continue;
+
+    let carriesAnchors = false;
+    for (const [mutation, spec] of Object.entries(table)) {
+      const shape = shapeOf(spec);
+      if (!shape) {
+        fail(`${name}/${mutation} declares a MUTATIONS shape this row does not recognise, and a shape nobody checks is a control nobody proved`);
+        continue;
+      }
+      if (shape.anchorless) {
+        if (!anchorless.some((a) => a.name === name)) anchorless.push({ name, why: shape.anchorless });
+        continue;
+      }
+      const body = targetSource(shape.file);
+      if (body === null) {
+        fail(`${name}/${mutation} anchors into ${shape.file}, which does not exist`);
+        continue;
+      }
+      for (const from of shape.from) {
+        carriesAnchors = true;
+        anchorsChecked++;
+        const hits = body.split(from).length - 1;
+        if (hits !== 1) {
+          stale++;
+          fail(`${name}/${mutation} matches ${hits} times in ${shape.file}, expected exactly 1`
+            + ` - ${hits === 0 ? 'the text it anchors on has moved, so this control cannot run' : 'the text it anchors on appears more than once, so the tool refuses it'}`);
+        }
+      }
+    }
+    if (carriesAnchors) tablesWithAnchors++;
+  }
+
+  // Printed rather than absorbed: a table with nothing to check is a real answer, and one
+  // the count would otherwise hide behind a total that looks complete.
+  for (const { name, why } of anchorless) {
+    console.log(`  anchors/ ${name} declares ${why} rather than source anchors, so it has none to check`);
+  }
+  if (anchorsChecked === 0) {
+    fail('no mutation anchors were checked at all, so this assertion passed on nothing - the tables moved or this scan is looking in the wrong place');
+  } else if (stale || unreadable) {
+    // Counted separately from the total rather than folded into it, because "239
+    // checked" beside three FAIL lines is the number a reader needs and "all 239 match"
+    // over the top of them would be this row asserting the very thing it just disproved.
+    //
+    // A table that could not be read at all belongs in the same sentence, and it took a
+    // control to notice that it was not there: with `library-check` unreadable the line
+    // above still said "all 174 match once", which is true of what it read and reads as a
+    // clean row over a FAIL. The number that is missing is the point - it was 248.
+    const parts = [];
+    if (stale) parts.push(`${stale} not matching exactly once`);
+    if (unreadable) parts.push(`${unreadable} table${unreadable === 1 ? '' : 's'} unread, so this count is short by however many ${unreadable === 1 ? 'it' : 'they'} held`);
+    console.log(`  anchors/ ${anchorsChecked} checked in ${tablesWithAnchors} tables of ${tablesDeclared} declared, ${parts.join(', ')}`);
+  } else {
+    console.log(`  anchors/ all ${anchorsChecked} in ${tablesWithAnchors} tables match once, of ${tablesDeclared} declared`);
   }
 }
 
