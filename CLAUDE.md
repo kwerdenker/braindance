@@ -126,6 +126,10 @@ node tools/library-check.mjs --mutate menu-close-strands-focus     # ... and a m
 node tools/library-check.mjs --mutate run-strands-focus            # ... and an action that held the surface down
 node tools/library-check.mjs --mutate reveal-drops-the-path        # ... what the file manager was told
 node tools/library-check.mjs --mutate reveal-answers-any-caller    # ... and who may start a process
+node tools/library-check.mjs --mutate poll-refreshes-every-tick     # ... the gallery follows the recorder rather than the page load
+node tools/library-check.mjs --mutate health-answers-beside-the-table # ... a route answering outside the table is one no sweep can see
+node tools/library-check.mjs --mutate empty-window-keeps-its-start  # ... a window with no frames in it still closes
+node tools/library-check.mjs --mutate faint-fixed-in-one-page       # ... one token, and the page that drifts is named
 node tools/library-check.mjs --mutate write-overwrites-builtin # ... and must FAIL
 node tools/library-check.mjs --mutate list-swallows-unreadable # ... and must FAIL
 node tools/library-check.mjs --mutate open-take-swallows-library # ... and must FAIL
@@ -172,6 +176,9 @@ node tools/editor-check.mjs --mutate pause-keeps-resume --no-render   # ... and 
 node tools/editor-check.mjs --mutate bounds-compare-off-grid --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate detent-in-rate-units --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate zoom-pans-at-the-clamp --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate note-skips-title --no-render      # ... the whole of a long refusal stays reachable
+node tools/editor-check.mjs --mutate tick-seeks-source-seconds --no-render # ... a mark tick seeks where it is drawn
+node tools/editor-check.mjs --mutate offer-ignores-take-hash --no-render # ... the resume offer joins on footage, not on a name
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated

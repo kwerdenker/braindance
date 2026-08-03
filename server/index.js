@@ -1249,6 +1249,41 @@ const serveDownloads = (req, res) => sendJson(res, {
   }),
 });
 const serveDescriptors = (req, res) => sendJson(res, { open: openCaptureCount(), real: realDescriptorCount() });
+
+/**
+ * Whether the sensor is delivering, answered without anything attaching to it.
+ *
+ * **The point is what it does not cost.** These numbers existed already - the health
+ * interval computes them every five seconds and prints one line to a console nobody
+ * is reading during a shoot - and the only way to find out whether the sensor was
+ * healthy was to open a monitor over the socket. `consumersCostingTheTake` exists
+ * because an attached monitor can cost the take frames, so the one instrument for
+ * "is this sensor well" made it less well, which is an instrument that changes what
+ * it measures. Reading it off HTTP removes the trade entirely.
+ *
+ * Neither `write` nor `live` in the table, and both absences are decisions. Nothing
+ * here changes, so there is no mutation to guard. And this reports numbers *about*
+ * the sensor rather than what the sensor is seeing - a frame count is not a picture
+ * of the room - so the origin rule that covers `/camera.mjpg` has nothing to bite on.
+ *
+ * The window is served as its own length and its own frame count rather than only as
+ * a rate, because those are the two readings that tell a gap from a slow link: five
+ * seconds carrying zero frames and five seconds carrying a hundred and fifty are
+ * different facts, and a rate alone reports the first as silence.
+ */
+const serveSensorHealth = (req, res) => sendJson(res, {
+  state: sensorState,
+  // The last window that carried frames, which is deliberately older than the window
+  // below whenever the sensor has stopped - see the health interval.
+  fps: observedFps,
+  bytesPerSec: observedBytesPerSec,
+  // And the last window that closed, whether or not anything arrived in it.
+  window: lastWindow,
+  dropped: droppedTotal,
+  // The first spawn is a start rather than a respawn, which is the number somebody
+  // reading this is after: on a healthy node it is zero for the life of the process.
+  respawns: Math.max(0, grabberSpawns - 1),
+});
 /**
  * What the recorder is doing, and what the monitors attached to it would cost.
  *
@@ -1399,6 +1434,16 @@ const ROUTES = [
   // declaring itself rather than by somebody remembering - the same move the table
   // already made for mutations.
   { path: '/camera.mjpg', pattern: /^\/camera\.mjpg$/, live: true, read: (req, res) => webcam.attach(req, res) },
+
+  // ---- the sensor
+  //
+  // A namespace of its own rather than a corner of `/library`, because the table's
+  // existing first segments each name the subsystem the route reads from - a capture,
+  // the library, the recorder, the queue - and this one reads the sensor. An entry
+  // and not a branch beside the dispatcher, which is the part that matters: `/library
+  // /routes` publishes this table and `library-check` sweeps what it publishes, so a
+  // route answering from anywhere else is a route no sweep can see.
+  { path: '/sensor/health', pattern: /^\/sensor\/health$/, read: serveSensorHealth },
 
   // ---- recording
   { path: '/record/state', pattern: /^\/record\/state$/, read: serveRecordState },
@@ -1711,6 +1756,33 @@ const stats = { frames: 0, dropped: 0, bytes: 0, since: Date.now() };
 // library on a cold server still needs a number.
 let observedBytesPerSec = 0;
 const recordingRate = () => (observedBytesPerSec > 0 ? observedBytesPerSec : undefined);
+// The frame rate over the same window, kept beside the byte rate rather than derived
+// from it. A frame rate recovered by dividing bytes by a nominal frame size would be
+// an estimate wearing a measurement's clothes, and the two quantities move apart for
+// real reasons - a link delivering half the frames at full size and one delivering
+// every frame at half size are the same MB/s and different faults.
+let observedFps = 0;
+
+// The window that closed last, empty ones included, and it is deliberately not the
+// same age as the two rates above. A window with no frames in it has no rate to
+// report, so the rates keep the last honest measurement across a gap - but the
+// window's own length and frame count are exactly what says the sensor stopped
+// delivering, and they would say nothing if they were held back with the rates.
+let lastWindow = null;
+
+// Every frame the broadcast has dropped since this process started. Accumulated as
+// each window closes rather than counted in `broadcastFrame`, so the hot path is
+// untouched, and monotonic because the per-window count is zeroed every five seconds
+// - a number that resets cannot answer "has this link been dropping frames".
+let droppedTotal = 0;
+
+// How many grabbers this process has started. Kept at module scope because the
+// supervisor's own `attempt` cannot answer the question this one is for: `attempt` is
+// an index into the backoff's delay table and is deliberately zeroed on a clean
+// handshake and on a colour toggle, so it says how long until the next try and
+// nothing at all about how many times the sensor has already dropped. Two numbers
+// because they are two questions, not one number written down twice.
+let grabberSpawns = 0;
 
 let sensorState = 'starting';
 
@@ -2062,13 +2134,35 @@ function handleMessage(msg) {
 }
 
 setInterval(() => {
-  const dt = (Date.now() - stats.since) / 1000;
-  if (stats.frames === 0) return;
-  const fps = (stats.frames / dt).toFixed(1);
-  const mbs = (stats.bytes / dt / 1e6).toFixed(1);
-  observedBytesPerSec = stats.bytes / dt;
-  console.log(`[server] ${fps} fps  ${mbs} MB/s  dropped=${stats.dropped}  clients=${wss.clients.size}`);
+  // **The window closes before anything decides whether it was interesting**, and
+  // that ordering is the whole of this. The reset used to sit past the early return,
+  // so a five-second window in which no frame arrived was never closed at all and
+  // `stats.since` carried its old value across the gap. After a sixty-second USB drop
+  // the next window's frames were divided by sixty-five seconds - about a thirteenth
+  // of the true rate, into the log and into `observedBytesPerSec`, which the
+  // remaining-time readout divides free space by. An operator was then promised card
+  // space that does not exist at the rate the sensor is actually writing.
+  //
+  // **Resetting `dropped` alongside the other three is safe by construction.**
+  // `stats.dropped++` only ever runs inside `broadcastFrame`, on a path that has
+  // already run `stats.frames++` for the same frame, so a window that ends with
+  // `frames` at zero cannot have a drop in it to lose.
+  const closed = { ms: Date.now() - stats.since, frames: stats.frames, dropped: stats.dropped, bytes: stats.bytes };
   Object.assign(stats, { frames: 0, dropped: 0, bytes: 0, since: Date.now() });
+  lastWindow = { ms: closed.ms, frames: closed.frames };
+  droppedTotal += closed.dropped;
+  // **And what stays behind the return is the derived rate, deliberately left stale.**
+  // A window that carried no frames has no rate in it, and computing one anyway would
+  // replace the last honest measurement with a number over a window that never
+  // happened. The length and the frame count above are what say the gap occurred; the
+  // rates say what delivery looked like when there last was any.
+  if (closed.frames === 0) return;
+  const dt = closed.ms / 1000;
+  const fps = (closed.frames / dt).toFixed(1);
+  const mbs = (closed.bytes / dt / 1e6).toFixed(1);
+  observedBytesPerSec = closed.bytes / dt;
+  observedFps = closed.frames / dt;
+  console.log(`[server] ${fps} fps  ${mbs} MB/s  dropped=${closed.dropped}  clients=${wss.clients.size}`);
 }, 5000);
 
 // The Kinect v2 drops off the bus under sustained load on a marginal USB link,
@@ -2184,6 +2278,11 @@ function startLive() {
   };
 
   const spawnGrabber = () => {
+    // Counted here rather than in the backoff, because every road to a running
+    // grabber ends at this function - the exit handler's retry, the colour toggle's
+    // restart, and the boot - so a path added later is counted by going through it
+    // rather than by somebody remembering to add a line to it.
+    grabberSpawns++;
     const grabberArgs = buildArgs();
     console.log(`[server] starting grabber: ${bin} ${grabberArgs.join(' ')}`);
     setSensorState('starting');

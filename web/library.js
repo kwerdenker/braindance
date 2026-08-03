@@ -48,6 +48,7 @@
 // the place it is enforced.
 
 import { VALID_ID } from '/format.js';
+import { pollRecordState } from '/record-poll.js';
 
 const DEPTH_W = 512;
 const DEPTH_H = 424;
@@ -1582,6 +1583,31 @@ for (const tab of document.querySelectorAll('.tab')) {
 }
 
 await refresh();
+
+/**
+ * The gallery stops being a snapshot taken at load.
+ *
+ * A tile of a take that is mid-write says so, and `cannotOpen` reads that same
+ * warning out to disable Open, Download, Rename and Remove behind it. Nothing polled,
+ * so the moment the recorder stopped every one of those was wrong until somebody
+ * reloaded: the take is finished, hashed and openable, and the gallery went on
+ * refusing to open it for as long as the page stayed up.
+ *
+ * **Gated here rather than inside the poll, and the gate is the whole of this.**
+ * `paint()` closes every menu, releases every skim and replaces every tile, so an
+ * ungated refresh would take an open menu away every five seconds and reset a skim
+ * under the pointer. The recording flag and the take id are what decide what a tile
+ * is allowed to claim about a take, so they are what a repaint is worth paying for;
+ * a frame count ticking up is not.
+ *
+ * The failure is reported rather than swallowed, on the line the unreachable node
+ * already uses: a gallery that quietly stopped following the recorder looks exactly
+ * like a gallery with nothing to follow.
+ */
+pollRecordState((state, changed) => {
+  if (!changed) return;
+  refresh().catch((err) => say(`the library could not be reread: ${err.message}`));
+});
 
 // What a check reads. Every number here comes from the library's own state rather
 // than from the DOM, except the mark ticks - those are read back off the page on

@@ -59,6 +59,9 @@
 //   node tools/editor-check.mjs --mutate orbit-arms-stale-position --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate release-seeks-past-target --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate pin-keeps-orbit-armed  --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate note-skips-title       --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate tick-seeks-source-seconds --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate offer-ignores-take-hash --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate export-ignores-name              # must FAIL
 //
 // `--no-render` drops the real-export rows and says so in the verdict, the way
@@ -172,6 +175,63 @@ const MUTATIONS = {
         + '  applyStoredPreset({ name: saved.name, rev: saved.rev, body });',
       ],
     ],
+  },
+
+  // The editor's note goes back to being written into an element that truncates, with
+  // nothing carrying the whole sentence. `#tNote` sits in `.tchips`, which scrolls
+  // horizontally with its scrollbar hidden, so a message wider than the strip has no
+  // scrollbar to drag and no `title` to hover - it is off the right edge and there is
+  // no gesture that reaches it. Every note in the editor went through that element and
+  // only that element, and the messages that overflow are the refusals.
+  //
+  // Only the `title` goes. The text still lands and the strip still scrolls, which is
+  // what makes this the control for one row rather than a blanket switch: a mutation
+  // that also stopped the note being written would redden every row that reads it and
+  // say nothing about whether the sentence was reachable.
+  //
+  // Must redden: section 13's "the whole of a long refusal is reachable off the note's
+  // title", and that row alone. The export note's own rows stay green - `sayExport`
+  // writes its own title and a mutation reaching it would be saying something wider
+  // than this fix is.
+  'note-skips-title': {
+    file: 'web/main.js',
+    edits: [['  ui.note.title = text;\n', '']],
+  },
+
+  // A mark tick seeks to the mark's own source second instead of the program second
+  // the drawing code clamped it to, which undoes the retime the tick was positioned
+  // through. The two coincide exactly at rate 1 with no keys, so the row that drives
+  // this **must** establish a non-unity rate first or the mutation is invisible and
+  // the control proves nothing - section 13 asserts the separation before it presses.
+  //
+  // The click handler alone, so `markSecondsInOrder` is untouched and the two keys go
+  // on jumping correctly. A mutation that took the whole control away would redden the
+  // key rows and the section 1 sweep as well, and then "the seek is wrong" would not
+  // be what the run had shown.
+  'tick-seeks-source-seconds': {
+    file: 'web/main.js',
+    edits: [[
+      "    el.addEventListener('click', (e) => { e.stopPropagation(); goTo(at); });",
+      "    el.addEventListener('click', (e) => { e.stopPropagation(); goTo(mark.sourceMs / 1000); });",
+    ]],
+  },
+
+  // The resume offer joins the working document to a take by id rather than by hash.
+  // A rename frees the old id and a later take can be renamed into it (#13), so an id
+  // match is a claim about a name where a hash match is a claim about footage - and
+  // the offer this makes is somebody's edit put back on top of material it was never
+  // authored against.
+  //
+  // Must redden: section 13's "no offer for a working document belonging to different
+  // footage". The row asserting the offer *is* made on a hash match stays green, since
+  // a mutation that suppressed the offer outright would pass the first row for exactly
+  // the wrong reason.
+  'offer-ignores-take-hash': {
+    file: 'web/main.js',
+    edits: [[
+      '  if (!openTakeHash || working.body?.take?.hash !== openTakeHash) return;',
+      '  if (!openTakeId || working.body?.take?.id !== openTakeId) return;',
+    ]],
   },
 
   'plant-unswept-control': {
@@ -941,6 +1001,17 @@ const DRIVER_RULES = [
     what: 'a camera-composition control',
     by: 'keyframe-check drives the path; sensor-view-check drives `sensor view`',
     match: (el) => el.closest('#cameraGroup') || el.id === 'camSensor',
+  },
+  {
+    key: 'mark',
+    what: 'a mark tick on the ruler',
+    // A rule rather than an id, because there is one of these per mark on the take
+    // and the fixture decides how many. Section 14 presses one and reads the playhead
+    // back, which is the row that matters here: the sweep can only say the control is
+    // covered, and a tick that seeks to the wrong second is a covered control that
+    // does the wrong thing.
+    by: 'section 14 presses a tick under a non-unity rate and reads where the playhead landed',
+    match: (el) => el.classList.contains('tmk'),
   },
   {
     key: 'nav',
@@ -4183,9 +4254,268 @@ try {
     await cleanupPresets();
   }
 
-  // ================================ 13. the pinned drive takes the loop away with it
+  // ============== 13. the note can be read, the ticks seek, and the auto-save comes back
 
-  console.log('\n[13] pinning the drive drops what the loop was going to serve');
+  console.log('\n[13] the note carries its whole sentence, a ruler tick seeks, and the auto-save is offered back');
+  //
+  // Three claims that share a shape rather than a subsystem: in each of them the
+  // editor already knew the right answer and had no way to say it. The note knew the
+  // whole refusal and showed the part that fitted; the tick knew the program second to
+  // seek to and was a `span`; the auto-save was on disk under a name the picker
+  // deliberately hides, with nothing offering it back.
+  //
+  // **Before section 13's pin**, because every row here needs the animation loop and
+  // the transport, and pinning the drive takes both away for good.
+  {
+    // A project built on footage this take is not, so pressing Open produces the
+    // longest refusal this program writes - which is the message the note's failure
+    // was about. A real document through the real store, driven by the real button:
+    // a `showTimelineError` called from `page.evaluate` would test the helper and
+    // leave the path an operator actually takes unmeasured.
+    const OTHER = 'editor-check-other-footage';
+    const WORKING = '__working__';
+    const putDoc = async (name, body) => {
+      const res = await fetch(`${URL_BASE}/projects/${encodeURIComponent(name)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return res.json();
+    };
+    const dropDoc = (name) => fetch(`${URL_BASE}/projects/${encodeURIComponent(name)}`, {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+    }).catch(() => {});
+
+    // Every page error this section is answerable for, and the mark moves once more
+    // below. Counted from here rather than from zero because section 12 refuses two
+    // malformed presets on purpose and both refusals reach the console, so a row
+    // asserting the array is empty would report another section's deliberate work as
+    // this one's fault.
+    let errorsBefore = errors.length;
+    // **Waits for the open to have finished, not for the transport to exist.** The two
+    // are two fetches apart: `timeline` is assigned less than halfway through
+    // `openTake`, before the library is listed and before the resume offer is decided,
+    // so a wait on the transport reads the note before anything has written it - and
+    // `settled()` does not close the gap, because a transport with nothing queued is
+    // idle in exactly that window. Measured: the note came back empty here while the
+    // identical sequence on a fresh page reported the offer every time.
+    const reopen = async () => {
+      await page.reload({ waitUntil: 'load' });
+      await page.waitForFunction('globalThis.__kinect?.library?.opened() === true', null, { timeout: 30000 });
+      await settle();
+    };
+
+    // ---- what a fresh open of this take actually gives
+    //
+    // **Measured rather than assumed, and that is the repair this block is.** The
+    // documents below have to differ from the clip a fresh open produces, and the first
+    // draft built them by toggling `outputSize` on whatever twelve sections of edits
+    // had left on screen - which lands on the fresh value roughly half the time and
+    // turns the offer's silence into a pass for the wrong reason. So the fresh document
+    // is read first and everything else is derived from it.
+    await dropDoc(WORKING);
+    await reopen();
+    const fresh = await page.evaluate('__kinect.keyframes.project()');
+    const openHash = await page.evaluate('__kinect.library.takeHash()');
+    const openId = await page.evaluate('__kinect.library.takeId()');
+    check(typeof openHash === 'string' && openHash.length > 20,
+      'the open take has a content hash, which is what the resume offer joins on', String(openHash).slice(0, 24));
+    const noDocument = await text('#tNote');
+    check((noDocument ?? '') === '',
+      'a take opened with no working document beside it offers nothing, which is what makes the rows below about the document',
+      `"${(noDocument ?? '').slice(0, 60)}"`);
+
+    // The working document as the auto-save writes it: the whole project, stamped with
+    // the take. `differ` changes one field away from the value a fresh open gives, and
+    // the row below asserts that it did - the offer is deliberately silent when the two
+    // agree, so a document that accidentally matched would test the wrong branch.
+    const workingBody = (stamp, differ = true) => {
+      const body = JSON.parse(JSON.stringify(fresh));
+      if (differ) body.outputSize = fresh.outputSize === '1280x720' ? '1920x1080' : '1280x720';
+      return { ...body, take: stamp };
+    };
+    // Long enough that it cannot be read off a chip, and different footage besides.
+    const foreignHash = `sha256:${'0'.repeat(64)}`;
+
+    // ---- reload one: the offer is made, and then the note has to carry a refusal
+    const differing = workingBody({ id: openId, hash: openHash });
+    check(differing.outputSize !== fresh.outputSize,
+      'the document about to be planted differs from what a fresh open puts on screen, or there is nothing for the offer to be about',
+      `${differing.outputSize} against ${fresh.outputSize}`);
+    await putDoc(WORKING, differing);
+    await putDoc(OTHER, { ...JSON.parse(JSON.stringify(fresh)), take: { id: 'some-other-take', hash: foreignHash } });
+    await reopen();
+
+    const offered = await text('#tNote');
+    check(/autosaved work/.test(offered ?? ''),
+      'a working document stamped with this take\'s hash is offered back when it differs from the clip on screen',
+      `"${(offered ?? '').slice(0, 90)}"`);
+    // The precondition, in its own row and asked of the list rather than of the note.
+    // Read off the note it would pass on an empty string, which is the answer a red row
+    // above produces - so it would agree with any failure instead of ruling one out.
+    const listedWorking = await page.evaluate(`(async () => {
+      const list = (await (await fetch('/projects')).json()).projects ?? [];
+      const w = list.find((d) => d.name === '${WORKING}');
+      return { there: Boolean(w), stamped: w?.body?.take?.hash ?? null };
+    })()`);
+    check(listedWorking.there && listedWorking.stamped === openHash,
+      'and the library listed the working document carrying this take\'s hash, so the row above is about the offer rather than about a store that answered nothing',
+      `${listedWorking.there ? 'listed' : 'absent'}, stamped ${String(listedWorking.stamped).slice(0, 24)}`);
+
+    await page.selectOption('#tProject', OTHER);
+    await page.click('#tProjectOpen');
+    await page.waitForFunction("document.getElementById('tNote').textContent.includes('different footage')",
+      null, { timeout: 15000 }).catch(() => {});
+    const noteBox = await page.evaluate(`(() => {
+      const note = document.getElementById('tNote');
+      const chips = note.closest('.tchips');
+      return {
+        text: note.textContent,
+        title: note.title,
+        overflows: chips.scrollWidth > chips.clientWidth + 1,
+        scrollLeft: chips.scrollLeft,
+        scrollWidth: chips.scrollWidth,
+        clientWidth: chips.clientWidth,
+      };
+    })()`);
+    // The row that makes the next one mean something: a message that fitted would be
+    // readable whatever the title said.
+    check(noteBox.overflows && noteBox.text.length > 120,
+      'the refusal is genuinely wider than the strip it is written into, which is what the title is for',
+      `${noteBox.text.length} characters, ${noteBox.scrollWidth}px of content in ${noteBox.clientWidth}px`);
+    check(noteBox.title === noteBox.text && /different footage/.test(noteBox.title),
+      'and the whole of it is reachable off the note\'s title, which is the only surface it fits on',
+      `title "${noteBox.title.slice(0, 60)}..." against text "${noteBox.text.slice(0, 60)}..."`);
+    check(noteBox.scrollLeft > 0,
+      'and the strip scrolled to the message that just arrived rather than leaving it off the right edge',
+      `scrollLeft ${noteBox.scrollLeft} of ${noteBox.scrollWidth - noteBox.clientWidth} available`);
+    // The refusal above is this section's own doing and `showTimelineError` logs every
+    // note it writes, so the mark moves past it. Left where it was, the page-error row
+    // at the foot of the section would be reporting the fixture it was handed.
+    errorsBefore = errors.length;
+
+    // ---- reload two: different footage under the same name
+    //
+    // The id is deliberately the take's own. A rename frees an id and a later take can
+    // be renamed into it, so this is the document that an id comparison accepts and a
+    // hash comparison refuses - and accepting it puts somebody's edit on top of
+    // material it was never authored against.
+    await putDoc(WORKING, workingBody({ id: openId, hash: foreignHash }));
+    await reopen();
+    const wrongFootage = await text('#tNote');
+    check(!/autosaved work/.test(wrongFootage ?? ''),
+      'a working document carrying this take\'s id and different footage\'s hash is not offered',
+      `"${(wrongFootage ?? '(nothing)').slice(0, 90)}"`);
+
+    // ---- reload three: the same document that is already on screen
+    await putDoc(WORKING, workingBody({ id: openId, hash: openHash }, false));
+    await reopen();
+    const sameAsScreen = await text('#tNote');
+    check(!/autosaved work/.test(sameAsScreen ?? ''),
+      'and neither is one that matches the clip on screen, since restoring what is already there is not an offer',
+      `"${(sameAsScreen ?? '(nothing)').slice(0, 90)}"`);
+
+    await dropDoc(WORKING);
+    await dropDoc(OTHER);
+
+    // ---- the ruler's marks are controls
+    //
+    // **Under a non-unity rate, and that is the whole of what makes these rows able to
+    // fail.** A mark is stored in source milliseconds and drawn in program seconds, and
+    // at rate 1 with no keys the two are the same number - so a tick that seeks to the
+    // source second would land exactly where a correct one does and the control would
+    // prove nothing. The separation is asserted before anything is pressed.
+    const RATE = 0.5;
+    const MARKS = [
+      { id: 'em0', sourceMs: 1000, label: 'first' },
+      { id: 'em1', sourceMs: 3000, label: 'second' },
+      { id: 'em2', sourceMs: 5000, label: 'third' },
+    ];
+    await page.evaluate('__kinect.keyframes.setRetime({ rate: 1, keys: [] })');
+    await page.evaluate(`(() => {
+      const el = document.getElementById('tRate');
+      el.value = String(__kinect.editor.rateSlider.toValue(${RATE}));
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await focusStage();
+    await settle();
+    await page.evaluate(`__kinect.editor.setMarks(${JSON.stringify(MARKS)})`);
+    await page.evaluate('__kinect.editor.view.fit()');
+    await settle();
+
+    const geometry = await page.evaluate(`(() => {
+      const total = __kinect.editor.view.window().duration;
+      return {
+        rate: __kinect.timeline.retime.rate,
+        total,
+        program: ${JSON.stringify(MARKS)}.map((m) => Math.max(0, Math.min(total,
+          __kinect.timeline.retime.programSecAt(m.sourceMs / 1000)))),
+        source: ${JSON.stringify(MARKS)}.map((m) => m.sourceMs / 1000),
+        ticks: __kinect.library.markTicks().length,
+      };
+    })()`);
+    const TOL = 0.08;
+    const separated = geometry.program
+      .map((p, i) => Math.abs(p - geometry.source[i]))
+      .filter((d) => d > TOL * 4);
+    check(geometry.rate !== 1 && separated.length >= 2,
+      'the fixture runs at a rate where a mark\'s program second and its source second are different numbers, or nothing below can fail',
+      `rate ${geometry.rate}, program ${geometry.program.map((p) => p.toFixed(2)).join('/')}`
+      + ` against source ${geometry.source.map((s) => s.toFixed(2)).join('/')}`);
+    check(geometry.ticks === MARKS.length, 'every mark drew a tick on the ruler', `${geometry.ticks} ticks`);
+
+    // Pressing the tick. The middle one, so a build that seeked to either end would
+    // land somewhere this row can tell apart from the answer.
+    await page.evaluate('__kinect.timeline.transport().seek(0)');
+    await settle();
+    await page.locator('#tMarks .tmk').nth(1).click();
+    await settle();
+    const pressed = (await read()).programSec;
+    check(near(pressed, geometry.program[1], TOL),
+      'pressing a mark tick parks the playhead on the program second the tick is drawn at',
+      `playhead ${pressed.toFixed(3)}s against the tick's ${geometry.program[1].toFixed(3)}s`
+      + ` (the source second is ${geometry.source[1].toFixed(3)}s)`);
+    check(!near(pressed, geometry.source[1], TOL),
+      'and not on the mark\'s own source second, which is where the retime would be undone',
+      `${pressed.toFixed(3)}s against ${geometry.source[1].toFixed(3)}s`);
+
+    // And the keyboard, which is the half that is actually usable on a five-pixel
+    // diamond. Through `goTo` like Home and End, so a jump pauses and clamps.
+    await page.evaluate('__kinect.timeline.transport().seek(0)');
+    await settle();
+    await focusStage();
+    await page.keyboard.press(']');
+    await settle();
+    const forward = (await read()).programSec;
+    check(near(forward, geometry.program[0], TOL),
+      'the next-mark key jumps to the first mark ahead of the playhead',
+      `${forward.toFixed(3)}s against ${geometry.program[0].toFixed(3)}s`);
+    await page.keyboard.press(']');
+    await settle();
+    const forwardAgain = (await read()).programSec;
+    check(near(forwardAgain, geometry.program[1], TOL),
+      'and pressing it again steps to the next one rather than finding the mark it is standing on',
+      `${forwardAgain.toFixed(3)}s against ${geometry.program[1].toFixed(3)}s`);
+    await page.keyboard.press('[');
+    await settle();
+    const back = (await read()).programSec;
+    check(near(back, geometry.program[0], TOL),
+      'and the previous-mark key walks back the way it came',
+      `${back.toFixed(3)}s against ${geometry.program[0].toFixed(3)}s`);
+
+    const legend = await page.evaluate('__kinect.editor.shortcuts()');
+    check(/\[\/\]/.test(legend),
+      'and the ? legend describes the whole keyboard, including the two keys this section added',
+      legend.slice(-90));
+
+    check(errors.length === errorsBefore, 'none of it raises a page error',
+      errors.slice(errorsBefore, errorsBefore + 2).join(' | '));
+  }
+
+  // ================================ 14. the pinned drive takes the loop away with it
+
+  console.log('\n[14] pinning the drive drops what the loop was going to serve');
 
   // The third state that strands an armed position, and the only one `pumpParkedDraft`
   // cannot notice on its own: `drive.pin` calls `setAnimationLoop(null)`, so that

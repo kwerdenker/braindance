@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { PROJECT_VERSION, versionRefusal } from './format.js';
+import { pollRecordState } from './record-poll.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -3445,10 +3446,10 @@ const history = {
     }).then(async (res) => {
       if (!res.ok) {
         const text = await res.text().catch(() => '');
-        ui.note.textContent = `auto-save failed: ${text.slice(0, 80)}`;
+        say(`auto-save failed: ${text.slice(0, 80)}`);
       }
     }).catch((err) => {
-      ui.note.textContent = `auto-save failed: ${err.message}`;
+      say(`auto-save failed: ${err.message}`);
     });
     return true;
   },
@@ -5935,6 +5936,39 @@ const sayExport = (text) => {
   ui.exportNote.title = text;
 };
 
+/**
+ * The editor's one line of prose, and the only way anything writes it.
+ *
+ * `#tNote` is a chip in `.tchips`, which scrolls horizontally with its scrollbar
+ * hidden so the bar keeps its 51px - so a sentence wider than the strip has nothing
+ * to drag, and the fade `.tchips.more` paints says that something is off the right
+ * edge without ever saying what. The whole of the editor's error channel wrote into
+ * that element and nothing else, which left a long refusal unreadable by any means
+ * available to the person it was written for, and a refusal is exactly the message
+ * that runs long. `title` is the same sentence somewhere it cannot be cut off, which
+ * is the repair `sayExport` above already made for the export note beside it.
+ *
+ * **The scroll is why every note comes through here and not only the errors.** A
+ * message that has just arrived should be the part of the strip on screen, and the
+ * strip is wherever the last one left it. Taken after the text lands, because
+ * `scrollWidth` read before the write is the previous message's width and would park
+ * the strip at the end of a sentence that is no longer there.
+ *
+ * A declaration rather than a `const` arrow like its neighbour, and that is about the
+ * auto-save fifteen hundred lines above this line: it reports a failed save through
+ * here, and a binding still in its temporal dead zone would turn that report into a
+ * throw out of the fetch handler - a save failure eating its own message.
+ */
+function say(text) {
+  ui.note.textContent = text;
+  ui.note.title = text;
+  // An empty note is the strip being cleared, and scrolling a cleared strip to its
+  // end moves it for no reason anybody watching could account for.
+  if (!text) return;
+  const chips = ui.note.closest('.tchips');
+  if (chips) chips.scrollLeft = chips.scrollWidth;
+}
+
 let timeline = null;
 
 const timecode = (sec) => {
@@ -5944,7 +5978,7 @@ const timecode = (sec) => {
 };
 
 function showTimelineError(err) {
-  ui.note.textContent = String(err?.message ?? err);
+  say(String(err?.message ?? err));
   console.error('[timeline]', err);
 }
 
@@ -6889,7 +6923,8 @@ const isTyping = (el) => el instanceof HTMLElement && (TYPING_TAGS.has(el.tagNam
 
 const SHORTCUTS = 'space play/pause · arrows step a frame, with shift a second · '
   + 'home/end · i/o set in/out, with shift jump to them · del removes the selected key · '
-  + 'm marks · +/- zoom the ruler, ,/. pan it, f fits the clip, z frames in..out · '
+  + 'm marks, [/] jump to the previous and next mark · '
+  + '+/- zoom the ruler, ,/. pan it, f fits the clip, z frames in..out · '
   + 'cmd-z undoes · h hides the panel';
 
 /**
@@ -6977,6 +7012,25 @@ addEventListener('keydown', (e) => {
       return;
     case 'Delete': case 'Backspace': e.preventDefault(); deleteSelectedKey(); return;
     case 'm': case 'M': e.preventDefault(); markHere().catch(showTimelineError); return;
+    // The other half of item three, and the half that is actually usable: a tick is
+    // five pixels of diamond, so pressing one is a gesture and stepping through them
+    // is a key. Through `goTo` like Home and End, so a jump pauses and clamps the
+    // same way every other seek on this keyboard does.
+    //
+    // The epsilon is what stops a playhead parked exactly on a mark finding itself
+    // and going nowhere, which reads as the key not being bound at all. It is a
+    // microsecond of program time - smaller than any frame this program can show, so
+    // it can never skip a mark that is genuinely a step away.
+    case '[': case ']': {
+      e.preventDefault();
+      const here = timeline.programSec;
+      const seconds = markSecondsInOrder();
+      const to = e.key === '['
+        ? seconds.filter((s) => s < here - 1e-6).pop()
+        : seconds.find((s) => s > here + 1e-6);
+      if (to !== undefined) goTo(to);
+      return;
+    }
     // Zoom about the playhead rather than about the centre of the window, for the same
     // reason the wheel zooms about the pointer: the playhead is what the keyboard is
     // pointing at, and zooming away from it is zooming away from the edit.
@@ -7009,7 +7063,7 @@ addEventListener('keydown', (e) => {
       e.preventDefault();
       if (view.frame(clipIn, clipOut ?? view.duration)) viewChanged();
       return;
-    case '?': e.preventDefault(); ui.note.textContent = SHORTCUTS; return;
+    case '?': e.preventDefault(); say(SHORTCUTS); return;
     default:
   }
 });
@@ -7942,6 +7996,28 @@ function timingChanged({ moved = false } = {}) {
 let takeMarks = [];
 let openTakeId = null;
 
+// Where a mark is allowed to be on the ruler. A mark past the end of the edit stacks
+// at the edge rather than being dropped, and the tick and the key that jumps to it
+// have to agree about where the edge is - so the clamp is one expression both call
+// rather than the same arithmetic written twice, which is how a press could land the
+// playhead somewhere its own tick is not.
+const clampToClip = (sec, total) => Math.max(0, Math.min(total, sec));
+
+/**
+ * Every mark's position on the ruler, in program seconds and in order.
+ *
+ * Recomputed on each press rather than cached beside the ticks: the curve moves under
+ * these whenever a retime key is dragged, and a cached list is a second copy of the
+ * marks that is right until the moment somebody edits the timing - which is exactly
+ * the moment a jump-to-mark key gets pressed.
+ */
+const markSecondsInOrder = () => {
+  const total = view.duration;
+  return takeMarks
+    .map((m) => clampToClip(retime.programSecAt(m.sourceMs / 1000), total))
+    .sort((a, b) => a - b);
+};
+
 function paintMarks() {
   const host = ui.marks;
   if (!host) return;
@@ -7958,7 +8034,13 @@ function paintMarks() {
     // look right - so this is drawn through `programSecAt` even when it is the
     // identity.
     const program = retime.programSecAt(mark.sourceMs / 1000);
-    const el = document.createElement('span');
+    // A button rather than a span, which is the whole of item three: the surface the
+    // marks were pressed *for* drew them as decoration while the gallery's viewer -
+    // which only reviews footage - made its own ticks pressable. The seek this needs
+    // was already computed here at draw time, so the tick was one element name away
+    // from being the control it looks like.
+    const el = document.createElement('button');
+    el.type = 'button';
     // A mark the edit never reaches is drawn at the edge in the dim colour rather
     // than dropped. `programSecAt` returns where the curve ends for a source
     // position it never gets to, so this is the honest reading of that answer: the
@@ -7966,10 +8048,22 @@ function paintMarks() {
     // somebody shortened the clip would be worse than one that needs explaining.
     const beyond = program >= total - 1e-9 && mark.sourceMs / 1000 > retime.sourceSecAt(total) + 1e-9;
     el.className = beyond ? 'tmk beyond' : 'tmk';
-    const at = Math.max(0, Math.min(total, program));
+    const at = clampToClip(program, total);
     el.style.left = `${view.pct(at)}%`;
     el.hidden = !view.holds(at);
     el.title = `${mark.label ?? mark.id} · source ${(mark.sourceMs / 1000).toFixed(2)}s`;
+    // **The clamped second, never the mark's own source second.** The two coincide
+    // only at rate 1 with no keys, which is exactly the case that would let a wrong
+    // implementation look right - and a tick drawn against the edge because the edit
+    // never reaches it has to seek to the edge it is drawn at, or pressing it lands
+    // the playhead somewhere the tick is not.
+    //
+    // Both events are stopped, and the pointerdown is the one that matters. The bed
+    // scrubs on `pointerdown` rather than on `click`, so a click-only guard leaves
+    // the press starting a scrub to wherever the pointer was, and the tick's own seek
+    // arriving afterwards reads as a drag that happened to end on a mark.
+    el.addEventListener('pointerdown', (e) => e.stopPropagation());
+    el.addEventListener('click', (e) => { e.stopPropagation(); goTo(at); });
     host.appendChild(el);
   }
   // The same marks on the overview, in whole-clip coordinates. Built here rather than
@@ -8238,6 +8332,42 @@ async function importPresetFile(file) {
   return saved;
 }
 
+/**
+ * Offers the auto-save back, when it belongs to the take that has just opened.
+ *
+ * The undo stack writes the whole document to `__working__` after every change, and
+ * `refreshProjects` deliberately keeps that name out of the picker - it is not a
+ * document anybody chose, and listing it beside real projects offers "the thing you
+ * were just doing" under a name that reads like a mistake. That reasoning is right
+ * and it left the working document unreachable: opening the same take again gave a
+ * fresh clip with no sign that a session's work was sitting on disk beside it.
+ *
+ * **No extra request.** The list arrives with every document's body already on it, so
+ * the stamp this needs is in hand at the moment the take opens - and a fetch here
+ * would put a round trip in the path of every take opening for the sake of a note
+ * that usually has nothing to say.
+ */
+function offerWorkingDocument(projects) {
+  const working = projects?.find((doc) => doc.name === WORKING_PROJECT);
+  if (!working) return;
+  // **Matched on hash rather than on id.** A rename frees the old id and a later take
+  // can be renamed into it (#13), so an id match is a claim about a name where a hash
+  // match is a claim about footage - and offering somebody their edit back on top of
+  // different footage is a wrong answer that looks exactly like a right one.
+  if (!openTakeHash || working.body?.take?.hash !== openTakeHash) return;
+  // And it has to differ from the clip on screen, or the offer is to restore what is
+  // already there. `history.begin` has just serialised the on-screen document into
+  // `baseline`, so this compares like with like rather than serialising it a second
+  // time - and the two fields the auto-save adds come off first, since neither of
+  // them is part of what the clip is.
+  const body = { ...working.body };
+  delete body.history;
+  delete body.take;
+  if (JSON.stringify(body) === history.baseline) return;
+  say(`this take has autosaved work from ${new Date(working.savedAt).toLocaleString()}`
+    + ` - open it with ?project=${WORKING_PROJECT}`);
+}
+
 async function refreshProjects() {
   const list = await documentsIn('projects');
   ui.project.replaceChildren(new Option('—', ''));
@@ -8425,8 +8555,8 @@ function removeRetimeKey(key) {
   const i = retime.keys.indexOf(key);
   if (i < 0) return false;
   if (i === 0 && retime.keys.length > 1) {
-    ui.note.textContent = 'the first retime key anchors the start of the clip - '
-      + 'remove the ones after it first';
+    say('the first retime key anchors the start of the clip - '
+      + 'remove the ones after it first');
     return false;
   }
   retime.keys.splice(i, 1);
@@ -8533,7 +8663,7 @@ function applyEasePreset(name) {
 for (const btn of ui.ease.querySelectorAll('button[data-ease]')) {
   btn.addEventListener('click', () => {
     const owner = selection?.owner ?? '';
-    if (applyEasePreset(btn.dataset.ease)) ui.note.textContent = `${btn.dataset.ease} ease on ${owner}`;
+    if (applyEasePreset(btn.dataset.ease)) say(`${btn.dataset.ease} ease on ${owner}`);
   });
 }
 
@@ -9618,7 +9748,7 @@ ui.presetApply.addEventListener('click', async () => {
   if (!name) return;
   try {
     applyStoredPreset(await (await fetch(`/presets/${encodeURIComponent(name)}`)).json());
-    ui.note.textContent = `applied ${name} · ${appliedPreset.rev.slice(7, 15)}`;
+    say(`applied ${name} · ${appliedPreset.rev.slice(7, 15)}`);
   } catch (err) {
     showTimelineError(err);
   }
@@ -9642,7 +9772,7 @@ ui.presetSave.addEventListener('click', async () => {
     // the provenance say a look this clip no longer has.
     appliedPreset = { name: saved.name, rev: saved.rev };
     await refreshPresets();
-    ui.note.textContent = `saved ${saved.name} · ${saved.rev.slice(7, 15)}`;
+    say(`saved ${saved.name} · ${saved.rev.slice(7, 15)}`);
     history.commit();
   } catch (err) {
     showTimelineError(err);
@@ -9657,7 +9787,7 @@ ui.presetExport.addEventListener('click', () => {
   try {
     const name = ui.preset.value || appliedPreset?.name || 'look';
     exportPresetFile(name, presetFromCurrentLook());
-    ui.note.textContent = `exported ${name}.braindance-preset.json`;
+    say(`exported ${name}.braindance-preset.json`);
   } catch (err) {
     showTimelineError(err);
   }
@@ -9677,7 +9807,7 @@ ui.presetFile.addEventListener('change', async () => {
     const saved = await importPresetFile(file);
     await refreshPresets();
     ui.preset.value = saved.name;
-    ui.note.textContent = `imported ${saved.name} · ${saved.rev.slice(7, 15)}`;
+    say(`imported ${saved.name} · ${saved.rev.slice(7, 15)}`);
   } catch (err) {
     showTimelineError(err);
   }
@@ -9701,7 +9831,7 @@ ui.projectSave.addEventListener('click', async () => {
     if (saved.error) throw new Error(saved.error);
     await refreshProjects();
     ui.project.value = saved.name;
-    ui.note.textContent = `saved ${saved.name} · ${saved.bytes} bytes`;
+    say(`saved ${saved.name} · ${saved.bytes} bytes`);
     rememberOpened();
   } catch (err) {
     showTimelineError(err);
@@ -9726,7 +9856,7 @@ ui.deliverable.addEventListener('change', async () => {
     if (doc.error) throw new Error(doc.error);
     applyDeliverable(doc.body);
     history.commit();
-    ui.note.textContent = `deliverable ${name}`;
+    say(`deliverable ${name}`);
   } catch (err) {
     showTimelineError(err);
   }
@@ -9740,7 +9870,7 @@ ui.deliverableNew.addEventListener('click', async () => {
     await saveDeliverable(name, activeDeliverable);
     await refreshDeliverables();
     ui.deliverable.value = name;
-    ui.note.textContent = `saved deliverable ${name}`;
+    say(`saved deliverable ${name}`);
   } catch (err) {
     showTimelineError(err);
   }
@@ -9793,7 +9923,7 @@ async function loadProjectNamed(name) {
   await timeline.seek(timeline.programSec);
   if (resume && gen === transportGen) timeline.play();
   ui.project.value = name;
-  ui.note.textContent = `opened ${name}`;
+  say(`opened ${name}`);
   rememberOpened();
   return doc;
 }
@@ -9855,13 +9985,12 @@ function paintRecord(storage) {
   }
 }
 
-async function pollRecord() {
-  try {
-    const state = await (await fetch('/record/state')).json();
-    recordState = state;
-    paintRecord(state.storage);
-  } catch { /* a server that went away is the status line's problem, not this one's */ }
-}
+// This page's tick of the shared poll, held so the record button can ask again the
+// instant it has changed something rather than waiting out the cadence. Assigned by
+// the boot block below, and only on the live surface: an editor has no recorder to
+// ask about, and a second poll started for the sake of a button is the copy this
+// module exists to avoid.
+let askRecordState = async () => {};
 
 if (ui.recGo) {
   ui.recGo.addEventListener('click', async () => {
@@ -9877,7 +10006,7 @@ if (ui.recGo) {
       if (body.error) ui.recNote.textContent = body.error;
     } finally {
       ui.recGo.disabled = false;
-      await pollRecord();
+      await askRecordState();
     }
   });
   ui.recMark.addEventListener('click', async () => {
@@ -9939,6 +10068,14 @@ ui.camView.addEventListener('click', () => {
 // the index the source already fetched rather than recomputed, because rehashing
 // gigabytes on every project save is exactly what step 2's design refuses.
 let openTakeHash = null;
+
+// Whether `openTake` has run to the end. Exposed on the check hook, and it is there
+// because a transport that exists is not a take that has opened: `timeline` is
+// assigned less than halfway through, before the library is listed and before the
+// resume offer has been decided, so a check waiting on the transport can read the note
+// a whole fetch before anything has written it. That is a race a passing run cannot be
+// told apart from a broken feature, and it cost a reproduction here.
+let takeOpened = false;
 
 async function openTake(id) {
   const source = await IndexedPairSource.open(id);
@@ -10024,23 +10161,30 @@ async function openTake(id) {
   // sequence leave only the last one on screen - and the recorder's own note, which
   // already reported this, is on a surface the editor does not show.
   const unavailable = [];
+  const listed = {};
   for (const [what, refresh] of [['presets', refreshPresets], ['projects', refreshProjects],
     ['deliverables', refreshDeliverables]]) {
-    await refresh().catch((err) => unavailable.push(`${what} (${err.message})`));
+    listed[what] = await refresh().catch((err) => { unavailable.push(`${what} (${err.message})`); return null; });
   }
-  if (unavailable.length) ui.note.textContent = `library unavailable: ${unavailable.join('; ')}`;
+  if (unavailable.length) say(`library unavailable: ${unavailable.join('; ')}`);
   ensureActiveDeliverable();
   applyDeliverable(activeDeliverable);
   timingChanged();
   // The stack starts from whatever the clip already is, so the first undo has
   // somewhere honest to land rather than an empty document.
   history.begin();
+  // After `begin`, because the offer is about whether the auto-save differs from the
+  // clip on screen and `baseline` is that clip serialised. Skipped when any part of
+  // the library failed to list, so the offer cannot write over the sentence naming
+  // what is broken - a note nobody can see is the failure this whole change is about.
+  if (!unavailable.length) offerWorkingDocument(listed.projects);
   await timeline.seek(0);
   // Two things per frame, and the second is not an afterthought: with the playhead
   // parked `tick` returns immediately, so this is the only clock a paused editor has.
   // A drag that continued itself off its own renders instead is what this loop was
   // added to replace - see `pumpDraft`.
   renderer.setAnimationLoop(() => { timeline.tick(); pumpParkedDraft(); });
+  takeOpened = true;
   return timeline;
 }
 
@@ -10159,8 +10303,16 @@ if (EDITING && !REQUESTED_TAKE) {
   // Polled rather than pushed because free space changes on its own - another
   // process writing, a card filling - and a number that only moved when the
   // recorder did would be stale in the one direction that matters.
-  pollRecord();
-  setInterval(pollRecord, 5000);
+  //
+  // **Which is why this caller ignores the change flag entirely.** The gallery gates
+  // on it because a repaint there throws away what the operator is pointing at; here
+  // there is nothing to throw away and a gated readout would simply stop being true.
+  // The flag is offered to both and read by one, which is the shape that lets the
+  // module have no opinion about either surface.
+  askRecordState = pollRecordState((state) => {
+    recordState = state;
+    paintRecord(state.storage);
+  });
 }
 
 // Handles for profiling and for poking at the scene from the console.
@@ -10459,6 +10611,12 @@ globalThis.__kinect = {
     markHere,
     takeId: () => openTakeId,
     takeHash: () => openTakeHash,
+    /**
+     * Whether `openTake` finished, which is the only moment its last decision - the
+     * resume offer - has been made. A check that waits for the transport instead is
+     * waiting on something assigned two fetches earlier.
+     */
+    opened: () => takeOpened,
     /** Where each mark ticks on the ruler, as the page actually drew it. */
     markTicks: () => [...document.querySelectorAll('#tMarks .tmk')].map((el) => ({
       left: Number.parseFloat(el.style.left),
