@@ -500,6 +500,22 @@ function addButton(row, label, cls, onClick, { disabled = false, why = '', item 
  */
 function cannotDelete(take) {
   if (take.recording === true) return warningsOf(take)[0].why;
+  // **A node we could not reach is not a node with nothing on it.** `/library/all` hands
+  // `reconcile` a null when the manifest read fails and null is read as an empty array,
+  // so a link dropping removes every node-only tile and turns every `both` take into a
+  // `local` one - and the confirmation that refuses to delete the last copy is drawn
+  // from exactly that count. The take then offers a delete whose safety rests on a
+  // reading that says "no second copy" when what happened is "no answer".
+  //
+  // Refused for every take rather than only the ones that were `both`, because after the
+  // repaint there is no way to tell which those were: the reading that would say so is
+  // the one that failed. This is the conservative half of the fix and it is deliberately
+  // not the whole of it - the tiles still disappear on a failed read, which is a
+  // separate change to how a failed manifest is carried.
+  if (library.node && !library.node.reachable) {
+    return `${library.node.name} cannot be reached, so whether this take has a second copy `
+      + 'is unknown - delete is refused rather than guessed at';
+  }
   if (take.state === 'remote') {
     return `${take.id} is only on ${library.node?.name ?? 'the node'}, and delete removes a file on this machine`;
   }
@@ -1604,8 +1620,22 @@ function paint() {
   }
 }
 
+// **Bounded, because a listing that never comes back stops this page following the
+// recorder at all.** `NodeLink.recordState` carries a three-second timeout and
+// `NodeLink.takes` carries none, so a node that accepts a connection and then says
+// nothing leaves `/library/all` hanging - and single-flight, which is what stops those
+// piling up, then means every later tick is skipped for as long as it hangs. The two
+// together turn one unlucky listing into a gallery frozen until somebody reloads.
+//
+// Fifteen seconds rather than the node poll's three: this crosses the network to have a
+// directory walked and a sidecar read per take, measured at 145ms against a 200-take
+// library, so the bound is there to catch a link that has died rather than to hurry a
+// listing that is working. Failing is enough, because a failed refresh is a transition
+// this poll has not seen - it says so and the next tick offers it again.
+const LISTING_TIMEOUT_MS = 15000;
+
 async function refresh() {
-  library = await (await fetch('/library/all')).json();
+  library = await (await fetch('/library/all', { signal: AbortSignal.timeout(LISTING_TIMEOUT_MS) })).json();
   paint();
 }
 

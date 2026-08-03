@@ -98,7 +98,7 @@ const MAC_PORT = Number(flag('--mac-port', '8211'));
 // and the failure reads exactly like a finding about the recorder. The span is checked
 // end to end before anything spawns, and `startServer` asserts its port is inside it, so
 // a section added later at `+17` is caught by arithmetic rather than by a wrong reading.
-const PORT_SPAN = 16;
+const PORT_SPAN = 17;
 const MUTATE = flag('--mutate');
 const HEADED = argv.includes('--headed');
 const WORK = flag('--work') ?? join(REPO, '.library-check');
@@ -638,6 +638,25 @@ const MUTATIONS = {
   //
   // Must redden only the overlap row. The retry rows have to stay green, or the control
   // is proving that the guard broke the retry rather than that it bounded it.
+  // The gallery's listing loses its bound, so a node that accepts a connection and never
+  // answers hangs it - and single-flight then skips every later tick for as long as it
+  // hangs. The pile-up guard and the timeout are two halves of one arrangement: without
+  // the bound, the guard turns one dead listing into a gallery that has stopped.
+  'listing-never-times-out': { file: 'web/library.js', edits: [[
+    "await fetch('/library/all', { signal: AbortSignal.timeout(LISTING_TIMEOUT_MS) })",
+    "await fetch('/library/all')",
+  ]] },
+
+  // Delete goes back to being offered while the node is unreachable, where the copy count
+  // it rests on came from a manifest read that failed rather than from a node with
+  // nothing on it.
+  'delete-guesses-past-an-unreachable-node': { file: 'web/library.js', edits: [[
+    '  if (library.node && !library.node.reachable) {\n'
+    + '    return `${library.node.name} cannot be reached, so whether this take has a second copy `\n'
+    + "      + 'is unknown - delete is refused rather than guessed at';\n  }\n",
+    '',
+  ]] },
+
   'poll-ticks-overlap': { file: 'web/record-poll.js', edits: [[
     '  const tick = () => {\n'
     + '    if (running) {\n'
@@ -5859,6 +5878,40 @@ async function runChecks() {
     check(errors.length === 0, 'and the gallery raises no page error while it follows', errors.slice(0, 2).join(' | '));
     await page.close();
 
+    // **A node that did not answer is not a node with nothing on it.** `/library/all`
+    // hands `reconcile` a null when the manifest read fails and null reads as an empty
+    // array, so a dropped link removes every node-only tile and turns every `both` take
+    // into a `local` one - and the delete confirmation that refuses to remove the last
+    // copy is drawn from exactly that count. The tile then offers a delete whose safety
+    // rests on a reading that says "no second copy" where what happened is "no answer".
+    //
+    // A station of its own pointed at a port nothing holds, so the node is unreachable
+    // from the first listing rather than made so mid-run - there is no window here for a
+    // successful read to have populated anything.
+    const blindNodeUrl = await startServer(root, [
+      '--captures', macCaps, '--name', 'mac-blind',
+      '--node', `http://127.0.0.1:${MAC_PORT + 17}`, '--node-name', 'a-node-that-is-not-there',
+    ], MAC_PORT + 11);
+    const dark = await openPage(browser, galleryPage(blindNodeUrl));
+    await dark.page.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 });
+    const darkState = await dark.page.evaluate('globalThis.__library.state()');
+    const darkTiles = await dark.page.evaluate('globalThis.__library.tiles()');
+    check(darkState.node?.reachable === false && darkTiles.length > 0,
+      'the station has a node it cannot reach and takes of its own on screen, which is the pair the row below needs',
+      `node ${darkState.node?.name} reachable ${darkState.node?.reachable}, ${darkTiles.length} tiles`);
+    const deletable = darkTiles.filter((t) => t.menu.some((m) => m.item === 'delete' && !m.disabled));
+    check(deletable.length === 0,
+      'and not one of them offers Delete while the node is unreachable, because the copy count that would make it safe came from a read that failed rather than from a node with nothing on it',
+      deletable.length ? `${deletable.length} of ${darkTiles.length} still deletable: ${deletable.map((t) => t.id).join(' ')}`
+        : `${darkTiles.length} tiles, every Delete refused`);
+    const why = darkTiles[0]?.menu.find((m) => m.item === 'delete')?.why ?? '';
+    check(/cannot be reached/.test(why),
+      'and it says which node it could not reach, so the refusal is a fact about the link rather than a control that went dead',
+      `"${why.slice(0, 90)}"`);
+    check(dark.errors.length === 0, 'and that gallery raises no page error', dark.errors.slice(0, 2).join(' | '));
+    await dark.page.close();
+    for (const p2 of servers.filter((sv) => sv.port === MAC_PORT + 11)) p2.child.kill('SIGKILL');
+
     // **The gap between the listing a gallery paints and the first tick it compares
     // against.** The page reads `/library/all`, draws a take as being written, and only
     // then asks the recorder what it is doing. A first tick with nothing behind it
@@ -6032,29 +6085,33 @@ async function runChecks() {
     await hung.goto(galleryPage(liveUrl), { waitUntil: 'domcontentloaded' });
     await hung.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 });
     await post(`${liveUrl}/record/stop`);
-    // Four cadences, so a poll that started a listing per tick would have started four
-    // and a poll that waits for the one in flight has started exactly one. The margin
-    // is what keeps a slow machine from reading as a catch.
-    await new Promise((done) => { setTimeout(done, 21000); });
+    // Two cadences and change, so a poll that started a listing per tick would have
+    // started two or three and a poll that waits for the one in flight has started
+    // exactly one - and deliberately short of the fifteen-second listing timeout, which
+    // the rows after this one are about. The margin keeps a slow machine from reading as
+    // a catch without letting the bound fire early and change what is being counted.
+    await new Promise((done) => { setTimeout(done, 11000); });
     const heldCount = heldForever.length;
     const listingsWhileHung = hungListings;
     check(heldCount === 1,
       'it has exactly one listing in flight however long that one takes - a refresh that has not come back is the question already being asked, not a reason to ask it again every five seconds',
       `${heldCount} listings left hanging, ${hungListings} requested in total`);
-    // **The liveness half is that it comes back, not that it kept polling.** The guard
-    // holds for the whole tick, so while a handler hangs the recorder is not asked
-    // either - which is right, since the answer would have nowhere to go, and is why a
-    // row counting `/record/state` during the hang reads two and means nothing. What
-    // proves the page was alive rather than dead is that clearing the hang starts a
-    // listing again: the abort makes the handler throw, the fingerprint stays where it
-    // was, and the next tick offers the same transition. One row, both properties - the
-    // guard releases and the retry underneath it still works.
-    for (const route of heldForever) await route.abort('connectionfailed').catch(() => {});
-    await new Promise((done) => { setTimeout(done, 11000); });
+    // **The liveness half is that it comes back on its own, and nothing here clears the
+    // hang for it.** The single-flight guard and the listing's timeout are two halves of
+    // one arrangement: without the bound, the guard turns one dead listing into a gallery
+    // that has stopped, since the guard holds for the whole tick and the tick is waiting
+    // on a request that will never answer. The earlier version of this row aborted the
+    // held listing itself and then checked that a new one went out, which proves the
+    // retry works and says nothing about whether anything would ever have released it.
+    // So the fixture now just waits: past fifteen seconds the page's own bound fails the
+    // listing, the handler throws, the fingerprint stays where it was, and the next tick
+    // offers the same transition again.
+    await new Promise((done) => { setTimeout(done, 12000); });
     check(hungListings > listingsWhileHung,
-      'and it asks again once that one is out of the way, so the single listing above is a poll waiting rather than a poll that died',
-      `${listingsWhileHung} listings while it hung, ${hungListings} after it cleared,`
+      'and the page frees itself from a listing nothing was ever going to answer, so the single listing above is a poll waiting rather than a poll that has stopped',
+      `${listingsWhileHung} listings while it hung, ${hungListings} after its own timeout fired,`
       + ` ${ticksSeen} ticks to /record/state throughout`);
+    for (const route of heldForever) await route.abort('connectionfailed').catch(() => {});
     await hung.close();
 
     // **The other way into the same poll, which the guard above nearly closed.** The

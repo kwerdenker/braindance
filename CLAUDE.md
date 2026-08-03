@@ -138,6 +138,8 @@ node tools/library-check.mjs --mutate poll-first-tick-is-blind       # ... and t
 node tools/library-check.mjs --mutate poll-forgets-a-failed-refresh  # ... and a refresh that failed leaves its transition unseen
 node tools/library-check.mjs --mutate poll-ticks-overlap             # ... while one that has not come back is not asked again
 node tools/library-check.mjs --mutate post-action-poll-discarded     # ... and a press asks again rather than taking the answer in flight
+node tools/library-check.mjs --mutate listing-never-times-out        # ... and a listing nothing will answer frees itself
+node tools/library-check.mjs --mutate delete-guesses-past-an-unreachable-node # ... a node that did not answer is not a node with nothing on it
 node tools/library-check.mjs --mutate faint-fixed-in-one-page       # ... one token, and the page that drifts is named
 node tools/library-check.mjs --mutate write-overwrites-builtin # ... and must FAIL
 node tools/library-check.mjs --mutate list-swallows-unreadable # ... and must FAIL
@@ -191,6 +193,7 @@ node tools/editor-check.mjs --mutate tick-seeks-source-seconds --no-render # ...
 node tools/editor-check.mjs --mutate offer-ignores-take-hash --no-render # ... the resume offer joins on footage, not on a name
 node tools/editor-check.mjs --mutate resume-waits-for-every-list --no-render # ... and a broken neighbouring library does not strand it
 node tools/editor-check.mjs --mutate resume-fetches-the-moving-name --no-render # ... and restores the document it offered, not what the name holds by then
+node tools/editor-check.mjs --mutate resume-restores-without-keeping --no-render # ... and keeps it, so the recovery outlives the tab
 node tools/editor-check.mjs --mutate shortcuts-reject-altgr --no-render # ... the mark keys work on the layouts that need AltGr to type them
 node tools/editor-check.mjs --mutate marks-ignore-the-clip-range --no-render # ... and offer only the marks a trimmed clip can reach
 node tools/editor-check.mjs --mutate tick-seeks-outside-the-trim --no-render # ... the ruler's ticks obey the same rule the keys do
@@ -248,7 +251,7 @@ ffmpeg and ffprobe.
 the depth texture, which is what lets it grade the plane fit against a normal it chose.
 
 **`library-check` binds a span of fixed ports** — `--node-port`, and `--mac-port` through
-`--mac-port + 16`, which default to 8210 and 8211..8227. It checks the whole span before it
+`--mac-port + 17`, which default to 8210 and 8211..8228. It checks the whole span before it
 spawns anything and **exits 2 naming what is held**, because the old failure was silent: two
 worktrees running at once did not collide, they shared a server, and the suite asserted
 against the other tree's fixture. Pass a range nothing else holds, and check

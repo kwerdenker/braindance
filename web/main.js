@@ -10137,7 +10137,27 @@ ui.projectOpen.addEventListener('click', async () => {
 // looks like it does something.
 ui.resumeOpen.addEventListener('click', async () => {
   try {
-    await loadProjectNamed(WORKING_PROJECT, offeredWorkingBody);
+    const accepted = offeredWorkingBody;
+    await loadProjectNamed(WORKING_PROJECT, accepted);
+    // **Written back before the snapshot is dropped, or the recovery lasts only as long
+    // as the tab.** Holding the offered body fixed which document the press restores;
+    // it did not make the restore survive anything. `__working__` still held the edit
+    // that overwrote the offer, this was the only remaining copy, and nothing writes the
+    // slot again until the next `history.commit()` - so closing the page after being
+    // told "restored the autosaved edit" loaded the overwriting edit back and lost the
+    // work a second time, having just reported it recovered.
+    //
+    // Awaited and reported rather than fired and forgotten, unlike the auto-save on
+    // every edit: that one is one of thousands and must not block a drag, while this is
+    // the single moment the operator asked for their work back. A failure here has to
+    // reach them, and the snapshot is kept if it does - dropping it would throw away the
+    // last copy on the way out of a failed save.
+    const kept = await fetch(`/projects/${WORKING_PROJECT}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(accepted),
+    });
+    if (!kept.ok) throw new Error(`restored on screen, but the auto-save could not be rewritten: ${(await kept.text().catch(() => '')).slice(0, 80)}`);
     ui.resume.hidden = true;
     offeredWorkingBody = null;
     say('restored the autosaved edit');

@@ -265,8 +265,27 @@ const MUTATIONS = {
   'resume-fetches-the-moving-name': {
     file: 'web/main.js',
     edits: [[
-      '    await loadProjectNamed(WORKING_PROJECT, offeredWorkingBody);',
+      '    await loadProjectNamed(WORKING_PROJECT, accepted);',
       '    await loadProjectNamed(WORKING_PROJECT);',
+    ]],
+  },
+
+  // The accepted snapshot is applied and then dropped without being written back, so the
+  // recovery lives only in the tab: `__working__` still holds the edit that overwrote the
+  // offer, and a reload after being told "restored" loads that edit back.
+  //
+  // The write and not the capture, because `resume-fetches-the-moving-name` already takes
+  // the capture. Must redden only the row that reads the store after the press.
+  'resume-restores-without-keeping': {
+    file: 'web/main.js',
+    edits: [[
+      "    const kept = await fetch(`/projects/${WORKING_PROJECT}`, {\n"
+      + "      method: 'PUT',\n"
+      + "      headers: { 'Content-Type': 'application/json' },\n"
+      + '      body: JSON.stringify(accepted),\n'
+      + '    });\n'
+      + "    if (!kept.ok) throw new Error(`restored on screen, but the auto-save could not be rewritten: ${(await kept.text().catch(() => '')).slice(0, 80)}`);\n",
+      '',
     ]],
   },
 
@@ -4889,6 +4908,20 @@ try {
     check(restoredAfterMove.outputSize === differing.outputSize,
       'and pressing it restores the document that was offered rather than whatever the name holds by then, since the work it was advertising is the work being recovered',
       `${restoredAfterMove.outputSize} against the offered ${differing.outputSize} and the store's ${moved.outputSize}`);
+
+    // **And the store holds it afterwards, or the recovery lasted only as long as the
+    // tab.** Holding the offered body fixed which document the press restores; it did
+    // not make the restore survive a reload. `__working__` still held the edit that
+    // overwrote the offer, the retained snapshot was the only other copy, and nothing
+    // rewrites that slot until the next edit - so closing the page after being told
+    // "restored the autosaved edit" loaded the overwriting edit straight back.
+    const storedAfterRestore = await page.evaluate(`(async () => {
+      const doc = await (await fetch('/projects/${WORKING}')).json();
+      return doc.body?.outputSize ?? null;
+    })()`);
+    check(storedAfterRestore === differing.outputSize,
+      'and the auto-save is rewritten with what was restored, so a reload after the recovery loads the recovered work rather than the edit that had overwritten it',
+      `stored ${storedAfterRestore} against the restored ${differing.outputSize} and the ${moved.outputSize} it had been overwritten with`);
 
     const afterRestore = await offerState();
     check(!afterRestore.shown,
