@@ -1324,9 +1324,19 @@ const numbersIn = (src) => {
     // perfectly good name; under the ASCII classes the `π` fell out of the identifier,
     // landed as punctuation, and the division behind it read as a regex that swallowed
     // the number - silently, and in a module the row is meant to be reading.
-    if (ID_START.test(c)) {
+    // **Walked by code point, not by code unit.** `𐐀` is `ID_Continue` and lives outside
+    // the basic plane, so a JavaScript string holds it as two surrogates - and a lone
+    // surrogate is not `ID_Continue`, so indexing one character at a time stopped the
+    // name in the middle of a letter. The rest of it then landed as punctuation and the
+    // division behind it opened a regex over the number, which is the same silent ending
+    // as every other way of not finishing a token.
+    if (ID_START.test(String.fromCodePoint(src.codePointAt(i)))) {
       let j = i;
-      while (j < src.length && ID_PART.test(src[j])) j++;
+      while (j < src.length) {
+        const letter = String.fromCodePoint(src.codePointAt(j));
+        if (!ID_PART.test(letter)) break;
+        j += letter.length;
+      }
       prevWord = src.slice(i, j);
       prev = 'a';
       i = j;
