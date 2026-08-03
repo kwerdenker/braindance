@@ -245,6 +245,7 @@ rather than by reading a config key:
 
 ```
 node tools/syntax-check.mjs                          # every JS file this repo ships parses
+node tools/syntax-check.mjs --mutate spec-drifts     # ... and the .knct decoder specification must FAIL when a constant moves under it
 node tools/release-gate-check.mjs                    # the .npmrc supply-chain gate is actually armed
 node tools/release-gate-check.mjs --mutate wrong-unit # ... and must FAIL (also: no-gate, absent)
 ```

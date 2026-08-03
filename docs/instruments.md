@@ -204,6 +204,25 @@ machine it fires eight, all of them the intended row. So a throw is now `crashed
 verdict and before `untested`. **Read which assertions fired, not how many** — and a proof
 tool must never count its own crash as a finding in either direction.
 
+### Reverting a probe with `git checkout --` deletes the thing under test when it is uncommitted
+
+Found while mutation-testing the `.knct` specification row in `syntax-check`. The row was new
+and so was the specification it reads, both of them uncommitted, and each probe ended in
+`git checkout -- server/protocol.js` to undo the damage. That restores the file to `HEAD`, which
+in this state means restoring the version with no specification in it at all. So the first probe
+was valid, the revert silently removed the feature, and the two probes after it ran against a
+file that no longer had anything to check — both went red, both for the wrong reason, and both
+would have been recorded as catches by anybody reading only the count. One of them additionally
+reported `Identifier 'MAGIC' has already been declared`, which is the shape of a probe whose
+own edit is malformed rather than a finding, and is the tell that should stop the run.
+
+`git stash` is already forbidden here for a different reason, and the same replacement covers
+this one: **copy the file outside the repository, probe, and restore from the copy**, then
+`diff` the restore against it and re-run the clean arm to confirm it is green again. The rule
+in `CLAUDE.md` about taking a baseline is written for a measurement, and it applies unchanged to
+mutating an instrument you have not committed yet. The cheaper version of the same protection is
+to commit the instrument before probing it, so that a revert has something to revert to.
+
 ### A mutation is source text, and nothing was checking that the text still existed
 
 Three declared controls could not run at all, and had not been able to for a long time.
@@ -261,6 +280,18 @@ and neither checks the third. And the minimap's copy of the mark conversion stil
 control over it at all: `markTicks()` only ever reads the ruler strip, so that second site
 could stop going through the retime curve entirely and every row in the suite would stay
 green. Two sites doing one conversion is what made this anchor stale in the first place.
+
+**And the shape inference was wrong within days, which is the argument for normalising rather
+than for a better guess.** A bare `{ from, to }` had a single declarer, `registry-check`, which
+edits the browser bundle - so the resolver read the shape as meaning `web/main.js`. Then
+`syntax-check` grew a `spec-drifts` control of its own in the same shape against
+`server/protocol.js`, and the row went looking for `export const TYPE_COLOR = 3;` in the bundle,
+found nothing, and reported a control that works perfectly as an anchor that had gone stale. The
+merge that brought the two together is what surfaced it, and it is a false positive rather than a
+missed defect, so it is the cheap direction of the same mistake. The fix is `spec-drifts` moving
+to `{ file, edits }` and declaring its own target, not the resolver learning a second tool's
+name: a resolver that knows which tool is asking is the hardcoded list this row exists to
+replace.
 
 ### A mutation can erase its own evidence
 

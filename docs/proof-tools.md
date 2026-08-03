@@ -78,14 +78,43 @@ the retime seam, and the refusal is what surfaced that rather than a silent pass
 something a mutation anchors to, re-anchor it in the same commit and say in the message which
 ones moved.
 
-**`library-check` serves a mutated page at the URL the page is reached by, not at its
-filename.** `web/library.html` has no URL of its own — `server/index.js` 404s any `.html`
-under `web/` on purpose, so a page has exactly one address — and it is served at `/gallery`.
-A route interception written as `**/library.html` therefore matches nothing, the unmutated
-page loads, and the run is recorded as the check having missed a bug it was never shown.
-That is the match-exactly-once failure arriving through the *delivery* rather than through
-the anchor, where nothing refuses it, so the interception refuses a page file it has no URL
-for instead.
+**`library-check` delivers every mutation by one mechanism — the staged tree — and then asks
+the server whether it arrived.** Both halves are worth reading before editing that tool,
+because it had two mechanisms for a release and the seam between them was a hazard rather
+than a redundancy.
+
+Server mutations were always staged. Page mutations were fulfilled by a Playwright route
+interception matched on a URL, and that shape has a specific failure: **a page is reached at
+the URL `PAGES` names it by, not at its filename**. `web/library.html` has no URL of its own —
+`server/index.js` 404s any `.html` under `web/` on purpose, so a page has exactly one address —
+and it is served at `/gallery`, so an interception written as `**/library.html` matches
+nothing, the unmutated page loads, and the run is recorded as the check having missed a bug it
+was never shown. That is the match-exactly-once failure arriving through the *delivery* rather
+than through the anchor, where nothing refused it.
+
+Staging everything closed a different hole — `server/library.js` imports `web/format.js` by
+path, so a mutation of it that reached only the page left the server deciding `openable` on the
+unmutated band — and made the interception redundant in the same breath, since `WEB_DIR` is
+`join(ROOT, 'web')` and `web/` is copied into the staged root. Two mechanisms delivering the
+same bytes is not defence in depth; it is the two-gates-that-agree shape `docs/instruments.md`
+records, where no mutation can reach one without the other covering, so neither can be tested
+and one of them is doing all the work.
+
+So there is one delivery path, and `requireMutationDelivered` is the opposite shape from the
+thing it replaced: it fetches the page's own URL before a browser opens anything and requires
+the bytes back to be the ones this run staged. `PAGE_URLS` is unavoidably a second spelling of
+`PAGES` and is *checked rather than trusted* by exactly that fetch, so a page that moved or
+stopped being served fails by name. **It exits 2 rather than failing an assertion**, and the
+direction is the point: a suite that fails one row on a mutation run reads as a catch, so a
+mutation that never arrived has to be the harness declining to run.
+
+Measured when the mechanisms were collapsed: 19 of the 20 page mutations delivered, each
+named with the URL and the byte count, `gallery-has-no-way-back` among them at `/gallery`,
+which is the case the interception existed for. The twentieth is `marks-ignore-retime`, which
+cannot be constructed at all — its anchor matches twice in `web/main.js` and the
+match-exactly-once refusal stops it, a stale anchor that predates this and is tracked in #28.
+The control for the delivery refusal is to stop staging `web/` files and run a page mutation:
+it names the file, the URL and both byte counts, and exits 2 without printing an assertion.
 
 ## What each tool needs
 
@@ -313,14 +342,13 @@ green — both `no-hello-take` rows, `local-clip`'s `dateSource === 'hello'`, an
 generation-zero rows. A mutation that reddened fewer would mean the band had quietly become
 several predicates that agree.
 
-Reaching all four needed one change to the harness. `stageServer` used to write only a `server/`
-mutation into the staged tree, leaving `web/` ones to the browser route interception — which is
-right for `main.js` and `library.js`, since nothing on the Node side imports either. It is wrong
-for `format.js`, which `server/library.js` imports by path: served to the page and not staged, the
-server would have gone on deciding `openable` on the unmutated band and the control would have
-reddened the page's rows only, reading as a partial break in the product rather than a half-broken
-build. Every mutation is written into the staged tree now; both roots there are copies, so nothing
-reaches the subject.
+Reaching all four needed the harness to stage `web/` mutations rather than leaving them to the
+browser route interception, because `server/library.js` imports `format.js` by path: served to
+the page and not staged, the server would have gone on deciding `openable` on the unmutated band
+and the control would have reddened the page's rows only, reading as a partial break in the
+product rather than a half-broken build. That is what put the tool briefly on two delivery
+mechanisms and is why it is now on one — see the Mutations section above for the collapse and for
+what `requireMutationDelivered` asserts.
 
 **`syntax-check` also holds the hello to the README and the format constant to the grabber**, in
 both directions and without importing either. The prose block documented nine keys against the
@@ -335,8 +363,11 @@ nothing. `CAPTURE_FORMAT` is read textually out of `web/format.js` and `native/g
 required equal, because this tool takes `--root` and an import would bind the assertion to this
 checkout while claiming to have checked another tree.
 
-Its three controls are run by hand, in the idiom the `tools/` and `docs/` blocks already use,
-because this tool carries no `--mutate` harness. Add a key to the grabber literal and not to the
+Its three controls are run by hand, in the idiom the `tools/` and `docs/` blocks already use.
+This tool does carry a `--mutate` harness, but its table holds one entry and that entry belongs
+to the specification row below, so nothing here has a named mutation — which is worth stating
+rather than leaving to be inferred, since a reader who saw the flag would otherwise read a green
+`--mutate spec-drifts` as a control over these assertions too. Add a key to the grabber literal and not to the
 README; add one to the README the grabber does not emit; bump the constant in one language. Each
 must fail naming what it found — measured, in that order: `the grabber's hello emits exposure and
 README.md's type 1 hello does not document it`, `README.md's type 1 hello documents exposure and
@@ -427,6 +458,27 @@ has quietly halved is visible rather than implied. It also asserts that every to
 is named in `CLAUDE.md`, which is why the invocation list lives there rather than here — a tool
 added later is asked by existing, and the falsification control is adding a tool without
 documenting it.
+
+**Its third row is the `.knct` decoder specification**, the page at the top of
+`server/protocol.js` that issue #45 decided is a take's exit from this program instead of a
+point-cloud export. That makes it load-bearing in a way prose here usually is not: it is what
+somebody writes a reader from once nothing in this tree runs, so a constant that moved while it
+did not would send them to a reader that is plausibly shaped and quietly wrong. The row reads the
+specification's number table against the module's exports and fails on any disagreement. Two
+choices in it are the whole of why it means anything. The exports are **enumerated rather than
+listed**, so every numeric export has to appear in the specification and a constant added next
+year is asked by existing rather than added to a second table that drifts. And the values are
+read by **importing** the module rather than by a regex over its source, because
+`MAX_PAYLOAD_BYTES` is `8 * 1024 * 1024` and reads correctly one way and not the other.
+
+The control is `--mutate spec-drifts`, which substitutes `TYPE_COLOR = 3` for `4` and leaves the
+prose where it is. Both arms import through a scratch copy of the file rather than the clean arm
+importing the live path — they have to differ only in the substitution, or the run is comparing
+two mechanisms and calling the difference a catch. An anchor it cannot find and a mutation name it
+does not know both exit 2 rather than running, for the reason the exit-code section above gives.
+Mutation-tested three ways beyond its own control: a numeric export added to `protocol.js` and
+left out of the table reddens it, the specification block deleted reddens it, and a number edited
+in the table while the code stays put reddens it.
 
 **`prof-summary.mjs <profile> [warmup]`** reads `grabber --profile` output and flags any run
 under 29.5fps as contended, because the segment timings from a run that dropped frames are
