@@ -101,14 +101,35 @@ per frame, each of which renders a pre-roll which evaluates, so the page never a
 never errors - it runs out of memory some minutes later, somewhere else. A bounded probe turns
 that into a sentence.
 
-**`jobs-check`** spawns its own server and renders one real job through
-`tools/render-worker.mjs`, so it needs a GPU browser and ffprobe. `--no-render` drops that row
-and says so - the queue rows are seconds, the render row is a minute. Its mutation runs use
-`--no-render` because every mutation it declares is queue semantics, and none of them needs a
-rendered frame to be caught. Take the names from the tool's own refusal rather than from a count
-written here - this sentence used to carry one and it was wrong, which is what a count in prose
-beside a list that grows does to itself, and enumerating from the refusal is what `sweep-all`
-already does for the same reason.
+**`jobs-check`** spawns its own server and renders two real jobs through
+`tools/render-worker.mjs`, so it needs a GPU browser and ffprobe. `--no-render` drops both rows
+and says so - the queue rows are seconds, each render is about a minute.
+
+**Its mutation runs are no longer all `--no-render`, and reading them as though they were is
+how a control gets recorded as green without running.** Every one but `heartbeat-stops-on-first-error`
+is queue semantics and wants `--no-render`; that one names a line in the worker's beat, is
+reached only by a render, and needs the browser and about two minutes. Take the names from the
+tool's own refusal rather than from a count written here - this sentence used to carry one and
+it was wrong, which is what a count in prose beside a list that grows does to itself, and
+enumerating from the refusal is what `sweep-all` already does for the same reason. That the
+split is by *which* mutation rather than by a number is the same argument arriving one level
+down: a reader who takes "its mutation runs use `--no-render`" as a rule runs the one that
+needs a render without one, and it passes.
+
+**The worker under test is the staged copy, not the repo's.** `jobs-check` copies `server/`,
+`web/` and `tools/render-worker.mjs` into `.jobs-check/root` and spawns from there, because a
+mutation naming a file nothing runs reports a miss that is really a control that never applied.
+
+**The heartbeat row runs the whole render through a forwarding proxy**, which destroys the
+socket on the first `POST /jobs/<id>/heartbeat` without answering - `ECONNRESET` at the
+worker's `fetch`, the one class of failure that is neither a 409 nor a status code. A worker
+has one `--url`, so the proxy also carries the page load and the export WebSocket, handling
+`upgrade` by piping the raw sockets both ways with the headers verbatim - `Host` included,
+since the page's `Origin` names the proxy and `originAllowed` compares the two. If that row
+fails with anything about the export, the page or a closed target, the proxy is the suspect and
+the finding is not the heartbeat. What discriminates is the record's `heartbeat` against its
+`claimed`: `claim` stamps them equal, so a worker that gave up on the first failure finishes
+`done` exactly like a healthy one and only the timestamp says it went quiet.
 
 **The worker reads its renderer class out of the browser it will render in and cannot be told
 one.** `channel: 'chromium'` rather than the bundled headless shell, which has no GPU and falls
@@ -226,6 +247,51 @@ held, `startServer` throws if its own child exits instead of listening, and it r
 outside the declared span so a section added at `+17` is a failure rather than a hole. Pass
 `--node-port`/`--mac-port` a range nothing else holds.
 
+**Three rows in it are flaky under machine contention, and they are written down here so the
+next person does not spend the afternoon on an innocent change.** Two are in the
+marks-on-the-scrubber section and are the same race: `and it is stamped in source milliseconds
+rather than program time` seeks the editor to program 1.0s, awaits `settled()`, presses mark,
+and asserts the written `sourceMs` is within 40ms of `sourceSecAt(1.0)`, while `stamped inside
+the footage it flags rather than at an arbitrary offset` asks that the mark land within the
+take. Observed failing as `0ms against source 150ms` — the playhead still at program zero when
+the mark was taken — and as `934ms into 425ms`. Neither is fixed: `settled()` resolving before
+the transport's program position has moved is a page-timing race in the editor, not a property
+of anything the section is about.
+
+The third is `and when the reader lets go the descriptor is closed rather than left for the
+collector to throw over`, which reports `real 19 against a baseline of 18` and whose own comment
+in the file already calls it measured-flaky. Its settle is a fixed 250ms against a collector
+measured to take 300ms to 1s, so it is sound on an idle machine and arithmetic on a loaded one.
+
+What says all three are the rows rather than the change under test is that they fail on
+unmutated trees as well as mutated ones, and disagree with themselves across runs of one tree —
+the descriptor row was green at load 70, red at 250 and green again at 276 on an identical
+checkout. A run that reddens only these on a busy machine is a re-run, not a finding, and per
+the rule at the top of this file that judgement comes from reading *which* assertion fired,
+never from the exit code.
+
+**Under a mutation they are worse than noise, because they land on top of a count.**
+`open-ignores-format` carries its claim *as* a number — six, and the doc above says which six —
+so a marks row arriving alongside them prints `7 failed` or `8 failed` and reads as a control
+that over-fired onto rows it was supposed to leave green, which is the one failure shape that
+would mean the band had stopped being a single predicate. Measured twice on the merge that
+brought the two together: `7 failed` at load average 71, the intended six by name and one marks
+row seventh; and `8 failed` at load average 270, the same six and both marks rows. Compare the
+names against the six rather than the total against six, and re-run before recording a spread —
+the same tree's baselines passed those rows at other moments, which is what a race looks like
+from the outside and what a real interaction would not do.
+
+**`--mutate exit-keeps-the-child-reference` reddens exactly two, and its section is the one to
+suspect first on a loaded machine**, because the whole of it is a message that has to land
+inside a 1000ms respawn backoff. The two are `the next failure is still reported lost` and `and
+it still counts toward the backoff`; the three rows above them are provenance and must stay
+green, since they are what separates a control that missed from a fixture that never reached the
+window. Read the printed `colour camera on - ...` line beside them either way — `restarting
+grabber` says the mutation reached the branch, `takes effect on the next spawn` says it did not,
+and the assertion count cannot tell you which. Both claim rows assert an order and a ratio
+rather than the presence of a word, and `docs/instruments.md` carries why: the earlier versions
+passed the mutated build, which reddened nothing and exited 0.
+
 **Two takes carry the capture format's band, and the second is the one that keeps the archive
 readable.** `future-format-take` declares a generation this build has never read and is
 otherwise an entirely ordinary take — whole frames, a readable hello, intrinsics in range —
@@ -241,7 +307,7 @@ the point of it rather than an implementation detail. Four doors decide whether 
 opened — `openable` in `describeTake`, the badge and the dead Open button in the gallery, and
 `openTake` in the editor — and three of them are cheap to satisfy by inlining a comparison, which
 would pass every row here and drift the first time the band gains a member. So the assertion the
-mutation really carries is the *count*: it reddens **6 of 360**, one row per door plus the
+mutation really carries is the *count*: it reddens **6 of 365**, one row per door plus the
 gallery's menu sentence and the editor's editing state, and the takes that must stay green stay
 green — both `no-hello-take` rows, `local-clip`'s `dateSource === 'hello'`, and all four
 generation-zero rows. A mutation that reddened fewer would mean the band had quietly become
@@ -468,5 +534,15 @@ block is carried through untouched` and `divisor 4 lands at the ~80KB`), because
 measure a JPEG the stand-in does not contain, and a sample whose hello carries `startedAt`
 fails the file-date fallback row, because the fixture depends on some takes having no wall
 clock. Neither is a defect in the build. Say which sample a run used when reporting its
-verdict — a run against a stand-in is 317 of 319 by construction, and reporting it as a pass
-or as two failures without naming the fixture is wrong in both directions.
+verdict — a run against a stand-in fails the rows named above by construction, and reporting it
+as a pass or as unexplained failures without naming the fixture is wrong in both directions.
+
+**The total is not written down here any more, and that is deliberate.** This sentence used to
+carry one — "317 of 319" — and it was stale by twenty-eight the day it was next read, because
+the total moves whenever a section is added and nothing was walking it. The number to compare a
+run against is the one a baseline on the same tree prints: **365 assertions on darwin against
+the real 138MB sample**, measured on the merge that brought section 4f alongside the capture
+format's band, which is the figure to re-measure rather than to trust. It went from 352 to 365
+in that merge alone — five rows from one branch and thirteen from the other, neither of which
+knew about the other — and that is the rate a total in prose goes stale at when two sections
+land in the same week.

@@ -922,6 +922,20 @@ const MUTATIONS = {
     '  if (!isLoopback(req)) {\n    const { label } = revealSupport();',
     '  if (false) {\n    const { label } = revealSupport();',
   ]] },
+
+  // ---- the supervisor's reference to the grabber it is supervising
+  //
+  // The exit handler stops nulling the reference, so for the whole respawn backoff the
+  // colour toggle finds a `ChildProcess` that has already exited, arms `restarting`
+  // against it and calls `stopGrabber` on a pid that cannot be signalled. Nothing then
+  // consumes the flag until the next genuine failure, which reads it as a requested
+  // restart. Anchored on the comment above the line as well as the line itself, because
+  // the identity test it copies appears verbatim in the spawn-`error` handler thirty
+  // lines up and a bare anchor would match twice.
+  'exit-keeps-the-child-reference': { file: 'server/index.js', edits: [[
+    '      // restart branch returns before the rest of the handler runs.\n      if (child === proc) child = null;',
+    '      // restart branch returns before the rest of the handler runs.',
+  ]] },
 };
 
 function mutatedSource(name) {
@@ -2100,6 +2114,163 @@ async function runChecks() {
         room.release();
       }
     }
+  }
+
+  // ------------------- 4f. a grabber that has exited is not a grabber that is running
+  //
+  // **The window this aims at is between an exit and the respawn the backoff has
+  // scheduled, and it exists because a colour toggle reads the supervisor's `child`
+  // reference to decide whether there is anything to restart.** Nothing used to clear
+  // that reference on exit, so for the whole backoff - `RESTART_DELAYS[attempt]`, a full
+  // second after the first failure - `child` was a truthy `ChildProcess` that had
+  // already gone. A toggle landing there armed `restarting` against the corpse and
+  // called `stopGrabber` on something that can neither be signalled nor exit again, so
+  // nothing consumed the flag; what eventually read it was the *next* grabber's genuine
+  // failure, which then took the requested-restart branch and returned before the
+  // backoff ever ran.
+  //
+  // Its own server rather than 4b's, because an extra restart moves that section's
+  // closed-take count and this section's whole method is provoking extra restarts.
+  //
+  // **What can be observed is the branch that was taken, not the state that was
+  // wrong.** The `attempt = 0` the toggle also does is invisible here - `fake-grabber`
+  // handshakes, and a hello zeroes `attempt` anyway - and the record button is
+  // unreachable for the same reason, since `everLive` is true so the node never reaches
+  // `absent`. What is left is two absences on the next genuine death: no `lost` on the
+  // status channel, and no `restarting grabber in ...ms` in the log. Those are the rows.
+  //
+  // **Both are read as a shape and not as a presence, and the note beside them says what
+  // that cost to learn.** The defect does not remove either word from the log - it moves
+  // them, because the toggle's own `stopGrabber` announces a `lost` of its own and the
+  // respawn that follows still writes a line. A row asking whether the word appeared was
+  // therefore true of the build with the bug in it.
+  console.log('\n[library] a colour toggle during the respawn backoff does not eat the next failure');
+  {
+    const supDir = join(WORK, 'supervised');
+    mkdirSync(supDir, { recursive: true });
+    // Short-lived on purpose: the grabber says hello, streams a burst and dies
+    // unrequested, which is the failure the backoff is for. A hello before each death
+    // is also what pins the window - it puts `attempt` back to 0, so the delay that
+    // follows is `RESTART_DELAYS[0]` and therefore 1000ms rather than a later and wider
+    // entry in the table. The 250ms clean-respawn window is a different one and is not
+    // what this aims at.
+    const supUrl = await startServer(root, [
+      '--captures', supDir, '--name', 'supervised', '--no-color',
+      '--grabber', `${join(REPO, 'tools/fake-grabber.mjs')} --source ${SAMPLE} --die-after 24 --burst 10 --fps 40`,
+    ], MAC_PORT + 1);
+    const supLog = () => servers.find((s) => s.port === MAC_PORT + 1).log.join('');
+    const countIn = (text, re) => [...text.matchAll(re)].length;
+    const EXITED = /\[server\] grabber exited/g;
+    const BACKOFF = /\[server\] restarting grabber in \d+ms \(attempt \d+\)/g;
+
+    // The status channel, held the way the descriptor section holds one: `lost` is
+    // broadcast and never served, so nothing over HTTP can answer this.
+    const statuses = [];
+    const ws = new WebSocket(supUrl.replace('http', 'ws'));
+    ws.on('message', (data, isBinary) => {
+      if (isBinary) return;
+      try {
+        const msg = JSON.parse(data.toString('utf8'));
+        if (msg.status) statuses.push(msg.status);
+      } catch { /* not a status message */ }
+    });
+    await new Promise((done, fail) => { ws.on('open', done); ws.on('error', fail); });
+
+    // Polled finely rather than slept against, because the whole row is a message that
+    // has to land inside a one-second window. 20ms against 1000ms is a margin of fifty.
+    let died = false;
+    for (let i = 0; i < 1500 && !died; i++) {
+      await new Promise((done) => { setTimeout(done, 20); });
+      died = countIn(supLog(), EXITED) >= 1;
+    }
+    check(died, 'the grabber handshook, streamed and died unrequested, which is the failure the backoff exists for',
+      `${countIn(supLog(), EXITED)} exits`);
+
+    // Everything after this point is counted from here, because the first death has
+    // already produced a `lost` and a backoff line of its own and the claim is about
+    // the *next* one.
+    const statusesBefore = statuses.length;
+    const backoffBefore = countIn(supLog(), BACKOFF);
+    const spawnsBefore = countIn(supLog(), /\[server\] starting grabber:/g);
+    ws.send(JSON.stringify({ camera: { color: true } }));
+    // **Whether the message landed in the window is the instrument's own question, and
+    // it is asked separately from the claim.** Both the fixed build and the broken one
+    // take a toggle during the backoff; what differs is the branch. A toggle that
+    // arrived late, after the respawn, is a legitimate restart on a live grabber in
+    // either build - so it would leave the two rows below green on a build that has the
+    // defect, and the run has to say the fixture missed rather than say the code passed.
+    const spawnsAtToggle = countIn(supLog(), /\[server\] starting grabber:/g);
+    check(spawnsAtToggle === spawnsBefore && spawnsBefore === 1,
+      'and the toggle was sent while nothing was running - between the exit and the respawn, which is the window the whole section is about',
+      `${spawnsAtToggle} spawns at the toggle, ${countIn(supLog(), EXITED)} exits`);
+
+    // The next genuine death: a respawn, a hello, a burst, and an exit nobody asked
+    // for. Waited for by the exit count rather than by a duration, since a spawn on a
+    // contended machine is the one part of this with no fixed cost.
+    for (let i = 0; i < 1500 && countIn(supLog(), EXITED) < 2; i++) {
+      await new Promise((done) => { setTimeout(done, 20); });
+    }
+    // A moment past the exit, because the two things being read are written by the
+    // handler that the exit runs and by the socket it broadcasts on.
+    await new Promise((done) => { setTimeout(done, 400); });
+    ws.close();
+
+    // **The read has to land on the second death and not on a third, and on the broken
+    // build a third is only 250ms away.** The requested-restart branch respawns at
+    // `RESPAWN_AFTER_CLEAN_MS` rather than at the backoff, so a mutated run that
+    // over-ran this window would see grabber #3 die, produce the `lost` and the backoff
+    // line the two rows below are asserting the absence of, and pass - and this tool has
+    // no `NOT CAUGHT` branch, so it would exit 0 and read as clean. Two on both sides:
+    // under the fix the next respawn is a second out, and under the mutation a third
+    // death here means the fixture over-ran rather than the code being right.
+    const exitsAtRead = countIn(supLog(), EXITED);
+    check(exitsAtRead === 2,
+      'and exactly one further death has happened when the reading is taken, so this is the next failure rather than a later one',
+      `${exitsAtRead} exits`);
+    // Printed rather than asserted, because it is the diagnostic that tells a fixture
+    // which missed the window from a control that is blind: `takes effect on the next
+    // spawn` means the reference was clear when the toggle arrived, and
+    // `restarting grabber` means it was not. Asserting it would be asserting the
+    // mechanism rather than what the mechanism costs, and it would hand the mutation a
+    // third row to redden.
+    console.log(`  ...   ${supLog().match(/\[server\] colour camera .*/)?.[0] ?? 'no colour line in the log at all'}`);
+
+    // **Both rows below assert a shape rather than a presence, and they do so because
+    // the presence versions passed the mutated build.** Measured on the merge that
+    // brought this section alongside the capture format's band, at a moment the machine
+    // was carrying another worktree's suite: `--mutate exit-keeps-the-child-reference`
+    // reddened *nothing*, and since this tool has no `NOT CAUGHT` branch it exited 0 and
+    // read as a clean pass. The diagnostic line above is what said otherwise - it printed
+    // `restarting grabber` where the fixed build prints `takes effect on the next spawn`,
+    // so the mutation had applied and reached the branch, and the two rows had simply
+    // agreed with it.
+    const after = statuses.slice(statusesBefore);
+    // The broken build emits a `lost` of its own the instant the toggle calls
+    // `stopGrabber` on the corpse, so the word is in this list either way: the fixed
+    // build said `starting live lost` and the mutated one said `lost starting live
+    // starting`. What separates them is order rather than membership. The death this row
+    // is about is the one that follows the respawn coming up, so the `lost` has to sit
+    // after a `live` - which also makes the row robust against the first death's own
+    // `lost` arriving late and landing inside this slice, since that one is still in
+    // front of the `live` that follows it.
+    const liveAfter = after.indexOf('live');
+    check(liveAfter >= 0 && after.indexOf('lost', liveAfter) > liveAfter,
+      'the next failure is still reported lost, rather than being read as the restart the toggle never got to ask for',
+      after.length ? `saw ${after.join(' ')}` : 'no status changes at all');
+    // One backoff line per death, rather than more lines than before. `> backoffBefore`
+    // was true of both builds - the fixed one went 1 to 2 and the mutated one 0 to 1 -
+    // so the row measured that the log had grown rather than that the failure had been
+    // spent. `backoffBefore` is reported and not asserted on because it is a race in the
+    // fixture: `scheduleRetry` writes its line just after the exit the poll loop above
+    // watches for, so whether it has landed by the time the toggle goes out depends on
+    // the machine. The count at the read is not, since the read is 400ms past the exit.
+    // The invariant is the one the defect breaks: the requested-restart branch returns
+    // before `scheduleRetry` runs, so a death that was eaten is a death with no line.
+    const backoffAtRead = countIn(supLog(), BACKOFF);
+    check(backoffAtRead === exitsAtRead,
+      'and it still counts toward the backoff, which is the table a machine with no sensor has to be able to spend',
+      `${backoffAtRead} backoff lines against ${exitsAtRead} deaths, ${backoffBefore} before the toggle`);
+    for (const p of servers.filter((s) => s.port === MAC_PORT + 1)) p.child.kill('SIGKILL');
   }
 
   // ---------------------------------------------------------- 6. the gallery page
