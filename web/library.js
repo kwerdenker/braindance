@@ -1723,7 +1723,15 @@ globalThis.__library = {
     id: el.dataset.id,
     hash: el.dataset.hash,
     state: el.dataset.state,
-    acts: [...el.querySelectorAll('.acts .act')].map((b) => ({ label: b.textContent, disabled: b.disabled })),
+    // The same four fields the menu below reports, and the symmetry is load-bearing
+    // rather than tidy: acts used to carry the label and the disabled flag alone, so a
+    // check asking why an act was off got `undefined` and a check looking an act up in
+    // `menu` found nothing and read that as a refusal. A row asserting no tile offers
+    // Delete passed on every build there could be, because Delete is an act and it was
+    // looking through the ⋯ items. Both lists answer the same questions now.
+    acts: [...el.querySelectorAll('.acts .act')].map((b) => ({
+      item: b.dataset.act, label: b.textContent, disabled: b.disabled, why: b.title,
+    })),
     menu: [...el.querySelectorAll('.menu .mi')].map((b) => ({
       item: b.dataset.item, label: b.textContent, disabled: b.disabled, why: b.title,
     })),
@@ -1888,12 +1896,16 @@ globalThis.__library = {
       note: vNote.textContent,
       flags: [...document.querySelectorAll('#vFlags .flag')].map((f) => f.dataset.flag),
       marks: [...vBar.querySelectorAll('.mk')].map((m) => Number.parseFloat(m.style.left)),
-      acts: [...document.querySelectorAll('#vActs .act')].map((b) => ({ label: b.textContent, disabled: b.disabled })),
       // Reported in the same shape `tiles()` reports a tile's, because what reads them
       // is one comparison: the two surfaces have to offer a take the same things, and a
       // reader that could see only one half of each would be comparing the halves that
       // never disagreed. The ⋯ itself is in the header rather than in `#vActs`, so the
-      // action rows line up without either side needing to be trimmed of it.
+      // action rows line up without either side needing to be trimmed of it. That is
+      // why the key order here is the key order there - the comparison is on the
+      // serialised object, so a field in a different place reads as a disagreement.
+      acts: [...document.querySelectorAll('#vActs .act')].map((b) => ({
+        item: b.dataset.act, label: b.textContent, disabled: b.disabled, why: b.title,
+      })),
       menu: [...viewer.querySelectorAll('.menu .mi')].map((b) => ({
         item: b.dataset.item, label: b.textContent, disabled: b.disabled, why: b.title,
       })),

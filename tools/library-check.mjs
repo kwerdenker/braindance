@@ -5899,13 +5899,23 @@ async function runChecks() {
     check(darkState.node?.reachable === false && darkTiles.length > 0,
       'the station has a node it cannot reach and takes of its own on screen, which is the pair the row below needs',
       `node ${darkState.node?.name} reachable ${darkState.node?.reachable}, ${darkTiles.length} tiles`);
-    const deletable = darkTiles.filter((t) => t.menu.some((m) => m.item === 'delete' && !m.disabled));
-    check(deletable.length === 0,
+    // **Delete is an act, and the first draft of these two rows looked for it in the ⋯
+    // menu.** `menu` holds rename, reveal and reclaim; there is no `delete` in it on any
+    // build, so "not one of them offers Delete" was a filter over an empty match and
+    // passed whatever the page did - the mutation restored the offer and the row went on
+    // agreeing. The missing-Delete arm below is what stops that recurring: a lookup that
+    // finds nothing now fails here rather than reading as a refusal.
+    const deleteAct = (t) => t.acts.find((a) => a.item === 'delete');
+    const noDelete = darkTiles.filter((t) => !deleteAct(t));
+    const deletable = darkTiles.filter((t) => !deleteAct(t)?.disabled);
+    check(noDelete.length === 0 && deletable.length === 0,
       'and not one of them offers Delete while the node is unreachable, because the copy count that would make it safe came from a read that failed rather than from a node with nothing on it',
-      deletable.length ? `${deletable.length} of ${darkTiles.length} still deletable: ${deletable.map((t) => t.id).join(' ')}`
-        : `${darkTiles.length} tiles, every Delete refused`);
-    const why = darkTiles[0]?.menu.find((m) => m.item === 'delete')?.why ?? '';
-    check(/cannot be reached/.test(why),
+      noDelete.length
+        ? `${noDelete.length} of ${darkTiles.length} render no Delete at all, so this row would be reading nothing`
+        : deletable.length ? `${deletable.length} of ${darkTiles.length} still deletable: ${deletable.map((t) => t.id).join(' ')}`
+          : `${darkTiles.length} tiles, every Delete refused`);
+    const why = darkTiles[0] ? deleteAct(darkTiles[0])?.why ?? '' : '';
+    check(/cannot be reached/.test(why) && why.includes('a-node-that-is-not-there'),
       'and it says which node it could not reach, so the refusal is a fact about the link rather than a control that went dead',
       `"${why.slice(0, 90)}"`);
     check(dark.errors.length === 0, 'and that gallery raises no page error', dark.errors.slice(0, 2).join(' | '));
@@ -6074,12 +6084,14 @@ async function runChecks() {
     let hungListings = 0;
     let ticksSeen = 0;
     const heldForever = [];
+    const heldAt = [];
     await hung.route('**/library/all', async (route) => {
       hungListings++;
       // The first is the page's own load and has to answer, or there is no painted grid
       // and no transition to follow. Every one after it is held open for good.
       if (hungListings === 1) { await route.continue(); return; }
       heldForever.push(route);
+      heldAt.push(Date.now());
     });
     await hung.route('**/record/state', async (route) => { ticksSeen++; await route.continue(); });
     await hung.goto(galleryPage(liveUrl), { waitUntil: 'domcontentloaded' });
@@ -6106,10 +6118,24 @@ async function runChecks() {
     // So the fixture now just waits: past fifteen seconds the page's own bound fails the
     // listing, the handler throws, the fingerprint stays where it was, and the next tick
     // offers the same transition again.
-    await new Promise((done) => { setTimeout(done, 12000); });
+    //
+    // **Timed from the held listing rather than from here, because the two are not a
+    // fixed distance apart.** The transition is only noticed on the first tick after the
+    // stop has flushed, indexed and hashed, so the listing that hangs goes out somewhere
+    // in the first cadences rather than at a known moment - and the bound then runs
+    // fifteen seconds from *it*, with the retry landing on the next five-second tick
+    // after that. A flat twelve-second wait from here read twenty-three seconds against a
+    // listing that went out at five and could not have been reasked before twenty-five,
+    // which failed a correct build for being two seconds early. Polled to a deadline that
+    // moves with the listing instead, and reported as the interval it actually took.
+    const freeBy = (heldAt[0] ?? Date.now()) + 15000 + 5000 + 6000;
+    while (Date.now() < freeBy && hungListings === listingsWhileHung) {
+      await new Promise((done) => { setTimeout(done, 250); });
+    }
+    const freedAfter = heldAt[0] ? Date.now() - heldAt[0] : null;
     check(hungListings > listingsWhileHung,
       'and the page frees itself from a listing nothing was ever going to answer, so the single listing above is a poll waiting rather than a poll that has stopped',
-      `${listingsWhileHung} listings while it hung, ${hungListings} after its own timeout fired,`
+      `${listingsWhileHung} listings while it hung, ${hungListings} ${freedAfter}ms after that listing went out,`
       + ` ${ticksSeen} ticks to /record/state throughout`);
     for (const route of heldForever) await route.abort('connectionfailed').catch(() => {});
     await hung.close();
