@@ -1698,9 +1698,27 @@ function paint() {
 const LISTING_TIMEOUT_MS = 15000;
 
 async function refresh({ bound = false } = {}) {
-  library = await (await fetch('/library/all', {
+  const res = await fetch('/library/all', {
     signal: bound ? AbortSignal.timeout(LISTING_TIMEOUT_MS) : undefined,
-  })).json();
+  });
+  const body = await res.json().catch(() => null);
+  // **Checked before it replaces the last library that worked**, because the server's
+  // refusals are JSON. `res.json()` on a 500 carrying `{ error: ... }` resolves
+  // perfectly happily, so assigning it straight through put an object with no `takes`
+  // and no `storage` into `library` - and `paint()` reads `library.storage.label`. The
+  // throw then landed *inside* the top-level catch, which paints again against the same
+  // wrecked object, and a throw inside a catch is uncaught: module evaluation ends,
+  // `__library` is never installed and the poll never starts. That is the exact failure
+  // the catch was added to end, arriving through the one door it did not cover, and the
+  // fixture missed it by serving a body that was not JSON - so `res.json()` threw, the
+  // assignment never happened, and the intact default was what got painted.
+  //
+  // The same shape `documentsIn` in `web/main.js` uses against the same server, rather
+  // than a second way of asking whether a listing is a listing.
+  if (!res.ok || !Array.isArray(body?.takes)) {
+    throw new Error(body?.error ?? `the library could not be listed: HTTP ${res.status}`);
+  }
+  library = body;
   paint();
 }
 

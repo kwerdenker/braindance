@@ -630,16 +630,39 @@ function revealAvailability(req) {
  * `close` rather than `aborted`, because it fires for a connection that ended either way
  * and an abort after the answer has gone out costs nothing - the fetch it would cancel
  * has already settled.
+ *
+ * **Watched on the response and not on the request, because half these routes read a
+ * body first.** An `IncomingMessage` is a stream, and it emits `close` when it *ends* -
+ * so by the time `serveRemoval` and `serveMarkSync` have awaited `readBody(req)` the
+ * request is already `destroyed` and a listener attached after it can never fire again.
+ * Both of them built a signal that was structurally incapable of aborting anything, and
+ * the source sweep could not see it: the call carried a signal, the argument was
+ * spelled correctly, and only the two routes that read no body actually worked. Measured
+ * directly rather than reasoned about - a listener on the consumed request does not fire
+ * when the client aborts, one on the response does.
+ *
+ * The response is the object whose lifetime is the handler's, which is what this wanted
+ * to name all along, so taking it here closes the class instead of reordering two call
+ * sites and leaving the third route somebody writes next year to be found the same way.
+ *
+ * What that rests on, checked rather than assumed, because it is the way this trade goes
+ * wrong: `close` on a response also fires when the answer finishes normally, so a route
+ * that had already written one before awaiting the node would abort a fetch still in
+ * flight - a signal that fires too early, which fails some of the time and is worse than
+ * one that never fires at all. Every write ahead of a `node.takes` call on all four
+ * routes is an early refusal that returns, so no path reaching the node has touched the
+ * response. A route that wants to stream before it asks the node needs a different
+ * answer, and this sentence is where it will find out.
  */
-const untilCallerLeaves = (req) => {
+const untilCallerLeaves = (res) => {
   const ctl = new AbortController();
-  req.on('close', () => ctl.abort());
+  res.on('close', () => ctl.abort());
   return ctl.signal;
 };
 
 async function serveLibrary(req, res) {
   const here = await localTakes();
-  const there = node ? await node.takes(untilCallerLeaves(req)) : null;
+  const there = node ? await node.takes(untilCallerLeaves(res)) : null;
   const takes = reconcile(here.takes, there);
   sendJson(res, {
     here: HERE_NAME,
@@ -760,7 +783,7 @@ async function serveRemoval(req, res, [id], kind) {
     sendJson(res, { error: `${id} is being recorded right now: stop the take before removing it` }, 409);
     return;
   }
-  const there = node ? await node.takes(untilCallerLeaves(req)) : null;
+  const there = node ? await node.takes(untilCallerLeaves(res)) : null;
   const theirs = (there ?? []).find((t) => t.hash === (mine?.hash ?? body.hash));
 
   if (kind === 'reclaim') {
@@ -858,7 +881,7 @@ async function serveDownload(req, res, [id]) {
     sendJson(res, { error: 'no capture node is linked, so there is nothing to download from' }, 409);
     return;
   }
-  const there = await node.takes(untilCallerLeaves(req));
+  const there = await node.takes(untilCallerLeaves(res));
   if (there === null) {
     sendJson(res, { error: `${node.name} is unreachable: ${node.lastError}` }, 502);
     return;
@@ -949,7 +972,7 @@ async function serveMarkSync(req, res, [id]) {
     // library is built to handle, so the one place that reached for a filename
     // would be the one place the design does not hold.
     const here = (await localTakes()).takes.find((t) => t.id === id);
-    const theirTakes = await node.takes(untilCallerLeaves(req));
+    const theirTakes = await node.takes(untilCallerLeaves(res));
     const match = here && (theirTakes ?? []).find((t) => t.hash === here.hash);
     if (!match) {
       sendJson(res, { merged: 0, marks: await readMarks(path), note: `${node.name} does not hold this take` });

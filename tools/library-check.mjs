@@ -672,10 +672,52 @@ const MUTATIONS = {
     'await refresh();',
   ]] },
 
+  // The listing goes back to being believed whatever the server said about it, which is
+  // where it was until a JSON refusal was found walking straight past the catch above.
+  // `res.json()` resolves on a 500 carrying `{ error }`, so `library` becomes an object
+  // with no `takes` and no `storage`, `paint()` throws reading `library.storage.label`,
+  // and the throw lands inside the catch that was supposed to recover from it.
+  //
+  // **Must redden all four rows of the first-load class, both arms, and that is not what
+  // this comment predicted.** The guess was that the non-JSON arm would stay green, on
+  // the reasoning that `res.json()` throws on a body that will not parse and so never
+  // reaches the assignment. It does not any more: the parse failure is caught into
+  // `null` beside the refusal now, so both doors arrive at the same check and removing
+  // it strands the page through either. Written down rather than quietly narrowed,
+  // because the run said something better than the prediction did - before the fix only
+  // one of the two doors was shut, and it was shut by accident, by a `SyntaxError`
+  // nobody chose escaping from `res.json()` with a message that named nothing.
+  //
+  // So this is not a revert to the build that shipped, and calling it one would be the
+  // more useful-sounding claim: that build strands on a refusal that parses and survives
+  // one that does not. What the mutation stages is the guard's absence, which is the
+  // thing under test.
+  'listing-takes-a-refusal-as-a-library': { file: 'web/library.js', edits: [[
+    '  if (!res.ok || !Array.isArray(body?.takes)) {\n'
+    + '    throw new Error(body?.error ?? `the library could not be listed: HTTP ${res.status}`);\n'
+    + '  }\n  library = body;',
+    '  library = body;',
+  ]] },
+
+  // The cancellation goes back to watching the request rather than the response. Every
+  // call site still passes a signal and the source sweep still reads clean - which is
+  // exactly what shipped - but on the two routes that await `readBody(req)` first the
+  // request has already ended, so a listener attached afterwards can never fire.
+  //
+  // `res.req` rather than reordering the call sites, because the defect being staged is
+  // *which object is watched* and reaching the request through the response leaves the
+  // signature and all four callers untouched. Must redden the removal arm and leave the
+  // listing arm green: the listing reads no body, so it worked on both builds and is
+  // what makes this a control for the ordering rather than for cancellation at large.
+  'cancel-watches-the-consumed-request': { file: 'server/index.js', edits: [[
+    "  res.on('close', () => ctl.abort());",
+    "  res.req.on('close', () => ctl.abort());",
+  ]] },
+
   // The listing route stops telling the node that its caller has gone, so a browser that
   // gave up leaves the outbound fetch running here.
   'listing-ignores-client-abort': { file: 'server/index.js', edits: [[
-    'await node.takes(untilCallerLeaves(req)) : null;\n  const takes = reconcile(',
+    'await node.takes(untilCallerLeaves(res)) : null;\n  const takes = reconcile(',
     'await node.takes() : null;\n  const takes = reconcile(',
   ]] },
 
@@ -7552,6 +7594,48 @@ async function runChecks() {
       'and it comes back on the next listing that works, so the failure costs a refresh rather than the session',
       repaired === -1 ? 'no working refresh was reachable' : `${repaired} tiles after the next refresh`);
     await broken.close();
+
+    // **And the same refusal in the shape this server actually sends it.** The arm above
+    // answers with a body that is not JSON, so `res.json()` throws before anything is
+    // assigned and the intact default is what gets painted - a real door, and not the one
+    // `serveLibrary` uses. What it writes is `sendJson(res, { error }, 500)`, and that
+    // body parses: read straight through it landed in `library` whole, `paint()` went for
+    // `library.storage.label` on an object with no storage, and the throw arrived *inside*
+    // the catch added to recover from it - where a throw is uncaught, so module evaluation
+    // ended anyway. A fixture is a claim about which failures were tried, and this one had
+    // tried the half the server does not send.
+    const refusedPage = await browser.newPage();
+    let refusedListings = 0;
+    await refusedPage.route('**/library/all', async (route) => {
+      refusedListings++;
+      if (refusedListings === 1) {
+        await route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'the captures directory cannot be read: ENOTDIR' }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+    await refusedPage.goto(galleryPage(liveUrl), { waitUntil: 'domcontentloaded' });
+    let refusedInstalled = true;
+    await refusedPage.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 })
+      .catch(() => { refusedInstalled = false; });
+    check(refusedInstalled,
+      'and a refusal that parses - the only kind this server sends - is not believed as a library, so the page still installs its hook',
+      refusedInstalled ? 'installed after a JSON 500' : 'the page never installed its hook');
+    // Asked separately, because a page that installed its hook over a blank shelf with no
+    // sentence on it is the failure this surface is named for. The server took trouble to
+    // say which directory and why, and that is the whole difference between a five-second
+    // fix and a mystery.
+    const refusedSaid = refusedInstalled
+      ? await refusedPage.evaluate('document.getElementById("note")?.textContent ?? ""')
+      : '';
+    check(/ENOTDIR/.test(refusedSaid),
+      'and the server\'s own sentence is what reaches the note, rather than a TypeError raised while painting the refusal',
+      JSON.stringify(refusedSaid));
+    await refusedPage.close();
     for (const p of servers.filter((sv) => sv.port === MAC_PORT + 1)) p.child.kill('SIGKILL');
 
     // **A node that stops answering must not leave this machine holding the pair.**
@@ -7601,6 +7685,34 @@ async function runChecks() {
       'and a caller giving up drops the node fetch with it, so a listing nobody is waiting for stops costing a handler here and a socket over there',
       mine?.closedAt === null ? 'the node still holds it 6s after the caller gave up'
         : `dropped ${freed}ms after the caller gave up, unanswered`);
+    // **And the same question asked of a route that reads a body first**, which is where
+    // the signal was structurally dead while every arm above stayed green. An
+    // `IncomingMessage` is a stream and emits `close` when it *ends*, so once
+    // `serveRemoval` has awaited `readBody(req)` the request is already destroyed and a
+    // listener attached after it never fires again. The listing reads no body and so
+    // worked, which is why one arm over one route could not see it - the two halves of
+    // the class are the two shapes of handler, not the four route names, and the source
+    // sweep below reads clean on both builds because the call really does carry a signal.
+    const heldBeforePost = deafHeld.length;
+    await fetch(`${deafUrl}/library/delete/a-take-this-machine-does-not-have`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ hash: `sha256:${'ab'.repeat(32)}` }),
+      signal: AbortSignal.timeout(2000),
+    }).catch(() => {});
+    const postGaveUpAt = Date.now();
+    check(deafHeld.length > heldBeforePost,
+      'a removal reaches the node too, so the row below is about a body-reading route rather than one that never asked',
+      `${deafHeld.length - heldBeforePost} held at the node`);
+    const posted = deafHeld[deafHeld.length - 1];
+    for (let i = 0; i < 24 && posted && posted.closedAt === null; i++) {
+      await new Promise((done) => { setTimeout(done, 250); });
+    }
+    const postFreed = posted?.closedAt === null ? null : posted.closedAt - postGaveUpAt;
+    check(posted != null && posted.closedAt !== null && posted.answered === false && postFreed < 1500,
+      'and a route that read its body before asking still drops the node fetch when its caller goes, rather than watching a request that had already ended',
+      posted?.closedAt === null ? 'the node still holds it 6s after the caller gave up'
+        : `dropped ${postFreed}ms after the caller gave up, unanswered`);
     for (const p of servers.filter((sv) => sv.port === MAC_PORT + 11)) p.child.kill('SIGKILL');
     deaf.srv.close();
 

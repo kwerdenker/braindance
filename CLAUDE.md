@@ -159,6 +159,8 @@ node tools/library-check.mjs --mutate delete-guesses-past-an-unreachable-node # 
 node tools/library-check.mjs --mutate first-load-bounded       # ... a cold library is slow for a reason, and the load is not the poll
 node tools/library-check.mjs --mutate first-load-strands-the-page  # ... and a first listing that fails leaves a page that still works
 node tools/library-check.mjs --mutate listing-ignores-client-abort # ... a caller that gave up takes the node fetch with it
+node tools/library-check.mjs --mutate cancel-watches-the-consumed-request # ... including on a route that read its body before asking
+node tools/library-check.mjs --mutate listing-takes-a-refusal-as-a-library # ... and a refusal that parses is not a library
 node tools/library-check.mjs --mutate faint-fixed-in-one-page       # ... one token, and the page that drifts is named
 node tools/library-check.mjs --mutate write-overwrites-builtin # ... and must FAIL
 node tools/library-check.mjs --mutate list-swallows-unreadable # ... and must FAIL
