@@ -5055,38 +5055,55 @@ try {
       { id: 'outside', sourceMs: 2000, label: 'outside' },
       { id: 'inside', sourceMs: 8000, label: 'inside' },
     ])`);
+    await settle();
+    // **Where the trim goes is derived from where the marks landed, never assumed.**
+    // This section deliberately runs at a rate where a mark's program second and its
+    // source second are different numbers - which is the whole point of the rows above -
+    // so a trim written as two constants put both marks on the same side of it and the
+    // liveness row below failed against a correct build. The boundaries are computed
+    // from the curve the page is actually holding.
+    const trim = await page.evaluate(`(() => {
+      const total = __kinect.editor.view.window().duration;
+      const at = (s) => Math.max(0, Math.min(total, __kinect.timeline.retime.programSecAt(s)));
+      const outside = at(2);
+      const inside = at(8);
+      const inAt = (outside + inside) / 2;
+      return { total, outside, inside, inAt, park: (inAt + inside) / 2, outAt: Math.min(total, inside + 1) };
+    })()`);
     // Set through the buttons the operator uses rather than through a hook, because a
     // hook that set the trim directly would be a second road to a value the keys have to
-    // agree with - and the row below is about exactly that agreement.
-    await page.evaluate('__kinect.timeline.transport().seek(5)');
+    // agree with - and the rows below are about exactly that agreement.
+    await page.evaluate(`__kinect.timeline.transport().seek(${trim.inAt})`);
     await settle();
     await page.click('#tSetIn');
-    await page.evaluate('__kinect.timeline.transport().seek(12)');
+    await page.evaluate(`__kinect.timeline.transport().seek(${trim.outAt})`);
     await settle();
     await page.click('#tSetOut');
     await settle();
     const trimmed = await page.evaluate('({ in: __kinect.timeline.transport().clipInSec, out: __kinect.timeline.transport().clipOutSec })');
     const marksNow = await page.evaluate('__kinect.library.markTicks().length');
-    check(Math.abs(trimmed.in - 5) < 0.05 && trimmed.out > 8 && marksNow === 2,
-      'the clip is trimmed with one mark outside it and one inside, which is the arrangement the clamp can be seen through',
-      `in ${trimmed.in?.toFixed(2)}s out ${trimmed.out?.toFixed(2)}s, ${marksNow} ticks`);
-    await page.evaluate('__kinect.timeline.transport().seek(6)');
+    check(marksNow === 2 && trim.outside < trimmed.in - TOL && trimmed.in < trim.park
+      && trim.park < trim.inside - TOL && trim.inside < trimmed.out + TOL,
+      'the clip is trimmed with one mark outside it and one inside, and the playhead parks between the in point and the mark it keeps - which is the arrangement the clamp can be seen through',
+      `outside ${trim.outside.toFixed(2)}s | in ${trimmed.in?.toFixed(2)}s | park ${trim.park.toFixed(2)}s`
+      + ` | inside ${trim.inside.toFixed(2)}s | out ${trimmed.out?.toFixed(2)}s, ${marksNow} ticks`);
+    await page.evaluate(`__kinect.timeline.transport().seek(${trim.park})`);
     await settle();
     await focusStage();
     await page.keyboard.press('[');
     await settle();
-    const backFromSix = (await read()).programSec;
-    check(Math.abs(backFromSix - 6) < 0.05,
+    const backFromPark = (await read()).programSec;
+    check(near(backFromPark, trim.park, TOL),
       'stepping back from inside the trim past a mark the trim excludes moves nothing at all, rather than throwing the playhead onto the in point it can never get past',
-      `${backFromSix.toFixed(3)}s, still where it was rather than at the in point ${trimmed.in?.toFixed(2)}s`);
+      `${backFromPark.toFixed(3)}s, parked at ${trim.park.toFixed(3)}s with the in point at ${trimmed.in?.toFixed(2)}s`);
     // The liveness half. Without it the row above passes against a key that does
     // nothing whatever, which is the same reading and the opposite defect.
     await page.keyboard.press(']');
     await settle();
     const forwardInTrim = (await read()).programSec;
-    check(forwardInTrim > 7 && forwardInTrim < 9,
+    check(near(forwardInTrim, trim.inside, TOL),
       'and the key is working while it declines, because the same press forward still reaches the mark the trim does keep',
-      `${forwardInTrim.toFixed(3)}s`);
+      `${forwardInTrim.toFixed(3)}s against the kept mark at ${trim.inside.toFixed(3)}s`);
 
     // **A mark the edit never reaches still answers a keyboard.** `.tmk.beyond` and
     // `.tmk:hover` have equal specificity, so the one written last wins - and with the
