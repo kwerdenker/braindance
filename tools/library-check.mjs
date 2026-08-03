@@ -6104,7 +6104,7 @@ async function runChecks() {
       `recording ${started.recording}, take ${started.takeId}`);
     check(requestsAfterPress > requestsBeforePress,
       'and pressing it asks the recorder again rather than settling for the answer already in flight, which was taken before the press and would repaint the world as it was',
-      `${requestsBeforePress} requests before the press, ${requestsAfterPress} within 2.5s after it`);
+      `${requestsBeforePress} requests before the press, ${requestsAfterPress} within 3s after it`);
     await post(`${liveUrl}/record/stop`);
     await slow.close();
     for (const p of servers.filter((sv) => sv.port === MAC_PORT + 1)) p.child.kill('SIGKILL');
