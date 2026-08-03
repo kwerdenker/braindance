@@ -928,6 +928,19 @@ function mutatedSource(name) {
 
 const mutation = MUTATE ? mutatedSource(MUTATE) : null;
 const pageMutation = mutation && mutation.file.startsWith('web/') ? mutation : null;
+// The URL a page file is served at, which is not its filename. `server/index.js` 404s
+// any `.html` under `web/` on purpose - a page has exactly one address - so
+// `library.html` is reachable only at the `/gallery` its `PAGES` table names, while the
+// modules beside it are served by name.
+//
+// This is unavoidably a second spelling of that table, and it is **checked rather than
+// trusted**: `requireMutationDelivered` fetches this URL and requires the bytes back to
+// be the ones this run staged, so a page that moved, gained a second address or stopped
+// being served fails the run by name instead of loading unmutated. That is the whole
+// difference from the mechanism this replaced, which could match nothing and say so to
+// nobody.
+const PAGE_URLS = { 'library.html': '/gallery' };
+const urlForPageFile = (file) => PAGE_URLS[file] ?? `/${file}`;
 const serverMutation = mutation && mutation.file.startsWith('server/') ? mutation : null;
 
 // ----------------------------------------------------------------- the fixtures
@@ -1156,30 +1169,34 @@ function stageServer() {
     const from = join(REPO, name);
     if (existsSync(from) && !existsSync(join(root, name))) symlinkSync(from, join(root, name));
   }
-  // **Every mutation is written into the staged tree, not only the server ones**, and
-  // it was `server/` only until the capture format's band needed breaking.
+  // **This is the one place a mutation is delivered, whichever side of the wire it is
+  // on**, and it is worth saying how it got here because the two halves arrived a
+  // release apart and the seam between them was a hazard rather than a redundancy.
   //
-  // `web/format.js` is the file that made the old arrangement wrong. `server/library.js`
-  // imports it by path - which is the entire reason the constant lives under `web/`,
-  // since the browser can only reach what the server serves and Node has no such
-  // constraint - so a mutation of it delivered to the page and not staged left the
-  // server deciding `openable` on the unmutated band. The control would then redden the
-  // page's rows and leave the server's green, which reads as a check having found a
-  // partial break in the product rather than as the harness having broken half the
-  // build. Both roots here are copies, so this writes into the scratch tree and never
-  // into the subject.
+  // Server mutations were always staged. Page mutations were fulfilled by a Playwright
+  // route interception in `openPage`, matched on a URL. `web/format.js` is what made
+  // that untenable: `server/library.js` imports it by path - which is the entire reason
+  // the constant lives under `web/`, since the browser can only reach what the server
+  // serves and Node has no such constraint - so a mutation of it reached the page and
+  // not the server, which went on deciding `openable` on the unmutated band. That
+  // control reddened the page's rows and left the server's green, reading as a check
+  // having found a partial break in the product rather than as the harness having broken
+  // half the build.
   //
-  // **This is now also the delivery path for a page file**, and saying so matters
-  // because the comment here used to claim the route interception in `openPage` was the
-  // whole of it. `WEB_DIR` is `join(ROOT, 'web')` and `web/` is copied into the staged
-  // root, so a mutated page file staged here is what the server serves - the
-  // interception in `openPage` fulfils first and wins the race, but it is answering with
-  // the same `mutation.body` this wrote, so the two cannot disagree about what is under
-  // test. What the interception still does uniquely is map `library.html` onto `/gallery`
-  // and refuse a page file it has no URL for. Collapsing the two into one mechanism is
-  // worth doing and is deliberately not done here: it would put six page mutations this
-  // issue never touched through a new delivery path, and re-proving each of them for its
-  // own stated reason is a piece of work rather than a line.
+  // Staging everything fixed that and made the interception redundant in the same
+  // breath, which is the state this replaces: `WEB_DIR` is `join(ROOT, 'web')` and
+  // `web/` is copied here, so the staged file *is* what the server serves. Two
+  // mechanisms delivering the same bytes is not defence in depth - it is a rule with
+  // nothing measuring it, since no mutation can reach one without the other covering,
+  // and the interception's own failure mode was silence: matched on a URL, it could
+  // match nothing, load the unmutated page, and be recorded as this tool having missed a
+  // bug it was never shown. `requireMutationDelivered` replaces it with the opposite
+  // shape - it asks the server what it serves and stops the run when the answer is not
+  // this file.
+  //
+  // Both roots here are copies, so this writes into the scratch tree and never into the
+  // subject - the reason a mutation is a file in a staged tree rather than an edit
+  // restored afterwards, which would leave a mutated working tree behind any crash.
   if (mutation) {
     writeFileSync(join(root, mutation.file), mutation.body);
   }
@@ -1253,6 +1270,52 @@ async function startServer(root, args, port) {
 
 function stopServers() {
   for (const { child } of servers) child.kill('SIGKILL');
+}
+
+/**
+ * Refuses the run when a page mutation did not reach the browser, and it is exit 2
+ * rather than a failed assertion.
+ *
+ * **The direction matters more than the check.** A mutation that never arrived leaves
+ * the unmutated page under test, every row passes, and the run is recorded as this tool
+ * having missed a bug it was never shown - which is the same silence
+ * `mutatedSource`'s match-exactly-once refusal exists to break one layer up, arriving
+ * through the delivery instead of through the anchor. Counted as a failed assertion it
+ * would be worse than nothing, because a suite that fails one row on a mutation run
+ * reads as a catch. So this is the harness declining to run, which is what 2 means
+ * everywhere else in the suite.
+ *
+ * Asked of the server over HTTP rather than of the staged file on disk, because the
+ * disk is the half already known to be true - `stageServer` just wrote it - and the
+ * question is whether that file is what a browser asking for this page receives. The
+ * two come apart exactly where the URL is not the filename, which is the case that
+ * produced this paragraph.
+ */
+async function requireMutationDelivered(base) {
+  if (!pageMutation) return;
+  const file = pageMutation.file.slice('web/'.length);
+  const url = `${base}${urlForPageFile(file)}`;
+  let served = null;
+  let status = null;
+  try {
+    const res = await fetch(url);
+    status = res.status;
+    served = await res.text();
+  } catch (err) {
+    served = null;
+    status = err.message;
+  }
+  if (served === pageMutation.body) {
+    console.log(`[library] ${MUTATE} delivered: ${url} serves the mutated ${file} (${served.length} bytes)`);
+    return;
+  }
+  console.error(`[library] refusing to run: ${MUTATE} edits web/${file} and ${url} did not answer with it.`);
+  console.error(`[library] the server answered ${status} with ${served === null ? 'nothing' : `${served.length} bytes`}, `
+    + `where the staged file is ${pageMutation.body.length}.`);
+  console.error('[library] a page mutation that does not arrive leaves the unmutated page under test and every row '
+    + 'passing, which reads as this tool having missed a bug it was never shown - so the run stops here rather than '
+    + 'reporting one. Either the page moved to a URL PAGE_URLS does not name, or the server stopped serving it.');
+  process.exit(2);
 }
 
 /**
@@ -1461,25 +1524,6 @@ async function openPage(browser, url, viewport = { width: 1100, height: 760 }) {
   const errors = [];
   page.on('pageerror', (err) => errors.push(String(err)));
   page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
-  if (pageMutation) {
-    // **A page is reached at the URL `PAGES` names it by, not at its filename**, which
-    // is a rule `server/index.js` enforces by 404ing any `.html` under `web/` - so a
-    // mutation of `library.html` intercepted at `**/library.html` would match nothing,
-    // the unmutated page would load, and the run would be recorded as the check having
-    // missed a bug it was never shown. That is the failure the match-exactly-once rule
-    // exists for one layer up, arriving through the delivery instead of the anchor.
-    const file = pageMutation.file.slice('web/'.length);
-    const html = file.endsWith('.html');
-    const target = html ? '/gallery' : `/${file}`;
-    await page.route(`**${target}`, (route) => route.fulfill({
-      status: 200,
-      contentType: html ? 'text/html; charset=utf-8' : 'text/javascript; charset=utf-8',
-      body: pageMutation.body,
-    }));
-    if (html && file !== 'library.html') {
-      throw new Error(`no URL is known for web/${file}: only library.html is served, at /gallery`);
-    }
-  }
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   return { page, errors };
 }
@@ -1503,6 +1547,12 @@ const macUrl = await startServer(root, ['--captures', macCaps, '--name', 'mac',
   '--node', nodeUrl, '--node-name', 'pi-01',
   '--presets', join(WORK, 'presets'), '--projects', join(WORK, 'projects'),
   '--builtin-presets', join(WORK, 'builtin-presets')], MAC_PORT);
+
+// Before a browser opens anything, so a mutation that cannot arrive costs a server spawn
+// rather than a full run ending in a verdict about the wrong build. One server answers
+// for all of them: every server this suite spawns is spawned out of `root`, which is the
+// tree `stageServer` wrote the mutation into.
+await requireMutationDelivered(macUrl);
 
 const { chromium } = await loadPlaywright();
 const browser = await chromium.launch({ headless: !HEADED, args: ['--use-gl=angle', '--use-angle=default'] });
