@@ -188,6 +188,11 @@ node tools/editor-check.mjs --mutate tick-seeks-source-seconds --no-render # ...
 node tools/editor-check.mjs --mutate offer-ignores-take-hash --no-render # ... the resume offer joins on footage, not on a name
 node tools/editor-check.mjs --mutate resume-waits-for-every-list --no-render # ... and a broken neighbouring library does not strand it
 node tools/editor-check.mjs --mutate shortcuts-reject-altgr --no-render # ... the mark keys work on the layouts that need AltGr to type them
+node tools/editor-check.mjs --mutate clip-range-unclamped --no-render # ... a trim the program cannot hold
+node tools/editor-check.mjs --mutate clip-bound-coerces-nonnumeric --no-render # ... and a trim that is not a time at all
+node tools/editor-check.mjs --mutate refusal-strands-the-picker --no-render # ... and the menu that named what was refused
+node tools/editor-check.mjs --mutate resize-skips-repaint --no-render # ... and the picture a resize clears
+node tools/editor-check.mjs --mutate restore-accepts-view-track --no-render # ... and a track the writer never writes
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated

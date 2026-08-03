@@ -1408,6 +1408,16 @@ function setViewCamera(cam) {
 // in its temporal dead zone on the `resize()` that runs at boot.
 let stageResizes = 0;
 
+// The transport, or null until a take is open. Declared here rather than beside the
+// class it is built from four thousand lines below, and for the same reason the counter
+// above is: `resize()` ends by asking for a repaint, `requestRepaint` reads this binding
+// first, and the `resize()` that runs at boot would be reading a `let` in its temporal
+// dead zone - a ReferenceError before the page has drawn anything, on the one path
+// nothing recovers from. That it is read there is deliberate rather than incidental:
+// null is the honest answer at boot, and it is the answer that makes the repaint stand
+// down until there is something to repaint.
+let timeline = null;
+
 /**
  * Who owns the transport's play state right now.
  *
@@ -1480,6 +1490,10 @@ const pauseTransport = () => {
 
 function resize() {
   stageResizes++;
+  // What the drawing buffer measured on the way in, so the repaint at the bottom can
+  // ask whether this call actually reallocated it. See the comment there for why the
+  // question is worth asking rather than assuming the answer is always yes.
+  const wasBuffer = renderer.getDrawingBufferSize(new THREE.Vector2());
   // The stage is the window less whatever the timeline strip is taking, which is
   // nothing at all while it is hidden. Overlaying it on the image instead would
   // have cost nothing here and hidden the bottom of every frame being graded.
@@ -1572,6 +1586,53 @@ function resize() {
   bloom.setSize(Math.max(1, refWidth / 2), 300);
   grade.uniforms.resolution.value.set(buf.x, buf.y);
   uniforms.bufferHeight.value = buf.y;
+  // And then ask for the picture back, because everything above reallocates the drawing
+  // buffer and nothing above draws into it again. A parked editor has no clock of its
+  // own - `tickNow` returns immediately on `!playing` and `pumpParkedDraft` returns with
+  // nothing armed - so the stage stays black until something unrelated happens to seek,
+  // with the chrome overlay floating over it because that is a separate 2D canvas
+  // `placeChrome` goes on repainting. Every path that resizes a parked stage had it: the
+  // window listener below, the three splitter entries, the render-scale slider, the
+  // export-size menu through `setTargetSize`, and `rebuildLanes` reaching this
+  // indirectly - which is the argument for the repaint being here, at the door, rather
+  // than at a caller list the seventh path would be added outside of.
+  //
+  // **This is not the pump section 9 of `editor-check` forbids.** That rule is about a
+  // redraw asking for the next redraw: `renderProgramFrame` moves the camera, so a
+  // handler that renders on a control's `change` has armed its own successor and a
+  // parked drag runs at whatever rate the machine can rebuild a frame. Nothing of that
+  // shape is here. `requestRepaint` stands down while playing, scrubbing, orbiting or
+  // exporting, and coalesces through `queueMicrotask`, so a splitter drag costs one
+  // accurate seek per settled state rather than one per pointer move.
+  //
+  // What keeps it that way is that nothing in the render path reaches this function, and
+  // that is a property to hold rather than one to assume. A `renderScale` track would
+  // have been exactly that path - `evaluateTracks` has no tag filter and runs per
+  // rendered frame - so the refusal `restoreProject` now makes is what stops this line
+  // becoming a repaint requested once per frame of every pre-roll.
+  //
+  // **Only when the buffer actually moved, and that condition was measured rather than
+  // reasoned about.** Most calls here change nothing: `rebuildLanes` runs this whenever
+  // the lane set is rebuilt, so every rate change reaches it through
+  // `timingChanged` -> `lanesChanged` with the strip the same height it already was.
+  // Asking for a repaint there is asking for a second accurate seek on top of the one
+  // the gesture's own release is about to issue - measured at 2 seeks for one held
+  // arrow key against 1, which is the seek storm the speed control was rewritten to
+  // avoid, coming back through a door that was opened for something else. It cost the
+  // take as well: the release resumes playback behind its seek, and the repaint's seek
+  // landed on top of that and put the playhead back on the frame the resume had just
+  // left, so a held key stopped the take three runs out of three.
+  //
+  // The condition is safe because a `setSize` to the size something already has does
+  // not reallocate anything: `WebGLRenderTarget.setSize` returns early on an unchanged
+  // size, and Chrome's canvas does the same for an unchanged `width`/`height`. Measured
+  // on this build rather than read off a specification - a stage carrying 158,247 lit
+  // pixels carried exactly 158,247 across a same-size `resize()`, and 0 across one that
+  // moved the buffer 1298x730 -> 1084x610. `editor-check` section 13 asserts both
+  // halves, because the premise this guard rests on is a fact about a browser and the
+  // day it stops being true is the day the stage goes black with nothing saying so.
+  const buffer = renderer.getDrawingBufferSize(new THREE.Vector2());
+  if (buffer.x !== wasBuffer.x || buffer.y !== wasBuffer.y) requestRepaint();
 }
 addEventListener('resize', () => {
   // The ceiling is a share of the window, so a window that got shorter can put the
@@ -2645,7 +2706,34 @@ function setActiveDeliverable(deliverable) {
   activeDeliverable = deliverable;
 }
 
+// What a clip bound is allowed to be, asked in one place because two callers need the
+// same answer and a second copy of it is the drift this design keeps refusing.
+//
+// `null` is a statement rather than a time, and it is only ever legal at the out point:
+// there it means "to the end", which has to survive a retime that lengthens the program
+// and so cannot be written down as a number. At the in point, and for anything else that
+// is not a finite number, there is no reading to recover - so it is refused.
+function clipBoundOrThrow(value, which) {
+  if (value === null && which === 'out') return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  throw new Error(
+    `the clip's ${which} point is ${JSON.stringify(value) ?? String(value)}, which is not a program `
+    + 'time: a trim carries finite seconds, and holding a value that is not one inside the program '
+    + 'spreads it through both bounds and leaves the transport no range at all',
+  );
+}
+
 function applyDeliverable(deliverable) {
+  // **Asked before anything is touched, so a document this program cannot read is refused
+  // whole rather than half-adopted.** `setClipInOut` below is the door that refuses a
+  // bound, and refusing there is what covers the marker drags and the rate rescale too -
+  // but by the time it runs, `setActiveDeliverable` has already made this document the
+  // active one, so a throw from inside it would leave a refused document's output size
+  // and codec sitting on a clip whose cuts it never got to write. Asking the same
+  // predicate here first is a second call site rather than a second rule, which is the
+  // distinction that matters: there is still one answer to what a clip bound is.
+  clipBoundOrThrow(deliverable.in, 'in');
+  clipBoundOrThrow(deliverable.out, 'out');
   // Before anything is written, because what follows replaces the cuts and the output
   // rate wholesale - see `dropRateGesture` for why this is not `takeTransport`.
   dropRateGesture();
@@ -2662,8 +2750,57 @@ function applyDeliverable(deliverable) {
 
 function setClipInOut(values) {
   const { in: inn, out } = values;
-  if (inn !== undefined) clipIn = inn;
-  if (out !== undefined) clipOut = out;
+  // **Refused before either binding is written, because the clamp below is arithmetic and
+  // arithmetic on something that is not a number does not fail - it spreads.** An `in` of
+  // `"start"` makes `Math.min(clipIn, dur)` NaN, and the `Math.max(clipIn, ...)` that holds
+  // the out point up then carries that NaN into a bound which was perfectly good: both ends
+  // are gone, `clipOutSec` answers NaN, and `frameAt` resolves every position to NaN. The
+  // getter this clamp was put in front of coerced instead - `Number(clipIn) || 0` read a
+  // malformed `in` as zero and left a valid `out` alone - so clamping without refusing first
+  // is strictly worse than what it replaced, on exactly the documents it exists to survive.
+  //
+  // `undefined` is not that case and must not be refused: it is how the two marker drags say
+  // which end they mean, and a drag writes one bound while the other keeps whatever it held.
+  // A document has no such reading, which is why `applyDeliverable` asks the same question
+  // about both of its fields and gets a refusal where this gets a pass.
+  const nextIn = inn === undefined ? undefined : clipBoundOrThrow(inn, 'in');
+  const nextOut = out === undefined ? undefined : clipBoundOrThrow(out, 'out');
+  if (nextIn !== undefined) clipIn = nextIn;
+  if (nextOut !== undefined) clipOut = nextOut;
+  // **Held inside the program that is open, because the two getters the transport reads
+  // this through are not symmetric.** `clipOutSec` is bounded above by the take's
+  // duration and `clipInSec` is bounded below by zero and above by nothing, so an `in`
+  // past the program's end makes `clipInSec` the larger of the two and `frameAt`
+  // composes to a constant: its inner `Math.min` can never exceed the out point, so its
+  // outer `Math.max` always answers the in point. Every position the editor can ask for
+  // then comes back as the same frame - seek, draft, redraw, `goTo`, Home, End, the
+  // arrow steps and the scrubber's release alike - while the readout goes on naming a
+  // range that has nothing in it.
+  //
+  // A deliverable is how that arrives. `applyDeliverable` writes a saved document's
+  // program times as they stand rather than into the rate the clip happens to be in, so
+  // a trim authored at 1x lands past the end of the same take played at 2x, and nothing
+  // upstream of here compares it against the take that is open.
+  //
+  // **Here rather than in the getters, and here rather than at `applyDeliverable`.**
+  // This is the one door every writer already passes - the two marker drags, the rate
+  // rescale in `reparameteriseProgramTime` and the deliverable - so there is no second
+  // clamp to keep in step with this one, and the writer added next year is held by
+  // existing. The markers already clamp themselves this way at their own ends; this is
+  // that same rule said once, where it covers the door a document comes through.
+  //
+  // What it deliberately does not do is make an empty range usable. A trim that lands
+  // wholly past the end has nothing in it, so it collapses to a point at the end - which
+  // is the state the two markers dragged together already reach, and it is explained by
+  // the same picture rather than by a frozen transport nothing on screen accounts for.
+  if (timeline) {
+    const dur = timeline.duration;
+    clipIn = Math.max(0, Math.min(clipIn, dur));
+    // `null` still means "to the end", which is a different statement from a number that
+    // happens to equal the duration: "whole clip" has to survive a retime that lengthens
+    // the program, and a duration written in here would freeze it at today's length.
+    if (clipOut !== null) clipOut = Math.max(clipIn, Math.min(clipOut, dur));
+  }
   ensureActiveDeliverable();
   activeDeliverable.in = clipIn;
   activeDeliverable.out = clipOut;
@@ -3272,11 +3409,47 @@ function restoreProject(project) {
   const restoredLook = [];
   for (const [name, keys] of Object.entries(project.look.tracks)) {
     if (!Array.isArray(keys)) throw new Error(`look track ${name} is not an array of keys`);
-    if (keys.length === 0) continue;
     // Names the registry does not know are refused rather than dropped. A track
     // silently discarded is an edit silently lost, and the file is more likely to
     // be from a build this one cannot read than to be harmlessly extra.
-    params.spec(name);
+    const spec = params.spec(name);
+    // And a name it does know but does not tag `look` is refused for a harder reason
+    // than tidiness. `serialiseProjectBody` filters the track set down to look
+    // parameters, so this is a shape no build of this program has ever written - the
+    // reader was simply not making the demand the writer already meets, and the tag was
+    // sitting here unread while the throw above was taken for the whole check.
+    //
+    // What accepting one cost is the part worth naming. `evaluateTracks` has no tag
+    // filter and runs inside `renderProgramFrame`, so a track on `renderScale` is
+    // `resize()` called once per rendered frame - and where the value genuinely moves
+    // across a ramp, `composer.setSize` disposes and recreates the render targets and,
+    // through `AfterimagePass`, the trails accumulator. That is the accumulator
+    // destroyed between two consecutive frames of a pre-roll whose entire purpose is to
+    // build it up, so an accurate seek stops reproducing the playback it is defined to
+    // reproduce. The document stops round-tripping at the same time and just as quietly,
+    // because the serialiser filters the track back out on the next commit.
+    //
+    // Read off the spec rather than checked against a list of view parameter names, so
+    // a parameter retagged later is refused by existing rather than by being remembered.
+    if (spec.tag !== 'look') {
+      throw new Error(
+        `the track on ${JSON.stringify(name)} is on a ${spec.tag} parameter: a project carries `
+        + 'look tracks only, which is what this build writes and the only kind it can evaluate '
+        + 'without resizing the drawing buffer from inside the render loop',
+      );
+    }
+    // **Skipped only after it has been asked about, and the order is the whole of it.**
+    // This shortcut used to stand above both refusals, so `{"renderScale": []}` and a
+    // track under a name the registry has never heard of both walked straight past a
+    // reader that had just promised to refuse them. Nothing threw and nothing was kept:
+    // `serialiseProjectBody` filters the entry back out on the next commit, so the
+    // document quietly stopped saying what it said when it was opened - which is the
+    // "an edit silently lost" the comment above is about, arriving through the one shape
+    // that has no edit in it to notice missing.
+    //
+    // An empty track is still nothing to restore, so it is still skipped. The change is
+    // that it is skipped for being empty rather than for being cheap to skip.
+    if (keys.length === 0) continue;
     restoredLook.push([name, keys.map((k) => {
       const key = restoreKey(`track ${name}`, k);
       key.value = params.normalise(name, key.value);
@@ -5972,8 +6145,6 @@ function say(text) {
   if (chips) chips.scrollLeft = chips.scrollWidth;
 }
 
-let timeline = null;
-
 const timecode = (sec) => {
   const s = Math.max(0, sec);
   const m = Math.floor(s / 60);
@@ -6461,9 +6632,15 @@ paramWritten = (name, tag) => {
   // business on their window, but a source has its own buffer and its own reason to
   // be told what scale to draw at.
   sendProgramOut({ params: { [name]: params.get(name) } });
-  // View state changes what you are looking at rather than what the clip is, and
-  // both of today's view parameters already do their own work: render scale
-  // resizes the buffers, and auto-orbit only means anything with a clock running.
+  // View state changes what you are looking at rather than what the clip is, and both
+  // of today's view parameters already do their own work: auto-orbit only means
+  // anything with a clock running, and render scale resizes the buffers - which is
+  // `resize()`, and `resize()` asks for its own repaint on its last line because
+  // reallocating a buffer clears it. The premise this comment used to carry was that
+  // resizing the buffers was the work, so a repaint here would be a second one. It is
+  // not: resizing a buffer is not drawing into it, and withholding the repaint here
+  // while nothing else asked for one is what left the stage black behind the chrome
+  // after every move of the render-scale slider.
   if (tag === 'view' || transportWriting) return;
   requestRepaint();
 };
@@ -8418,6 +8595,24 @@ async function refreshDeliverables() {
   return list;
 }
 
+/**
+ * Moves the picker and the record of what it is naming together.
+ *
+ * **Because a refusal has to be able to put the picker back, and there is nothing else
+ * that knows where back is.** A `change` event arrives with `value` already moved, so the
+ * previous selection is gone by the time anything can object to the new one - and
+ * `activeDeliverable` cannot stand in for it, since `saveDeliverable` PUTs the document as
+ * it is and stamps no name into it. Kept on the element rather than in a module binding so
+ * there is one object holding both halves and no second copy to fall out of step.
+ *
+ * Every adoption goes through here, which is what makes the revert below mean "the one the
+ * clip is actually on" rather than "the one somebody remembered to record".
+ */
+function showAdoptedDeliverable(name) {
+  ui.deliverable.value = name;
+  ui.deliverable.dataset.adopted = name;
+}
+
 async function saveDeliverable(name, deliverable) {
   const res = await fetch(`/deliverables/${encodeURIComponent(name)}`, {
     method: 'PUT',
@@ -9899,8 +10094,20 @@ ui.deliverable.addEventListener('change', async () => {
     if (doc.error) throw new Error(doc.error);
     applyDeliverable(doc.body);
     history.commit();
+    showAdoptedDeliverable(name);
     say(`deliverable ${name}`);
   } catch (err) {
+    // **Put the picker back on what the clip is actually on.** `applyDeliverable` refuses a
+    // document whose cuts are not program times, and it refuses it before it has replaced
+    // anything - so the clip, the export size and the readout beside the picker all still
+    // describe the deliverable that was there before. The picker was the one surface left
+    // naming the refused one, and the two disagreeing is worse than either: the readout says
+    // one thing, the control says another, and the file that comes out of a render afterwards
+    // matches the readout while carrying the name the operator can see in the menu.
+    //
+    // The message stays on `#tNote` either way, so this is not a refusal being swallowed - it
+    // is the refusal being told in one place instead of contradicted in a second.
+    ui.deliverable.value = ui.deliverable.dataset.adopted ?? '';
     showTimelineError(err);
   }
 });
@@ -9912,7 +10119,9 @@ ui.deliverableNew.addEventListener('click', async () => {
   try {
     await saveDeliverable(name, activeDeliverable);
     await refreshDeliverables();
-    ui.deliverable.value = name;
+    // Through the same door as the menu's own adoption: what was just saved *is* what the
+    // clip is on, so this is the selection a later refusal has to be able to come back to.
+    showAdoptedDeliverable(name);
     say(`saved deliverable ${name}`);
   } catch (err) {
     showTimelineError(err);
