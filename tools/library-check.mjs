@@ -1588,6 +1588,15 @@ const servers = [];
 // so that a lookup by port answers with whoever is on it, and they are still here so the
 // exit backstop has a list to walk rather than an argument to follow.
 const retired = [];
+// **Everything this run started, which is what anything sweeping rather than looking up
+// wants.** Splitting the list gave the *lookups* a right answer and quietly gave the
+// *sweeps* a short one: the end-of-run fatal-log scan read `servers` alone, so a server
+// whose offset was later reused - three of them on a full run - could log `cannot open`
+// and have it dropped from the verdict. A named set rather than `[...servers, ...retired]`
+// spelled at each site, because the sites are two today and the bug was one of them being
+// forgotten. `sweptEverything` below asserts this is still all of them.
+const everyServer = () => [...servers, ...retired];
+let serversStarted = 0;
 
 /** Whether something already holds a port, asked of the kernel rather than of a fetch. */
 const portHeld = (port) => new Promise((done) => {
@@ -1678,6 +1687,7 @@ async function startServer(root, args, port) {
   let exited = null;
   child.on('exit', (code, signal) => { exited = signal ?? code; });
   servers.push({ child, log, port });
+  serversStarted++;
   for (let i = 0; i < 200; i++) {
     await new Promise((done) => { setTimeout(done, 100); });
     if (exited !== null) {
@@ -1693,7 +1703,7 @@ async function startServer(root, args, port) {
 }
 
 function stopServers() {
-  for (const { child } of [...servers, ...retired]) child.kill('SIGKILL');
+  for (const { child } of everyServer()) child.kill('SIGKILL');
 }
 
 // **The backstop for every way out that does not reach the `finally`.** A spawned server
@@ -6155,7 +6165,29 @@ async function runChecks() {
     for (const p of servers.filter((sv) => sv.port === MAC_PORT + 13)) p.child.kill('SIGKILL');
   }
 
-  for (const { log } of servers) {
+  // **Every server this run started, and a row saying so.** The sweep read `servers`
+  // alone, which stopped being all of them when a reclaimed offset started moving the
+  // previous holder to `retired` - three servers on a full run, whose fatal lines were
+  // dropped from the verdict while the tool reported a pass. That is the worst shape a
+  // proof tool has: a detection it made and did not say.
+  //
+  // The count is checked rather than the collection, because what went wrong was not this
+  // loop reading the wrong variable - it was a list being split somewhere else and one of
+  // its two readers not being told. A row comparing what was swept against what was
+  // started is red for either mistake, including the next collection somebody adds.
+  //
+  // **It has no `--mutate` entry and the reason is a limit worth knowing**: this row is
+  // about the instrument, and the mutation machinery reaches only the subject. A spec
+  // writes its body into the staged tree, and the stage is `server/` and `web/` - a
+  // mutation naming a file under `tools/` would be delivered to a copy nothing runs, and
+  // would be recorded as a control that passed. So this one was mutation-tested by hand:
+  // `everyServer()` put back to `servers` reddens this row and nothing else, and the
+  // commit message carries the numbers.
+  const swept = everyServer();
+  check(swept.length === serversStarted,
+    'the fatal-log sweep reads every server this run started, including the ones whose port was later reclaimed',
+    `swept ${swept.length} of ${serversStarted} started`);
+  for (const { log } of swept) {
     const text = log.join('');
     const bad = text.split('\n').filter(looksFatal);
     if (bad.length) {

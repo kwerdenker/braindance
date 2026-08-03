@@ -498,6 +498,40 @@ hardcodes the boolean together, because hardcoding alone changes nothing observa
 would have been a control that did nothing: 1 failed assertion of 392, the row that carries
 the claim and no other.
 
+### Splitting a list gave the lookups a right answer and the sweeps a short one
+
+The tail of the port-collision fix below, and the reason it is its own entry is that the
+fix was correct and still broke something. Moving a reclaimed offset's previous holder to
+a `retired` list is what makes `servers.find((s) => s.port === n)` answer with whoever is
+on the port. It also silently changed what `servers` *means*: it stopped being every
+server this run started, and the end-of-run fatal-log sweep had been reading it on the
+old meaning.
+
+Measured when the row went in: **four** servers are retired on a full run, so four
+servers' logs were outside the scan. A `cannot open` from any of them would have been a
+failure this tool detected and did not say, which is the worst shape a proof tool has —
+worse than not looking, because the verdict claims it looked.
+
+**The lesson is about the readers rather than the list.** Every consumer of a collection
+is either a *lookup*, which wants the one that is current, or a *sweep*, which wants all
+of them — and splitting a collection to fix a lookup gives every sweep a new bug at the
+same moment. The fix is a named `everyServer()` used by both sweeps, rather than
+`[...servers, ...retired]` spelled at each site, because there were two sites and the bug
+was one of them being forgotten.
+
+The row checks the *count* against a counter incremented where a server is started, not
+the collection the loop reads. What went wrong was never this loop naming the wrong
+variable; it was a list splitting somewhere else and one of its two readers not being
+told, so the row has to be red for that, including for the next collection somebody adds.
+
+**It has no `--mutate` entry, and that limit is worth knowing before you write a row about
+the instrument.** A mutation spec writes its body into the staged tree, and the stage is
+`server/` and `web/` — a mutation naming a file under `tools/` would be delivered to a
+copy nothing runs and would be recorded as a control that passed, which is the
+silent-delivery failure this file already carries two entries about. So it was
+mutation-tested by hand: `everyServer()` put back to `servers` reddens that row and
+nothing else, reporting `swept 18 of 22 started` against a clean `22 of 22`.
+
 ### Two sections on one port, and the one that read a log read the wrong one
 
 The sibling of the `MAC_PORT + 9` case above, with this file on both ends of it instead of
