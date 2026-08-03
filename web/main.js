@@ -1689,6 +1689,26 @@ const cropReach = (maxDepth = 9.5) => {
 // straight down the panel: `Reading · detail` sits beside the two groups it belongs
 // with here and renders first among the grade's, because it is a look group and they
 // are not.
+//
+// `collapses` is the second such property, and it is declared here for the same reason
+// `lookgroup` is: a group added next year answers the question by existing rather than
+// by somebody remembering to put its key in a list somewhere else, which is the list
+// that would go stale. It says only that the group *may* be shut - whether it is shut
+// right now is derived from the document by `revealsItself` below and overridden only
+// where a person has disagreed, so there is no stored open/closed state to keep in step
+// with the values. Everything without it always renders open, and `framing` is the one
+// where that matters beyond taste: its `after()` emits `#cropReset`, which `editor-check`
+// clicks, and Playwright's click waits for visibility - so a collapsible `framing` would
+// turn that row into a thirty-second timeout, which is a crash carrying no failed
+// assertion rather than a finding.
+//
+// `reveals` is the escape hatch beside it, and exactly one group needs one. A group's
+// default rule is that it is in use when its own parameters are, and `Reading · detail`
+// is *also* governed by another group's values - so the rule lives on the entry with the
+// group it is about rather than as a branch inside the predicate that would have to name
+// it. A closure widens the default rule and must not replace it: which groups are open
+// is the look's diff against its defaults, and a group that dropped its own parameters
+// out of its rule would be carrying values the panel had stopped accounting for.
 const PANEL_GROUPS = [
   // The five readings of the take, which were five buttons and one integer uniform
   // until they became five look parameters. They mix rather than exclude, so this is
@@ -1712,7 +1732,35 @@ const PANEL_GROUPS = [
   // the bottom of a laptop panel to buy nothing anybody needs before a take. Which
   // reading you are shooting against is a shooting decision; how wide its bands are is
   // grading.
-  { key: 'detail', label: 'Reading · detail', lookgroup: true },
+  {
+    key: 'detail',
+    label: 'Reading · detail',
+    lookgroup: true,
+    collapses: true,
+    // The one group the default rule is not enough for, and it *widens* that rule rather
+    // than replacing it. Every one of these seven sits at the shader literal it replaced,
+    // so a fresh project has them all at their defaults - and choosing a reading writes
+    // `source` and `treatment` and never these, so on the default rule alone the group
+    // would stay shut whichever reading is live. Which reading you are shooting is
+    // exactly when these constants become worth reading, so the readings are a second
+    // way in and not a different door.
+    //
+    // **The `revealsItself('detail')` term is the load-bearing half of the widening.**
+    // Without it this group stops answering the question every other group answers -
+    // which groups are open is the look's diff against its defaults, so "what is this
+    // look made of" is a thing you can read off the panel - and a preset naming
+    // `contourBands` and no reading would leave a live value behind a closed heading
+    // while the panel had room to show it. Keeping the term is what holds that invariant
+    // across all four groups instead of three, and it is what lets the in-use mark be
+    // keyed on this rule alone rather than on a wider condition of its own.
+    //
+    // The obvious phrasing is wrong and is worth naming so nobody writes it back: "open
+    // when a reading is non-zero" fires on a page nobody has touched, because `readRgb`
+    // defaults to 1 and a default reading is the absence of a decision. Comparing
+    // against the defaults is the whole of what keeps a fresh project shut, on this
+    // group exactly as on the other three.
+    reveals: () => revealsItself('detail') || revealsItself('source') || revealsItself('treatment'),
+  },
   // Framing: what you can see, and where you are seeing it from. `sensor view` is
   // navigation and writes nothing - distinct from `look through it` in the camera
   // group, which adopts the program camera whose pose is document state.
@@ -1743,21 +1791,21 @@ const PANEL_GROUPS = [
   // what colour they take, what persists between frames, and what the optics do to
   // the result.
   { key: 'conditioning', label: 'Depth conditioning', lookgroup: true },
-  { key: 'displacement', label: 'Displacement', lookgroup: true },
+  { key: 'displacement', label: 'Displacement', lookgroup: true, collapses: true },
   // One region in the room, read three ways: it displaces, it scrambles, and it
   // masks. Everything here is metres in the sensor frame, so a look holds at any
   // output size without being referred to 1080p the way the screen-space terms are.
   // Half-extents at zero with a radius is a sphere; raise them and it becomes a
   // rounded box; take two to zero and it is a capsule. No shape selector, because an
   // enum could not keyframe and these sliders can.
-  { key: 'region', label: 'Region (metres)', lookgroup: true },
+  { key: 'region', label: 'Region (metres)', lookgroup: true, collapses: true },
   { key: 'points', label: 'Points', lookgroup: true },
   { key: 'colour', label: 'Colour & tone', lookgroup: true },
   // The three terms that accumulate across frames, together. Fade and wake are the
   // surface memory and trails is the afterimage buffer; they were two groups apart
   // while doing one thing, which is how a look gets tuned twice.
   { key: 'time', label: 'Time (ms)', lookgroup: true },
-  { key: 'optical', label: 'Optical', lookgroup: true },
+  { key: 'optical', label: 'Optical', lookgroup: true, collapses: true },
   // The two parameters that are not part of the clip, in the one group that says so.
   // They are tagged `view` in the registry, they get no keyframe control and no
   // preset carries them - and while they sat inside look groups that read as an
@@ -2079,8 +2127,16 @@ const PARAMS = {
 const READINGS = Object.keys(PARAMS).filter((n) => PARAMS[n].reading);
 
 /**
- * Which of the five readings a document does not name, which is a refusal at both
- * doors a document arrives through rather than at one of them.
+ * Which of the five readings a document does not name, asked at both doors a document
+ * arrives through and answered differently by them.
+ *
+ * A project is refused for missing any of them, because `serialiseProjectBody` writes
+ * the whole look tag every time and a project that is short of one is truncated. A
+ * preset is refused only for missing *some* of them, because a preset may deliberately
+ * be about part of a look - see `refusePresetBody` for why naming none is a scope and
+ * naming two is a blend nobody authored. The count is the same question; what differs
+ * is what each kind of document is allowed to leave out, which is a fact about the two
+ * doors rather than about this list.
  *
  * **The defaults are what make a partial document dangerous rather than incomplete.**
  * Every loader resets to defaults first so that a key a file omits means the default
@@ -2234,6 +2290,42 @@ function writeControl(name, value) {
 // would be machinery for a problem nobody has.
 let paramWritten = () => {};
 
+// The other announcement a write has to make, and it is separate from the one above
+// because it has a second sender: whether a panel group is worth showing is decided by
+// a parameter's value *and* by whether it carries keys, so a track appearing has to
+// reach this too and a track appearing is not a registry write.
+//
+// A no-op that gets replaced, like `paramWritten`, and here that shape is load-bearing
+// rather than stylistic. The predicate reads `tracks`, which is declared several hundred
+// lines below this - so `params.reset()` further down, which writes every parameter
+// while the module is still evaluating, would reach `tracks` in its temporal dead zone
+// and throw. A module that throws while evaluating publishes no `__kinect` at all, so
+// every proof tool in the suite reports DID NOT RUN and the exit code has no assertion
+// behind it, which is the outcome this repo has twice written down as a bug found.
+let groupRevealChanged = () => {};
+
+// Registry writes the transport makes on its own behalf, rather than on a user's: the
+// camera pose every render poses, and the three parameters a draft borrows for one frame
+// and hands back. Neither may ask for a repaint, and neither may re-derive the panel. A
+// render that scheduled another render would never stop, and a draft would be chased by
+// the accurate seek it exists to postpone - so the drag would pay for both.
+//
+// This is a separate flag from `evaluating` rather than a widening of it, and the two
+// mean different things: `evaluating` says a preset is not a track, this says a write
+// came from the renderer rather than from a hand. Nesting is real - a draft's suppression
+// spans a render that suppresses in turn - so `withoutRepaint` saves and restores instead
+// of clearing.
+//
+// **Declared up here rather than beside `withoutRepaint`, which is the same dead zone the
+// no-op above records and the second time this file has been caught by it.** `params.set`
+// consults it now, and `params.reset()` further down writes every parameter while the
+// module is still evaluating - so a `let` sitting beside its function four thousand lines
+// later is read before it exists, and the page throws during module evaluation. That
+// publishes no `__kinect` at all: every tool in the suite reports DID NOT RUN with no
+// assertion behind the exit code, measured exactly once and immediately. A flag the
+// registry reads is declared before the registry.
+let transportWriting = false;
+
 /**
  * The registry's door, and every way in goes through it.
  *
@@ -2289,6 +2381,18 @@ const params = {
     // write path at all: a preset, a slider, a mode and step 5's tracks all end up
     // on this line, so nothing can change the image without saying that it did.
     paramWritten(name, spec.tag);
+    // Beside it rather than folded into it, because the two answer different
+    // questions: `paramWritten` is "the image changed, rebuild it", and this is "the
+    // evidence a group is in use changed, so re-derive which groups are open". A
+    // parameter written back to the value it already held moves the first and not
+    // the second, which is why the refresh compares before it touches the panel.
+    //
+    // Skipped under the same flag `paramWritten` skips under, and for the same reason
+    // rather than by analogy: the transport's own writes arrive one per keyed parameter
+    // per rendered frame, and every one of them would walk every group's evidence to
+    // re-derive a panel the bulk write has not finished changing yet. `withoutRepaint`
+    // asks once on the way out, which is the answer for the whole write.
+    if (!transportWriting) groupRevealChanged();
     return v;
   },
   /**
@@ -2471,11 +2575,67 @@ function panelPlace(group, groupNode) {
   panelTail.set(anchor, groupNode);
 }
 
+// What the collapse rule below needs to find again after this pass has run: the group's
+// node, the parameters it emitted rows for, and the two elements in its head that say
+// what state it is in. Taken from the pass that *built* the rows rather than from a
+// second walk of the registry, because a group revealing itself over a parameter it
+// does not show would be a header answering for a control somewhere else - and two walks
+// of one table is exactly the drift this generator exists to remove.
+const panelGroupNodes = new Map();
+const panelGroupParams = new Map();
+
+// One head per group, whether or not the group can be shut, because two shapes of
+// header is two sets of CSS and the one that gets forgotten is the one nobody is
+// looking at. Only a collapsible group gets a button and a mark inside it.
+//
+// The heading stays the first element in the head and the only `<label>` there:
+// `sensor-view-check` names a group by the text of the first label it can find inside
+// it, so a head that put anything labelled ahead of the heading would rename thirteen
+// groups at once in a tool that has nothing to do with this feature.
+function panelHead(group) {
+  const head = panelNode('div', 'grouphead');
+  head.append(panelNode('label', null, group.label));
+  if (!group.collapses) return { head, button: null, mark: null };
+
+  // A count of the parameters in this group that are carrying something, shown only
+  // while the group is shut. Without it a collapsed group in use is the panel lying
+  // about what is shaping the frame, which is the exact fear this feature answers,
+  // inverted - the values would still be applied to every pixel with nothing on
+  // screen saying so.
+  const mark = panelNode('span', 'groupmark');
+  const button = panelNode('button', 'grouptoggle');
+  button.type = 'button';
+  // The key rather than a position, and on the button rather than only on the group,
+  // so `editor-check`'s sweep can credit *any* group toggle by the attribute instead
+  // of naming the four that exist today - a rule listing four ids stops covering the
+  // fifth the moment somebody declares `collapses` on another entry.
+  button.dataset.groupToggle = group.key;
+  button.id = `${group.key}Toggle`;
+  button.append(panelNode('i', 'groupchevron'));
+  button.addEventListener('click', () => toggleGroup(group.key));
+  head.append(mark, button);
+  return { head, button, mark };
+}
+
 let panelRowsEmitted = 0;
 for (const group of PANEL_GROUPS) {
   const groupNode = panelNode('div', group.lookgroup ? 'group lookgroup' : 'group');
-  groupNode.append(panelNode('label', null, group.label));
+  // A data attribute and not an id, because the six hand-written groups in the markup
+  // are already `#cameraGroup`, `#sensorGroup`, `#monitorGroup`, `#programOutGroup`,
+  // `#recordGroup` and `#recLookGroup`, and a generated group minting ids in the same
+  // shape is one registry key away from colliding with one of them silently.
+  groupNode.dataset.group = group.key;
+  // Named apart from the keyframe button the row loop below declares, which is a
+  // different button in a narrower scope: one `button` meaning two things in one loop
+  // is how the wrong element ends up registered.
+  const { head, button: headButton, mark: headMark } = panelHead(group);
+  groupNode.append(head);
   if (group.before) groupNode.append(...group.before());
+  const names = [];
+  panelGroupParams.set(group.key, names);
+  if (group.collapses) {
+    panelGroupNodes.set(group.key, { group, node: groupNode, button: headButton, mark: headMark });
+  }
 
   let rows = 0;
   for (const [name, spec] of Object.entries(PARAMS)) {
@@ -2520,6 +2680,11 @@ for (const group of PANEL_GROUPS) {
     }
     rows++;
     panelRowsEmitted++;
+    // The evidence set for this group, recorded here because here is where the row was
+    // emitted. A group asks whether anybody has touched it by walking exactly the
+    // parameters it put on screen, so the header and the rows under it cannot come to
+    // disagree about which parameters the group is.
+    names.push(name);
   }
   // A heading with nothing under it is a group key that got misspelled on one side,
   // which is the only way a group can end up empty and is worth a sentence rather
@@ -2582,19 +2747,9 @@ params.reset();
 // does not exist yet.
 let evaluating = false;
 
-// Registry writes the transport makes on its own behalf, rather than on a user's:
-// the camera pose every render poses, and the three parameters a draft borrows for
-// one frame and hands back. Neither may ask for a repaint. A render that scheduled
-// another render would never stop, and a draft would be chased by the accurate
-// seek it exists to postpone - so the drag would pay for both.
-//
-// This is a separate flag from `evaluating` rather than a widening of it, and the
-// two mean different things: `evaluating` says a preset is not a track, this says
-// a write came from the renderer rather than from a hand. Nesting is real - a
-// draft's suppression spans a render that suppresses in turn - so it saves and
-// restores instead of clearing.
-let transportWriting = false;
-
+// `transportWriting` is declared above the registry rather than here, where it would
+// otherwise belong: `params.set` reads it and the boot writes run long before this line.
+// The note on the declaration carries the rest.
 function withoutRepaint(write) {
   const outer = transportWriting;
   transportWriting = true;
@@ -2602,6 +2757,14 @@ function withoutRepaint(write) {
     return write();
   } finally {
     transportWriting = outer;
+    // The panel asked once for the whole write rather than once per value in it, and
+    // only at the outermost of a nest - a draft's suppression spans a render that
+    // suppresses in turn, so an inner `finally` firing here would be the per-write
+    // recompute again wearing a different name. This is not the repaint's twin: a
+    // repaint is deliberately *not* requested on the way out, because these writes are
+    // the renderer's own and asking for another render is the loop the flag exists to
+    // stop. Re-deriving which groups are open renders nothing.
+    if (!outer) groupRevealChanged();
   }
 }
 
@@ -3002,6 +3165,290 @@ function dropTrackIfEmpty(name) {
   const track = tracks.get(name);
   if (track && track.keys.length === 0) tracks.delete(name);
 }
+
+// ------------------------------------------------- which panel groups are open
+//
+// Whether a group is open is *derived from the document*, and only a disagreement is
+// stored. The alternative - a stored open/closed flag per group - is a second copy of
+// something the values already say, and a second copy drifts: a look applied from the
+// library would put values into three groups and leave all three shut, because nothing
+// in a preset knows about panel furniture. Deriving means the panel opens at whatever
+// the clip is actually using without anybody teaching every writer about it.
+//
+// This lives here rather than beside the generator because the predicate reads both of
+// the stores a parameter's evidence can be in, and `tracks` is the one declared just
+// above. See `groupRevealChanged`, which is the no-op the generator's pass calls and
+// which the last line of this block replaces.
+
+// Which groups you have overruled, and nothing else - the group key against the state
+// you asked for. It is client state and not document state, for the reason the `viewer`
+// group's own note gives about the two parameters in it: this changes what you are
+// looking at, not what the frame is. So it is out of the project, out of undo, out of
+// every export, and stored per browser like `kinect.lastOpened` and `kinect.lanesHeight`.
+const PANEL_GROUPS_OPEN = 'kinect.panelGroupsOpen';
+
+const groupOverride = new Map();
+try {
+  // The string is checked before the parse, which is the same lesson `kinect.lanesHeight`
+  // records one line at a time: `getItem` answers null when nothing was ever stored, and
+  // `JSON.parse(null)` answers null rather than throwing, so a missing entry and a stored
+  // `null` would arrive as one reading. `JSON.parse('')` does throw, and landing in the
+  // catch would be right by accident rather than by having asked.
+  const saved = localStorage.getItem(PANEL_GROUPS_OPEN);
+  if (saved !== null && saved.trim() !== '') {
+    const parsed = JSON.parse(saved);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      // Each entry checked rather than the object adopted, because this is a file a
+      // person can edit and a `null` or a string here would make `override ?? derived`
+      // answer with a truthy non-boolean and pin a group open forever. A `Map` is what
+      // holds them, so the `__proto__` key that `JSON.parse` creates as an own property
+      // is an ordinary entry here rather than a prototype write.
+      for (const [key, want] of Object.entries(parsed)) {
+        if (typeof want === 'boolean') groupOverride.set(key, want);
+      }
+    }
+  }
+} catch {
+  // Private browsing, storage disabled by policy, or an entry somebody has damaged.
+  // Every group answering for itself is a good state to arrive in.
+}
+
+function storeGroupOverride() {
+  try {
+    localStorage.setItem(PANEL_GROUPS_OPEN, JSON.stringify(Object.fromEntries(groupOverride)));
+  } catch {
+    // Private browsing or policy again. The panel still collapses and still opens; it
+    // just will not remember which way across a reload.
+  }
+}
+
+// What each parameter is worth in a project nobody has touched, computed once.
+//
+// **Through `normalise`, not against `PARAMS[n].def` raw**, and the difference is a
+// class rather than a case. `normalise` clamps, snaps to a grid anchored at `min` and
+// rounds to the decimals `min` and `step` imply, and every scalar default this build
+// declares happens to land on its own grid - so raw equality is correct today and
+// would go on being correct right up until somebody adds a parameter whose default is
+// not on its step. That group would then read as touched from boot, on a fresh page,
+// with nothing anywhere saying why. Doing it once at module scope is what keeps the
+// arithmetic off the evaluator's path, where this is asked several times a frame.
+const groupDefaults = new Map();
+for (const names of panelGroupParams.values()) {
+  for (const name of names) groupDefaults.set(name, params.normalise(name, PARAMS[name].def));
+}
+
+/**
+ * Whether one parameter carries evidence that somebody has been here: a keyframe track
+ * with keys on it, or a value sitting off the default a fresh project would hold. The
+ * whole rule is this line and a half, and both the group's open state and the count on
+ * a shut header are asked of it rather than of a copy.
+ *
+ * **The keyframe term is not decoration.** During playback the evaluator writes every
+ * keyed parameter through `params.set`, so `params.get` answers the *evaluated* value -
+ * and a curve that happens to cross its own default at the parked frame would make the
+ * value test say "untouched" for that one frame. Without this term the groups would
+ * breathe open and shut as the playhead moved, which is a panel that cannot be read
+ * while anything is playing. `valueAtProgram` answers the un-evaluated question, and it
+ * is deliberately not what this asks: a parameter with keys is in use at every position,
+ * including the ones its curve passes through on the way somewhere else.
+ *
+ * **`keys.length > 0`, never `tracks.has(name)`.** `restoreProject` does
+ * `trackFor('camera').keys = restoredCamera` with no `dropTrackIfEmpty` after it and
+ * `trackFor` inserts on a miss, so a zero-key entry survives in the map for the rest of
+ * the session after any project open or undo. No panel group holds `camera`, so
+ * membership would answer correctly here today and be wrong the first time an empty
+ * track outlives a name a group does show - and the length is what every other has-keys
+ * test in this file already asks.
+ *
+ * **And `tracks.get`, never `trackFor`.** `trackFor` is a creating accessor. A
+ * predicate built on it would author a keyframe track as a side effect of drawing a
+ * panel header, which is a document that changed because somebody looked at it.
+ */
+function paramTouched(name) {
+  if ((tracks.get(name)?.keys.length ?? 0) > 0) return true;
+  return params.get(name) !== groupDefaults.get(name);
+}
+
+/**
+ * The default rule: a group is in use when any parameter it shows is. Named rather than
+ * inlined because a `reveals` closure on a `PANEL_GROUPS` entry is written in terms of
+ * it - `Reading · detail` asks it about two other groups - so this is the vocabulary
+ * those closures are written in and not an internal step of the one below.
+ */
+function revealsItself(key) {
+  return (panelGroupParams.get(key) ?? []).some(paramTouched);
+}
+
+/**
+ * What the document says about a group, which is the derived half of "is it open" and
+ * the thing a toggle is measured against.
+ *
+ * Kept apart from `revealsItself` rather than folded into it, and the store rule below
+ * is why the two cannot be one function. A group carrying a `reveals` closure answers a
+ * wider question than its own parameters do, so a store rule comparing a collapse
+ * against `revealsItself` would find the two agreeing on a `Reading · detail` that a
+ * live reading had opened, drop the override, and re-derive the group open - a collapse
+ * that does not survive the repaint it caused. `detail`'s closure also calls
+ * `revealsItself` on two other groups, which is the second reason the names have to stay
+ * distinguishable at a call site.
+ */
+function groupRevealed(group) {
+  return group.reveals ? group.reveals() : revealsItself(group.key);
+}
+
+/** The predicate: what the document derives, unless a person has said otherwise. */
+function groupIsOpen(group) {
+  return groupOverride.get(group.key) ?? groupRevealed(group);
+}
+
+/**
+ * How many of a group's own parameters are carrying something, for the shut header.
+ *
+ * Over the same `paramTouched` the predicate walks rather than a second copy of the
+ * test, because two spellings of "has anybody been here" is two things to keep in step
+ * and the header would be the one that quietly stopped agreeing with the rule that
+ * opened the group above it.
+ */
+function groupTouchedCount(key) {
+  return (panelGroupParams.get(key) ?? []).filter(paramTouched).length;
+}
+
+/**
+ * What the panel shows, re-derived. Called after every registry write and after every
+ * change to the set of tracks, which between them are both terms of the predicate.
+ *
+ * Each group is painted only where the answer moved. The evaluator writes one value per
+ * keyed parameter per frame and every one of them arrives here, so an unconditional
+ * write would put a `textContent` assignment and an attribute write per group into the
+ * render path to say what the panel already said.
+ */
+const groupPainted = new Map();
+// How often the panel has been re-derived, for the one question a tool cannot answer
+// from outside: whether a bulk write costs one pass or one per value in it. A count the
+// page keeps rather than a duration a driver times, because a rate taken around a
+// gesture Playwright is pacing is a measurement of Playwright.
+let groupRefreshes = 0;
+// Whether the map has moved since it was last written down. It is a flag rather than a
+// second `storeGroupOverride()` call at the toggle because there is exactly one rule
+// about what may be in that store, and a rule with two enforcement sites is the shape
+// `docs/instruments.md` records the rename refusal having: no mutation can reach one of
+// them without the other covering, so one of the two is doing all the work and nothing
+// can say which.
+let groupOverrideDirty = false;
+// Where the two terms of the store rule last stood, keyed by group and read as
+// `override/derived`. It exists so a pass can tell an agreement that was just *arrived
+// at* from one that has been true since the page opened, which is the whole of what the
+// prune below turns on. Empty at boot on purpose.
+const groupSeen = new Map();
+function refreshGroups() {
+  groupRefreshes++;
+  for (const [key, { group, node, button, mark }] of panelGroupNodes) {
+    // The same rule that decides whether the group opens, and not a wider one of its
+    // own. That is a property of every `reveals` closure including its own parameters
+    // rather than a coincidence: a group with something touched inside it always
+    // derives open, so a shut group that is in use is always one a person shut, and the
+    // mark is telling them what they hid. A closure that *replaced* the default rule
+    // would break that - the group could be quietly carrying a value with nothing on
+    // screen saying so - and the fix belongs in the closure rather than here, because a
+    // mark widened to cover it would be a second rule drifting from the first.
+    const inUse = groupRevealed(group);
+    const want = groupOverride.get(key);
+    // **The decay the store rule claims, and for a while it was only a claim.**
+    // `toggleGroup` drops an entry that agrees with the derivation *at the moment the
+    // toggle is pressed*, which closes nothing on its own, because the term that moves
+    // afterwards is the other one. A group pinned open while it was quiet stores `true`
+    // against a derived `false`, and then a value set, a look applied or a project
+    // opened moves the derivation onto it with nothing looking - so reset the look and
+    // the group is still open with nothing inside it, which is the stored panel layout
+    // this whole design exists to refuse. The derivation is read here, on every write
+    // and every change to the tracks, so this is where an override that has been
+    // overtaken can be seen to have been.
+    //
+    // **What it may not do is prune on agreement alone, and the state that says so is
+    // the one this page boots into.** Before the take is open and before a project has
+    // been restored every look parameter sits at its default and `tracks` is empty, so
+    // the derivation answers `false` for every group - which is not a statement about
+    // the document, it is a statement about there not being one yet. A build comparing
+    // the two terms for equality deleted every stored collapse on its way past that
+    // reading, wrote the pruned map straight back, and then let the take load and derive
+    // the group open again. Collapsing a group that was in use never survived a reload
+    // while pinning one open always did, and the direction that failed is the one people
+    // reach for, because a quiet group is already shut. The same window is open for as
+    // long as the load takes rather than only at module evaluation, so a flag raised
+    // until boot finishes would close half of it: `openTake` derives against a default
+    // look before the project that fills it has arrived.
+    //
+    // So the pair is remembered and the prune fires where it has *changed* into
+    // agreement - the derivation arriving on the opinion, or a toggle putting the
+    // opinion on the derivation. Both terms are covered by one comparison rather than
+    // two rules, which is the same reason `toggleGroup` does not prune on its own way
+    // past. At boot nothing has changed into anything and the map is empty, so the page
+    // reads the store and leaves it alone. An entry that agreed from the first frame and
+    // never moved is kept, which costs a group rendering exactly as it would have
+    // anyway, and it decays the first time the document uses that group and stops.
+    //
+    // `get` answers `undefined` for a group nobody has overruled and no comparison
+    // against a boolean can match that, so the untouched case costs two Map lookups.
+    const pair = `${want}/${inUse}`;
+    const settled = groupSeen.get(key);
+    if (settled !== undefined && settled !== pair && want === inUse) {
+      groupOverride.delete(key);
+      groupOverrideDirty = true;
+    }
+    groupSeen.set(key, `${groupOverride.get(key)}/${inUse}`);
+    const open = groupIsOpen(group);
+    const touched = groupTouchedCount(key);
+    const state = `${open}/${inUse}/${touched}`;
+    if (groupPainted.get(key) === state) continue;
+    groupPainted.set(key, state);
+
+    node.classList.toggle('shut', !open);
+    button.setAttribute('aria-expanded', String(open));
+    // What the button says it will do, which is not the same sentence as the heading.
+    button.setAttribute('aria-label', `${open ? 'collapse' : 'expand'} ${group.label}`);
+    // The count only where it is the only thing that can say so. An open group has its
+    // rows on screen and a number over them would be a second, worse copy of them; a
+    // shut group that is genuinely at its defaults has nothing to announce. The one
+    // case with nothing to count is `detail` revealed by a reading, which shows the
+    // mark without a number rather than a misleading zero.
+    mark.hidden = open || !inUse;
+    mark.textContent = touched > 0 ? String(touched) : '';
+    mark.title = touched > 0
+      ? `${touched} of these are set to something` : 'this group is in use';
+  }
+  // Once at the end, and only where the map actually moved. `setItem` serialises the
+  // whole thing synchronously, so writing it on every pass would put a `JSON.stringify`
+  // and a storage write into the render path to store the bytes that were already
+  // there - which is the cost the painting rule above exists to keep out, arriving
+  // through the door beside it.
+  if (groupOverrideDirty) {
+    groupOverrideDirty = false;
+    storeGroupOverride();
+  }
+}
+
+/**
+ * A person disagreeing with the derivation, which is the only thing that is stored.
+ *
+ * It writes what was asked for and nothing else. Whether that survives is the prune's
+ * question and is asked in `refreshGroups` above, where the derivation is read - a
+ * toggle that dropped an agreeing entry on its own way past would be the same rule
+ * spelled a second time, and the second spelling would be the one covering for the
+ * first every time anything tried to measure either.
+ */
+function toggleGroup(key) {
+  const entry = panelGroupNodes.get(key);
+  if (!entry) return;
+  groupOverride.set(key, !groupIsOpen(entry.group));
+  groupOverrideDirty = true;
+  refreshGroups();
+}
+
+// The no-op declared beside `paramWritten` becomes the real thing here, where both of
+// the stores the predicate reads exist, and the panel is painted once for the state the
+// page booted into.
+groupRevealChanged = refreshGroups;
+refreshGroups();
 
 // Every track written through the one door, at one program position. This is the
 // evaluator the note on `evaluating` asked for: it runs inside
@@ -5896,6 +6343,13 @@ const ui = {
   presetExport: document.getElementById('tPresetExport'),
   presetImport: document.getElementById('tPresetImport'),
   presetFile: document.getElementById('tPresetFile'),
+  pickDialog: document.getElementById('presetPick'),
+  pickTitle: document.getElementById('ppTitle'),
+  pickName: document.getElementById('ppName'),
+  pickGroups: document.getElementById('ppGroups'),
+  pickCount: document.getElementById('ppCount'),
+  pickCancel: document.getElementById('ppCancel'),
+  pickGo: document.getElementById('ppGo'),
   project: document.getElementById('tProject'),
   projectOpen: document.getElementById('tProjectOpen'),
   projectSave: document.getElementById('tProjectSave'),
@@ -7858,6 +8312,14 @@ function paintLanes() {
 function lanesChanged() {
   rebuildLanes();
   paintLanes();
+  // The keyframe half of the panel's collapse rule, and this is the one announcement
+  // that carries it: a track appearing is not a registry write, so `params.set` never
+  // hears about it. Every path that changes the set of tracks arrives here - keying
+  // from a panel button, a tool writing a whole set at once, undo, and a project being
+  // opened, which reaches it through `timingChanged`. A group whose only evidence is a
+  // keyed parameter sitting on its default would otherwise stay shut until the next
+  // time anything wrote a value.
+  groupRevealChanged();
 }
 
 /**
@@ -8056,6 +8518,210 @@ function presetFromCurrentLook(names) {
 }
 
 /**
+ * Whether a document says what the whole look is, rather than adjusting part of one.
+ *
+ * The distinction did not exist while the only thing that could write a preset wrote
+ * the entire look tag, and it decides two separate things now - whether a file may
+ * stamp a clip with its provenance, and whether saving one moves the stamp - so it is
+ * one predicate both of them ask rather than the same `every` written twice.
+ */
+const wholeLookTag = (values) => params.names('look').every((n) => Object.hasOwn(values, n));
+
+// ------------------------------------------- which look values a preset carries
+
+/**
+ * The subset picker, built once at boot and shown by both doors a look leaves by.
+ *
+ * `presetFromCurrentLook` has taken a subset of names since it was written and both
+ * of its callers passed nothing, so every preset this program could author was the
+ * whole look tag - the capability sat one layer down with no way to reach it. What
+ * that cost was not expressiveness: "just my grain and bloom" had to be a hand-edited
+ * file, and a hand-edited file is the one door into this program that nothing
+ * upstream validates.
+ *
+ * **The groups come from `PANEL_GROUPS` and `PARAMS[n].group`, never from a list
+ * here.** A second statement of which parameter belongs under which heading is a
+ * statement that drifts, and it would drift silently, because a parameter missing
+ * from this dialog is not an error anywhere - it is a value you can no longer choose
+ * to leave out. Derived, a parameter added next year appears by existing, under the
+ * heading the panel already gives it.
+ *
+ * **Built at boot rather than on the first press**, which is the same call
+ * `library.js` makes for the gallery's menus and for the same reason: `editor-check`
+ * enumerates what the document contains and demands a driver for every control in it,
+ * so a dialog that populated itself on open would show the sweep an empty box and the
+ * user fifty-odd checkboxes. A control no sweep can see is a control nothing proves.
+ */
+const presetPickBoxes = new Map();
+const presetPickGroups = [];
+
+/**
+ * One box written, and the four that may have to move with it.
+ *
+ * The five reading weights tick and untick as a unit because a document naming two of
+ * them is not a look at all - `refusePresetBody` refuses exactly that file, and the
+ * reason is that the three left out do not arrive as anything. They stay at whatever
+ * the clip was already wearing, so half a blend renders as a mixture nobody authored.
+ * The rule belongs to the format; this is the control declining to assemble the file
+ * the format will refuse, which is better than meeting that refusal at the end of the
+ * gesture with the boxes already ticked.
+ */
+function presetPickSet(name, on) {
+  for (const n of (PARAMS[name].reading ? READINGS : [name])) presetPickBoxes.get(n).checked = on;
+}
+
+/**
+ * The group headings and the count, read back off the boxes rather than tracked
+ * beside them.
+ *
+ * A heading is a third state and not two: ticked when the whole group is in,
+ * indeterminate when part of it is, which is what makes one control both the
+ * check-all and the honest readout of what the group currently holds. Recomputed from
+ * the boxes after every write because the reading rule crosses two groups - unticking
+ * `depth` under Reading · source takes the three under Reading · treatment with it,
+ * and a heading that only heard about its own members would go on claiming they were
+ * in.
+ */
+function presetPickSync() {
+  for (const group of presetPickGroups) {
+    const on = group.members.filter((n) => presetPickBoxes.get(n).checked).length;
+    group.box.checked = on === group.members.length;
+    group.box.indeterminate = on > 0 && on < group.members.length;
+  }
+  const picked = presetPickNames();
+  ui.pickCount.textContent = `${picked.length} of ${presetPickBoxes.size} look values`;
+  // A preset carrying nothing is refused on the way back in, so the confirm is what
+  // refuses to write one: meeting that at the end of the gesture would be a dialog
+  // that lets you spend a minute assembling a document it already knows it cannot use.
+  ui.pickGo.disabled = picked.length === 0;
+}
+
+const presetPickNames = () => [...presetPickBoxes.keys()].filter((n) => presetPickBoxes.get(n).checked);
+
+for (const group of PANEL_GROUPS) {
+  const members = params.names('look').filter((n) => PARAMS[n].group === group.key);
+  // Skipped where the panel generator refuses, and the opposite call is right for the
+  // opposite reason: an empty panel group is a group key misspelled on one side, where
+  // an empty group here is the Viewer heading, which holds render scale and auto-orbit
+  // and both of them are `view`. View state is not in any preset, so a heading with
+  // nothing under it would be the panel's shape leaking into a question about the
+  // document.
+  if (!members.length) continue;
+  const groupNode = document.createElement('div');
+  groupNode.className = 'ppgroup';
+  const head = document.createElement('label');
+  head.className = 'check pphead';
+  const all = document.createElement('input');
+  all.type = 'checkbox';
+  all.id = `ppg-${group.key}`;
+  head.append(all, ` ${group.label}`);
+  groupNode.append(head);
+  all.addEventListener('change', () => {
+    for (const name of members) presetPickSet(name, all.checked);
+    presetPickSync();
+  });
+
+  for (const name of members) {
+    const row = document.createElement('label');
+    row.className = 'check';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    // Prefixed, because the panel's own control for this parameter is already `id`
+    // = the parameter's name. Two nodes under one id is a document where
+    // `getElementById` answers whichever came first, and `editor-check` builds the
+    // set it diffs against the registry out of exactly these ids - so a bare name
+    // here would let a panel that had dropped a row pass the row that exists to
+    // catch it, on the strength of a checkbox in a dialog.
+    input.id = `pp-${name}`;
+    input.checked = true;
+    row.append(input, ` ${PARAMS[name].label}`);
+    groupNode.append(row);
+    presetPickBoxes.set(name, input);
+    input.addEventListener('change', () => { presetPickSet(name, input.checked); presetPickSync(); });
+  }
+  ui.pickGroups.append(groupNode);
+  presetPickGroups.push({ box: all, members });
+}
+
+// Every reading needs a box, on the same reasoning as the uniform assertion beside
+// `READINGS` itself: `presetPickSet` reaches for all five whenever one of them is
+// ticked, so a reading the loop above did not build - one tagged something other than
+// `look`, which is the only way it could be skipped - would not be a missing checkbox.
+// It would be a dialog that throws on the first tick of any reading, which is a control
+// that appears to work until somebody uses it.
+for (const name of READINGS) {
+  if (!presetPickBoxes.has(name)) {
+    throw new Error(`the reading ${name} has no box in the preset subset dialog: ticking any of the five would throw`);
+  }
+}
+
+// Wired once rather than per opening: cancel means the same thing every time, and a
+// listener added on each open is a listener added again on the next one.
+ui.pickCancel.addEventListener('click', () => ui.pickDialog.close());
+
+/**
+ * Opens the picker and answers with a name and a subset, or with null.
+ *
+ * **Every box starts ticked**, so the gesture somebody already knows - press save,
+ * type a name, confirm - writes the whole look tag exactly as it did before, and a
+ * sparse preset is something you go out of your way to author. The state is rebuilt
+ * on each opening rather than remembered, because a selection carried over from the
+ * last save is a document shape decided by something off screen.
+ *
+ * **Cancelling writes nothing**, which is the whole of what `null` means here, and
+ * closing is one path rather than three: the confirm closes the dialog, so the
+ * `close` event is where the promise is settled whether it arrived from the button,
+ * from Escape, or from anything added later. Focus goes back to the control that
+ * opened the dialog on that same path, for the reason `library.js` states beside
+ * `closeMenus` - a surface dismissed while focus sat inside it leaves the caret
+ * nowhere, and the fix that is a rule survives the next caller where the fix that is
+ * a case does not.
+ */
+function pickPresetSubset({ title, verb, name }) {
+  return new Promise((resolve) => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    for (const input of presetPickBoxes.values()) input.checked = true;
+    presetPickSync();
+    ui.pickTitle.textContent = title;
+    ui.pickGo.textContent = verb;
+    ui.pickName.value = name;
+
+    let picked = null;
+    const confirm = () => {
+      // A document is named before it is written, and an unnamed one is neither a
+      // library entry nor a filename. The refusal is the field taking the focus back
+      // rather than a sentence, because there is only one field to be wrong about.
+      const chosen = ui.pickName.value.trim();
+      if (!chosen) { ui.pickName.focus(); return; }
+      picked = { name: chosen, names: presetPickNames() };
+      ui.pickDialog.close();
+    };
+    // Enter in the name field confirms, because it did when this was a `prompt()` and
+    // a dialog that quietly stopped answering the return key would be the gesture
+    // getting longer for everybody who already knew it. Guarded on the confirm being
+    // live so the key cannot write a document the button is refusing to write.
+    const typed = (e) => {
+      if (e.key !== 'Enter' || ui.pickGo.disabled) return;
+      e.preventDefault();
+      confirm();
+    };
+    const settle = () => {
+      ui.pickGo.removeEventListener('click', confirm);
+      ui.pickName.removeEventListener('keydown', typed);
+      ui.pickDialog.removeEventListener('close', settle);
+      if (opener?.isConnected && !opener.disabled) opener.focus();
+      resolve(picked);
+    };
+    ui.pickGo.addEventListener('click', confirm);
+    ui.pickName.addEventListener('keydown', typed);
+    ui.pickDialog.addEventListener('close', settle);
+    ui.pickDialog.showModal();
+    ui.pickName.focus();
+    ui.pickName.select();
+  });
+}
+
+/**
  * Everything about a preset that can be refused without writing anything.
  *
  * Split out of `applyStoredPreset` so the import path can ask the question before it
@@ -8071,11 +8737,62 @@ function refusePresetBody(name, body) {
   if (body?.version !== PROJECT_VERSION) {
     throw new Error(versionRefusal(`preset ${name}`, body?.version));
   }
+  // **The envelope, checked with the same suspicion as what is inside it.** Every key
+  // in `values` is put to the registry below, and for a while nothing looked at the
+  // document's own keys at all - so `{"version": 4, "mode": 4, "values": {...}}` walked
+  // straight through. `mode` is the exact field version 4 dissolved into the five
+  // reading weights, it means something specific in a version 3 document, and a file
+  // carrying it is a file whose author believes this build reads it. Answering that
+  // file with silence is the failure the version check one line above exists to
+  // prevent, arriving through the one part of the document nobody was reading.
+  //
+  // Named rather than counted, because the point is to tell somebody editing by hand
+  // which word to delete. `Object.keys` on a parsed document reports `__proto__` as an
+  // own key, so a file smuggling one is refused here as well - earlier than the values
+  // walk that already refuses it, and for the more accurate reason.
+  //
+  // `presetFromCurrentLook` emits these two and the five shipped looks carry these two,
+  // so this is the shape the program authors rather than a shape asserted about it.
+  const PRESET_KEYS = ['version', 'values'];
+  const stray = Object.keys(body).filter((k) => !PRESET_KEYS.includes(k));
+  if (stray.length) {
+    throw new Error(
+      `preset ${name} carries ${stray.join(', ')}, which a version ${PROJECT_VERSION} preset has no `
+      + `place for: a preset is ${PRESET_KEYS.join(' and ')} and nothing else, so a key beside them is `
+      + 'either a field an older version had or a typo, and both would be read as neither',
+    );
+  }
   // A document with no values is not a look that happens to change nothing. `?? {}`
   // used to make it one: the apply wrote nothing, the stamp went on anyway, and what
   // came back was a clip claiming provenance from a file that had said nothing at all.
-  if (!body.values || typeof body.values !== 'object' || Array.isArray(body.values)) {
+  //
+  // **An empty `values` object is that same document spelled differently**, and it
+  // needed saying out loud only once the reading rule below became a rule about
+  // scope. While all five readings were demanded of every file, `{}` was refused for
+  // naming none of them; a file whose scope is "nothing" now walks through that gate
+  // truthfully, so the sentence the shape deserves has to be stated where it was
+  // always meant - here, about the values.
+  //
+  // Three shapes and three sentences, because they are three different mistakes and
+  // one sentence fitted one of them. The person reading it is editing the file by
+  // hand, and telling somebody who has just deleted the last entry out of `values`
+  // that their document "carries no values object" sends them looking for a key that
+  // is in front of them.
+  if (!body.values || typeof body.values !== 'object') {
     throw new Error(`preset ${name} carries no values object, so there is no look in it to apply`);
+  }
+  if (Array.isArray(body.values)) {
+    throw new Error(
+      `preset ${name} carries a list where its values should be: a look is an object of `
+      + 'parameter names against values, so a list has nothing in it this program can name',
+    );
+  }
+  if (Object.keys(body.values).length === 0) {
+    throw new Error(
+      `preset ${name} has a values object with nothing in it, so its scope is nothing: `
+      + 'applying it would write no value and move no pixel. Name the values this look is '
+      + 'made of, or delete the document rather than keep one that describes no look',
+    );
   }
 
   // The values, checked against the registry without reaching it. `params.apply` does
@@ -8106,34 +8823,94 @@ function refusePresetBody(name, body) {
     params.normalise(key, value);
   }
 
-  // **And all five readings have to be there**, which is the whole reason there is a
-  // version 4. `format.js` puts it plainly about a version 3 file: every value it names
-  // is still a parameter, so the apply writes all of them without complaint and only
-  // the reading is missing, leaving whatever the previous document happened to select.
-  // A version 4 file that simply omits the five keys reaches that identical state while
-  // passing the version gate - the same look rendering as somebody else's shading,
-  // silently, only now with a stamp on it saying which file it came from. Everything
-  // that writes a preset writes all five: the converter emits them, and an export is
-  // `params.values` over the whole look tag. So a file missing them is hand-made, and
-  // this is the sentence it should get.
+  // **And the readings are all or none**, which is the version 4 rule stated as a
+  // scope rather than as a census, because the file's own keys are what it claims to
+  // be about.
+  //
+  // The danger the rule exists for has not moved. `format.js` puts it plainly about a
+  // version 3 file: every value it names is still a parameter, so the apply writes all
+  // of them without complaint and only the reading is missing, leaving whatever the
+  // previous document happened to select. A file naming `readRgb` and `readDepth` and
+  // stopping reaches that identical state for the other three - a blend of the two it
+  // set against whatever the clip was already wearing, which is a mixture nobody
+  // authored and which nothing on screen says is a mixture. That file still gets the
+  // sentence below.
+  //
+  // What changed is the file that names **none** of them, which used to be caught by
+  // the same test and is a different document. It is not a look with a hole in it, it
+  // is a look that is not about the reading: `applyStoredPreset` writes the keys the
+  // document names and no others, so the blend on screen afterwards is the one the
+  // clip already had, chosen by whoever was grading rather than left over from a file.
+  // The half that made the old refusal necessary - a stamp on the clip claiming
+  // provenance from a document that had not said what the look is - is closed at the
+  // stamp instead, where it belongs, and a partial file cannot claim it at all.
   const missing = missingReadings(body.values);
-  if (missing.length) {
+  if (missing.length && missing.length !== READINGS.length) {
+    // **Both ways out, because the file in front of this person has two.** The old
+    // sentence said the look "carries all five reading weights", which stopped being
+    // true the moment naming none of them became legal, and it named the one exit that
+    // adds keys - so somebody who had deliberately cut the blend down to two was told
+    // to put three back rather than told that taking two out is the other answer and
+    // the one they probably meant. The reason for refusing the middle has not moved and
+    // is still the whole of it: a document naming some of the weights leaves the rest
+    // wherever the clip had them, which is a blend nobody authored.
+    //
+    // Off `missingReadings` for both halves rather than a second census of the same
+    // thing, since two spellings of one count is how one of them comes to be wrong.
+    const named = READINGS.filter((n) => !missing.includes(n));
     throw new Error(
-      `preset ${name} names no ${missing.join(', ')}: a version ${PROJECT_VERSION} look carries all `
-      + 'five reading weights, and one that leaves them out would render as whatever was on '
-      + 'screen before it',
+      `preset ${name} names ${named.join(', ')} but not ${missing.join(', ')}: the reading `
+      + 'weights are all or none, because a file naming some of them blends what it says with '
+      + `whatever the clip was already wearing. Name the other ${missing.length}, or take `
+      + `${named.length === 1 ? 'the one it has' : `all ${named.length} it has`} out and leave `
+      + 'the reading to whoever is grading',
     );
   }
 }
 
-/** Applies a saved preset and stamps where it came from. */
+/**
+ * Applies a saved preset, and stamps where it came from only if the document said
+ * what the whole look is.
+ *
+ * The stamp answers one question - what look is this clip wearing - and a document
+ * that set three of the fifty-four look values did not answer it. Naming it as the
+ * clip's origin is the same silent lie the reading rule above exists to stop, one
+ * level up: a gallery comparing revisions would show three clips agreeing on a look
+ * they only agree about in the three values that file happened to carry.
+ *
+ * So a partial apply leaves the stamp exactly where it was, which is the same thing
+ * moving a slider does, and is the honest answer for the same reason - the clip's
+ * provenance is the last document that described the whole of it. The two surfaces
+ * that report an apply read the result rather than the stamp, because a note that
+ * printed `appliedPreset.rev` after a partial apply would either name a revision the
+ * user did not just apply or, once the clip has no stamp at all, throw inside the
+ * handler and report a successful apply as a failure.
+ */
 function applyStoredPreset(doc) {
   refuseDuringEvaluation('a stored preset applied');
   refusePresetBody(doc.name, doc.body);
-  params.apply(doc.body.values ?? {});
-  appliedPreset = { name: doc.name, rev: doc.rev };
+  const values = doc.body.values ?? {};
+  const stamped = wholeLookTag(values);
+  params.apply(values);
+  if (stamped) appliedPreset = { name: doc.name, rev: doc.rev };
   requestRepaint();
   history.commit();
+  return { stamped, written: Object.keys(values).length, look: params.names('look').length };
+}
+
+/**
+ * What a surface says after an apply, in one place because there are two surfaces and
+ * they were already saying it twice.
+ *
+ * A partial apply has no revision to print - there is no stamp, and printing the one
+ * the clip is still carrying would attribute this gesture to a document that had
+ * nothing to do with it - so what it reports is what it did: how much of the look came
+ * out of the file, and that the clip's provenance was left alone.
+ */
+function presetAppliedNote(name, applied) {
+  return applied.stamped
+    ? `applied ${name} · ${appliedPreset.rev.slice(7, 15)}`
+    : `applied ${applied.written} of ${applied.look} values from ${name} · part of a look, so the clip keeps its provenance`;
 }
 
 /**
@@ -9599,88 +10376,216 @@ function paintPreviewRange(minDepth, maxDepth) {
   ui.recRange.textContent = `preview only · ${kept}`;
 }
 
-ui.recPresetApply.addEventListener('click', async () => {
+// Every control that starts a preset gesture, named once so a fifth is covered by being
+// added to this list rather than by being remembered.
+//
+// **The apply and the import are in it, and leaving them out is the hole this list was
+// drawn up to close arriving through the other side.** What the guard protects is
+// `appliedPreset`, and four doors write it: a save that describes the whole look, an
+// apply of one, an import, and the apply on the recorder. Scoping the flag to the two
+// controls that share the subset dialog left the other two live with a PUT in flight -
+// press save, confirm, and apply a whole-look preset while the write is unanswered, and
+// the apply's stamp lands first with the save's overwriting it, so the clip ends up
+// wearing the older revision. That is the same corruption the dialog introduced, through
+// a door the guard did not cover.
+//
+// It is one gate rather than a second rule sequencing writes to `appliedPreset`, because
+// two gates that agree cannot be tested apart and one of them would be doing all the
+// work - `docs/instruments.md` records the rename refusal costing exactly that. And it
+// sits on the handlers rather than inside `applyStoredPreset`, because that function and
+// `restoreProject` beside it are exposed raw for the proof tools to drive: a guard
+// pushed down there would start silently dropping calls that are not gestures at all.
+const PRESET_WRITERS = [ui.presetSave, ui.presetExport, ui.presetApply, ui.presetImport, ui.recPresetApply];
+
+// Whether one of those gestures is running. It is a flag on the program rather than a
+// state of a control, because what has to be true is that there is one gesture, not that
+// a particular button is unpressable - a second door added later would otherwise be a
+// second way in with no guard on it.
+let presetGesture = false;
+
+/**
+ * One preset gesture at a time, whichever control started it.
+ *
+ * **This is a regression the dialog introduced and the `prompt()` it replaced did not
+ * have.** A `prompt` blocks the whole page, so two saves could not overlap and nothing
+ * had to say so; a `<dialog>` closes before the PUT it authorised has been answered,
+ * and from that moment every preset control is live again with a write in flight behind
+ * them. Two gestures whose responses come back out of order then run the stale handler
+ * last, and `appliedPreset` ends up naming the older revision - which corrupts the one
+ * thing the stamp is for, quietly, in the direction that looks like it worked.
+ *
+ * **A refused gesture is answered rather than dropped**, and the surface is the caller's
+ * because the recorder has no timeline strip to write into. A second press of save is a
+ * repeat of the gesture already running and silence there reads as the press not having
+ * registered; an apply or an import is a *different* gesture, chosen from a picker or an
+ * operating system file dialog, and swallowing one without a word is a document answered
+ * with silence.
+ *
+ * The export half of this closes no race of its own: `exportPresetFile` builds a blob
+ * and clicks a link, with no request whose answer could arrive late. It is here because
+ * a gesture is a gesture, and because the controls share the dialog - a save left in
+ * flight underneath a fresh export sheet is a name field over a document that is still
+ * being written.
+ */
+async function withPresetGesture(note, run) {
+  if (presetGesture) {
+    note.textContent = 'a preset gesture is still running, so this one did not start';
+    return false;
+  }
+  presetGesture = true;
+  try {
+    await run();
+  } finally {
+    presetGesture = false;
+  }
+  return true;
+}
+
+/**
+ * The write itself: the controls held down for as long as a request is unanswered, and
+ * the caret given back to whichever of them was carrying it.
+ *
+ * The two spans differ on purpose. The **flag** covers the whole gesture including the
+ * dialog, because that is the honest statement of the rule. The **disabled** state
+ * covers only the write, because while the dialog is up it is modal and nothing outside
+ * it can be pressed anyway.
+ *
+ * **And the caret is put back, because disabling is what took it.** `pickPresetSubset`
+ * hands focus to the control that opened the dialog on the `close` event and resolves in
+ * the same breath, so the button is holding the caret exactly when this runs a microtask
+ * later - `el.disabled = true` on a focused element blurs it, the browser falls back to
+ * the body, and re-enabling does not undo that. The guard's own comment used to argue
+ * that the narrow span avoided this and the order made it false. `library.js` states the
+ * rule beside `closeMenus` and `library-check` carries two mutations for it, so a
+ * surface that strands the caret is a defect here rather than a detail. Only where the
+ * caret has fallen to the body, so a gesture the user has moved on from does not have
+ * focus dragged back out from under them.
+ */
+async function whileWriting(run) {
+  const held = document.activeElement;
+  for (const el of PRESET_WRITERS) el.disabled = true;
+  try {
+    return await run();
+  } finally {
+    for (const el of PRESET_WRITERS) el.disabled = false;
+    const stranded = document.activeElement === null || document.activeElement === document.body;
+    if (stranded && PRESET_WRITERS.includes(held) && held.isConnected) held.focus();
+  }
+}
+
+ui.recPresetApply.addEventListener('click', () => withPresetGesture(ui.recLookNote, () => whileWriting(async () => {
   const name = ui.recPreset.value;
   if (!name) return;
   try {
-    applyStoredPreset(await (await fetch(`/presets/${encodeURIComponent(name)}`)).json());
-    ui.recLookNote.textContent = `applied ${name} · ${appliedPreset.rev.slice(7, 15)}`;
+    const applied = applyStoredPreset(await (await fetch(`/presets/${encodeURIComponent(name)}`)).json());
+    ui.recLookNote.textContent = presetAppliedNote(name, applied);
   } catch (err) {
     // The recorder has no timeline bar, so `showTimelineError` would write into a
-    // strip nobody on this surface can see.
+    // strip nobody on this surface can see. Kept at the call site rather than folded
+    // into the guard for that reason: one shared `catch` would move this sentence to a
+    // surface the person pressing the button cannot see.
     ui.recLookNote.textContent = `could not apply ${name}: ${err.message}`;
     console.error(err);
   }
-});
+})));
 
-ui.presetApply.addEventListener('click', async () => {
+ui.presetApply.addEventListener('click', () => withPresetGesture(ui.note, () => whileWriting(async () => {
   const name = ui.preset.value;
   if (!name) return;
   try {
-    applyStoredPreset(await (await fetch(`/presets/${encodeURIComponent(name)}`)).json());
-    ui.note.textContent = `applied ${name} · ${appliedPreset.rev.slice(7, 15)}`;
+    const applied = applyStoredPreset(await (await fetch(`/presets/${encodeURIComponent(name)}`)).json());
+    ui.note.textContent = presetAppliedNote(name, applied);
   } catch (err) {
     showTimelineError(err);
   }
-});
+})));
 
-ui.presetSave.addEventListener('click', async () => {
-  // Named by the user, because a preset library whose entries are called
-  // "preset 3" is a library nobody uses twice.
-  const name = prompt('save this look as', appliedPreset?.name ?? 'look-1');
-  if (!name) return;
-  try {
-    const res = await fetch(`/presets/${encodeURIComponent(name)}`, {
+/** Pick a subset, then do one thing with it, inside the one gesture the program allows. */
+async function withPresetSubset(ask, run) {
+  await withPresetGesture(ui.note, async () => {
+    try {
+      const picked = await pickPresetSubset(ask);
+      if (!picked) return;
+      await whileWriting(() => run(picked));
+    } catch (err) {
+      showTimelineError(err);
+    }
+  });
+}
+
+// Named by the user, because a preset library whose entries are called "preset 3" is a
+// library nobody uses twice - and the name is asked for in the same gesture as the
+// subset, because they are two halves of one decision about the document being written
+// and asking them one after the other would put a `prompt` in front of a dialog.
+ui.presetSave.addEventListener('click', () => withPresetSubset(
+  { title: 'Save this look', verb: 'save', name: appliedPreset?.name ?? 'look-1' },
+  async (picked) => {
+    const body = presetFromCurrentLook(picked.names);
+    const res = await fetch(`/presets/${encodeURIComponent(picked.name)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(presetFromCurrentLook()),
+      body: JSON.stringify(body),
     });
     const saved = await res.json();
     if (saved.error) throw new Error(saved.error);
-    // Saving stamps the clip too. The look on screen genuinely is that revision of
-    // that preset, and leaving the stamp on whatever was applied before would have
-    // the provenance say a look this clip no longer has.
-    appliedPreset = { name: saved.name, rev: saved.rev };
+    // Saving stamps the clip too, on the same condition an apply does. The look on
+    // screen genuinely is that revision of that preset when the file describes the
+    // whole of it, and leaving the stamp on whatever was applied before would have the
+    // provenance say a look this clip no longer has. A saved *subset* is the other
+    // case, and the same sentence rules it out from the other end: the file does not
+    // say what this clip is wearing, so the clip's origin is still whatever last did.
+    if (wholeLookTag(body.values)) appliedPreset = { name: saved.name, rev: saved.rev };
     await refreshPresets();
-    ui.note.textContent = `saved ${saved.name} · ${saved.rev.slice(7, 15)}`;
+    ui.note.textContent = `saved ${saved.name} · ${saved.rev.slice(7, 15)}`
+      + (wholeLookTag(body.values) ? '' : ` · ${picked.names.length} of ${params.names('look').length} values`);
     history.commit();
-  } catch (err) {
-    showTimelineError(err);
-  }
-});
+  },
+));
 
 // The look on screen, not the document the picker happens to be pointing at. Those are
 // the same thing only until you move a slider, and exporting what you can see is the
-// answer that is right in both cases - the picker's name is used for the filename
-// because it is the best guess at what to call it, which is a different question.
-ui.presetExport.addEventListener('click', () => {
-  try {
-    const name = ui.preset.value || appliedPreset?.name || 'look';
-    exportPresetFile(name, presetFromCurrentLook());
-    ui.note.textContent = `exported ${name}.braindance-preset.json`;
-  } catch (err) {
-    showTimelineError(err);
-  }
-});
+// answer that is right in both cases - the picker's name is the filename it is offered
+// under, because it is the best guess at what to call it, which is a different question.
+//
+// Through the same dialog the save goes through, and that is the point rather than a
+// saving of code: a file is what a look leaves this program as, so a subset you could
+// put in a library and not in a file would be a document shape that exists on one side
+// of the export and not the other.
+ui.presetExport.addEventListener('click', () => withPresetSubset(
+  {
+    title: 'Export this look',
+    verb: 'export',
+    name: ui.preset.value || appliedPreset?.name || 'look',
+  },
+  async (picked) => {
+    exportPresetFile(picked.name, presetFromCurrentLook(picked.names));
+    ui.note.textContent = `exported ${picked.name}.braindance-preset.json`;
+  },
+));
 
 // The button and the input are two halves of one control: a file input cannot be
 // styled into the strip, and one that opens on its own is a control nobody can find.
 ui.presetImport.addEventListener('click', () => ui.presetFile.click());
-ui.presetFile.addEventListener('change', async () => {
+ui.presetFile.addEventListener('change', () => {
   const file = ui.presetFile.files?.[0];
   // Cleared before the await rather than after, so choosing the same file twice in a
   // row fires `change` the second time. An input that keeps its value is an import
   // button that works once per file per session.
   ui.presetFile.value = '';
   if (!file) return;
-  try {
-    const saved = await importPresetFile(file);
-    await refreshPresets();
-    ui.preset.value = saved.name;
-    ui.note.textContent = `imported ${saved.name} · ${saved.rev.slice(7, 15)}`;
-  } catch (err) {
-    showTimelineError(err);
-  }
+  // The input itself is never disabled and does not need to be: the button in front of
+  // it is, and this is the only thing that opens it. The gesture is what the guard is
+  // about anyway, so a file arriving here by any other route is still refused.
+  return withPresetGesture(ui.note, () => whileWriting(async () => {
+    try {
+      const saved = await importPresetFile(file);
+      await refreshPresets();
+      ui.preset.value = saved.name;
+      ui.note.textContent = `imported ${saved.name} · ${saved.rev.slice(7, 15)}`;
+    } catch (err) {
+      showTimelineError(err);
+    }
+  }));
 });
 
 ui.projectSave.addEventListener('click', async () => {
@@ -10242,6 +11147,13 @@ globalThis.__kinect = {
   params, applyPreset,
   readings: () => READINGS.slice(),
 
+  // How often the panel has re-derived which groups are open, since boot. Published
+  // because the claim it carries is about *how many times* a bulk write asks that
+  // question, and nothing outside the page can count that - a driver timing the gesture
+  // measures the driver, which is the rule `docs/measurement.md` states about the paused
+  // orbit. It is also the only way to see a gate whose whole effect is an absence.
+  groupRefreshes: () => groupRefreshes,
+
   /**
    * Keys, the curve and the undo stack. Every number a check reads comes from
    * here rather than from the DOM, because a lane is a view on a track the same
@@ -10468,6 +11380,22 @@ globalThis.__kinect = {
     setActiveDeliverable,
     activeDeliverable: () => activeDeliverable,
     appliedPreset: () => appliedPreset,
+    /**
+     * Whether a preset gesture is running, which is the guard's own state and is
+     * published because a driver cannot see it any other way.
+     *
+     * The `disabled` attribute is only half the span - it goes on after the dialog
+     * closes and comes off when the write is answered - and the flag covers the dialog
+     * too. So a tool pressing one of these controls has to know when the last gesture
+     * finished, and the observable it would otherwise reach for is wrong in a way that
+     * costs a whole run: `dialog.close()` clears `open` synchronously and fires its
+     * `close` event in a later task, so a driver that waited for `open === false` can
+     * press again while the promise is still unresolved and the flag still up. That
+     * press is correctly ignored, the dialog does not open, and the check dies on a
+     * ten-second timeout with no failed assertion - a crash wearing the shape of a
+     * finding. Measured exactly once, on `editor-check` at 238 of 274.
+     */
+    presetGestureRunning: () => presetGesture,
     marks: () => takeMarks.map((m) => ({ ...m })),
     markHere,
     takeId: () => openTakeId,

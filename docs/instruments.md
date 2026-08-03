@@ -26,6 +26,36 @@ growth bound. When you write a proof tool, ask what a broken implementation woul
 to still pass it, and close that. **Every proof tool needs a falsification control**:
 something that must FAIL if the thing under test were not actually doing the work.
 
+### A rule with two terms, driven only through the term the code already handled
+
+The sharpest version of "an instrument must enforce its claims" yet, because the row was
+honest, the gesture was real, and the check was still blind by construction.
+
+The panel's store rule is a comparison: an override is kept where it disagrees with what the
+document derives, and dropped where the two agree. Two terms, and either can move. The check
+drove one of them — press a toggle to collapse a live group, press it again to reopen it,
+assert the entry is gone — and reported the rule holding. It did hold, on that path, because
+`toggleGroup` compares the two *at the instant of the press* and pressing back is the one
+gesture where they agree by construction. **The path the check drove was the only path that
+never needed the fix.** The other term moves without anybody pressing anything — a value set,
+a look applied, a project opened — and nothing in the section moved it, so a build whose prune
+lived entirely inside the toggle passed 22 assertions with a group pinned open over an empty
+document, and the comment beside that code claimed self-healing behaviour the code had never
+had.
+
+Two things generalise. **When a claim is a comparison, ask which side your fixture moves**, and
+write a row for each — a check that only ever changes the term the handler is written around is
+asserting the handler rather than the rule. And the tell was in the prose before it was in the
+behaviour: the section's own comment said the entry goes "the moment the derivation catches up",
+while every gesture under it moved the *override* and left the derivation alone. A sentence
+naming a term no arm touches is a hole with a label on it.
+
+`override-prunes-only-on-toggle` is the control, and it restores the pre-fix build exactly
+rather than breaking the feature some other way — the prune moves out of `refreshGroups` and
+back into `toggleGroup` in one edit. That matters for the reason the whole document keeps
+repeating: a mutation that also failed the toggle rows would redden a path this build gets
+right, and a control that fails everything cannot say which question it was asking.
+
 ### The passthrough row that hashed a served part against the set of served parts
 
 `vcam-check` section 2 claimed "the bytes served are the bytes emitted", with a comment above
@@ -138,6 +168,86 @@ accurate seek to the same moment on the worst of the forty tiles, where a seek o
 sits 4.48 — an eighteen-fold separation, and the claim row asks for a fourfold one.
 `release-seeks-past-target` is the control, and it moves that worst tile to 4.50.
 
+### A floor stated in the wrong units stops being able to fail when the selector under it widens
+
+`editor-check` section 1 sweeps the controls the editor renders and demands a driver for each,
+and the row under it is what stops that claim being satisfied by having nothing left to cover:
+`check(sweep.length > 60, 'and the sweep found the panel, not an empty page')`. It meant what it
+said for as long as everything the selector could reach was the strip or the panel.
+
+The preset subset dialog is a body-level `<dialog>`, so the sweep was widened to
+`dialog input, dialog select, dialog button, dialog a` — correctly, because a modal outside every
+observation is the deliberate exclusion this document already records costing three holes. That
+put 68 more controls inside the same count. **68 clears 60 on its own**, so from that commit a
+build whose panel had gone entirely would have passed a row whose entire sentence is that the
+panel was found, and passed it green, in a run with nothing else red. Measured either side: 160
+controls at the commit before, of which 131 were the panel; 228 after, of which 131 are still the
+panel and 68 are the dialog.
+
+**And the same failure has a second form, where the population does not grow but the thing being
+counted stops being the thing the sentence is about.** `sensor-view-check` section 6 asserted
+"and open on the editor, where grading is the job - 9 look groups, all 9 visible", counting group
+*nodes* through `checkVisibility`. Then the panel learned to collapse a group that the document
+says nothing is in — and collapse hides a group's **rows**, not the box around them, so the node
+goes on answering `true` with nothing gradeable underneath it. The row passed, correctly by its
+own arithmetic, on a recorder showing four of its nine look groups as a heading and a chevron.
+It was found by pressing `extended settings` on the recorder, which nothing else in the pass
+covered: every screenshot and every `editor-check` row is `/edit`, and a recorder has no clip, so
+every look parameter sits at its default and all four collapsible groups derive shut at once.
+
+The repair is to count the controls rather than the containers — `input, select` inside each
+block, hit-tested the same way — and to say which groups the collapse rule shut in the detail
+line, so the split between "hidden by the surface" and "collapsed by the document" is legible
+instead of averaged away. **A container is visible for a different reason than its contents
+are**, so a row about whether something is on screen has to name which of the two it means and
+count that one. Which groups collapse stays `editor-check` section 13's subject, because a
+collapse derived from the document is a different feature from a surface that hides the grade,
+and one row asserting both would go red for either.
+
+Nothing would have caught it. The row it protects — every control has a driver — went on working
+perfectly, because that one ranges over the same widened set and *should*; only the floor was
+stated in units of what the selector happened to return rather than in units of the thing it
+protects. The repair is one line, `sweep.filter((r) => r.groups.includes('#panel')).length > 60`,
+and it reports `131 of 228 controls are the panel's` so the two numbers stay visible.
+
+**When you widen what a count ranges over, re-read every threshold on that count against its own
+sentence.** A floor is denominated in the thing it is defending, and a selector is not. This is
+the vacuous-conjunction failure at the top of this document arriving from the other direction:
+there, a row compared a quantity against a set containing it; here, a row kept comparing the same
+quantity while the set underneath it grew a second population that satisfies the comparison alone.
+
+**And the repair for that second form arrived carrying the first failure this document names,
+which is the part worth reading twice.** The row that replaced it read
+`edFixed.length > 0 && edFixed.every((b) => b.controls > 0 && b.controlsOnScreen === b.controls)
+&& sum(edLook, 'controlsOnScreen') > 0` — and the last conjunct cannot fail while the one before
+it holds, since a group showing all of its controls with a positive control count *is* a positive
+sum. A vacuous conjunction, written into the change whose commit message cites the vacuous
+conjunction at the top of this file. The floor beside it was denominated wrongly in the same way
+the `sweep.length > 60` one was: `edFixed` is the look groups that do not declare `collapses`, so
+it narrows towards one as more of them do and would reach zero without a word, while the claim
+underneath it is about the grade being reachable at all.
+
+The repair is to partition rather than to floor. The look groups are split by the `shut` class
+the panel sets, every group the collapse rule leaves open has to show *all* of its controls,
+every group it has shut has to show none, and there has to be at least one of the first — which
+is checked from both sides, so a build marking everything shut fails the floor and one marking
+everything open fails the controls. **A conjunct earns its place by being able to fail while its
+neighbours hold**, and the cheapest way to find out is to ask what would have to break for that
+term alone to go red. The same row on the recorder had the weaker version of the same problem:
+`after.controlsOnScreen > before.controlsOnScreen` with the row above pinning `before` at zero,
+so "controls included" was graded at one control appearing anywhere on a surface with fifty of
+them, and it now asks the recorder's revealed groups exactly what the editor's row asks.
+
+Two smaller things from the same change, recorded because each is a rule already here landing
+somewhere new. The dialog's rule in `covered()` has to be tested **before** the panel's, since the
+panel rule matches any `#panel` checkbox and would have credited 54 dialog checkboxes to
+`registry-check`'s drop-one slider sweep, which has never heard of them — the misattribution the
+`DRIVER_RULES` re-keying was done to stop, reappearing as an ordering rather than as an index. And
+the row asserting that unticking a group heading takes its whole group out was first written as
+`after.length === before.length - off.length`, which is true by construction of a set difference:
+a row that cannot fail, in the middle of a section about rows that cannot fail. It reads the
+panel's own group out of the DOM now and requires the two groupings to be the same grouping.
+
 ## Mutation-test the instrument, don't just reason about it
 
 Deliberately break the thing under test, run the check, and confirm it fails on the
@@ -152,6 +262,35 @@ result, and it has now caught two flaws that reading the code did not:
 
 Report which mutations you ran and what each one caught. A check nobody has broken on purpose
 is a check nobody knows the sensitivity of.
+
+### A mutation that removes a precondition reddens the rows built on it, and that is the mutation working
+
+The rule above says to report which rows fired, and the rule two sections down says the next
+agent re-derives that set from scratch rather than trusting a docstring. Put together they make
+an undocumented extra red row read as a second defect to investigate — so a `Must redden` line
+that undercounts costs somebody a hunt for a bug that is not there.
+
+The shape that produces the undercount is always the same. A section builds a fixture with one
+gesture and then asserts several things about it; a mutation that destroys the *gesture*
+destroys the fixture, and every row standing on it goes red for a reason that is about the
+fixture rather than about that row's own claim. `editor-check`'s preset section has three
+mutations of exactly this shape and only one of them said so: `picker-ignores-the-boxes` was
+documented at two rows and fires three, `readings-tick-alone` at one and fires three, while
+`detail-ignores-the-reading` carried the sentence "three more go with it and they are the
+fixture rather than the claim" from the day it was written. Nothing was wrong with any of the
+three mutations. Two docstrings were wrong about them.
+
+So a `Must redden` line has two parts and needs both: **the rows carrying the claim, and the
+rows that redden because the mutation took their fixture away.** Naming the first without the
+second is not brevity, because the reader's job is to check the set they got against the set
+they were promised, and a promise that is a subset fails that check every time it is kept.
+
+The tell that a red row is a cascade rather than a finding is that it asserts about a state the
+section had to *establish* — a partial document, a live reading, a value planted off its
+default — and the mutation is what establishes it. Where the two cannot be told apart by
+reading, the discriminator is the same one this document keeps returning to: read the detail
+line, which prints the quantity, and ask whether it moved in the direction the mutation moves it
+or simply went absent.
 
 ### A mutation that does nothing reads as a check that found nothing
 
@@ -519,6 +658,55 @@ mutation was re-run rather than reasoned about and reddens both geometric rows, 
 the scrolling body: true` — which is what says it failed for its own reason rather than a
 neighbouring one.
 
+### A persistence row that went red because it had found the bug, and was re-polarised instead
+
+**This entry previously drew the opposite conclusion and was wrong. It is kept with the
+correction on it rather than replaced, because the wrong reading is the one that recurs.**
+
+`editor-check` 13i asks whether a collapsed panel group survives a reload. It shut `Reading ·
+detail` while a reading was live, reloaded, put the reading back, and read the group. It went
+red the round the override's prune moved into `refreshGroups`, reporting `shut=false, 7 of 7
+rows on screen`, as the only red row in the run.
+
+The reading taken at the time was that the row had become ambiguous. On a document at its
+defaults the group derives shut; the page boots *before* the reading goes back; so at the
+instant the store is read the stored `false` and the derived `false` agree, and an entry that
+agrees is indistinguishable from one that was forgotten. Every sentence of that is true, and
+the conclusion drawn from it — reverse the polarity to a group pinned *open* on a quiet
+document, which is a disagreement nothing can prune — does not follow, because **the row does
+not read its answer at that instant.** It puts the value back afterwards, and with the value
+back the two builds part company: the entry kept renders the group shut, the entry pruned
+renders it open. The row was discriminating, it was red, and the thing it had found was a real
+defect in the code the same change had just written — the prune comparing two terms for
+equality on the boot pass, where the derivation is not a statement about the document but about
+there not being one yet. Collapsing a group that was in use never survived a reload. Pinning
+one open always did, so re-polarising the row onto the pin moved it onto the one direction the
+defect cannot reach, and the suite went green over a shipped bug for a second round.
+
+Three things to carry, in the order they bite.
+
+**A row that goes red on a build you have just changed is evidence about the change first.**
+This is the same failure the review found in `library-check`'s route sweep and it has now cost
+two rounds here: the instrument was adjusted to accommodate the code rather than the code
+fixed, and the adjustment came with a written justification, which is what stopped anybody
+looking twice. Before re-polarising, re-weakening or re-siting a red row, work out what the
+build would have to be doing for it to be red, and check whether that is happening.
+
+**The general form is still sound; the answer to it was wrong.** *Ask what the page would do
+with the entry missing, and if the answer is the same thing, the row is not about the entry* —
+ask it of the moment the row **reads**, not of the moment the page boots. A fixture rebuilt
+after the reload is not automatically a tell that the row is reaching: here it is the step that
+creates the difference, because the stored opinion only becomes visible once the document
+disagrees with it again.
+
+**Both polarities are worth a row and they are not the same claim.** The pin proves an override
+survives a reload at all; the collapse proves nothing pruned it against a document that had not
+loaded yet. 13i drives both across one reload now, and its strongest row is neither of those —
+it reads `kinect.panelGroupsOpen` straight back after the reload and before anything touches
+the panel, which is the defect at its own scale rather than through its consequence.
+`prune-ignores-movement` is the control, restoring the equality comparison and reddening those
+two rows and no others.
+
 ### A probe that changes the state it samples proves whatever it did to it
 
 This is a distinct failure from the two above - not a probe in a dead zone and not a vacuous
@@ -786,6 +974,56 @@ different from grain that has not as grain that has thinned, so both grade mutat
 every difference-based threshold the sampling residual left room for. What catches them is a
 correlation: high-pass both images and correlate, and a structure quantised onto a shared
 reference grid correlates 0.94 where a continuously sampled one correlates 0.77.
+
+**A feature that serialises gestures makes every driver's press conditional, and the DOM
+observable for "the last one finished" is a task early.** The preset controls grew an
+in-flight guard, so a press landing while the previous gesture is still unwinding is
+correctly ignored — which turns four existing lines of `editor-check` from "click the
+button" into "click the button and hope". The wait that looks right is the one already
+beside them, `dialog.open === false`, and it is wrong by construction: `close()` clears
+`open` synchronously and fires its `close` event in a later task, and the promise the
+handler awaits settles from that event. So a driver can pass the wait, do a whole
+Node-side `fetch` round trip, and still press into a gesture that has not finished. It
+arrives as a ten-second `waitForFunction` timeout with **zero failed assertions** — a
+crash wearing the shape of a catch, which is the outcome this document already names
+twice. Measured once, at 238 of 274 on a mutation run whose own rows had not been reached.
+
+Two things to carry. **When a build learns to refuse a repeated gesture, every driver of
+that gesture becomes a race**, and the fix is not more waiting but waiting on the right
+thing: the guard's own state, published for the purpose, because nothing in the DOM is
+that state. And the repair goes to **all** the call sites rather than the one that failed
+— `openPicker` is now the only way this section presses either control, so the fifth
+gesture somebody adds inherits the wait by existing instead of by being remembered.
+
+**And it came back a round later at the other end: the guard was scoped to the controls
+that share the dialog rather than to the value it protects.** Its own docstring named the
+failure — "a second door added later would otherwise be a second way in with no guard on
+it" — and then listed two of the four doors onto `appliedPreset`. Press save, confirm, and
+apply a whole-look preset while the PUT is unanswered: the apply stamps first and the save
+lands on top of it with the older revision, which is the same corruption the guard exists
+to close arriving through a door outside it. **A guard named after a gesture drifts from
+the value it defends; ask which writes it, not which controls look alike.** The choice
+against the obvious alternative is worth recording too — a sequence number on the stamp
+would be a second gate agreeing with the first, and this document already has the entry
+about two gates that cannot be tested apart.
+
+Two things the fix needed that the shape did not make obvious. The guard belongs on the
+**handlers** and not inside `applyStoredPreset`, because that function and `restoreProject`
+beside it are exposed raw for the proof tools to drive, and a guard pushed down there
+starts silently dropping calls that are not gestures. And each door keeps **its own
+`catch`**: the recorder's apply writes `ui.recLookNote` deliberately, since
+`showTimelineError` targets a strip that surface does not show, so a shared catch in the
+wrapper would move that sentence somewhere nobody can see it.
+
+**The same guard stranded the caret its comment said it preserved**, which is the smaller
+half and the one a row can hold. `pickPresetSubset` hands focus to the control that opened
+the dialog on the `close` event and resolves in the same breath, so the button is holding
+the caret when the write span disables that same button a microtask later — which blurs it
+onto the body, and re-enabling does not undo that. The comment argued that the narrow span
+avoided exactly this, and the ordering made it false. Measuring it needs the driver
+changed as well: a programmatic `element.click()` leaves the caret on the body, where a
+build that stranded it and a build that never had it read identically, so `openPicker`
+focuses before it clicks.
 
 **A contended machine fails a check in a way that reads as a finding.** Two worktrees running
 proof tools at once produced four failed runs, and the quiet one is the dangerous one: under

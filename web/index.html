@@ -73,8 +73,56 @@
   #status b { color: var(--accent); font-weight: 500; }
 
   .group { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
-  .group > label { display: block; color: var(--dim); margin-bottom: 6px;
+  .group > label, .grouphead > label { display: block; color: var(--dim); margin-bottom: 6px;
     letter-spacing: 0.08em; text-transform: uppercase; font-size: 10px; }
+  /* Every group's heading is in a head, whether or not the group can be shut, because
+     two shapes of header is two sets of rules and the forgotten one is always the one
+     nobody is looking at. The heading takes the spare width so the mark and the button
+     sit against the right edge at every panel width. */
+  .grouphead { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .grouphead > label { flex: 1; min-width: 0; margin-bottom: 0; }
+
+  /* A group collapses by hiding its rows, never by leaving them out of the document,
+     and the argument is the one written above `.lookgroup` below: the generator emits a
+     row per registry parameter and refuses to boot when the count comes out short, so a
+     panel that built a subset would stop being checkable against the registry at all.
+     `editor-check` sweeps `#panel` with a plain `querySelectorAll`, which is blind to
+     visibility, so every row a shut group holds is still found, still counted against
+     the registry and still driveable. The head is what survives the rule - a group whose
+     own name you cannot see is a group nobody can open again.
+
+     Written as a child selector against the head rather than against `.row`, so a note
+     or a button row a collapsible group grows later is shut with the rest of it instead
+     of being left hanging under a closed heading. */
+  .group.shut > *:not(.grouphead) { display: none; }
+
+  /* The chevron is the whole control: a caret rotated a quarter turn, pointing down when
+     the group is open and right when it is shut, which is the direction convention every
+     disclosure control on this machine already uses. */
+  .grouptoggle {
+    flex: 0 0 16px; width: 16px; height: 16px; display: grid; place-items: center;
+    border: 0; background: transparent; padding: 0; cursor: pointer;
+  }
+  .grouptoggle i {
+    width: 5px; height: 5px; border-right: 1px solid var(--faint);
+    border-bottom: 1px solid var(--faint); transform: rotate(45deg) translate(-1px, -1px);
+  }
+  .grouptoggle:hover i { border-color: var(--ink); }
+  .grouptoggle[aria-expanded=false] i { transform: rotate(-45deg) translate(-1px, -1px); }
+
+  /* A shut group that is carrying something has to say so, or the panel is quietly
+     lying about what is shaping the frame - which is the exact worry this feature
+     exists to answer, inverted. It carries a count where the group's own parameters are
+     what moved, and stands as a plain dot where the group is relevant because another
+     group's values made it so, which is `Reading · detail` and nothing else. */
+  .groupmark {
+    flex: 0 0 auto; min-width: 14px; height: 14px; padding: 0 4px; border-radius: 7px;
+    display: grid; place-items: center; background: var(--accent-low);
+    color: var(--accent); font-size: 9px; font-variant-numeric: tabular-nums;
+  }
+  .groupmark[hidden] { display: none; }
+  .groupmark:empty { min-width: 6px; width: 6px; height: 6px; padding: 0; border-radius: 3px;
+    background: var(--accent); }
 
   .row { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
   .row span { flex: 0 0 74px; color: var(--dim); }
@@ -300,6 +348,50 @@
   .tchip button[disabled] { color: var(--dim); cursor: default; }
   .tchip.warn, #tNote { border-color: var(--warn); color: var(--warn); }
   #tNote:empty, #tBehind:empty, #tExportNote:empty { display: none; }
+
+  /* The dialog that asks which look values a preset is written with. A `<dialog>`
+     rather than a positioned div, for the reason `library.js` gives beside the
+     gallery's ⋯ menus: modality, a backdrop and an Escape that closes are behaviours
+     a browser already has, and the gallery had to write the Escape half by hand twice
+     before it stayed written. What this file owns is only how it looks. */
+  dialog { border: 1px solid var(--line-2); border-radius: 10px; background: var(--paper-1);
+    color: var(--ink); font: inherit; padding: 18px; width: min(460px, calc(100vw - 32px)); }
+  dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+  dialog h2 { margin: 0 0 8px; font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; }
+  dialog p { margin: 0 0 10px; color: var(--dim); font-size: 10px; line-height: 1.5; }
+  #ppName {
+    width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 5px;
+    background: var(--paper-2); color: var(--ink); font: inherit; margin-bottom: 12px;
+  }
+  #ppName:focus-visible { outline: 1px solid var(--accent); outline-offset: 0; }
+  /* Scrolls rather than growing. The look tag is fifty-odd parameters, so a box sized
+     to its contents is taller than the window on a laptop and puts its own confirm
+     button below the bottom of the screen - which is the render button's old failure
+     in a container nothing can scroll to, since the page behind a modal does not
+     scroll for it. Two columns because one makes even the scrolling version long
+     enough that the groups at the end are a discovery. */
+  #ppGroups {
+    max-height: min(46vh, 360px); overflow-y: auto;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; align-content: start;
+  }
+  .ppgroup { margin-bottom: 10px; }
+  .ppgroup .pphead { margin-bottom: 4px; color: var(--dim); font-size: 10px;
+    letter-spacing: 0.08em; text-transform: uppercase; }
+  .ppgroup .check { font-size: 11px; margin-bottom: 3px; padding-left: 12px; }
+  .ppacts { display: flex; gap: 8px; margin-top: 14px; align-items: center; }
+  #ppCount { flex: 1; color: var(--dim); font-size: 10px; }
+  /* `:disabled` last and every other state written as `:not(:disabled)`, because this
+     is exactly where the gallery's stylesheet went wrong: `dialog .row .act.go` is
+     three classes and an element, so it beat a plain `.act:disabled` on specificity
+     and a disabled confirm went on looking pressable. */
+  .ppacts button {
+    padding: 6px 14px; border: 1px solid var(--line); border-radius: 5px;
+    background: transparent; color: var(--dim); font: inherit; font-size: 10px; cursor: pointer;
+  }
+  .ppacts button:hover:not(:disabled) { border-color: var(--line-3); color: var(--ink); }
+  .ppacts button.go { border-color: var(--accent); color: var(--accent); background: var(--accent-low); }
+  .ppacts button.go:hover:not(:disabled) { background: var(--accent); color: #04231f; }
+  .ppacts button:disabled { opacity: 0.4; cursor: default; }
 
   .tlanes { flex: 1; min-height: 0; display: grid; grid-template-columns: 96px minmax(0, 1fr); }
   .tcol { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -753,6 +845,30 @@
       </div>
     </div>
   </section>
+
+  <!-- Which look values the preset about to be written is going to carry, asked before
+       it is written rather than after. Both doors a look leaves by come through here -
+       the save into the library and the export to a file - because they are one
+       question with two destinations, and a subset offered on one of them would be a
+       shape of document you can author one way and not the other.
+
+       The boxes are not here. They are built at boot from the registry, so a parameter
+       added later appears under the same heading the panel gives it without this markup
+       knowing anything about it; `main.js` carries the rest of that argument. What is
+       written here is the furniture the generator hangs them on. -->
+  <dialog id="presetPick" aria-labelledby="ppTitle">
+    <h2 id="ppTitle">Save this look</h2>
+    <p>A preset carries the values you tick and nothing else, so a clip it is applied to
+      keeps everything left out. The five reading weights tick and untick together,
+      because a look naming some of them renders as a blend nobody authored.</p>
+    <input id="ppName" type="text" autocomplete="off" spellcheck="false" aria-label="Preset name" />
+    <div id="ppGroups"></div>
+    <div class="ppacts">
+      <span id="ppCount"></span>
+      <button type="button" id="ppCancel">cancel</button>
+      <button type="button" class="go" id="ppGo">save</button>
+    </div>
+  </dialog>
 
   <script type="importmap">
   {
