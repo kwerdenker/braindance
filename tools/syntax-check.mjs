@@ -203,6 +203,105 @@ if (!existsSync(DOC)) {
   }
 }
 
+// **The hello the grabber emits and the hello the README documents have to be the same
+// set of keys, and the constant saying which generation wrote it has to be the same
+// number in both languages.**
+//
+// The prose block was nine keys against the thirteen actually emitted for long enough
+// that the four it omitted became the argument for this: `startedAt` is the only durable
+// capture date a take has, and somebody implementing a second producer against the
+// documented nine writes takes the library dates by file modification time instead - which
+// changes the first time a take is copied off the node, and degrades *quietly*, because
+// the fallback is legitimate and says `dateSource: 'mtime'` rather than failing.
+//
+// Three details decide whether this is an instrument or a green light wired to nothing,
+// and all three are the same rule as the two blocks above.
+//
+// **Both directions.** A key emitted and not documented is the failure that already
+// happened; a key documented and not emitted is somebody writing against a promise the
+// grabber does not keep, which is the same reader misled by the opposite mistake.
+//
+// **Scoped anchors, and an empty extraction is a failure rather than a pass.** A bare
+// `readme.includes('width')` is true of the word appearing anywhere in a 700-line file,
+// so the README side is cut to the `type 1 hello` stanza and stops at `type 2`, and the
+// grabber side to the one `snprintf` that builds the hello. Zero keys from either side
+// means the anchor moved and the comparison ran on nothing, which is exactly the shape
+// this tool's own header is about.
+//
+// **Read textually, never imported.** This tool takes `--root`, so an `import` would bind
+// the assertion to this checkout while claiming to have checked another tree - and the C++
+// constant could not be imported at all, which is the whole reason it needs watching: it
+// is unavoidably a second spelling of a JavaScript number, and nothing else in the repo
+// would notice the two drifting.
+//
+// The controls are run by hand, in the idiom the two blocks above use, because this tool
+// carries no `--mutate` harness: add a key to the grabber literal and not to the README,
+// then the other way round, then bump the constant in one language, and require a named
+// failure each time.
+{
+  const grabberPath = join(ROOT, 'native/grabber.cpp');
+  const readmePath = join(ROOT, 'README.md');
+  if (!existsSync(grabberPath) || !existsSync(readmePath)) {
+    fail('native/grabber.cpp or README.md is missing, so the hello the format claims to have cannot be tested against the one it emits');
+  } else {
+    const grabber = readFileSync(grabberPath, 'utf8');
+    const readme = readFileSync(readmePath, 'utf8');
+
+    // The literal that builds the hello, from the call to its closing paren. Anchored on
+    // the call rather than on the opening brace of the JSON, because the brace is a
+    // character that appears everywhere and the call appears once.
+    const callAt = grabber.indexOf('std::snprintf(hello, sizeof(hello),');
+    const literal = callAt === -1 ? '' : grabber.slice(callAt, grabber.indexOf(');', callAt));
+    // `\"name\":` as it is spelled in C++ source. The `%s` values between them cannot
+    // match, because a conversion specifier does not start with a letter.
+    const emitted = new Set([...literal.matchAll(/\\"([A-Za-z][A-Za-z0-9]*)\\":/g)].map((m) => m[1]));
+
+    // The stanza, and only the stanza: from the type 1 line to the type 2 line, then the
+    // braced list inside it. Splitting a brace on commas rather than scanning for words
+    // keeps the prose around it - "UTF-8 JSON, once, before any frame" - out of the set.
+    const stanzaAt = readme.indexOf('type 1  hello');
+    const stanza = stanzaAt === -1 ? '' : readme.slice(stanzaAt, readme.indexOf('type 2', stanzaAt));
+    const braced = stanza.match(/\{([^}]*)\}/);
+    const documented = new Set((braced?.[1] ?? '').split(',').map((k) => k.trim()).filter(Boolean));
+
+    if (emitted.size === 0) {
+      fail('no hello keys found in native/grabber.cpp - the snprintf anchor moved, so this comparison would have passed on nothing');
+    } else if (documented.size === 0) {
+      fail("no hello keys found in README.md's type 1 hello stanza - the anchor moved, so this comparison would have passed on nothing");
+    } else {
+      const undocumented = [...emitted].filter((k) => !documented.has(k)).sort();
+      const unemitted = [...documented].filter((k) => !emitted.has(k)).sort();
+      // Two failures rather than one, because which direction it broke in is the whole
+      // diagnosis: one is a writer that grew a key nobody was told about, the other is a
+      // reader promised a key that never arrives.
+      if (undocumented.length) {
+        fail(`the grabber's hello emits ${undocumented.join(', ')} and README.md's type 1 hello does not document ${undocumented.length === 1 ? 'it' : 'them'}`);
+      }
+      if (unemitted.length) {
+        fail(`README.md's type 1 hello documents ${unemitted.join(', ')} and the grabber does not emit ${unemitted.length === 1 ? 'it' : 'them'}`);
+      }
+      if (!undocumented.length && !unemitted.length) {
+        console.log(`  hello/  all ${emitted.size} keys emitted are documented, and back`);
+      }
+    }
+
+    // The format generation, in the two languages that have to agree about it. Anchored
+    // on the declaration in each rather than on any mention, so a comment naming the
+    // constant is not a second reading of its value.
+    const inJs = readFileSync(join(ROOT, 'web/format.js'), 'utf8').match(/^export const CAPTURE_FORMAT = (\d+);/m);
+    const inCpp = grabber.match(/^static const uint32_t CAPTURE_FORMAT = (\d+);/m);
+    if (!inJs || !inCpp) {
+      fail(`CAPTURE_FORMAT is not declared where this looked: ${inJs ? '' : 'web/format.js '}${inCpp ? '' : 'native/grabber.cpp'}`.trim()
+        + ' - one of the two declarations moved, and an undeclared constant cannot be compared with anything');
+    } else if (inJs[1] !== inCpp[1]) {
+      fail(`CAPTURE_FORMAT is ${inJs[1]} in web/format.js and ${inCpp[1]} in native/grabber.cpp - `
+        + 'the grabber would stamp a generation the band that reads it refuses, on every take shot after this');
+    } else {
+      console.log(`  format/ CAPTURE_FORMAT is ${inJs[1]} in both languages`);
+    }
+  }
+}
+
 console.log(`\n${total} JavaScript files, ${failed} failed`);
 // Said out loud because `npm test` runs this, and a green `npm test` that meant "the
 // suite passed" would be the most expensive wrong impression in the repo. Nothing here

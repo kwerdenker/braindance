@@ -195,7 +195,15 @@ async function resolveResume() {
   // gallery's job rather than something to do on the way past.
   if (take.state === 'remote') return gallery(`${take.id} is only on the node`);
   if (take.recording === true) return gallery(`${take.id} is still being recorded`);
-  if (!take.openable) return gallery(`${take.id} cannot be opened: no sensor hello, or under two frames`);
+  // **The predicate is the server's and the sentence is not this page's to write.**
+  // This used to name the two reasons it knew - no sensor hello, or under two frames -
+  // and that stopped being the whole list the moment the capture format grew a band,
+  // which is a third way for `openable` to be false and one neither of those sentences
+  // describes. Enumerating again here would put this page back in the same position one
+  // member later, and the band is expected to gain another when a third message type
+  // lands. So the gate stays on the one predicate and the reason comes from the gallery,
+  // which carries a sentence per band and a badge to go with it.
+  if (!take.openable) return gallery(`${take.id} cannot be opened - the gallery says why`);
 
   // Built a value at a time rather than by interpolation, because a project name is
   // whatever somebody typed and an ampersand in it would otherwise start a second
