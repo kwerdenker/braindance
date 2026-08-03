@@ -156,31 +156,43 @@ is a check nobody knows the sensitivity of.
 ### A source row that reads the staged tree cannot be falsified by a page mutation
 
 The match-exactly-once rule guards the *anchor*. This is the same hole one layer further
-out, in the **delivery**, where nothing refuses it — and it was almost shipped as the
+out, in the **delivery**, where nothing refused it — and it was almost shipped as the
 falsification control for a row about the sensor grid being declared once.
 
-`library-check` applies its two kinds of mutation by two different mechanisms, and only one
-of them touches the tree. `stageServer` writes a **server** mutation into the copied tree,
-so a row reading `join(root, 'server/…')` sees it. A **page** mutation never lands on disk
-at all: `openPage` installs a Playwright route interception, so the browser gets the
-mutated body and the staged `root/web/main.js` is still the clean file. A row that walked
+`library-check` applied its two kinds of mutation by two different mechanisms, and only one
+of them touched the tree. `stageServer` wrote a **server** mutation into the copied tree,
+so a row reading `join(root, 'server/…')` saw it. A **page** mutation never landed on disk
+at all: `openPage` installed a Playwright route interception, so the browser got the
+mutated body and the staged `root/web/main.js` was still the clean file. A row that walked
 the staged tree looking for a literal would therefore have passed against every page
 mutation there is, while looking exactly like a row with a control behind it.
 
-The fix is a `shippedSource(rel)` helper — the staged copy for every file, and
-`mutation.body` for the one file the mutation replaces — so the row reads what the run
-actually ships rather than what it happened to write down. Measured: with the helper,
-`--mutate grid-declared-twice` reddens the row and names both holders,
-`web/format.js web/main.js`, over a run that reached all 351 assertions. The other half is
-a code fact rather than a second measurement, and it is the whole mechanism: `stageServer`
-writes `serverMutation` and nothing else, so the staged `web/` is the clean tree on every
-page mutation and a row reading it would have counted one holder and passed.
+**The tool now has one delivery, and this section is kept for the shape rather than for
+the mechanism.** `stageServer` writes every mutation, whichever side of the wire it is on,
+and `requireMutationDelivered` then asks the server over HTTP whether the bytes it serves
+are the ones this run staged — `docs/proof-tools.md` carries that collapse in full,
+including why two mechanisms delivering the same bytes was a rule with nothing measuring
+it. The `shippedSource(rel)` helper written to close this therefore lost its conditional
+in the same breath: `mutation.body` and the staged copy became the same bytes, so the
+branch was a second path that could only ever agree, and it is one read now.
 
-`docs/proof-tools.md` already records this family's other member — `web/library.html` has
-no URL of its own, so a `**/library.html` interception matches nothing and the unmutated
-page loads. **Whenever a row reads source rather than behaviour, ask by what mechanism the
-mutation would reach the bytes that row reads**, and do not assume the answer is the same
-for every file the tool can mutate.
+Two things survive the mechanism that produced them, and they are why this is still here.
+
+**A source row and a behaviour row are falsified by different things**, and it is worth
+asking which you have. The row that catches a page mutation by driving the page is safe
+from this entirely; the row that greps the tree depends on a delivery it does not name.
+When the delivery changed, only the second kind had to be re-examined.
+
+**What holds the staging is the source rows' own controls.** Remove the write in
+`stageServer` and `grid-declared-twice` stops reddening — that is the arm, and it is
+already in the suite. A helper that guarantees the bytes independently of the staging
+would have been the second gate again: nothing could reach one without the other covering,
+so neither could be tested and one of them would be doing all the work.
+
+Measured when the conditional came out, which is the check that it was genuinely
+redundant rather than merely looking it: `--mutate grid-declared-twice` still reddens both
+dimension rows naming `web/format.js web/main.js`, and `grid-declared-in-another-spelling`
+still reddens its two, over a baseline of 392 assertions with none failed.
 
 ### A known intermittent in `library-check` section 9, written down with its signature
 

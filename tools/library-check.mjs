@@ -1181,21 +1181,28 @@ const serverMutation = mutation && mutation.file.startsWith('server/') ? mutatio
 /**
  * A file of the staged tree as this run actually ships it.
  *
- * The staged copy for everything, and `mutation.body` for the one file a mutation
- * replaces - which is not the same thing, and the difference is what lets a source row
- * fail. `stageServer` writes only a *server* mutation into the tree; a page mutation is
- * delivered by intercepting its route in `openPage`, so the staged `web/main.js` on a
- * `--mutate grid-declared-twice` run is the clean file. A source row reading it would
- * pass against every page mutation there is, which is the falsification control that
- * cannot fire, arriving one layer further out than the match-exactly-once rule that
- * guards the anchor.
+ * **One read, because there is one delivery.** This used to be a conditional -
+ * `mutation.body` for the mutated file and the staged copy for everything else - and the
+ * difference was load-bearing when `stageServer` wrote only *server* mutations into the
+ * tree and a page mutation was fulfilled by intercepting its route in the browser. The
+ * staged `web/main.js` on a `--mutate grid-declared-twice` run really was the clean file
+ * then, so a source row reading it would have passed against every page mutation there
+ * is: a falsification control that cannot fire, one layer further out than the
+ * match-exactly-once rule that guards the anchor.
+ *
+ * `stageServer` writes every mutation now, whichever side of the wire it is on, so the
+ * two branches returned identical bytes and the conditional was a second path that could
+ * only ever agree. Kept as a named helper rather than inlined, because a row wants to say
+ * it is reading what this run ships and not what the repo holds - but the answer to that
+ * is the staged tree and nothing else.
+ *
+ * What holds the staging is the source rows' own controls: remove that write and
+ * `grid-declared-twice` stops reddening, which is a mutation this suite already runs.
  *
  * `root` is read at call time rather than closed over at declaration, which is why this
  * can sit beside the mutation table it belongs to and above the tree it reads.
  */
-const shippedSource = (rel) => (
-  mutation && mutation.file === rel ? mutation.body : readFileSync(join(root, rel), 'utf8')
-);
+const shippedSource = (rel) => readFileSync(join(root, rel), 'utf8');
 
 /**
  * Source with its comments taken out, so a row about what the code says is not
