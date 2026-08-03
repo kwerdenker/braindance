@@ -136,6 +136,59 @@ held, `startServer` throws if its own child exits instead of listening, and it r
 outside the declared span so a section added at `+17` is a failure rather than a hole. Pass
 `--node-port`/`--mac-port` a range nothing else holds.
 
+**Two takes carry the capture format's band, and the second is the one that keeps the archive
+readable.** `future-format-take` declares a generation this build has never read and is
+otherwise an entirely ordinary take — whole frames, a readable hello, intrinsics in range —
+because "nothing here knows what these numbers mean" is a condition with no other symptom.
+`generation-zero-take` declares no `format` key at all, which is what `captures/sample.knct`
+itself is and what every take shot before the field existed is; it is planted under its own name
+rather than left to the takes that are generation zero incidentally, since a band written as
+"refuse anything unfamiliar" passes every row about the first take and shuts the whole existing
+archive out of the editor.
+
+`--mutate open-ignores-format` is the control and it edits one line of `web/format.js`, which is
+the point of it rather than an implementation detail. Four doors decide whether a take may be
+opened — `openable` in `describeTake`, the badge and the dead Open button in the gallery, and
+`openTake` in the editor — and three of them are cheap to satisfy by inlining a comparison, which
+would pass every row here and drift the first time the band gains a member. So the assertion the
+mutation really carries is the *count*: it reddens **6 of 360**, one row per door plus the
+gallery's menu sentence and the editor's editing state, and the takes that must stay green stay
+green — both `no-hello-take` rows, `local-clip`'s `dateSource === 'hello'`, and all four
+generation-zero rows. A mutation that reddened fewer would mean the band had quietly become
+several predicates that agree.
+
+Reaching all four needed one change to the harness. `stageServer` used to write only a `server/`
+mutation into the staged tree, leaving `web/` ones to the browser route interception — which is
+right for `main.js` and `library.js`, since nothing on the Node side imports either. It is wrong
+for `format.js`, which `server/library.js` imports by path: served to the page and not staged, the
+server would have gone on deciding `openable` on the unmutated band and the control would have
+reddened the page's rows only, reading as a partial break in the product rather than a half-broken
+build. Every mutation is written into the staged tree now; both roots there are copies, so nothing
+reaches the subject.
+
+**`syntax-check` also holds the hello to the README and the format constant to the grabber**, in
+both directions and without importing either. The prose block documented nine keys against the
+thirteen emitted for long enough that the four it omitted became the argument for the check:
+`startedAt` is the only durable capture date a take has, so a second producer written against the
+documented nine writes takes the library dates by file modification time, which changes the first
+time a take is copied off the node and degrades quietly, because that fallback is legitimate and
+reports `dateSource: 'mtime'` rather than failing. The README side is cut to the `type 1 hello`
+stanza and stops at `type 2`, the grabber side to the one `snprintf` that builds the hello, and an
+empty extraction from either fails — zero keys means the anchor moved and the comparison ran on
+nothing. `CAPTURE_FORMAT` is read textually out of `web/format.js` and `native/grabber.cpp` and
+required equal, because this tool takes `--root` and an import would bind the assertion to this
+checkout while claiming to have checked another tree.
+
+Its three controls are run by hand, in the idiom the `tools/` and `docs/` blocks already use,
+because this tool carries no `--mutate` harness. Add a key to the grabber literal and not to the
+README; add one to the README the grabber does not emit; bump the constant in one language. Each
+must fail naming what it found — measured, in that order: `the grabber's hello emits exposure and
+README.md's type 1 hello does not document it`, `README.md's type 1 hello documents exposure and
+the grabber does not emit it`, and `CAPTURE_FORMAT is 2 in web/format.js and 1 in
+native/grabber.cpp`. The first of those three is worth doing carefully: the obvious `perl -pi`
+one-liner silently matches nothing against a C++ string literal full of escaped quotes, and a
+mutation that did not apply reads exactly like a check that missed one.
+
 **`editor-check` enumerates rather than lists, and it exists because the suite tested the model
 and never the control.** The clip in/out markers were detached from the document during boot
 for the whole life of the feature — `rebuildLanes` cleared `#tBeds` of every child that was

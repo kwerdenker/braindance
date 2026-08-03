@@ -22,6 +22,12 @@ import { appendFileSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { MessageParser, TYPE_HELLO, TYPE_FRAME, TYPE_COLOR, encodeMessage } from '../server/protocol.js';
+// The capture format's generation, read from where the band that reads it lives rather
+// than copied. This file is a second producer of the record `native/grabber.cpp` writes,
+// and a second producer with its own literal is the drift the number exists to catch -
+// it would go on stamping last year's generation into every take the suite plants while
+// the check reading them was updated.
+import { CAPTURE_FORMAT } from '../web/format.js';
 
 const argv = process.argv.slice(2);
 const flag = (name, fallback = null) => {
@@ -156,8 +162,15 @@ process.stdin.resume();
 // The wall clock goes in the hello and nowhere else, the same as the real grabber:
 // every frame stamp below is a monotonic clock, which is right for frame spacing and
 // useless for sorting a library.
+//
+// The format number is stamped for the same reason and in the same place. The sample
+// this loops its depth out of predates both fields, so a hello copied through unedited
+// would make every take the suite records generation zero - which is a real shape and
+// the wrong one to write here, because a *writer* that declares nothing is exactly the
+// second producer this repo's own README nearly taught somebody to build.
 const hello = Buffer.from(JSON.stringify({
   ...sourceHello,
+  format: CAPTURE_FORMAT,
   startedAt: Date.now(),
   ...(TAG ? { tag: TAG } : {}),
 }));

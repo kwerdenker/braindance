@@ -604,13 +604,37 @@ is byte-identical to what the grabber emits:
 [u32 magic 'KNCT'][u32 type][u32 payloadLen][payload]
 
 type 1  hello  UTF-8 JSON, once, before any frame:
-               { serial, firmware, width, height, fx, fy, cx, cy, color }
+               { format, serial, firmware, width, height, fx, fy, cx, cy,
+                 color, minDepth, maxDepth, lowLight, startedAt }
 type 2  frame  [u32 depthBytes][u32 colorBytes][u64 timestampMs]
                [u16 depth[512*424] millimetres, 0 = no reading]
                [JPEG of the registered 512x424 colour image]
 type 3  colour [u64 timestampMs][JPEG of the native 1920x1080 colour image]
                Live only, and only while something is subscribed.
 ```
+
+**`format` is the generation of the capture format, and a take that carries no `format`
+key at all is generation zero.** Everything shot before the field existed is one, and
+nothing migrates them, because rewriting a capture to add a key is the one operation this
+design will not perform on the artifact that cannot be shot again — so a take declaring
+nothing opens, a take declaring the generation this build reads opens, and a take
+declaring anything else is refused rather than unprojected on assumptions that may not be
+its own. `web/format.js` owns the number and the three bands; `native/grabber.cpp` carries
+the only other spelling of it, and `tools/syntax-check.mjs` requires the two equal and
+requires this key list to be exactly what the grabber emits, in both directions.
+
+**Four of the other keys are load-bearing and were undocumented for a long time**, which
+is worth stating rather than quietly fixing, because the shape of that failure is a second
+producer written against this block. `startedAt` is the only durable capture date a take
+has — the frame stamps are `steady_clock`, monotonic since boot, so two takes recorded a
+day apart on a node that never rebooted are indistinguishable by them — and a writer that
+omits it lands every take in the gallery dated by file modification time, which changes the
+first time the take is copied off the node. The library's ordering silently becomes "when
+it was last copied", and it degrades quietly, because `describeTake` has a legitimate
+fallback for exactly that case and reports `dateSource: 'mtime'` rather than an error.
+`minDepth` and `maxDepth` say how much of the world the file was allowed to contain, and
+the editor paints its preview range from them; `lowLight` says whether the colour camera
+was run long-exposure.
 
 **Type 3 is live-only, so "byte-identical" now means identical to the type 1 and 2
 subsequence.** A capture file is still exactly what the grabber emitted of the stream
