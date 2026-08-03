@@ -629,6 +629,19 @@ const MUTATIONS = {
   //
   // The module and not the gallery's `throw`, because those are two halves of one
   // arrangement and this is the half that decides. Must redden only the retry row.
+  // The poll goes back to starting a tick whether or not the last one has finished. On
+  // its own that is harmless; beside the retry it is not, because a handler that never
+  // returns leaves `previous` where it was and every later tick then reports the same
+  // change and starts another `/library/all` - which on a station with a `--node` is a
+  // request and a connection to the other machine every five seconds, for as long as
+  // the page is open.
+  //
+  // Must redden only the overlap row. The retry rows have to stay green, or the control
+  // is proving that the guard broke the retry rather than that it bounded it.
+  'poll-ticks-overlap': { file: 'web/record-poll.js', edits: [[
+    '    if (inFlight) return;\n    inFlight = true;\n', '',
+  ]] },
+
   'poll-forgets-a-failed-refresh': { file: 'web/record-poll.js', edits: [[
     '    try {\n      await saw(state, changed);\n      previous = mark;\n'
     + '    } catch { /* not seen, so not recorded as seen - the next tick offers it again */ }',
@@ -5400,10 +5413,19 @@ async function runChecks() {
       'the sensor health route is a ROUTES entry the table publishes, read-only and not a live sensor feed, and it answers',
       entry ? `published: read=${entry.read} mutates=${entry.mutates} live=${entry.live}, state ${health.state}`
         : `not in the table of ${table.length}`);
-    check(typeof health.dropped === 'number' && typeof health.respawns === 'number'
+    check(typeof health.monitorDropped === 'number' && typeof health.respawns === 'number'
       && typeof health.fps === 'number' && typeof health.bytesPerSec === 'number',
       'and it carries the four numbers an operator would otherwise have attached a monitor to read',
-      `dropped=${health.dropped} respawns=${health.respawns} fps=${health.fps} B/s=${health.bytesPerSec.toFixed(0)}`);
+      `monitorDropped=${health.monitorDropped} respawns=${health.respawns} fps=${health.fps} B/s=${health.bytesPerSec.toFixed(0)}`);
+    // **And it does not offer a number that would be read as sensor loss.** The count
+    // behind it moves inside `broadcastFrame`, once per socket that is over its buffer
+    // ceiling - so under the old name a node whose sensor was struggling with nobody
+    // watching read zero drops, and one frame two lagging monitors both missed read as
+    // two. The row is written against the bare name rather than against the new one,
+    // because what had to go is the word an operator would trust.
+    check(health.dropped === undefined,
+      'and nothing on it is called `dropped` unqualified, since the only count here is monitors failing to keep up with the output rather than the sensor failing to deliver',
+      `dropped=${JSON.stringify(health.dropped)}, monitorDropped=${health.monitorDropped}`);
     // A machine with no sensor on it, said as a state rather than as silence. This is
     // also the reading that makes the window row below about an *empty* window.
     check(['lost', 'absent', 'starting'].includes(health.state) && health.respawns >= 1,
@@ -5951,6 +5973,56 @@ async function runChecks() {
       'and the gallery comes back from it on a later tick, because a refresh that failed leaves the transition unseen rather than spending it',
       flakyTile === null ? 'no tile for that take' : `flags ${flakyTile.flags.join(',') || '(none)'}, acts ${flakyTile.acts.join(' ')}`);
     await flaky.close();
+
+    // **And the retry is bounded, which is the debt holding the fingerprint back took
+    // on.** A handler that never returns leaves `previous` where it was, so without a
+    // guard every later tick reports the same change and starts another `/library/all`
+    // - and where a `--node` is linked that is a request and a connection to the other
+    // machine every five seconds for as long as the page is open. The failure mode is
+    // not a wrong answer but an unbounded one, so what this counts is requests.
+    //
+    // The listing is accepted and then never answered, which is the shape that matters:
+    // a refused request returns and lets the handler finish, and the whole defect is
+    // about a handler that does not.
+    const fourth = await post(`${liveUrl}/record/start`);
+    let shootingFourth = null;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((done) => { setTimeout(done, 250); });
+      shootingFourth = await getJson(`${liveUrl}/record/state`);
+      if (shootingFourth.recording) break;
+    }
+    check(shootingFourth?.recording === true,
+      'a fourth take is open, so the page below has a transition whose refresh can be left hanging',
+      `${shootingFourth?.takeId}, start said ${JSON.stringify(fourth).slice(0, 50)}`);
+
+    const hung = await browser.newPage();
+    let hungListings = 0;
+    let ticksSeen = 0;
+    const heldForever = [];
+    await hung.route('**/library/all', async (route) => {
+      hungListings++;
+      // The first is the page's own load and has to answer, or there is no painted grid
+      // and no transition to follow. Every one after it is held open for good.
+      if (hungListings === 1) { await route.continue(); return; }
+      heldForever.push(route);
+    });
+    await hung.route('**/record/state', async (route) => { ticksSeen++; await route.continue(); });
+    await hung.goto(galleryPage(liveUrl), { waitUntil: 'domcontentloaded' });
+    await hung.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 });
+    await post(`${liveUrl}/record/stop`);
+    // Four cadences, so a poll that started a listing per tick would have started four
+    // and a poll that waits for the one in flight has started exactly one. The margin
+    // is what keeps a slow machine from reading as a catch.
+    await new Promise((done) => { setTimeout(done, 21000); });
+    const heldCount = heldForever.length;
+    check(ticksSeen >= 3,
+      'the page went on polling the recorder while its listing hung, which is what makes the row below about the listings rather than about a page that stopped',
+      `${ticksSeen} ticks to /record/state in 21s`);
+    check(heldCount === 1,
+      'and it has exactly one listing in flight however long that one takes - a refresh that has not come back is the question already being asked, not a reason to ask it again every five seconds',
+      `${heldCount} listings left hanging, ${hungListings} requested in total`);
+    for (const route of heldForever) await route.abort('connectionfailed').catch(() => {});
+    await hung.close();
     for (const p of servers.filter((sv) => sv.port === MAC_PORT + 1)) p.child.kill('SIGKILL');
   }
 

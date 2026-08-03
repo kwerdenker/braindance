@@ -7226,8 +7226,7 @@ addEventListener('keydown', (e) => {
     case '[': case ']': {
       e.preventDefault();
       const here = timeline.programSec;
-      const seconds = markSecondsInOrder()
-        .filter((s) => s >= timeline.clipInSec - 1e-6 && s <= timeline.clipOutSec + 1e-6);
+      const seconds = markSecondsInOrder().filter(reachableInClip);
       const to = e.key === '['
         ? seconds.filter((s) => s < here - 1e-6).pop()
         : seconds.find((s) => s > here + 1e-6);
@@ -8214,6 +8213,22 @@ const clampToClip = (sec, total) => Math.max(0, Math.min(total, sec));
  * marks that is right until the moment somebody edits the timing - which is exactly
  * the moment a jump-to-mark key gets pressed.
  */
+/**
+ * Whether a seek to this program second would land where it was asked to.
+ *
+ * `Transport.frameAt` clamps every seek into in..out, so a mark the trim excludes is a
+ * destination that silently becomes the boundary instead - and the two surfaces that
+ * offer marks both had to know it. The keys learned first and the ruler's ticks did
+ * not, which is the instance being fixed rather than the class: one expression, called
+ * by both, so the surface added next is asked by existing rather than by somebody
+ * remembering this paragraph.
+ *
+ * The epsilons are the same slack the key stepping uses. A mark sitting exactly on a
+ * boundary is reachable, because the boundary is inside the range.
+ */
+const reachableInClip = (programSec) => !timeline
+  || (programSec >= timeline.clipInSec - 1e-6 && programSec <= timeline.clipOutSec + 1e-6);
+
 const markSecondsInOrder = () => {
   const total = view.duration;
   return takeMarks
@@ -8266,7 +8281,24 @@ function paintMarks() {
     // the press starting a scrub to wherever the pointer was, and the tick's own seek
     // arriving afterwards reads as a drag that happened to end on a mark.
     el.addEventListener('pointerdown', (e) => e.stopPropagation());
-    el.addEventListener('click', (e) => { e.stopPropagation(); goTo(at); });
+    // **A tick outside the trim declines and says so, rather than seeking somewhere it
+    // is not.** The seek would be clamped to the boundary, so pressing a diamond drawn
+    // inside the shading moved the playhead to the edge of the edit - a control that
+    // answers, in the one way that is worse than not answering, by doing something
+    // other than what it shows. The keys already refuse these; a class closed on one
+    // surface and left open on the other is the same defect with a second address.
+    //
+    // Said out loud rather than declined in silence, because a press is a person
+    // pointing at a specific thing: a key that steps past nothing has nothing to report,
+    // and a diamond that was aimed at does.
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!reachableInClip(at)) {
+        say('that mark is outside the clip range, so the edit cannot reach it');
+        return;
+      }
+      goTo(at);
+    });
     host.appendChild(el);
   }
   // The same marks on the overview, in whole-clip coordinates. Built here rather than

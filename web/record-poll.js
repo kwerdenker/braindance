@@ -114,7 +114,30 @@ const fingerprint = (state) => [
  */
 export function pollRecordState(saw, believed = null) {
   let previous = believed === null ? null : fingerprint(believed);
+  // **One tick at a time, which is the debt the retry above took on.** Holding
+  // `previous` back until the handler finishes is what lets a failed refresh be offered
+  // again - and it also means a handler that never finishes leaves every later tick
+  // still reporting the same change. The interval does not care: it would start another
+  // `/library/all` every five seconds for as long as the first one hung, and where the
+  // library spans a linked node that is a request and a connection to the other machine
+  // each time, accumulating for as long as the page is open. A node that accepts a
+  // connection and then says nothing is not hypothetical here - `recordState` carries a
+  // three-second timeout for exactly that machine.
+  //
+  // Skipped rather than queued, because a tick is a question about what is true now: a
+  // queue of them would answer with a backlog of stale moments, and the one still in
+  // flight is already asking the question the skipped tick wanted answered.
+  let inFlight = false;
   const tick = async () => {
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      await run();
+    } finally {
+      inFlight = false;
+    }
+  };
+  const run = async () => {
     let state;
     try {
       state = await (await fetch('/record/state')).json();

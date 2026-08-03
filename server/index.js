@@ -1285,7 +1285,18 @@ const serveSensorHealth = (req, res) => sendJson(res, {
   bytesPerSec: observedBytesPerSec,
   // And the last window that closed, whether or not anything arrived in it.
   window: lastWindow,
-  dropped: droppedTotal,
+  // **Named for what it counts, which is not what a reader of a sensor-health route
+  // would assume.** `stats.dropped` is incremented inside `broadcastFrame`, per socket
+  // whose send buffer is over the ceiling - so it is monitors failing to keep up with
+  // the output, not the sensor failing to deliver. Called `dropped` on this route it
+  // reads as sensor loss and is wrong in both directions at once: a node whose sensor is
+  // struggling with nobody watching reports zero, because the function returns before
+  // this can move when `wss.clients.size` is zero, and one frame that two lagging
+  // monitors both missed counts twice. There is no sensor-loss number here to rename it
+  // to - the frames that never arrived are absent from `window.frames`, which is the
+  // reading that already says so - so the honest move is to stop this one claiming to be
+  // one. `dropped` is beside the recorder's own, which counts what the disk refused.
+  monitorDropped: droppedTotal,
   // The first spawn is a start rather than a respawn, which is the number somebody
   // reading this is after: on a healthy node it is zero for the life of the process.
   // The restarts somebody asked for come off it for the same reason - a colour toggle

@@ -218,8 +218,8 @@ const MUTATIONS = {
   'tick-seeks-source-seconds': {
     file: 'web/main.js',
     edits: [[
-      "    el.addEventListener('click', (e) => { e.stopPropagation(); goTo(at); });",
-      "    el.addEventListener('click', (e) => { e.stopPropagation(); goTo(mark.sourceMs / 1000); });",
+      '      goTo(at);',
+      '      goTo(mark.sourceMs / 1000);',
     ]],
   },
 
@@ -289,9 +289,26 @@ const MUTATIONS = {
   'marks-ignore-the-clip-range': {
     file: 'web/main.js',
     edits: [[
-      '      const seconds = markSecondsInOrder()\n'
-      + '        .filter((s) => s >= timeline.clipInSec - 1e-6 && s <= timeline.clipOutSec + 1e-6);',
+      '      const seconds = markSecondsInOrder().filter(reachableInClip);',
       '      const seconds = markSecondsInOrder();',
+    ]],
+  },
+
+  // The ruler's ticks go back to seeking wherever they are drawn, trim or no trim. The
+  // seek is clamped into in..out, so pressing a diamond that sits inside the shading
+  // moves the playhead to the boundary instead - a control doing something other than
+  // what it shows, which is worse than one that declines.
+  //
+  // The click and not the predicate, because the predicate is shared with the keys now:
+  // removing it would redden the key rows as well and the run could no longer say which
+  // surface was broken. Must redden only the click rows.
+  'tick-seeks-outside-the-trim': {
+    file: 'web/main.js',
+    edits: [[
+      "      if (!reachableInClip(at)) {\n"
+      + "        say('that mark is outside the clip range, so the edit cannot reach it');\n"
+      + '        return;\n      }\n',
+      '',
     ]],
   },
 
@@ -5104,6 +5121,48 @@ try {
     check(near(forwardInTrim, trim.inside, TOL),
       'and the key is working while it declines, because the same press forward still reaches the mark the trim does keep',
       `${forwardInTrim.toFixed(3)}s against the kept mark at ${trim.inside.toFixed(3)}s`);
+
+    // **The same rule, pressed rather than typed.** The keys were taught to refuse a
+    // mark the trim excludes and the ruler's own ticks were not, so the diamond drawn
+    // inside the shading still seeked - and the seek was clamped to the boundary, which
+    // is a control doing something other than what it shows. Both go through
+    // `reachableInClip` now; this row is the half that had no coverage at all.
+    //
+    // The tick is found by its drawn position rather than by index, because the ticks
+    // are sorted by where they land and an index would be a second claim about the
+    // ordering that the row does not want to be making.
+    const outsideTickIndex = await page.evaluate(`(() => {
+      const ticks = globalThis.__kinect.library.markTicks();
+      const lefts = ticks.map((t) => t.left);
+      return lefts.indexOf(Math.min(...lefts));
+    })()`);
+    await page.evaluate(`__kinect.timeline.transport().seek(${trim.park})`);
+    await settle();
+    await page.locator('#tMarks .tmk').nth(outsideTickIndex).click();
+    await settle();
+    const afterClickingOutside = (await read()).programSec;
+    const noteAfter = await page.evaluate("document.getElementById('tNote').textContent");
+    check(near(afterClickingOutside, trim.park, TOL),
+      'pressing a tick the trim excludes moves the playhead nowhere, rather than seeking to a boundary the diamond is not drawn at',
+      `${afterClickingOutside.toFixed(3)}s, parked at ${trim.park.toFixed(3)}s with the in point at ${trimmed.in?.toFixed(2)}s`);
+    check(/outside the clip range/.test(noteAfter),
+      'and it says so, because a key stepping past nothing has nothing to report while a diamond somebody aimed at does',
+      `note "${noteAfter.slice(0, 80)}"`);
+    // The liveness half again, on the click path this time: the tick the trim keeps has
+    // to still seek, or the row above passes against a ruler whose ticks are all dead.
+    const insideTickIndex = await page.evaluate(`(() => {
+      const ticks = globalThis.__kinect.library.markTicks();
+      const lefts = ticks.map((t) => t.left);
+      return lefts.indexOf(Math.max(...lefts));
+    })()`);
+    await page.evaluate(`__kinect.timeline.transport().seek(${trim.park})`);
+    await settle();
+    await page.locator('#tMarks .tmk').nth(insideTickIndex).click();
+    await settle();
+    const afterClickingInside = (await read()).programSec;
+    check(near(afterClickingInside, trim.inside, TOL),
+      'and the tick the trim keeps still seeks to itself, so the refusal above is about reachability rather than about a ruler that stopped working',
+      `${afterClickingInside.toFixed(3)}s against the kept mark at ${trim.inside.toFixed(3)}s`);
 
     // **A mark the edit never reaches still answers a keyboard.** `.tmk.beyond` and
     // `.tmk:hover` have equal specificity, so the one written last wins - and with the
