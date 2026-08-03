@@ -135,6 +135,7 @@ node tools/library-check.mjs --mutate respawns-count-a-colour-toggle # ... and a
 node tools/library-check.mjs --mutate respawns-dip-before-the-spawn  # ... and the count does not read low while that restart is in flight
 node tools/library-check.mjs --mutate openpath-drops-at-the-stop     # ... a take is the recorder's until its index exists, not until it stops
 node tools/library-check.mjs --mutate poll-first-tick-is-blind       # ... and the first tick answers against the grid already painted
+node tools/library-check.mjs --mutate poll-forgets-a-failed-refresh  # ... and a refresh that failed leaves its transition unseen
 node tools/library-check.mjs --mutate faint-fixed-in-one-page       # ... one token, and the page that drifts is named
 node tools/library-check.mjs --mutate write-overwrites-builtin # ... and must FAIL
 node tools/library-check.mjs --mutate list-swallows-unreadable # ... and must FAIL
@@ -188,6 +189,8 @@ node tools/editor-check.mjs --mutate tick-seeks-source-seconds --no-render # ...
 node tools/editor-check.mjs --mutate offer-ignores-take-hash --no-render # ... the resume offer joins on footage, not on a name
 node tools/editor-check.mjs --mutate resume-waits-for-every-list --no-render # ... and a broken neighbouring library does not strand it
 node tools/editor-check.mjs --mutate shortcuts-reject-altgr --no-render # ... the mark keys work on the layouts that need AltGr to type them
+node tools/editor-check.mjs --mutate marks-ignore-the-clip-range --no-render # ... and offer only the marks a trimmed clip can reach
+node tools/editor-check.mjs --mutate beyond-mark-loses-focus --no-render # ... a mark past the end still answers a keyboard
 node tools/editor-check.mjs --mutate clip-range-unclamped --no-render # ... a trim the program cannot hold
 node tools/editor-check.mjs --mutate clip-bound-coerces-nonnumeric --no-render # ... and a trim that is not a time at all
 node tools/editor-check.mjs --mutate refusal-strands-the-picker --no-render # ... and the menu that named what was refused

@@ -278,6 +278,47 @@ const MUTATIONS = {
     ]],
   },
 
+  // The mark keys go back to offering every mark on the take, including the ones the
+  // trim puts out of reach. `Transport.frameAt` clamps every seek into in..out, so the
+  // press lands back where it started - and at the in point, which is where somebody
+  // steps backwards from, the key reads as unbound.
+  //
+  // Must redden only the row about a trimmed clip. Every other mark row in section 13
+  // runs on the whole take, where the clamp cannot change the answer, which is exactly
+  // how the defect survived a section that already pressed both keys four times.
+  'marks-ignore-the-clip-range': {
+    file: 'web/main.js',
+    edits: [[
+      '      const seconds = markSecondsInOrder()\n'
+      + '        .filter((s) => s >= timeline.clipInSec - 1e-6 && s <= timeline.clipOutSec + 1e-6);',
+      '      const seconds = markSecondsInOrder();',
+    ]],
+  },
+
+  // `.tmk.beyond` goes back under the two interaction states. Same specificity, so the
+  // later rule wins and a beyond tick keeps its resting colour while hovered and while
+  // focused - and since `:focus-visible` turns the native outline off on the grounds
+  // that the colour change describes the same thing, the keyboard gets no answer at all.
+  //
+  // The order and not the colour, because the colour is right in both builds at rest.
+  // Must redden the focused-beyond row and leave the focused-ordinary row green: a
+  // mutation that broke focus everywhere would take both, and this defect is specific to
+  // the one state that was written last.
+  // Both halves of the move, because putting `.tmk.beyond` back between the two states
+  // would restore the hover defect and not the focus one - and focus is the half that
+  // leaves the keyboard with no answer at all.
+  'beyond-mark-loses-focus': {
+    file: 'web/index.html',
+    edits: [
+      ['  .tmk.beyond { background: var(--faint); }\n  .tmk:hover', '  .tmk:hover'],
+      [
+        '  .tmk:focus-visible { outline: 0; background: var(--ink); }',
+        '  .tmk:focus-visible { outline: 0; background: var(--ink); }\n'
+        + '  .tmk.beyond { background: var(--faint); }',
+      ],
+    ],
+  },
+
   'plant-unswept-control': {
     file: 'web/index.html',
     edits: [[
@@ -5003,6 +5044,93 @@ try {
     check(near((await read()).programSec, altGrArrow, TOL),
       'and a named key under the same modifier is still the browser\'s, since AltGr only composes characters and there is no character here',
       `${(await read()).programSec.toFixed(3)}s against ${altGrArrow.toFixed(3)}s`);
+
+    // **And a trimmed clip, which is the case every row above is blind to.** The rows
+    // so far run on the whole take, where `Transport.frameAt`'s clamp into in..out
+    // cannot change where a press lands - so a key offering marks outside the trim
+    // looked identical to one that did not. With an in point at 5s and a mark at 2s,
+    // pressing `[` from inside asks to go to 2 and arrives back at 5: the playhead
+    // teleports to the edge, and at the edge itself the key reads as unbound.
+    await page.evaluate(`__kinect.editor.setMarks([
+      { id: 'outside', sourceMs: 2000, label: 'outside' },
+      { id: 'inside', sourceMs: 8000, label: 'inside' },
+    ])`);
+    // Set through the buttons the operator uses rather than through a hook, because a
+    // hook that set the trim directly would be a second road to a value the keys have to
+    // agree with - and the row below is about exactly that agreement.
+    await page.evaluate('__kinect.timeline.transport().seek(5)');
+    await settle();
+    await page.click('#tSetIn');
+    await page.evaluate('__kinect.timeline.transport().seek(12)');
+    await settle();
+    await page.click('#tSetOut');
+    await settle();
+    const trimmed = await page.evaluate('({ in: __kinect.timeline.transport().clipInSec, out: __kinect.timeline.transport().clipOutSec })');
+    const marksNow = await page.evaluate('__kinect.library.markTicks().length');
+    check(Math.abs(trimmed.in - 5) < 0.05 && trimmed.out > 8 && marksNow === 2,
+      'the clip is trimmed with one mark outside it and one inside, which is the arrangement the clamp can be seen through',
+      `in ${trimmed.in?.toFixed(2)}s out ${trimmed.out?.toFixed(2)}s, ${marksNow} ticks`);
+    await page.evaluate('__kinect.timeline.transport().seek(6)');
+    await settle();
+    await focusStage();
+    await page.keyboard.press('[');
+    await settle();
+    const backFromSix = (await read()).programSec;
+    check(Math.abs(backFromSix - 6) < 0.05,
+      'stepping back from inside the trim past a mark the trim excludes moves nothing at all, rather than throwing the playhead onto the in point it can never get past',
+      `${backFromSix.toFixed(3)}s, still where it was rather than at the in point ${trimmed.in?.toFixed(2)}s`);
+    // The liveness half. Without it the row above passes against a key that does
+    // nothing whatever, which is the same reading and the opposite defect.
+    await page.keyboard.press(']');
+    await settle();
+    const forwardInTrim = (await read()).programSec;
+    check(forwardInTrim > 7 && forwardInTrim < 9,
+      'and the key is working while it declines, because the same press forward still reaches the mark the trim does keep',
+      `${forwardInTrim.toFixed(3)}s`);
+
+    // **A mark the edit never reaches still answers a keyboard.** `.tmk.beyond` and
+    // `.tmk:hover` have equal specificity, so the one written last wins - and with the
+    // beyond rule underneath, a beyond tick kept its resting colour through both states
+    // while `:focus-visible` had already turned the native outline off on the grounds
+    // that the colour change said the same thing. The net effect was a focused control
+    // with no focus indication of any kind, which no row here had looked for because the
+    // existing presses are all on ordinary ticks.
+    await page.evaluate(`__kinect.editor.setMarks([
+      { id: 'ordinary', sourceMs: 3000, label: 'ordinary' },
+      { id: 'past', sourceMs: 9000000, label: 'past the end' },
+    ])`);
+    await settle();
+    const ticks = await page.evaluate('__kinect.library.markTicks()');
+    check(ticks.length === 2 && ticks.some((t) => t.beyond) && ticks.some((t) => !t.beyond),
+      'one tick is a beyond mark and one is ordinary, so the two rows below are a comparison rather than two readings of the same thing',
+      ticks.map((t) => (t.beyond ? 'beyond' : 'ordinary')).join(' '));
+    // Focus arrives by Tab rather than by `.focus()`, because `:focus-visible` is a
+    // claim about how focus got there - a programmatic focus does not match it in
+    // Chromium, so a row built that way would read the resting colour on both builds
+    // and agree with the defect.
+    const focusColours = async (selector) => page.evaluate(`(async () => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      const rest = getComputedStyle(el).backgroundColor;
+      return { rest, el: Boolean(el) };
+    })()`);
+    const beforeFocus = await focusColours('#tMarks .tmk.beyond');
+    await page.evaluate("document.querySelector('#tMarks .tmk:not(.beyond)').focus()");
+    await page.keyboard.press('Tab');
+    const focused = await page.evaluate(`(() => {
+      const el = document.activeElement;
+      return {
+        isBeyond: el?.classList?.contains('beyond') ?? false,
+        visible: el?.matches(':focus-visible') ?? false,
+        background: el ? getComputedStyle(el).backgroundColor : null,
+        outline: el ? getComputedStyle(el).outlineStyle : null,
+      };
+    })()`);
+    check(focused.isBeyond && focused.visible,
+      'tabbing off the ordinary tick lands keyboard focus on the beyond one, which is what makes the row below about the colour rather than about where focus went',
+      `beyond ${focused.isBeyond}, :focus-visible ${focused.visible}`);
+    check(focused.background !== beforeFocus.rest,
+      'and a focused beyond mark looks different from a resting one - the outline is off on the grounds that the colour says it instead, so the colour has to say it',
+      `resting ${beforeFocus.rest}, focused ${focused.background}, outline ${focused.outline}`);
 
     const legend = await page.evaluate('__kinect.editor.shortcuts()');
     check(/\[\/\]/.test(legend),

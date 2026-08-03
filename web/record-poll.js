@@ -93,6 +93,20 @@ const fingerprint = (state) => [
  * first tick reports no change, because a first tick claiming one would make it do its
  * expensive thing once at load for no reason.
  *
+ * **A tick counts as seen only once the caller has actually dealt with it, which is
+ * what `await` and the missing assignment in the catch are for.** `previous` moving on
+ * its own made a failed handler permanent: the gallery reads the library when this
+ * reports a change, and one refresh losing its connection advanced the fingerprint past
+ * the transition it failed on - so every later tick matched, reported no change, and the
+ * grid kept a finished take's actions disabled until something else moved. A handler
+ * that throws leaves `previous` where it was, so the next tick puts the same change in
+ * front of it again and the retry costs nothing to arrange.
+ *
+ * Swallowed here rather than left to reject, because `tick` is what the interval calls:
+ * an async function rejecting into a timer is an unhandled rejection and a console the
+ * page's own error sweep would then fail on. The caller has already said whatever it
+ * wants to say about its own failure - this only decides whether to ask again.
+ *
  * Returns the tick itself, so a caller that has just changed something - pressing
  * record is the case - can ask again immediately instead of waiting out the cadence.
  * That is the same poll rather than a second one: it updates the same `previous`, so
@@ -111,8 +125,10 @@ export function pollRecordState(saw, believed = null) {
     }
     const mark = fingerprint(state);
     const changed = previous !== null && previous !== mark;
-    previous = mark;
-    saw(state, changed);
+    try {
+      await saw(state, changed);
+      previous = mark;
+    } catch { /* not seen, so not recorded as seen - the next tick offers it again */ }
   };
   tick();
   setInterval(tick, EVERY_MS);

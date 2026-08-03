@@ -620,6 +620,21 @@ const MUTATIONS = {
     '}, believedFromLibrary());', '});',
   ]] },
 
+  // The poll goes back to recording a tick as seen before the caller has managed to do
+  // anything with it. One refresh losing its connection then advances the fingerprint
+  // past the transition it failed on, every later tick matches, and the grid keeps a
+  // finished take's actions disabled until some other transition happens along - the
+  // same permanent staleness `poll-first-tick-is-blind` covers at the other end of the
+  // page's life, reached by a different road.
+  //
+  // The module and not the gallery's `throw`, because those are two halves of one
+  // arrangement and this is the half that decides. Must redden only the retry row.
+  'poll-forgets-a-failed-refresh': { file: 'web/record-poll.js', edits: [[
+    '    try {\n      await saw(state, changed);\n      previous = mark;\n'
+    + '    } catch { /* not seen, so not recorded as seen - the next tick offers it again */ }',
+    '    previous = mark;\n    saw(state, changed);',
+  ]] },
+
   // One page's `--faint` goes back to the value that fails AA, which is the drift three
   // separate declarations of one token invite. Deliberately one page and not all three:
   // the rows are per page, so the run says *which* surface regressed rather than that
@@ -5873,6 +5888,69 @@ async function runChecks() {
       blindTile === null ? 'no tile for that take' : `flags ${blindTile.flags.join(',') || '(none)'}, acts ${blindTile.acts.join(' ')}`);
     check(blindErrors.length === 0, 'and that page raises no error while it catches up', blindErrors.slice(0, 2).join(' | '));
     await blind.close();
+
+    // **A refresh that fails is a transition the gallery has not seen yet.** The poll
+    // used to record a tick as seen the moment it had one, so a single `/library/all`
+    // losing its connection advanced the fingerprint past the very transition its
+    // refresh had failed on - and since every later tick then matched, the gallery never
+    // looked again and the tile kept a finished take's actions disabled for the life of
+    // the page. One unlucky five-second window, permanent.
+    //
+    // The failure is injected at the page's edge and withdrawn after exactly one, which
+    // is what separates "retries" from "kept trying forever": the row below wants the
+    // next tick to succeed, not the fetch to be broken for the rest of the section.
+    const third = await post(`${liveUrl}/record/start`);
+    let shootingThird = null;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((done) => { setTimeout(done, 250); });
+      shootingThird = await getJson(`${liveUrl}/record/state`);
+      if (shootingThird.recording) break;
+    }
+    check(shootingThird?.recording === true,
+      'a third take is open, so the page below has a transition to miss and then catch up on',
+      `${shootingThird?.takeId}, start said ${JSON.stringify(third).slice(0, 50)}`);
+
+    const flaky = await browser.newPage();
+    const flakyErrors = [];
+    flaky.on('pageerror', (err) => flakyErrors.push(String(err)));
+    flaky.on('console', (msg) => { if (msg.type() === 'error') flakyErrors.push(msg.text()); });
+    let listings = 0;
+    let refused = 0;
+    await flaky.route('**/library/all', async (route) => {
+      listings++;
+      // The first listing is the page's own load and has to succeed, or there is no
+      // painted grid for the tick to disagree with and the row measures the wrong hole.
+      // The second is the refresh the stop transition asks for, and it is the one that
+      // fails.
+      if (listings === 2) { refused++; await route.abort('connectionfailed'); return; }
+      await route.continue();
+    });
+    await flaky.goto(galleryPage(liveUrl), { waitUntil: 'domcontentloaded' });
+    await flaky.waitForFunction('globalThis.__library !== undefined', null, { timeout: 20000 });
+    const flakyPainted = await flaky.evaluate(`(() => {
+      const t = globalThis.__library.tiles().find((x) => x.id === ${JSON.stringify(shootingThird?.takeId)});
+      return t ? t.flags.includes('recording') : null;
+    })()`);
+    check(flakyPainted === true,
+      'that page painted the open take as being written, from a listing that was allowed through',
+      `painted mid-write ${flakyPainted}, ${listings} listings so far`);
+    await post(`${liveUrl}/record/stop`);
+    const caughtUp = await flaky.waitForFunction(
+      `(() => { const t = globalThis.__library.tiles().find((x) => x.id === ${JSON.stringify(shootingThird?.takeId)});
+        return t && !t.flags.includes('recording') && t.acts.find((a) => a.label === 'Open')?.disabled === false; })()`,
+      null, { timeout: 30000 },
+    ).then(() => true).catch(() => false);
+    check(refused === 1,
+      'and exactly one of its listings was refused - the refresh the stop asked for, so the tick after it is a retry rather than a first attempt',
+      `${refused} refused of ${listings} listings`);
+    const flakyTile = await flaky.evaluate(`(() => {
+      const t = globalThis.__library.tiles().find((x) => x.id === ${JSON.stringify(shootingThird?.takeId)});
+      return t ? { flags: t.flags, acts: t.acts.map((a) => a.label + (a.disabled ? ' (off)' : '')) } : null;
+    })()`);
+    check(caughtUp,
+      'and the gallery comes back from it on a later tick, because a refresh that failed leaves the transition unseen rather than spending it',
+      flakyTile === null ? 'no tile for that take' : `flags ${flakyTile.flags.join(',') || '(none)'}, acts ${flakyTile.acts.join(' ')}`);
+    await flaky.close();
     for (const p of servers.filter((sv) => sv.port === MAC_PORT + 1)) p.child.kill('SIGKILL');
   }
 

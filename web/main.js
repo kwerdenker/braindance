@@ -7212,10 +7212,22 @@ addEventListener('keydown', (e) => {
     // and going nowhere, which reads as the key not being bound at all. It is a
     // microsecond of program time - smaller than any frame this program can show, so
     // it can never skip a mark that is genuinely a step away.
+    // **Only the marks the playhead can actually get to.** `markSecondsInOrder` clamps
+    // to the take, not to the trim, and `Transport.frameAt` clamps every seek into
+    // in..out - so on a clip trimmed to start at five seconds, pressing `[` at the in
+    // point found a mark at two, asked to go there, and arrived back at five. The key
+    // read as unbound at exactly the edge where somebody is most likely to press it.
+    //
+    // Filtered here rather than in `markSecondsInOrder`, because the ticks must go on
+    // being drawn where they are: a mark outside the trim is drawn inside `.tshade`,
+    // which is the shading that exists to say "the export will not reach this". Moving
+    // those ticks to the boundary would put them where the export *does* reach and
+    // report a moment that is not there. What is unreachable is the seek, not the mark.
     case '[': case ']': {
       e.preventDefault();
       const here = timeline.programSec;
-      const seconds = markSecondsInOrder();
+      const seconds = markSecondsInOrder()
+        .filter((s) => s >= timeline.clipInSec - 1e-6 && s <= timeline.clipOutSec + 1e-6);
       const to = e.key === '['
         ? seconds.filter((s) => s < here - 1e-6).pop()
         : seconds.find((s) => s > here + 1e-6);

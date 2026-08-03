@@ -422,15 +422,23 @@
   .tmk { position: absolute; bottom: 2px; width: 5px; height: 5px; margin-left: -2.5px;
     padding: 0; border: 0; background: var(--accent); transform: rotate(45deg);
     pointer-events: auto; cursor: pointer; }
+  /* A mark the edit never reaches stacks at the right edge rather than being
+     dropped: the moment is still in the footage, and a tick nobody can explain is
+     better than a tick that silently vanished when the curve was retimed.
+
+     **Above the two interaction states rather than below them, and the order is the
+     whole of it.** `.tmk.beyond` and `.tmk:hover` have the same specificity, so
+     whichever is written last wins - and with this rule underneath, a beyond mark kept
+     its resting colour while hovered and while focused. Focus was the worse half: the
+     rule below turns the native outline off on the grounds that the colour change says
+     the same thing, so a beyond tick answered a keyboard with no change of any kind. */
+  .tmk.beyond { background: var(--faint); }
   .tmk:hover { background: var(--ink); }
   /* Rotated 45 degrees, so the focus ring would be a diamond around a diamond and
      land under the neighbouring lane. Drawn as the same colour change hovering
-     gives, which is the state the ring would have been describing anyway. */
+     gives, which is the state the ring would have been describing anyway - which is
+     only true while these sit after every rule that sets a resting colour. */
   .tmk:focus-visible { outline: 0; background: var(--ink); }
-  /* A mark the edit never reaches stacks at the right edge rather than being
-     dropped: the moment is still in the footage, and a tick nobody can explain is
-     better than a tick that silently vanished when the curve was retimed. */
-  .tmk.beyond { background: var(--faint); }
 
   .tplayhead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--ink);
     pointer-events: none; z-index: 3; }

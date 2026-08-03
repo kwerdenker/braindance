@@ -1654,6 +1654,15 @@ await refresh();
  * already uses: a gallery that quietly stopped following the recorder looks exactly
  * like a gallery with nothing to follow.
  *
+ * **And re-thrown after it is reported, which is what buys the retry.** The poll only
+ * records a tick as seen once this handler returns, so a refresh that lost its
+ * connection leaves the fingerprint where it was and the next tick offers the same
+ * transition again. Reporting it and returning normally - which is what this did - made
+ * one unlucky five-second window permanent: the fingerprint had already advanced past
+ * the transition the refresh failed on, every later tick matched it, and the grid kept a
+ * finished take's Open, Download, Rename and Remove disabled until some *other*
+ * transition happened along.
+ *
  * **Seeded with what the grid on screen already says, because the listing above and
  * the poll's first tick are two reads of a moving world.** A take that stopped between
  * them left the paint saying "being written" and every fingerprint from then on saying
@@ -1662,9 +1671,14 @@ await refresh();
  * comparison against the paint rather than against nothing, so the disagreement is
  * caught on the tick that finds it.
  */
-pollRecordState((state, changed) => {
+pollRecordState(async (state, changed) => {
   if (!changed) return;
-  refresh().catch((err) => say(`the library could not be reread: ${err.message}`));
+  try {
+    await refresh();
+  } catch (err) {
+    say(`the library could not be reread: ${err.message}`);
+    throw err;
+  }
 }, believedFromLibrary());
 
 // What a check reads. Every number here comes from the library's own state rather
