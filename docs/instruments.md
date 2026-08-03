@@ -296,6 +296,33 @@ script.
 enumeration reaches and what the question is asked of are different decisions, and collapsing
 them means every widening of one silently widens the other.
 
+**And the same fact one layer further in: a string is not code either.** Narrowing to the
+JavaScript left `throw new Error('expected 512 bytes')` counting as a declaration of the
+sensor's width, so an ordinary debug message added to any module would have failed a clean
+suite. Comments were already excluded, by a regex; strings were not, and the two are the
+same exclusion — what the row wants is what a lexer would call a numeric token.
+
+The pair of regexes went, replaced by one scan. They were each approximating half of a
+lexer and each carrying a patch for the other's territory: the line-comment rule skipped a
+`//` preceded by a colon, which exists so that a URL *in a string* survives comment
+stripping. That is a lexer being written one exception at a time, and the exceptions only
+stop arriving when the thing knows what a literal is.
+
+Two decisions in it are worth copying. **Template expressions are scanned and template text
+is not**, because `${...}` is code by definition and swallowing the whole template would
+lose a declaration inside one silently. And **where it has to guess, it guesses toward
+reporting**: a `/` after `}` is division here, so a regex in that position is scanned as
+code and its digits are over-reported, which fails loudly. The other reading skips to the
+next `/` and swallows the code in between, which is a declaration going unseen under a
+green row. When an instrument must be wrong sometimes, choose the direction that announces
+itself.
+
+The probe carries one file that is on one list and off the other. Its 512s are all
+text — two strings, an escaped quote, a comment, a template — and its 424 appears both as
+text and inside a `${}`. A scan that reads strings puts it on the 512 list and fails; a
+scan that swallows template expressions takes it off the 424 list and fails. One file,
+both directions, which is what an arm for a scanner has to do.
+
 ### An enumeration that walks a flat tree is the files that exist, not the tree
 
 The grid row above walks `web/` and `server/` rather than a list of the files that hold the

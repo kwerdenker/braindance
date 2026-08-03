@@ -1205,23 +1205,114 @@ const serverMutation = mutation && mutation.file.startsWith('server/') ? mutatio
 const shippedSource = (rel) => readFileSync(join(root, rel), 'utf8');
 
 /**
- * Source with its comments taken out, so a row about what the code says is not
- * answered by what the prose says.
+ * Every number a piece of JavaScript states as code, by value.
  *
- * Four files in this tree name the grid in prose - `web/format.js` explaining why it
- * lives there, `web/main.js` describing the band a mis-bound frame collapses into,
- * `server/protocol.js` sizing a message and `server/webcam.js` explaining what the
- * colour camera is not - and every one of them is a comment doing its job. A row that
- * counted them would be unfalsifiable in the loud direction: permanently red, and
- * therefore turned off.
+ * **A scan rather than a pair of regexes, and it replaced two.** What a row about the
+ * sensor grid needs is the numbers the *code* says, and the two things that are not code
+ * are comments and literal text - so the question is what a JavaScript lexer would call a
+ * numeric token, and nothing else is a reliable way to ask it. Four files in this tree
+ * name the grid in prose (`web/format.js` explaining why it lives there, `web/main.js`
+ * describing the band a mis-bound frame collapses into, `server/protocol.js` sizing a
+ * message, `server/webcam.js` saying what the colour camera is not) and every one is a
+ * comment doing its job; the string half is the same fact one layer in, where an
+ * ordinary `throw new Error('expected 512 bytes')` added to any module would have been
+ * counted as a second declaration of the sensor's width.
  *
- * Block comments first, because a `//` inside one is not a line comment; and a `//`
- * preceded by a colon is left alone, since that is a URL rather than the start of one.
+ * The regexes this replaces each approximated one half and each carried a patch for the
+ * other's territory - the line-comment rule skipped a `//` preceded by a colon, so that a
+ * URL in a string would survive, which is a lexer being written one exception at a time.
+ * One pass that knows what a literal is has no exceptions to accumulate.
+ *
+ * **Template expressions are scanned and template text is not**, which is the one place
+ * the two can be interleaved: `${...}` is code by definition and the brace depth says
+ * where it ends.
+ *
+ * **Where it guesses, it guesses toward reporting.** A `/` is division or the start of a
+ * regex depending on what came before it, and there is no correct answer without a parse.
+ * The unambiguous cases are decided by the previous significant token and skipped whole -
+ * `= /[0-9a-f]{64}/` is a regex and its digits are not declarations of anything. What is
+ * left ambiguous is `}`, which ends a block (a regex may follow) or an object (division
+ * may), and this reads it as division. Wrong that way, a regex's contents get scanned as
+ * code and a digit inside one is a holder reported that is not one, which fails loudly and
+ * gets looked at. Wrong the other way, it skips to the next `/` and swallows whatever code
+ * is in between, which is a declaration going unseen under a green row. Only one of those
+ * two is safe to be wrong about.
  */
-const withoutComments = (src) => src
-  .replace(/<!--[\s\S]*?-->/g, ' ')
-  .replace(/\/\*[\s\S]*?\*\//g, ' ')
-  .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+const numbersIn = (src) => {
+  const values = [];
+  // One entry per literal we are inside, innermost last. A backtick pushes `template`;
+  // a `${` inside one pushes `code` remembering the brace depth to come back at.
+  const stack = [];
+  const inTemplate = () => stack[stack.length - 1]?.kind === 'template';
+  let depth = 0;
+  // The last significant character, which is what decides the `/` question. Not the last
+  // character: whitespace and comments do not answer it.
+  let prev = '';
+  let i = 0;
+  const NUM = /^(?:0[xX][\dA-Fa-f](?:_?[\dA-Fa-f])*|0[oO][0-7](?:_?[0-7])*|0[bB][01](?:_?[01])*|\d(?:_?\d)*(?:\.(?:\d(?:_?\d)*)?)?(?:[eE][+-]?\d(?:_?\d)*)?)n?/;
+  while (i < src.length) {
+    const c = src[i];
+    if (inTemplate()) {
+      if (c === '\\') { i += 2; continue; }
+      if (c === '`') { stack.pop(); prev = '`'; i++; continue; }
+      if (c === '$' && src[i + 1] === '{') { stack.push({ kind: 'code', depth }); depth++; prev = '{'; i += 2; continue; }
+      i++;
+      continue;
+    }
+    if (c === '/' && src[i + 1] === '/') { while (i < src.length && src[i] !== '\n') i++; continue; }
+    if (c === '/' && src[i + 1] === '*') {
+      i += 2;
+      while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++;
+      i += 2;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      i++;
+      while (i < src.length && src[i] !== c) i += src[i] === '\\' ? 2 : 1;
+      i++;
+      prev = c;
+      continue;
+    }
+    if (c === '`') { stack.push({ kind: 'template' }); i++; continue; }
+    // A regex only where a value cannot already have ended. `}` counts as a value ending,
+    // which is the ambiguous case resolved toward division, as the comment above says.
+    if (c === '/' && !/[\w$)\]}'"`]/.test(prev)) {
+      i++;
+      let klass = false;
+      while (i < src.length) {
+        if (src[i] === '\\') { i += 2; continue; }
+        if (src[i] === '[') klass = true;
+        else if (src[i] === ']') klass = false;
+        else if (src[i] === '/' && !klass) break;
+        else if (src[i] === '\n') break;
+        i++;
+      }
+      i++;
+      prev = '/';
+      continue;
+    }
+    if (c === '{') { depth++; prev = c; i++; continue; }
+    if (c === '}') {
+      depth--;
+      const top = stack[stack.length - 1];
+      if (top?.kind === 'code' && top.depth === depth) { stack.pop(); i++; continue; }
+      prev = c;
+      i++;
+      continue;
+    }
+    // A number, but only where one can start - `a.512` is a property and `x512` a name.
+    if (/\d/.test(c) && !/[\w$.]/.test(prev)) {
+      const [token] = NUM.exec(src.slice(i));
+      values.push(Number(token.replace(/n$/, '').replace(/_/g, '')));
+      i += token.length;
+      prev = '0';
+      continue;
+    }
+    if (!/\s/.test(c)) prev = c;
+    i++;
+  }
+  return values;
+};
 
 // ----------------------------------------------------------------- the fixtures
 //
@@ -1987,14 +2078,14 @@ async function runChecks() {
   // grid that went missing" - that only fired when both went at once.
   console.log('\n[library] the sensor grid is declared once, and the tree is what says so');
   {
-    // **Every numeric literal, compared by value.** The first spelling of this searched
-    // for the decimal digits with guards either side - `(?<![\d.])512(?![\d.])`, which
-    // keeps `512` out of `1512` and `4.24` - and that is a matcher for one *spelling* of a
-    // number wearing the name of the number. A module redeclaring the width as `512.0` is
-    // rejected by the trailing guard, `0x200` and `5.12e2` are never looked at, and each
-    // of them is a second declaration of the grid sitting under a row reporting one. The
-    // guards are not needed once the comparison is by value, because `1512` tokenises as
-    // `1512` and answers 1512.
+    // **Every numeric literal, compared by value**, which `numbersIn` above is the scan
+    // for. The first spelling of this searched for the decimal digits with guards either
+    // side - `(?<![\d.])512(?![\d.])`, which keeps `512` out of `1512` and `4.24` - and
+    // that is a matcher for one *spelling* of a number wearing the name of the number. A
+    // module redeclaring the width as `512.0` is rejected by the trailing guard, `0x200`
+    // and `5.12e2` are never looked at, and each of them is a second declaration of the
+    // grid sitting under a row reporting one. The guards stopped being needed with the
+    // comparison by value, because `1512` is one token and answers 1512.
     //
     // Bounded on purpose, and the boundary is where a reader would otherwise assume more:
     // this sees a literal in any spelling and does not see an *expression* that computes
@@ -2007,16 +2098,7 @@ async function runChecks() {
     // Legacy octal - `01000`, which is 512 - is not in the pattern because it is a
     // SyntaxError in a module, and every file walked here is one. `syntax-check` is what
     // holds that.
-    const NUMERIC = new RegExp([
-      '(?<![\\w$.])(?:',
-      '0[xX][\\dA-Fa-f](?:_?[\\dA-Fa-f])*',       // hex
-      '|0[oO][0-7](?:_?[0-7])*',                  // octal
-      '|0[bB][01](?:_?[01])*',                    // binary
-      '|\\d(?:_?\\d)*(?:\\.(?:\\d(?:_?\\d)*)?)?(?:[eE][+-]?\\d(?:_?\\d)*)?', // decimal
-      ')n?',
-    ].join(''), 'g');
-    const declares = (source, n) => [...source.matchAll(NUMERIC)]
-      .some((m) => Number(m[0].replace(/n$/, '').replace(/_/g, '')) === n);
+    const declares = (source, n) => numbersIn(source).includes(n);
 
     // **The JavaScript in a file, because this is a claim about JavaScript.** The walk
     // reaches every file under `web/` and `server/`, which is three HTML pages and a
@@ -2089,6 +2171,25 @@ async function runChecks() {
     writeFileSync(join(probeRoot, 'web', 'nested', 'hexadecimal.js'), 'export const W = 0x200;\n');
     writeFileSync(join(probeRoot, 'web', 'nested', 'deeper', 'further.js'), 'export const H = 424;\n');
     writeFileSync(join(probeRoot, 'web', 'nested', 'deeper', 'scientific.js'), 'export const H = 4.24e2;\n');
+    // **The literal text a module carries, which is the same fact as the paragraph in the
+    // page one layer in.** An ordinary `throw new Error('expected 512 bytes')` is a
+    // message and not a declaration, and a row that counted it would fail a clean suite
+    // on a debug string. Every kind that can hold text is here because they are scanned
+    // by different branches: a single-quoted string, a double-quoted one, an escaped
+    // quote inside a string, a comment, and template text.
+    //
+    // **The last line is the one that has to be found**, and it is here because skipping
+    // template *text* and skipping a template *expression* are one character apart in the
+    // scan. `${}` is code by definition, so a declaration hiding in one is a declaration -
+    // and a scan that swallowed the whole template would lose it silently, which is the
+    // direction that does not announce itself.
+    writeFileSync(join(probeRoot, 'web', 'nested', 'literals.js'),
+      "export const A = 'expected 512 bytes';\n"
+      + 'export const B = "a 424-line budget";\n'
+      + "export const C = 'it\\'s 512 wide, they said';\n"
+      + '// a comment saying 512 and 424\n'
+      + 'export const D = `the grid is 512 by 424`;\n'
+      + 'export const E = `computed ${424} rows`;\n');
     // A page and a stylesheet, which is what the tree actually holds beside the modules.
     // The page states both numbers three times over and only one of them is a
     // declaration: in prose, in a `<style>` rule, in an importmap that is a `<script>` of
@@ -2105,16 +2206,21 @@ async function runChecks() {
     const walked = sourcesUnder(probeRoot, 'web');
     // Sorted per directory and depth-first, which is the order `sourcesUnder` produces
     // and the order these are written in.
+    // **`literals.js` is on one list and not the other, which is the whole arm.** Its
+    // 512s are all text - two strings, an escaped quote, a comment, a template - and its
+    // 424 appears both as text and inside a `${}`. So a scan that reads strings puts it on
+    // the 512 list and fails, and a scan that swallows template expressions takes it off
+    // the 424 list and fails. One file, both directions.
     const WANT = {
       512: ['web/nested/buried.js', 'web/nested/hexadecimal.js', 'web/page.html'],
-      424: ['web/nested/deeper/further.js', 'web/nested/deeper/scientific.js'],
+      424: ['web/nested/deeper/further.js', 'web/nested/deeper/scientific.js', 'web/nested/literals.js'],
     };
     for (const [what, n] of GRID) {
       const probed = walked.filter((rel) => declares(
-        withoutComments(javascriptIn(rel, readFileSync(join(probeRoot, rel), 'utf8'))), n,
+        javascriptIn(rel, readFileSync(join(probeRoot, rel), 'utf8')), n,
       ));
       check(eq(probed, WANT[n]),
-        `the walk this row uses reaches ${what} buried in a subdirectory, in every spelling of the number, in a page's script and in no near miss, stylesheet or paragraph`,
+        `the walk this row uses reaches ${what} in every spelling and in a page's script, and in no string, comment, template text, stylesheet, paragraph or near miss`,
         probed.join(' ') || 'the walk found nothing');
     }
 
@@ -2123,7 +2229,7 @@ async function runChecks() {
     // either number.
     const holdersOf = (n) => ['web', 'server'].flatMap(
       (dir) => sourcesUnder(root, dir)
-        .filter((rel) => declares(withoutComments(javascriptIn(rel, shippedSource(rel))), n)),
+        .filter((rel) => declares(javascriptIn(rel, shippedSource(rel)), n)),
     );
     for (const [what, n] of GRID) {
       const holders = holdersOf(n);
