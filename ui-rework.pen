@@ -5445,6 +5445,31 @@
                       "fontWeight": "normal"
                     }
                   ]
+                },
+                {
+                  "type": "frame",
+                  "id": "Mn45g",
+                  "name": "Save Look",
+                  "width": "fill_container",
+                  "cornerRadius": 4,
+                  "gap": 12,
+                  "padding": [
+                    4,
+                    12
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "IulMU",
+                      "name": "Label",
+                      "fill": "#e8ecf1",
+                      "content": "Stats for nerds",
+                      "fontFamily": "JetBrains Mono",
+                      "fontSize": 11,
+                      "fontWeight": "normal"
+                    }
+                  ]
                 }
               ]
             }
