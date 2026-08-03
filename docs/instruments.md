@@ -142,6 +142,64 @@ machine it fires eight, all of them the intended row. So a throw is now `crashed
 verdict and before `untested`. **Read which assertions fired, not how many** — and a proof
 tool must never count its own crash as a finding in either direction.
 
+### A mutation is source text, and nothing was checking that the text still existed
+
+Three declared controls could not run at all, and had not been able to for a long time.
+`editor-check --mutate space-unbound` anchored on `if (timeline.playing) timeline.pause();`
+where the branch now reads `pauseTransport()` — renamed in `51c7c9d`, sixty commits before
+this was found. `keyframe-check --mutate undo-on-input` anchored on a listener whose local
+was renamed `el` to `input`; one word killed the control that proves a slider drag is one
+undo step rather than two hundred. `library-check --mutate marks-ignore-retime` anchored on
+the line converting a mark through the retime curve, which had been *copied* to the minimap,
+so it matched twice and the tool refused it.
+
+**The two shapes of refusal disagree, and the disagreement runs the dangerous way.**
+`editor-check` resolves its mutation inside a `try` and reports `DID NOT RUN` with exit 2,
+which is the honest answer. `keyframe-check` and `library-check` call `mutatedSource` at
+module top level with nothing catching it, so a run prints a stack trace and exits 1 with no
+`FAIL` row, no assertion count and no verdict line — which is indistinguishable from a caught
+mutation to anything reading exit codes, and `keyframe-check`'s throw happens after
+`chromium.launch`, so it leaves a browser behind as well.
+
+**Neither is the real lesson.** `timeline.pause()` had not vanished from the tree; it moved
+off the line the mutation cared about, and still exists elsewhere in `web/main.js`. Nothing
+casual would have spotted any of the three. The class is that every anchor in this suite is
+one rename away from the same silence, and the only thing that would have noticed was
+`sweep-all`, which needs a server, a browser and hours — the right verdict at the wrong
+latency, since it is what a merge waits on rather than what tells you your control is dead
+while you are leaning on it.
+
+**This had already happened once and was closed as an instance.** The comment above
+`undo-includes-view` in `tools/keyframe-check.mjs` records a previous re-anchoring in these
+words: the line it named moved, "so the old text matched nothing and the tool refused the
+mutation - correctly, and silently as far as anything reading only the exit code was
+concerned." That instance was fixed and the class was left open, and three more went stale
+behind it.
+
+So `syntax-check` now walks every tool's `MUTATIONS` table and asserts each anchor matches
+its target file **exactly once**. It costs nothing, needs no server and runs in CI. The table
+is read without executing the tool, by cutting the source at the end of the declaration,
+appending an export and importing that prefix from inside `tools/` so the tool's own relative
+imports still resolve; a prefix that does not import fails the row rather than being read as
+"this tool has no table". Targets resolve by the entry's *shape*, never by the tool's name,
+and an unrecognised seventh shape fails naming the tool instead of being skipped. Measured at
+`907b87f`: 239 anchors across 13 tables, of 15 declared.
+
+**A duplicate is as stale as a miss, and that is the half a naive row drops.** The real defect
+here was `marks-ignore-retime` matching *two* sites, so a row asking "does this text appear"
+rather than "exactly once" sails straight past the thing that prompted the work while looking
+thorough. Both controls exist for that reason: `anchor-matches-twice` duplicates an anchored
+line into its target file, and `anchor-goes-stale` changes one character inside a `from`
+string. Each must redden the anchor row **and nothing else** — a control that reddens the
+whole tool says nothing about which question the tool was asking.
+
+**One thing this does not close.** `library-check`'s `reveal-drops-the-path` resolves its edit
+through `process.platform`, so a macOS developer and a Linux CI run check different strings
+and neither checks the third. And the minimap's copy of the mark conversion still has no
+control over it at all: `markTicks()` only ever reads the ruler strip, so that second site
+could stop going through the retime curve entirely and every row in the suite would stay
+green. Two sites doing one conversion is what made this anchor stale in the first place.
+
 ### A mutation can erase its own evidence
 
 `plant-open-take` originally appended its foreign bytes through a second file descriptor.

@@ -178,9 +178,14 @@ const MUTATIONS = {
   ]],
   // Undo pushes on every input event rather than on the end of the interaction, so
   // one slider drag is two hundred levels.
+  // Re-anchored: the listener's local was renamed `el` to `input`, and a one-word rename
+  // is enough to kill a control outright - this one proves that a slider drag is a single
+  // undo step, and it had stopped running while reading as though it had. Caught by
+  // `syntax-check`'s anchor row rather than by anybody noticing; `docs/instruments.md`
+  // carries the case file.
   'undo-on-input': [[
-    "    el.addEventListener('input', () => writeFromControl(name, Number(el.value)));",
-    "    el.addEventListener('input', () => { writeFromControl(name, Number(el.value)); history.commit(); });",
+    "      input.addEventListener('input', () => writeFromControl(name, Number(input.value)));",
+    "      input.addEventListener('input', () => { writeFromControl(name, Number(input.value)); history.commit(); });",
   ]],
   // A seek plans its span once and never looks again, which is what the code did
   // before a curve could move under it. The hazard is older than step 5 - the speed

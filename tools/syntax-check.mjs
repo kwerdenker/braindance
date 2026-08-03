@@ -203,6 +203,158 @@ if (!existsSync(DOC)) {
   }
 }
 
+// **A mutation is a piece of source text, and until this row nothing checked that the
+// text still existed.** Every claim this suite makes about the tree is proved by running
+// a mutation and reading which assertions fired, so a mutation whose anchor no longer
+// matches proves nothing at all - and it fails in the direction that reads as success.
+// Of the three found when this row was written, two threw at module top level: a stack
+// trace, a non-zero exit and **zero failed assertions**, which is precisely what a caught
+// mutation looks like to anything reading exit codes instead of counting failures. The
+// third refused politely with exit 2. `docs/instruments.md` carries the case file, and
+// the previous instance of this same drift was closed at `keyframe-check`'s
+// `undo-includes-view` without closing the class - which is how three more went stale.
+//
+// **A duplicate is as stale as a miss**, and that is the half a naive row drops. The
+// defect that prompted this was an anchor matching *two* sites, because one conversion
+// had been copied to a second place, and a row asking "does this text appear" rather than
+// "exactly once" sails straight past it while looking thorough.
+//
+// Nothing here executes a tool. The table is read by cutting the tool's source at the end
+// of the declaration, appending an export, and importing that prefix from inside `tools/`
+// so the tool's own relative imports still resolve. Two properties of that cut were
+// measured rather than assumed: no tool that declares a table does side-effectful
+// top-level work above the declaration, and the terminator is the first `};` at column
+// zero, because no table body contains a line starting there. The second is an invariant
+// rather than a guarantee, so a prefix that does not import fails the row instead of being
+// quietly read as "this tool has no table".
+//
+// The target file is resolved from each entry's *shape* rather than from the tool's name,
+// because a hardcoded list of tools is the exact failure `sweep-all`'s header records from
+// its own shell ancestor: four arrays that would have run 59 of 78 mutations and printed
+// "all caught". There are six shapes, which is five more than there should be - and the
+// honest fix is normalising them onto `{ file, edits }`, which this row is the regression
+// test for. A seventh fails naming the tool rather than being skipped, because a
+// deliberate exclusion arrives with a justification that stops anybody looking twice.
+//
+// Last of the three rows on purpose: it is the only one that writes a file into `tools/`,
+// so a crash that leaks the prefix cannot make the same run's documentation row fail for a
+// reason that has nothing to do with the tree.
+{
+  const DECLARATION = /^const MUTATIONS = \{$/m;
+  // Where a shape that does not carry its own target points. Both are facts about the
+  // shape rather than about any tool: a bare `[from, to]` pair is only ever the C++
+  // registration mutation, and the three JavaScript shapes all edit the browser bundle.
+  const MAIN = 'web/main.js';
+  const REGISTRATION = 'third_party/libfreenect2/src/registration.cpp';
+  // One name reused for every extraction, so a crash can leak at most one file, and
+  // dotted-and-suffixed so the documentation row above catches it on the next run rather
+  // than letting it sit in `tools/` looking like something this repo ships.
+  const PROBE = join(ROOT, 'tools', '.mutation-table-probe.mjs');
+
+  /** What a single entry anchors on, or why it anchors on nothing, or null for unknown. */
+  const shapeOf = (spec) => {
+    if (Array.isArray(spec)) {
+      // Both array shapes are pairs, so `Array.isArray` alone cannot tell them apart -
+      // it is the first element that says which. Read it wrong and every registration
+      // anchor reports hundreds of hits, which is loud and still wrong.
+      if (typeof spec[0] === 'string') return { file: REGISTRATION, from: [spec[0]] };
+      if (Array.isArray(spec[0])) return { file: MAIN, from: spec.map(([from]) => from) };
+      return null;
+    }
+    if (typeof spec === 'function') return { anchorless: 'functions that redirect the oracle' };
+    if (spec === null || typeof spec === 'string') return { anchorless: 'whole replacement file bodies' };
+    if (typeof spec === 'object') {
+      if (typeof spec.file === 'string' && Array.isArray(spec.edits)) {
+        return { file: spec.file, from: spec.edits.map(([from]) => from) };
+      }
+      if (typeof spec.from === 'string') return { file: MAIN, from: [spec.from] };
+    }
+    return null;
+  };
+
+  const targets = new Map();
+  const targetSource = (path) => {
+    if (!targets.has(path)) {
+      const full = join(ROOT, path);
+      targets.set(path, existsSync(full) ? readFileSync(full, 'utf8') : null);
+    }
+    return targets.get(path);
+  };
+
+  let tablesDeclared = 0, tablesWithAnchors = 0, anchorsChecked = 0, stale = 0;
+  const anchorless = [];
+  for (const name of readdirSync(join(ROOT, 'tools')).filter((f) => PARSES.test(f)).sort()) {
+    const source = readFileSync(join(ROOT, 'tools', name), 'utf8');
+    const declared = DECLARATION.exec(source);
+    if (!declared) continue;
+    tablesDeclared++;
+    const end = source.indexOf('\n};', declared.index);
+    if (end === -1) {
+      fail(`${name} declares a MUTATIONS table with no terminator at column zero, so its anchors cannot be read`);
+      continue;
+    }
+    let table = null;
+    try {
+      writeFileSync(PROBE, `${source.slice(0, end + 3)}\nexport { MUTATIONS };\n`);
+      // Cache-busted, because fifteen tools are imported through one filename and Node
+      // would otherwise hand back the first tool's table fourteen more times - which
+      // would read as every anchor matching and is the quietest possible way for this
+      // row to pass on nothing.
+      ({ MUTATIONS: table } = await import(`file://${PROBE}?tool=${encodeURIComponent(name)}`));
+    } catch (err) {
+      fail(`${name}: its MUTATIONS table could not be read - ${String(err.message).split('\n')[0]}`);
+    } finally {
+      rmSync(PROBE, { force: true });
+    }
+    if (!table) continue;
+
+    let carriesAnchors = false;
+    for (const [mutation, spec] of Object.entries(table)) {
+      const shape = shapeOf(spec);
+      if (!shape) {
+        fail(`${name}/${mutation} declares a MUTATIONS shape this row does not recognise, and a shape nobody checks is a control nobody proved`);
+        continue;
+      }
+      if (shape.anchorless) {
+        if (!anchorless.some((a) => a.name === name)) anchorless.push({ name, why: shape.anchorless });
+        continue;
+      }
+      const body = targetSource(shape.file);
+      if (body === null) {
+        fail(`${name}/${mutation} anchors into ${shape.file}, which does not exist`);
+        continue;
+      }
+      for (const from of shape.from) {
+        carriesAnchors = true;
+        anchorsChecked++;
+        const hits = body.split(from).length - 1;
+        if (hits !== 1) {
+          stale++;
+          fail(`${name}/${mutation} matches ${hits} times in ${shape.file}, expected exactly 1`
+            + ` - ${hits === 0 ? 'the text it anchors on has moved, so this control cannot run' : 'the text it anchors on appears more than once, so the tool refuses it'}`);
+        }
+      }
+    }
+    if (carriesAnchors) tablesWithAnchors++;
+  }
+
+  // Printed rather than absorbed: a table with nothing to check is a real answer, and one
+  // the count would otherwise hide behind a total that looks complete.
+  for (const { name, why } of anchorless) {
+    console.log(`  anchors/ ${name} declares ${why} rather than source anchors, so it has none to check`);
+  }
+  if (anchorsChecked === 0) {
+    fail('no mutation anchors were checked at all, so this assertion passed on nothing - the tables moved or this scan is looking in the wrong place');
+  } else if (stale) {
+    // Counted separately from the total rather than folded into it, because "239
+    // checked" beside three FAIL lines is the number a reader needs and "all 239 match"
+    // over the top of them would be this row asserting the very thing it just disproved.
+    console.log(`  anchors/ ${anchorsChecked} checked in ${tablesWithAnchors} tables of ${tablesDeclared} declared, ${stale} not matching exactly once`);
+  } else {
+    console.log(`  anchors/ all ${anchorsChecked} in ${tablesWithAnchors} tables match once, of ${tablesDeclared} declared`);
+  }
+}
+
 console.log(`\n${total} JavaScript files, ${failed} failed`);
 // Said out loud because `npm test` runs this, and a green `npm test` that meant "the
 // suite passed" would be the most expensive wrong impression in the repo. Nothing here
