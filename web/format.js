@@ -118,3 +118,35 @@ export function versionRefusal(what, version) {
  * valid document name.
  */
 export const VALID_ID = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
+
+/**
+ * The sensor's depth grid, and it is filed here for the delivery reason above rather
+ * than for the document-format one.
+ *
+ * Nothing about 512x424 is a property of the document format, so a reader arriving at
+ * the top of this file has every right to wonder what a sensor dimension is doing
+ * beside a version number. The answer is the second half of the header's argument and
+ * not the first: the browser can only import what the server serves, `web/` is what
+ * gets served, and Node has no such constraint and reaches for it by path. That is the
+ * whole of why this file exists as a shared home, and the grid needs exactly that home
+ * for exactly that reason - `web/main.js` and `web/library.js` are pages,
+ * `server/capture.js` is not, and all three have to mean the same grid.
+ *
+ * It was declared four times before this, twice inside `web/main.js` alone under two
+ * different names 1,646 lines apart, and spelled out as bare literals a fifth time in
+ * the monitor's cost line - under a comment promising the number was "stated from the
+ * grid rather than from a table, so the number cannot drift from what the sender is
+ * actually building". It was stated from two literals typed a third time, which is the
+ * duplication having already started saying something untrue.
+ *
+ * **`native/grabber.cpp` declares the pair a second time and that one is correct.** No
+ * JavaScript import reaches a C++ translation unit, so the grabber has no way to be a
+ * reader of this and is the one honest second declaration. It is what the hello
+ * carries, so a device with a different grid changes both files and nothing between
+ * them.
+ *
+ * The proof tools keep their own copies too, and deliberately: a check that imported
+ * the constant it asserts would be holding a `512` against itself.
+ */
+export const DEPTH_W = 512;
+export const DEPTH_H = 424;

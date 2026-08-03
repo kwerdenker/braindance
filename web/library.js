@@ -47,10 +47,7 @@
 // over the picture where they cost no height. See `library.html` for each of those in
 // the place it is enforced.
 
-import { VALID_ID } from '/format.js';
-
-const DEPTH_W = 512;
-const DEPTH_H = 424;
+import { DEPTH_H, DEPTH_W, VALID_ID } from '/format.js';
 
 // The depth divisor per state. A local take is read whole; a take that is only on
 // the node comes through the divisor, which is what turns a 486KB frame into about
@@ -129,6 +126,12 @@ const post = (url, body) => jsonOf(url, {
 function warningsOf(take) {
   const out = [];
   if (take.recording === true) {
+    // **The one sentence this page still writes, and it is a warning rather than a
+    // refusal.** It names four actions, so it is not an answer to "why is Open off" -
+    // the server carries that one, in a sentence about the hash a take being written
+    // does not have yet. The two are different claims about one take rather than two
+    // copies of one claim, which is why this did not move to the library scanner with
+    // the others: an action list is not something a scanner knows.
     out.push({
       key: 'recording',
       short: 'recording',
@@ -144,37 +147,44 @@ function warningsOf(take) {
       why: 'the writer stopped mid-frame, so the take is usable up to the cut and no further',
     });
   }
-  if (take.hasHello === false) {
+  // The reasons the take cannot be opened, in the server's words. This page used to
+  // write them again from `hasHello` and `frames`, which is how the badge and the
+  // Open button beside it ended up saying different things about one take - so the
+  // sentence arrives with the take now and the only thing decided here is the badge
+  // it goes under. **Not a courtesy copy in the sense `web/format.js` uses for
+  // `VALID_ID`**: there is no local derivation left to fall back to, because a second
+  // one is exactly what was wrong.
+  //
+  // Zero and one are different facts and the badge says which. A take cut before its
+  // first whole frame has no picture to show at all - which is why the skim below
+  // never asks for one - where a single-frame take has exactly one and draws it. Both
+  // refuse to open, and reading `< 2 frames` on a tile with a blank poster would send
+  // somebody looking for the frame it has. That distinction is a 228px poster's
+  // problem rather than a library fact, which is why `short` is still written here
+  // while the sentence under it is not.
+  // No `?? []` guarding this. `describeTake` sets the field in both its branches, so a
+  // take that reached this page without one is a server this page cannot render
+  // anyway, and a silent empty list would draw a tile claiming a take is fine - which
+  // is a second implementation wearing a fallback, and the fallback is the half that
+  // would be believed.
+  for (const refusal of take.openRefusals) {
     out.push({
-      key: 'no-hello',
-      short: 'no hello',
-      why: 'this take carries no sensor hello, so its intrinsics are unknown and it cannot be unprojected',
-    });
-  }
-  if (take.frames !== null && take.frames < 2) {
-    // Zero and one are different facts and the badge says which. A take cut before
-    // its first whole frame has no picture to show at all - which is why the skim
-    // below never asks for one - where a single-frame take has exactly one and draws
-    // it. Both refuse to open, for the same reason, and reading `< 2 frames` on a
-    // tile with a blank poster would send somebody looking for the frame it has.
-    out.push({
-      key: 'short',
-      short: take.frames === 0 ? 'no frames' : '< 2 frames',
-      why: take.frames === 0
-        ? 'the scan found no whole frame in this take, so there is nothing here to draw or to open'
-        : 'a take needs two frames to bracket a position, so there is nothing here to play',
+      key: refusal.key,
+      short: refusal.key === 'short' ? (take.frames === 0 ? 'no frames' : '< 2 frames') : 'no hello',
+      why: refusal.why,
     });
   }
   return out;
 }
 
-/** Why a take cannot be opened, or the empty string when it can. */
-const cannotOpen = (take) => {
-  if (take.recording === true) return warningsOf(take)[0].why;
-  if (take.hasHello === false) return 'this take carries no sensor hello, so its intrinsics are unknown';
-  if (take.frames !== null && take.frames < 2) return 'a take needs two frames to bracket a position';
-  return '';
-};
+/**
+ * Why a take cannot be opened, or the empty string when it can.
+ *
+ * Read rather than derived. The two sentences this used to compose disagreed with the
+ * badges over the same poster, and the fix is not a third careful copy - it is that
+ * the take carries its own reasons and every surface quotes them.
+ */
+const cannotOpen = (take) => take.openRefusals[0]?.why ?? '';
 
 // ------------------------------------------------------------------ the skim frame
 
@@ -1595,11 +1605,21 @@ globalThis.__library = {
     id: el.dataset.id,
     hash: el.dataset.hash,
     state: el.dataset.state,
-    acts: [...el.querySelectorAll('.acts .act')].map((b) => ({ label: b.textContent, disabled: b.disabled })),
+    // `why` off the rendered `title` rather than out of `availability`, so a row
+    // asking whether two surfaces say the same thing reads the sentence an operator
+    // would actually get rather than the one the function returned.
+    acts: [...el.querySelectorAll('.acts .act')].map((b) => ({ label: b.textContent, disabled: b.disabled, why: b.title })),
     menu: [...el.querySelectorAll('.menu .mi')].map((b) => ({
       item: b.dataset.item, label: b.textContent, disabled: b.disabled, why: b.title,
     })),
     flags: [...el.querySelectorAll('.skim .flag')].map((f) => f.dataset.flag),
+    // The same badges with the sentence each one is short for. A second field rather
+    // than a richer `flags`, because a dozen rows above read `flags` as a list of
+    // keys and a shape change there would be a rewrite of all of them to add one
+    // reading.
+    badges: [...el.querySelectorAll('.skim .flag')].map((f) => ({
+      key: f.dataset.flag, short: f.textContent, why: f.title,
+    })),
     marks: [...el.querySelectorAll('.bar .mk')].map((m) => Number.parseFloat(m.style.left)),
     coarse: el.querySelector('.coarse')?.textContent ?? null,
     empty: false,
@@ -1760,7 +1780,7 @@ globalThis.__library = {
       note: vNote.textContent,
       flags: [...document.querySelectorAll('#vFlags .flag')].map((f) => f.dataset.flag),
       marks: [...vBar.querySelectorAll('.mk')].map((m) => Number.parseFloat(m.style.left)),
-      acts: [...document.querySelectorAll('#vActs .act')].map((b) => ({ label: b.textContent, disabled: b.disabled })),
+      acts: [...document.querySelectorAll('#vActs .act')].map((b) => ({ label: b.textContent, disabled: b.disabled, why: b.title })),
       // Reported in the same shape `tiles()` reports a tile's, because what reads them
       // is one comparison: the two surfaces have to offer a take the same things, and a
       // reader that could see only one half of each would be comparing the halves that

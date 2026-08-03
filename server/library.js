@@ -190,6 +190,16 @@ async function describeTake(dir, file, recording) {
       truncated: false,
       hasHello: null,
       hello: null,
+      // The same authority answering a case it already knows, rather than a second
+      // derivation: a take still being written has no settled hash, so nothing may
+      // open it whatever its frames turn out to be. The gallery's *warning* about a
+      // recording take is a wider statement - it names stopping before opening,
+      // downloading, renaming or removing - and stays a page concern for that reason,
+      // because an action list does not belong in a library scanner.
+      openRefusals: [{
+        key: 'recording',
+        why: 'this take is still being written, so it has no settled hash and nothing may open it until the recorder closes it',
+      }],
       openable: false,
       recording: true,
       // Cheap and it is the one thing that is true mid-take: marks pressed in the
@@ -212,6 +222,49 @@ async function describeTake(dir, file, recording) {
   // own modification time, and says which it used rather than presenting a guess
   // as a record.
   const fromHello = Number.isFinite(hello?.startedAt) && hello.startedAt > 0;
+
+  /**
+   * Why this take cannot be opened, in sentences, keyed so a surface can decide what
+   * to do with each - and this is the only place any of them is written.
+   *
+   * A list rather than one string, because a take can carry two blocking facts at
+   * once and a single string cannot serve a tile that badges both. `openable` below
+   * is then "the list is empty" rather than a second expression of the same
+   * predicate, which is what stops the two drifting.
+   *
+   * It is here rather than in the pages because it was in the pages, twice, twelve
+   * lines apart, and they disagreed. A take with a hello and no whole frame was
+   * badged "the scan found no whole frame in this take" and, on the button beside it,
+   * told it "needs two frames to bracket a position" - a sentence about a take that
+   * has one, shown over a take that has none. Measured on the shipped build before
+   * this moved, with the `hello-no-frames` fixture `library-check` now plants: nothing
+   * had ever reached that shape, because the take with zero frames carried no hello
+   * and answered on the branch above, and the take with a hello had a frame.
+   *
+   * Zero frames and one frame are different facts and the sentence says which, which
+   * is the distinction the gallery's badge already drew and the button did not.
+   *
+   * **The push order is the badge order**, since the gallery renders these in the
+   * order they arrive and `cannotOpen` quotes the first. Decided here rather than
+   * sorted there, because two files agreeing about an order is the same shape as two
+   * files agreeing about a sentence.
+   */
+  const openRefusals = [];
+  if (!index.hello) {
+    openRefusals.push({
+      key: 'no-hello',
+      why: 'this take carries no sensor hello, so its intrinsics are unknown and it cannot be unprojected',
+    });
+  }
+  if (stamps.length < 2) {
+    openRefusals.push({
+      key: 'short',
+      why: stamps.length === 0
+        ? 'the scan found no whole frame in this take, so there is nothing here to draw or to open'
+        : 'a take needs two frames to bracket a position, so there is nothing here to play',
+    });
+  }
+
   return {
     id,
     file,
@@ -239,7 +292,8 @@ async function describeTake(dir, file, recording) {
     hello: hello ? { fx: hello.fx, fy: hello.fy, cx: hello.cx, cy: hello.cy } : null,
     // Two frames is the floor for a pair source, so a shorter take lists and
     // refuses to open. Named here rather than discovered in the editor.
-    openable: Boolean(index.hello) && stamps.length >= 2,
+    openRefusals,
+    openable: openRefusals.length === 0,
     recording: false,
     marks,
   };

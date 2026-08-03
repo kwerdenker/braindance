@@ -273,8 +273,8 @@ const MUTATIONS = {
   'tanv-uses-fx': {
     file: 'web/main.js',
     edits: [[
-      '  const tanV = (DH / 2) / fy;',
-      '  const tanV = (DH / 2) / fx;',
+      '  const tanV = (DEPTH_H / 2) / fy;',
+      '  const tanV = (DEPTH_H / 2) / fx;',
     ]],
   },
   // Navigation that leaves a trace. Modelled on the `key here` handler beside it

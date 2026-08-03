@@ -111,6 +111,8 @@ node tools/export-check.mjs --url http://localhost:8080   # step 6: resolution, 
 node tools/export-check.mjs --mutate pointsize-absolute   # ... and must FAIL mutated
 node tools/library-check.mjs                              # step 7: library, recorder, routes
 node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL
+node tools/library-check.mjs --mutate open-decides-its-own-reason  # ... one take, one refusal, whichever surface asks
+node tools/library-check.mjs --mutate grid-declared-twice          # ... and the sensor grid stated once
 node tools/library-check.mjs --mutate tile-height-follows-content  # ... the gallery's geometry
 node tools/library-check.mjs --mutate poster-height-in-js          # ... and its poster's box
 node tools/library-check.mjs --mutate viewer-splat-one             # ... and the viewer's density

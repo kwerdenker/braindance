@@ -887,6 +887,40 @@ const MUTATIONS = {
   // the row a status code cannot carry, which is why the check reads the argv the
   // program was actually given rather than the answer the route wrote.
   'reveal-drops-the-path': { file: 'server/library.js', edits: [REVEAL_EDIT] },
+  // **The gallery goes back to composing its own refusal**, which is the shape that
+  // shipped: two derivations of one predicate twelve lines apart, disagreeing on the
+  // take with a hello and no whole frame. The historical body rather than a minimal
+  // edit, because what the row claims is that the page reads the reason it was sent
+  // rather than that one branch of it is right.
+  //
+  // Anchored on the *post-fix* text on purpose. A mutation written against the code
+  // the fix deletes matches nothing, the unmutated page loads, and the run is recorded
+  // as this check having missed a bug it was never shown.
+  'open-decides-its-own-reason': { file: 'web/library.js', edits: [[
+    "const cannotOpen = (take) => take.openRefusals[0]?.why ?? '';",
+    'const cannotOpen = (take) => {\n'
+      + '  if (take.recording === true) return warningsOf(take)[0].why;\n'
+      + "  if (take.hasHello === false) return 'this take carries no sensor hello, so its intrinsics are unknown';\n"
+      + "  if (take.frames !== null && take.frames < 2) return 'a take needs two frames to bracket a position';\n"
+      + "  return '';\n"
+      + '};',
+  ]] },
+  // **The monitor's cost line goes back to spelling the grid out inline**, which is
+  // where it was for as long as the comment above it promised the opposite. It
+  // computes exactly the same number, renders identical pixels and serves identical
+  // bytes, so the only thing it can move is the single-declaration row - which is what
+  // makes it a control for that row rather than for the gallery.
+  //
+  // Deliberately not written as an edit that replaces an import line. `web/main.js`
+  // reaches `PROJECT_VERSION`, `versionRefusal` and the grid through one import and
+  // `web/library.js` reaches `VALID_ID` and the grid through another, so a mutation
+  // swapping either for local declarations takes an unrelated binding out with it and
+  // reddens half the suite - a control that fails everything cannot say which row was
+  // carrying the claim.
+  'grid-declared-twice': { file: 'web/main.js', edits: [[
+    '  const depthKB = Math.ceil(DEPTH_W / state.divisor) * Math.ceil(DEPTH_H / state.divisor) * 2 / 1000;',
+    '  const depthKB = Math.ceil(512 / state.divisor) * Math.ceil(424 / state.divisor) * 2 / 1000;',
+  ]] },
   // The loopback gate comes off the one route in this program that starts a process,
   // so a browser across the link opens a window on a machine nobody is standing at.
   'reveal-answers-any-caller': { file: 'server/index.js', edits: [[
@@ -912,6 +946,44 @@ function mutatedSource(name) {
 const mutation = MUTATE ? mutatedSource(MUTATE) : null;
 const pageMutation = mutation && mutation.file.startsWith('web/') ? mutation : null;
 const serverMutation = mutation && mutation.file.startsWith('server/') ? mutation : null;
+
+/**
+ * A file of the staged tree as this run actually ships it.
+ *
+ * The staged copy for everything, and `mutation.body` for the one file a mutation
+ * replaces - which is not the same thing, and the difference is what lets a source row
+ * fail. `stageServer` writes only a *server* mutation into the tree; a page mutation is
+ * delivered by intercepting its route in `openPage`, so the staged `web/main.js` on a
+ * `--mutate grid-declared-twice` run is the clean file. A source row reading it would
+ * pass against every page mutation there is, which is the falsification control that
+ * cannot fire, arriving one layer further out than the match-exactly-once rule that
+ * guards the anchor.
+ *
+ * `root` is read at call time rather than closed over at declaration, which is why this
+ * can sit beside the mutation table it belongs to and above the tree it reads.
+ */
+const shippedSource = (rel) => (
+  mutation && mutation.file === rel ? mutation.body : readFileSync(join(root, rel), 'utf8')
+);
+
+/**
+ * Source with its comments taken out, so a row about what the code says is not
+ * answered by what the prose says.
+ *
+ * Four files in this tree name the grid in prose - `web/format.js` explaining why it
+ * lives there, `web/main.js` describing the band a mis-bound frame collapses into,
+ * `server/protocol.js` sizing a message and `server/webcam.js` explaining what the
+ * colour camera is not - and every one of them is a comment doing its job. A row that
+ * counted them would be unfalsifiable in the loud direction: permanently red, and
+ * therefore turned off.
+ *
+ * Block comments first, because a `//` inside one is not a line comment; and a `//`
+ * preceded by a colon is left alone, since that is a URL rather than the start of one.
+ */
+const withoutComments = (src) => src
+  .replace(/<!--[\s\S]*?-->/g, ' ')
+  .replace(/\/\*[\s\S]*?\*\//g, ' ')
+  .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 
 // ----------------------------------------------------------------- the fixtures
 //
@@ -1039,6 +1111,15 @@ function buildFixture() {
   writeTake(macCaps, 'truncated-take', { frames: 6, truncate: true });
   writeTake(macCaps, 'no-hello-take', { frames: 6, withHello: false });
   writeTake(macCaps, 'one-frame-take', { frames: 1 });
+  // **A hello, and no whole frame - the one shape that could tell the gallery's two
+  // openability sentences apart, and the take nobody planted.** `three-warning-take`
+  // below reaches zero frames the same way but carries no hello, so the button's
+  // refusal answered on the hello branch and never reached the frame one;
+  // `one-frame-take` above has a hello and a frame, where the two sites agreed. Both
+  // observations skipped this object, which is why the button could say a take "needs
+  // two frames to bracket a position" - a sentence about a take with one - over a
+  // poster correctly badged as having none, for as long as it did.
+  writeTake(macCaps, 'hello-no-frames', { frames: 1, truncate: true });
   writeBadLengthTake(macCaps, 'bad-length-take');
   // **Three warnings at once, which is the tile the height rows need and none of the
   // takes above is.** Every fixture take carries at most one - truncated, or no
@@ -1478,6 +1559,38 @@ process.exit(failures ? 1 : skipped.length ? 2 : 0);
 async function runChecks() {
   checkLogPredicate();
 
+  // ------------------------------------------------- 0. one grid, one declaration
+  //
+  // **The sensor grid is one number in one file, and this asks the tree rather than
+  // the four places it used to be written.** It was declared four times in
+  // JavaScript - twice inside `web/main.js` alone, under two different names 1,646
+  // lines apart - and spelled out as bare literals a fifth time in the monitor's cost
+  // line, under a comment promising the number was stated from the grid so it could
+  // not drift. Nothing had bitten yet, which is the only reason this is a row and not
+  // a bug report.
+  //
+  // It walks the directories rather than a list of the files that hold it today, so a
+  // page or a server module added next year is asked by existing - the close-the-class
+  // rule, where the enumeration *is* the check. Scoped to `web/` and `server/` and
+  // deliberately not to `tools/`: every proof tool here states the grid independently,
+  // and that is correct rather than sloppy, because a check that imported the constant
+  // it asserts would be holding a `512` against itself.
+  console.log('\n[library] the sensor grid is declared once, and the tree is what says so');
+  {
+    const grid = /(?<![\d.])(?:512|424)(?![\d.])/;
+    const holders = [];
+    for (const dir of ['web', 'server']) {
+      for (const name of readdirSync(join(root, dir)).sort()) {
+        const rel = `${dir}/${name}`;
+        if (statSync(join(root, rel)).isDirectory()) continue;
+        if (grid.test(withoutComments(shippedSource(rel)))) holders.push(rel);
+      }
+    }
+    check(eq(holders, ['web/format.js']),
+      'the 512x424 grid appears as a literal in exactly one file across web/ and server/, and it is web/format.js',
+      holders.join(' ') || 'nothing holds it, which is a grid that went missing rather than a grid stated once');
+  }
+
   // ------------------------------------------------------------- 1. the manifest
   console.log('\n[library] the manifest carries step 2\'s hash, and stops carrying a stale one');
   {
@@ -1521,6 +1634,14 @@ async function runChecks() {
     check(byId['one-frame-take'].frames === 1 && byId['one-frame-take'].openable === false,
       'a one-frame take lists, and says it cannot be bracketed');
     check(byId['local-clip'].openable === true, 'and an ordinary take is openable');
+    // The fixture the openability rows in section 6 rest on, asserted here rather than
+    // assumed there: the truncation has to cut the single frame without cutting the
+    // hello, and a sample regenerated at a different frame size could leave the frame
+    // whole. A take that listed with one frame would send those rows looking at the
+    // shape that never disagreed.
+    check(byId['hello-no-frames'].hasHello === true && byId['hello-no-frames'].frames === 0,
+      'a take can carry a hello and no whole frame at all, which is the shape the two client derivations disagreed about',
+      `hasHello=${byId['hello-no-frames'].hasHello} frames=${byId['hello-no-frames'].frames}`);
     check(byId['local-clip'].dateSource === 'hello'
       && Math.abs(byId['local-clip'].capturedAt - Date.UTC(2026, 6, 15, 18, 5)) < 1,
       'the wall-clock capture date comes off the hello where the take carries one');
@@ -2036,6 +2157,28 @@ async function runChecks() {
       'the Open on a take with no hello is disabled rather than a throw waiting to happen');
     check(one('local-clip').acts.find((a) => a.label === 'Open')?.disabled === false,
       'and an ordinary take opens');
+
+    // **One take, one reason, whichever surface is asking.** The page used to derive
+    // this twice, twelve lines apart, and the two derivations disagreed on exactly one
+    // shape: a take with a hello and no whole frame. Measured on the build before the
+    // reason moved to the server, with this fixture: the badge read "the scan found no
+    // whole frame in this take, so there is nothing here to draw or to open" while the
+    // button beside it read "a take needs two frames to bracket a position" - a
+    // sentence about a take that has one, over a take that has none.
+    //
+    // Nothing had noticed because nothing had ever built this take. The zero-frame
+    // fixture carried no hello, so the button answered on its hello branch and never
+    // reached the frame one; the take with a hello had a frame, where the two agreed.
+    // Both observations skipped the one object that could tell them apart.
+    const refused = one('hello-no-frames');
+    const badgeWhy = refused.badges.find((b) => b.key === 'short')?.why ?? '';
+    const buttonWhy = refused.acts.find((a) => a.label === 'Open')?.why ?? '';
+    check(badgeWhy !== '' && badgeWhy === buttonWhy,
+      'a take with a hello and no whole frame is refused in one sentence, the same on its badge and on its button',
+      `badge ${JSON.stringify(badgeWhy)} vs button ${JSON.stringify(buttonWhy)}`);
+    check(/no whole frame/.test(buttonWhy) && !/bracket a position/.test(buttonWhy),
+      'and it is the sentence about the frame it does not have rather than the one about bracketing a position',
+      JSON.stringify(buttonWhy));
 
     // Marks on the tile's scrub bar, at their source fraction. The two that a
     // fraction gets wrong on its own are checked by name: source zero has to land

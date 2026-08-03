@@ -195,7 +195,13 @@ async function resolveResume() {
   // gallery's job rather than something to do on the way past.
   if (take.state === 'remote') return gallery(`${take.id} is only on the node`);
   if (take.recording === true) return gallery(`${take.id} is still being recorded`);
-  if (!take.openable) return gallery(`${take.id} cannot be opened: no sensor hello, or under two frames`);
+  // The reason the take carries, rather than this page's own third spelling of it.
+  // It used to name both causes at once - "no sensor hello, or under two frames" -
+  // because it had the boolean and nothing telling it which one fired.
+  if (!take.openable) {
+    const why = take.openRefusals.map((r) => r.why).join('; ');
+    return gallery(`${take.id} cannot be opened: ${why}`);
+  }
 
   // Built a value at a time rather than by interpolation, because a project name is
   // whatever somebody typed and an ampersand in it would otherwise start a second
