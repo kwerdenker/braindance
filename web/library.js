@@ -47,11 +47,8 @@
 // over the picture where they cost no height. See `library.html` for each of those in
 // the place it is enforced.
 
-import { VALID_ID, captureFormatRefusal } from '/format.js';
+import { DEPTH_H, DEPTH_W, VALID_ID } from '/format.js';
 import { pollRecordState } from '/record-poll.js';
-
-const DEPTH_W = 512;
-const DEPTH_H = 424;
 
 // The depth divisor per state. A local take is read whole; a take that is only on
 // the node comes through the divisor, which is what turns a 486KB frame into about
@@ -119,6 +116,62 @@ const post = (url, body) => jsonOf(url, {
 // -------------------------------------------------------------- what a take says
 
 /**
+ * The badge each refusal wears over a poster, as a table rather than a conditional
+ * with an else on the end.
+ *
+ * The sentence under a badge is the server's and this is the part that is not: a
+ * 228px poster is a page constraint, and "no frames" against "< 2 frames" is a
+ * distinction only something drawing the tile can be asked to make. Zero and one are
+ * different facts and the badge says which - a take cut before its first whole frame
+ * has no picture to show at all, which is why the skim never asks for one, where a
+ * single-frame take has exactly one and draws it. Reading `< 2 frames` on a tile with
+ * a blank poster would send somebody looking for the frame it has.
+ *
+ * **A key with no entry here reads as itself.** The first spelling of this was
+ * `key === 'short' ? … : 'no hello'`, which is a table of two wearing an else - so a
+ * third refusal, of the kind the server is free to add and which has since arrived,
+ * would have been badged "no hello" over a take that has one. Visibly unmapped beats
+ * confidently wrong, and `library-check` asserts the two tables agree rather than
+ * leaving it to be noticed.
+ *
+ * **No prototype, because the keys come off the wire and `Object.prototype` answers to
+ * some of them.** A refusal key is a string another machine chose - `NodeLink` gates
+ * the *shape* of a manifest and deliberately not its vocabulary, so that a newer node
+ * can name a reason this build has never heard of and get the fallback above - and an
+ * ordinary object literal answers `BADGES['__proto__']` with its own prototype rather
+ * than with `undefined`. The `?.` then does not short-circuit, the call throws on a
+ * value that is not a function, and the gallery dies painting the tile: the same blank
+ * shelf the version gate exists to prevent, arriving through the door the gate was
+ * told to leave open. `constructor`, `toString` and `valueOf` do not throw and are
+ * worse, badging a take `[object Object]` under a promise that an unmapped key reads
+ * as itself.
+ *
+ * Fixed at the table rather than at the one lookup, because the lookup is one today
+ * and the property that makes it safe belongs to the table. `Object.keys` still sees
+ * exactly the three entries, which is what `badgeKeys()` reports.
+ */
+const BADGES = Object.assign(Object.create(null), {
+  'no-hello': () => 'no hello',
+  // The third refusal the paragraph above predicted, arriving exactly as predicted: the
+  // server grew a capture-format band and this table gained a label and nothing else.
+  // The label is short because the sentence is `refusal.why` and the server wrote it -
+  // which matters more here than for its neighbours, since that sentence names the
+  // generation it found and "unknown format" on its own cannot.
+  //
+  // **The tile under this badge still draws, and that is decided rather than left over.**
+  // The skim unprojects the take's depth on this build's intrinsics, which is the very
+  // thing the refusal calls geometry nobody can check - so a badged tile is showing a
+  // picture whose shape may not be the room's. It draws anyway, because the poster's job
+  // here is recognition and not measurement: a gallery is where somebody goes to find
+  // which take this is, a blank tile answers that worse than an approximate one, and the
+  // badge over it says the picture is not to be trusted. Nothing bakes: the take cannot
+  // be opened, and `render-worker` reaches a take through `/edit?take=` - the same door
+  // `openTake` refuses at - so no export can be made from one of these.
+  format: () => 'unknown format',
+  short: (take) => (take.frames === 0 ? 'no frames' : '< 2 frames'),
+});
+
+/**
  * The warnings a take carries, short enough for a badge and long enough to act on.
  *
  * One list, read by the poster badges, by the ⋯ menu and by the viewer, because
@@ -130,6 +183,12 @@ const post = (url, body) => jsonOf(url, {
 function warningsOf(take) {
   const out = [];
   if (take.recording === true) {
+    // **The one sentence this page still writes, and it is a warning rather than a
+    // refusal.** It names four actions, so it is not an answer to "why is Open off" -
+    // the server carries that one, in a sentence about the hash a take being written
+    // does not have yet. The two are different claims about one take rather than two
+    // copies of one claim, which is why this did not move to the library scanner with
+    // the others: an action list is not something a scanner knows.
     out.push({
       key: 'recording',
       short: 'recording',
@@ -145,68 +204,40 @@ function warningsOf(take) {
       why: 'the writer stopped mid-frame, so the take is usable up to the cut and no further',
     });
   }
-  if (take.hasHello === false) {
-    out.push({
-      key: 'no-hello',
-      short: 'no hello',
-      why: 'this take carries no sensor hello, so its intrinsics are unknown and it cannot be unprojected',
-    });
-  }
-  // The band immediately after the one above, because it is the same fact one step
-  // further along: a take with no hello has intrinsics nobody knows, and a take from a
-  // generation nobody knows has intrinsics whose *meaning* nobody knows. The sentence
-  // comes from `format.js` rather than being spelled here, so this badge and the dead
-  // Open button below it and the editor's own throw are one statement in three places.
-  // The `short` stays local, because what fits over a 228px poster is this file's
-  // concern and nothing else's.
+  // The reasons the take cannot be opened, in the server's words. This page used to
+  // write them again from `hasHello` and `frames`, which is how the badge and the
+  // Open button beside it ended up saying different things about one take - so the
+  // sentence arrives with the take now and the only thing decided here is the badge
+  // it goes under. **Not a courtesy copy in the sense `web/format.js` uses for
+  // `VALID_ID`**: there is no local derivation left to fall back to, because a second
+  // one is exactly what was wrong.
   //
-  // **The tile under this badge still draws, and that is decided rather than left over.**
-  // The skim unprojects the take's depth on this build's intrinsics, which is the very
-  // thing the refusal calls geometry nobody can check - so a badged tile is showing a
-  // picture whose shape may not be the room's. It draws anyway, because the poster's job
-  // here is recognition and not measurement: a gallery is where somebody goes to find
-  // which take this is, a blank tile answers that worse than an approximate one, and the
-  // badge over it says the picture is not to be trusted. Nothing bakes: the take cannot
-  // be opened, and `render-worker` reaches a take through `/edit?take=` - the same door
-  // `openTake` refuses at - so no export can be made from one of these.
-  const wrongFormat = captureFormatRefusal('this take', take.format ?? null);
-  if (wrongFormat) {
+  // No `?? []` guarding this. `describeTake` sets the field in both its branches, so a
+  // take that reached this page without one is a server this page cannot render
+  // anyway, and a silent empty list would draw a tile claiming a take is fine - which
+  // is a second implementation wearing a fallback, and the fallback is the half that
+  // would be believed.
+  for (const refusal of take.openRefusals) {
     out.push({
-      key: 'format',
-      short: 'unknown format',
-      why: wrongFormat,
-    });
-  }
-  if (take.frames !== null && take.frames < 2) {
-    // Zero and one are different facts and the badge says which. A take cut before
-    // its first whole frame has no picture to show at all - which is why the skim
-    // below never asks for one - where a single-frame take has exactly one and draws
-    // it. Both refuse to open, for the same reason, and reading `< 2 frames` on a
-    // tile with a blank poster would send somebody looking for the frame it has.
-    out.push({
-      key: 'short',
-      short: take.frames === 0 ? 'no frames' : '< 2 frames',
-      why: take.frames === 0
-        ? 'the scan found no whole frame in this take, so there is nothing here to draw or to open'
-        : 'a take needs two frames to bracket a position, so there is nothing here to play',
+      key: refusal.key,
+      short: BADGES[refusal.key]?.(take) ?? refusal.key,
+      why: refusal.why,
     });
   }
   return out;
 }
 
-/** Why a take cannot be opened, or the empty string when it can. */
-const cannotOpen = (take) => {
-  if (take.recording === true) return warningsOf(take)[0].why;
-  if (take.hasHello === false) return 'this take carries no sensor hello, so its intrinsics are unknown';
-  // Taken from `format.js` rather than shortened here the way its two neighbours are.
-  // Those two say one thing each and a reader can be told the rest by the badge; this
-  // one has to name the generation it found, because "unknown format" without the
-  // number is a refusal nobody can act on.
-  const wrongFormat = captureFormatRefusal('this take', take.format ?? null);
-  if (wrongFormat) return wrongFormat;
-  if (take.frames !== null && take.frames < 2) return 'a take needs two frames to bracket a position';
-  return '';
-};
+/**
+ * Why a take cannot be opened, or the empty string when it can.
+ *
+ * Read rather than derived. The four sentences this used to compose disagreed with the
+ * badges over the same poster, and the fix is not a fifth careful copy - it is that
+ * the take carries its own reasons and every surface quotes them. The format band is
+ * the one that shows why quoting beats shortening: it has to name the generation it
+ * found, because "unknown format" with no number is a refusal nobody can act on, and a
+ * page shortening the server's sentence is how that number went missing.
+ */
+const cannotOpen = (take) => take.openRefusals[0]?.why ?? '';
 
 // ------------------------------------------------------------------ the skim frame
 
@@ -1723,12 +1754,17 @@ globalThis.__library = {
     id: el.dataset.id,
     hash: el.dataset.hash,
     state: el.dataset.state,
-    // The same four fields the menu below reports, and the symmetry is load-bearing
-    // rather than tidy: acts used to carry the label and the disabled flag alone, so a
-    // check asking why an act was off got `undefined` and a check looking an act up in
-    // `menu` found nothing and read that as a refusal. A row asserting no tile offers
-    // Delete passed on every build there could be, because Delete is an act and it was
-    // looking through the ⋯ items. Both lists answer the same questions now.
+    // `why` off the rendered `title` rather than out of `availability`, so a row
+    // asking whether two surfaces say the same thing reads the sentence an operator
+    // would actually get rather than the one the function returned.
+    //
+    // `item` for the same reason the menu below carries one, and the symmetry is
+    // load-bearing rather than tidy: acts reported the label alone, so a check looking
+    // an act up by name had only `menu` to look in - and `menu` holds rename, reveal
+    // and reclaim and has no `delete` on any build. A row asserting that no tile offers
+    // Delete while a node is unreachable was therefore a filter over a match that
+    // cannot exist, and passed whatever the page did. Both lists answer the same four
+    // questions now, so an act can be found where an act is.
     acts: [...el.querySelectorAll('.acts .act')].map((b) => ({
       item: b.dataset.act, label: b.textContent, disabled: b.disabled, why: b.title,
     })),
@@ -1736,11 +1772,23 @@ globalThis.__library = {
       item: b.dataset.item, label: b.textContent, disabled: b.disabled, why: b.title,
     })),
     flags: [...el.querySelectorAll('.skim .flag')].map((f) => f.dataset.flag),
+    // The same badges with the sentence each one is short for. A second field rather
+    // than a richer `flags`, because a dozen rows above read `flags` as a list of
+    // keys and a shape change there would be a rewrite of all of them to add one
+    // reading.
+    badges: [...el.querySelectorAll('.skim .flag')].map((f) => ({
+      key: f.dataset.flag, short: f.textContent, why: f.title,
+    })),
     marks: [...el.querySelectorAll('.bar .mk')].map((m) => Number.parseFloat(m.style.left)),
     coarse: el.querySelector('.coarse')?.textContent ?? null,
     empty: false,
   })),
   emptyLine: () => grid.querySelector('.empty')?.textContent ?? null,
+  // Which refusal keys this page has a badge for, so a check can hold the two tables
+  // against each other rather than against the refusals that happen to exist today.
+  // A key the server can send and this page cannot badge is the next wrong label,
+  // and it is a row rather than something to notice.
+  badgeKeys: () => Object.keys(BADGES),
 
   /**
    * Every tile's geometry as it actually rendered, which is the only place the

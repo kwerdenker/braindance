@@ -199,16 +199,36 @@ async function resolveResume() {
   // A take only on the node has no local file to open, and downloading it is the
   // gallery's job rather than something to do on the way past.
   if (take.state === 'remote') return gallery(`${take.id} is only on the node`);
-  if (take.recording === true) return gallery(`${take.id} is still being recorded`);
-  // **The predicate is the server's and the sentence is not this page's to write.**
-  // This used to name the two reasons it knew - no sensor hello, or under two frames -
-  // and that stopped being the whole list the moment the capture format grew a band,
-  // which is a third way for `openable` to be false and one neither of those sentences
-  // describes. Enumerating again here would put this page back in the same position one
-  // member later, and the band is expected to gain another when a third message type
-  // lands. So the gate stays on the one predicate and the reason comes from the gallery,
-  // which carries a sentence per band and a badge to go with it.
-  if (!take.openable) return gallery(`${take.id} cannot be opened - the gallery says why`);
+  // **A take being recorded needs no branch of its own here, and used to have one.** It
+  // spelled its own sentence - "is still being recorded" - for a case this lookup cannot
+  // produce: the match above is by hash, `describeTake` gives a take mid-write no hash
+  // on purpose, and `lastOpened` refuses a saved entry whose `takeHash` is not a
+  // non-empty string. So the branch was a third spelling of a reason the server now owns,
+  // guarding a take that cannot arrive. `library-check` asserts the hash half of that
+  // rather than leaving it as a reading, because a recording take that started carrying
+  // one would make this reachable again - and then it falls through to the block below
+  // and quotes the server, which is the right answer either way.
+  //
+  // The remote branch above stays, and the difference is the point: "only on the node"
+  // is a fact about reconciliation that no take carries in its refusals, where
+  // "recording" is a key the server declares.
+  //
+  // **The predicate is the server's and the sentence is not this page's to write.** This
+  // used to name the two reasons it knew - no sensor hello, or under two frames - and
+  // that stopped being the whole list the moment the capture format grew a band, which is
+  // a third way for `openable` to be false and one neither of those sentences describes.
+  // Enumerating again here would put this page back in the same position one member
+  // later, and the band is expected to gain another when a third message type lands.
+  //
+  // So the gate stays on the one predicate and the reason is read off the take. Read and
+  // not deferred to another page: "the gallery says why" was the shape before this, and
+  // it asks somebody looking at a disabled tile to go somewhere else to find out what is
+  // wrong with it. The sentences are on the take, the take is already in hand, and a
+  // refusal a member wider costs this line nothing.
+  if (!take.openable) {
+    const why = take.openRefusals.map((r) => r.why).join('; ');
+    return gallery(`${take.id} cannot be opened: ${why}`);
+  }
 
   // Built a value at a time rather than by interpolation, because a project name is
   // whatever somebody typed and an ampersand in it would otherwise start a second

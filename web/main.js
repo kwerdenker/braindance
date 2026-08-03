@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { PROJECT_VERSION, versionRefusal, captureFormatRefusal } from './format.js';
+import { DEPTH_H, DEPTH_W, PROJECT_VERSION, versionRefusal, captureFormatRefusal } from './format.js';
 import { pollRecordState } from './record-poll.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -10,9 +10,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 
-const DW = 512;
-const DH = 424;
-const POINTS = DW * DH;
+const POINTS = DEPTH_W * DEPTH_H;
 
 // Which of the two surfaces this page is, decided by the path. One document still
 // serves both, because there is one renderer and one image pipeline and splitting
@@ -212,7 +210,7 @@ const DEFAULT_POSE = poseLookingAt(new THREE.Vector3(0, 0.1, 1.6));
 // which is what makes an 8-15fps stream look fluid on a 120Hz display.
 const makeDepthTexture = () => {
   const tex = new THREE.DataTexture(
-    new Uint16Array(POINTS), DW, DH, THREE.RedIntegerFormat, THREE.UnsignedShortType,
+    new Uint16Array(POINTS), DEPTH_W, DEPTH_H, THREE.RedIntegerFormat, THREE.UnsignedShortType,
   );
   tex.internalFormat = 'R16UI';
   tex.minFilter = THREE.NearestFilter;
@@ -256,7 +254,7 @@ const stateType = renderer.getContext().getExtension('EXT_color_buffer_float')
   ? THREE.FloatType
   : THREE.HalfFloatType;
 
-const makeStateTarget = () => new THREE.WebGLRenderTarget(DW, DH, {
+const makeStateTarget = () => new THREE.WebGLRenderTarget(DEPTH_W, DEPTH_H, {
   type: stateType,
   minFilter: THREE.NearestFilter,
   magFilter: THREE.NearestFilter,
@@ -283,7 +281,7 @@ const MAX_AGE = 6.0;
 const stateUniforms = {
   depthCurr: { value: depthCurr },
   statePrev: { value: statePrev.texture },
-  resolution: { value: new THREE.Vector2(DW, DH) },
+  resolution: { value: new THREE.Vector2(DEPTH_W, DEPTH_H) },
   dt: { value: 1 / 30 },
   snapDelta: { value: 250 },
 };
@@ -354,8 +352,8 @@ const geometry = new THREE.BufferGeometry();
 const pixelCoords = new Float32Array(POINTS * 2 * 3);
 const slotAttr = new Float32Array(POINTS * 2);
 for (let slot = 0; slot < 2; slot++) {
-  for (let row = 0, i = 0; row < DH; row++) {
-    for (let col = 0; col < DW; col++, i++) {
+  for (let row = 0, i = 0; row < DEPTH_H; row++) {
+    for (let col = 0; col < DEPTH_W; col++, i++) {
       const k = slot * POINTS + i;
       pixelCoords[k * 3] = col;
       pixelCoords[k * 3 + 1] = row;
@@ -379,7 +377,7 @@ const uniforms = {
   interpolate: { value: 1 },
   focal: { value: new THREE.Vector2(366, 366) },
   center: { value: new THREE.Vector2(256, 212) },
-  resolution: { value: new THREE.Vector2(DW, DH) },
+  resolution: { value: new THREE.Vector2(DEPTH_W, DEPTH_H) },
   // The drawing buffer's height, which is what makes every screen-space term
   // below a fraction of the frame rather than a count of pixels. Written by
   // `resize` and by nothing else, so the one place the buffer can change is also
@@ -1085,8 +1083,8 @@ function setAdditive(on) {
 // here has to be told which one it is looking at.
 const DEPTH_GRIDS = new Map();
 for (let k = 1; k <= 16; k++) {
-  const w = Math.ceil(DW / k);
-  const h = Math.ceil(DH / k);
+  const w = Math.ceil(DEPTH_W / k);
+  const h = Math.ceil(DEPTH_H / k);
   DEPTH_GRIDS.set(w * h, { k, w, h });
 }
 
@@ -1115,7 +1113,7 @@ function expandDepth(src, dst) {
   const grid = DEPTH_GRIDS.get(src.length);
   if (!grid) {
     throw new Error(
-      `a depth block of ${src.length} samples is not the ${DW}x${DH} grid at any divisor this `
+      `a depth block of ${src.length} samples is not the ${DEPTH_W}x${DEPTH_H} grid at any divisor this `
       + 'build serves: refusing rather than filling the head of the texture with it and '
       + 'unprojecting whatever was already in the rest as though it were the scene',
     );
@@ -1124,10 +1122,10 @@ function expandDepth(src, dst) {
     dst.set(src);
     return;
   }
-  for (let row = 0; row < DH; row++) {
+  for (let row = 0; row < DEPTH_H; row++) {
     const from = ((row / grid.k) | 0) * grid.w;
-    const to = row * DW;
-    for (let col = 0; col < DW; col++) dst[to + col] = src[from + ((col / grid.k) | 0)];
+    const to = row * DEPTH_W;
+    for (let col = 0; col < DEPTH_W; col++) dst[to + col] = src[from + ((col / grid.k) | 0)];
   }
 }
 
@@ -1717,8 +1715,6 @@ function gradeNeeded() {
  * the take actually open rather than against the ones in this comment.
  */
 const CROP_LIMIT = 7;
-const DEPTH_W = 512;
-const DEPTH_H = 424;
 const cropReach = (maxDepth = 9.5) => {
   const { x: fx, y: fy } = uniforms.focal.value;
   const { x: cx, y: cy } = uniforms.center.value;
@@ -3847,8 +3843,9 @@ function showMonitor(state) {
   // A frame is 486KB at full rate; the depth block scales with the divisor squared
   // and the colour block does not move at all, which is why the saving flattens.
   // Stated from the grid rather than from a table, so the number cannot drift from
-  // what the sender is actually building.
-  const depthKB = Math.ceil(512 / state.divisor) * Math.ceil(424 / state.divisor) * 2 / 1000;
+  // what the sender is actually building - which this line promised for a while
+  // before it was true, having spelled the two numbers out inline as a third copy.
+  const depthKB = Math.ceil(DEPTH_W / state.divisor) * Math.ceil(DEPTH_H / state.divisor) * 2 / 1000;
   const perFrame = depthKB + 52;
   const rate = perFrame * (30 / state.stride) / 1000;
   const parts = [];
@@ -9214,9 +9211,9 @@ function drawPlanCloud(rect) {
   const far = uniforms.farClip.value;
   const s = planScale(rect);
   chromeCtx.fillStyle = 'rgba(232, 236, 241, 0.55)';
-  for (let row = 0; row < DH; row += PLAN_STRIDE) {
-    for (let col = 0; col < DW; col += PLAN_STRIDE) {
-      const mm = depth[row * DW + col];
+  for (let row = 0; row < DEPTH_H; row += PLAN_STRIDE) {
+    for (let col = 0; col < DEPTH_W; col += PLAN_STRIDE) {
+      const mm = depth[row * DEPTH_W + col];
       if (mm === 0) continue;
       const z = mm * 0.001;
       if (z < near || z > far) continue;
@@ -9582,8 +9579,8 @@ function sensorView() {
   const fx = uniforms.focal.value.x;
   const fy = uniforms.focal.value.y;
   // Half-angles as tangents, which is the form the containment test needs anyway.
-  const tanH = (DW / 2) / fx;
-  const tanV = (DH / 2) / fy;
+  const tanH = (DEPTH_W / 2) / fx;
+  const tanV = (DEPTH_H / 2) / fy;
   // Fit rather than fill. three's `fov` is the vertical angle and the horizontal one
   // follows from the aspect, so matching vertical on a stage narrower than the sensor
   // would crop the sides off the very thing the button exists to show. Whichever axis
@@ -9675,9 +9672,9 @@ function fitPatchNormal(col0, row0, depth, fx, fy, cx, cy, near, far) {
   const xs = [];
   const ys = [];
   const zs = [];
-  for (let row = Math.max(0, row0 - LEVEL_PATCH); row <= Math.min(DH - 1, row0 + LEVEL_PATCH); row++) {
-    for (let col = Math.max(0, col0 - LEVEL_PATCH); col <= Math.min(DW - 1, col0 + LEVEL_PATCH); col++) {
-      const mm = depth[row * DW + col];
+  for (let row = Math.max(0, row0 - LEVEL_PATCH); row <= Math.min(DEPTH_H - 1, row0 + LEVEL_PATCH); row++) {
+    for (let col = Math.max(0, col0 - LEVEL_PATCH); col <= Math.min(DEPTH_W - 1, col0 + LEVEL_PATCH); col++) {
+      const mm = depth[row * DEPTH_W + col];
       if (mm === 0) continue;
       const z = mm * 0.001;
       if (z < near || z > far) continue;
@@ -9781,9 +9778,9 @@ function levelAtStagePoint(stageX, stageY) {
   // through the one in front of the sensor, because the gesture names a surface by
   // where it sits in the picture and the picture is whatever the view happens to be.
   let best = null;
-  for (let row = 0; row < DH; row += LEVEL_PICK_STRIDE) {
-    for (let col = 0; col < DW; col += LEVEL_PICK_STRIDE) {
-      const mm = depth[row * DW + col];
+  for (let row = 0; row < DEPTH_H; row += LEVEL_PICK_STRIDE) {
+    for (let col = 0; col < DEPTH_W; col += LEVEL_PICK_STRIDE) {
+      const mm = depth[row * DEPTH_W + col];
       if (mm === 0) continue;
       const z = mm * 0.001;
       if (z < near || z > far) continue;
@@ -10466,12 +10463,12 @@ async function openTake(id) {
   // correct one, and pretending otherwise would be a threshold with no method
   // behind it.
   const usable = hello.fx > 0 && hello.fy > 0
-    && hello.cx > 0 && hello.cx < DW
-    && hello.cy > 0 && hello.cy < DH;
+    && hello.cx > 0 && hello.cx < DEPTH_W
+    && hello.cy > 0 && hello.cy < DEPTH_H;
   if (!usable) {
     throw new Error(
       `take ${id} has an unusable hello: ${JSON.stringify(hello)} - focal lengths must be `
-      + `positive and the centre must lie inside the ${DW}x${DH} depth frame`,
+      + `positive and the centre must lie inside the ${DEPTH_W}x${DEPTH_H} depth frame`,
     );
   }
   uniforms.focal.value.set(hello.fx, hello.fy);
@@ -11104,7 +11101,7 @@ globalThis.__kinect = {
   // noise rather than on motion.
   stateStats() {
     const buf = new Float32Array(POINTS * 4);
-    renderer.readRenderTargetPixels(statePrev, 0, 0, DW, DH, buf);
+    renderer.readRenderTargetPixels(statePrev, 0, 0, DEPTH_W, DEPTH_H, buf);
     let ghosts = 0, hard = 0, soft = 0, fresh = 0;
     const life = uniforms.fadeTime.value + uniforms.wakeTime.value;
     for (let i = 0; i < POINTS; i++) {
