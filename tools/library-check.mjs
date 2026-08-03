@@ -2178,12 +2178,34 @@ async function runChecks() {
     // **Typed scripts are excluded by type and not by looking like data.** `index.html`
     // carries an importmap, which is JSON in a `<script>` tag - a version string in it is
     // not a declaration of anything, and it is skipped because its `type` says it is not
-    // JavaScript rather than because this guessed. An empty `type`, `module`, or a
-    // JavaScript mime are the three that count.
+    // JavaScript rather than because this guessed.
+    //
+    // **The list is HTML's and not a shape**, which is the correction: the first spelling
+    // matched `(text|application)/(java|ecma)script` and that is four of the sixteen
+    // essences the spec calls a JavaScript MIME type. A page written with
+    // `application/x-javascript` runs, and its body was being discarded - executable
+    // JavaScript dropped from a row about what the JavaScript declares, silently, which is
+    // the direction a missing spelling always fails in. There is no pattern behind the
+    // sixteen; `text/livescript` and `text/jscript` are there for reasons that are
+    // twenty-five years old, so the enumeration *is* the definition and a regex over it
+    // was a guess at one.
+    //
+    // Parameters are stripped before the comparison because the spec matches the essence,
+    // and that is also the safe way to be wrong: a `text/javascript; charset=utf-8` block
+    // read as JavaScript is scanned, and scanning something that is not code over-reports
+    // loudly, where skipping something that is code goes unseen.
+    const JS_MIME = new Set([
+      'application/ecmascript', 'application/javascript', 'application/x-ecmascript',
+      'application/x-javascript', 'text/ecmascript', 'text/javascript', 'text/javascript1.0',
+      'text/javascript1.1', 'text/javascript1.2', 'text/javascript1.3', 'text/javascript1.4',
+      'text/javascript1.5', 'text/jscript', 'text/livescript', 'text/x-ecmascript',
+      'text/x-javascript',
+    ]);
     const SCRIPT = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
     const isJs = (attrs) => {
-      const type = /\btype\s*=\s*["']?([^"'\s>]*)/i.exec(attrs)?.[1]?.toLowerCase();
-      return !type || type === 'module' || /^(text|application)\/(java|ecma)script$/.test(type);
+      const type = /\btype\s*=\s*["']?([^"'>]*)/i.exec(attrs)?.[1]?.trim().toLowerCase();
+      if (!type || type === 'module') return true;
+      return JS_MIME.has(type.split(';')[0].trim());
     };
     const javascriptIn = (rel, source) => {
       if (rel.endsWith('.js') || rel.endsWith('.mjs')) return source;
@@ -2275,6 +2297,15 @@ async function runChecks() {
       + '<script type="importmap">{"imports":{"x":"/x-512-424.js"}}</script>\n'
       + '<script type="module">const W = 512;</script>\n');
     writeFileSync(join(probeRoot, 'web', 'sheet.css'), '.rail { height: 424px; width: 512px; }\n');
+    // A second page whose executable code is under a `type` nobody writes any more and
+    // every browser still runs, beside a block of JSON under a `type` that is not code at
+    // all. It must be a holder of the height and not of the width, so a check that knows
+    // only the four modern essences loses the first and a check that reads anything in a
+    // `<script>` gains the second. The charset parameter is on it because the spec matches
+    // the essence and a check comparing the whole attribute would drop this too.
+    writeFileSync(join(probeRoot, 'web', 'legacy-page.html'),
+      '<script type="application/x-javascript; charset=utf-8">const H = 424;</script>\n'
+      + '<script type="application/json">{"width": 512}</script>\n');
     const walked = sourcesUnder(probeRoot, 'web');
     // Sorted per directory and depth-first, which is the order `sourcesUnder` produces
     // and the order these are written in.
@@ -2285,7 +2316,8 @@ async function runChecks() {
     // the 424 list and fails. One file, both directions.
     const WANT = {
       512: ['web/nested/buried.js', 'web/nested/edge-forms.js', 'web/nested/hexadecimal.js', 'web/page.html'],
-      424: ['web/nested/deeper/further.js', 'web/nested/deeper/scientific.js', 'web/nested/literals.js'],
+      424: ['web/legacy-page.html', 'web/nested/deeper/further.js', 'web/nested/deeper/scientific.js',
+        'web/nested/literals.js'],
     };
     for (const [what, n] of GRID) {
       const probed = walked.filter((rel) => declares(

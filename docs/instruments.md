@@ -345,6 +345,27 @@ two-thirds measured and read as whole. `grid-declared-with-a-leading-dot` is its
 mutation rather than a third number in that one, because the two fail differently and a
 control that covers a case is the only thing that says the case is covered.
 
+**And the last of them: a regex over an enumeration is a guess at it.** Deciding which
+`<script>` blocks hold JavaScript, the check matched `(text|application)/(java|ecma)script`
+— a shape, and a reasonable-looking one. HTML defines *sixteen* JavaScript MIME type
+essences, and that pattern is four of them. A page written with `application/x-javascript`
+runs in every browser and had its body discarded, so executable JavaScript was being
+dropped from a row about what the JavaScript declares. Silently, which is how a missing
+spelling always fails.
+
+There is no shape behind the sixteen — `text/livescript` and `text/jscript` are there for
+reasons twenty-five years old — so the enumeration *is* the definition, and the fix is to
+write it down rather than to describe it. **When a set is defined by a list somebody else
+maintains, copy the list; a pattern that covers today's members is a claim about the
+future that nothing checks.** Parameters are stripped before the comparison, because the
+spec matches the essence and because reading `text/javascript; charset=utf-8` as
+JavaScript over-reports loudly where dropping it goes unseen.
+
+The probe's second page carries executable code under a type nobody writes any more and a
+JSON block under a type that is not code, so it has to be a holder of one number and not
+the other: a check knowing only the modern four loses the first, and a check reading
+anything inside a `<script>` gains the second.
+
 ### An enumeration that walks a flat tree is the files that exist, not the tree
 
 The grid row above walks `web/` and `server/` rather than a list of the files that hold the
