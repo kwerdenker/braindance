@@ -66,9 +66,27 @@ const EVERY_MS = 5000;
  * the same reason: the gallery prints "unreachable" beside the node's name, so a link
  * dropping or coming back changes what is on screen.
  */
+/**
+ * The fields of a node's `/record/state` this fingerprint is computed from, named once
+ * so the link that admits a node can require exactly them.
+ *
+ * **A list rather than a spelling inside the expression below, because the boundary is
+ * on the other machine's build and had no way to know what this reads.** `NodeLink`
+ * fills a missing field in with `?? null`, which is right for a node that is simply not
+ * writing and wrong for one that has never heard of the field: a build one older than
+ * this one answers `/record/state` without `writingId` at all, passes the manifest gate
+ * `takes()` applies, and then reads as an idle recorder on every tick forever - so the
+ * fingerprint is constant, no remote start or stop ever changes it, and the gallery
+ * stops following the recorder it is drawing. Exported, so `server/library.js` requires
+ * what this actually reads rather than a copy of it somebody has to remember to widen.
+ */
+export const POLLED_NODE_FIELDS = ['writingId'];
+
 const fingerprint = (state) => [
   state.writingId ?? '',
-  state.node ? `${state.node.reachable}:${state.node.writingId ?? ''}` : '',
+  state.node
+    ? [state.node.reachable, ...POLLED_NODE_FIELDS.map((f) => state.node[f] ?? '')].join(':')
+    : '',
 ].join('|');
 
 /**

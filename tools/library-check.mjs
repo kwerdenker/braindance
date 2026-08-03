@@ -1325,6 +1325,23 @@ const MUTATIONS = {
     '      const older = takes.find((t) => !carriesRefusals(t));\n      if (older) {',
     '      const older = takes.find((t) => !carriesRefusals(t));\n      if (false) {',
   ]] },
+
+  // The same gate on the other route goes away: a `/record/state` with no `writingId`
+  // in it is read as a recorder that owns no take, which is what `?? null` did before
+  // the refusal existed. The field is still filtered for, so the mutation is the
+  // conclusion drawn from it rather than the question - a build that stopped asking
+  // would also stop the heal arm working and could not say which half was wrong.
+  //
+  // Must redden two rows and leave three green: the refusal itself and the listing that
+  // carries it go red, while the node that carries the field, the takes that still list
+  // beside it, and the heal all pass on both builds - the mutated build never refuses,
+  // so it has nothing to recover from and the heal row reads as success. That
+  // asymmetry is the point: a control reddening the whole section would not show that
+  // absence and an idle recorder had stopped being told apart.
+  'node-admits-an-old-record-state': { file: 'server/library.js', edits: [[
+    '      const missing = POLLED_NODE_FIELDS.filter((f) => body[f] === undefined);',
+    '      const missing = POLLED_NODE_FIELDS.filter((f) => body[f] === undefined) && [];',
+  ]] },
   // **The monitor's cost line goes back to spelling the grid out inline**, which is
   // where it was for as long as the comment above it promised the opposite. It
   // computes exactly the same number, renders identical pixels and serves identical
@@ -3000,6 +3017,86 @@ async function runChecks() {
         for (const p of servers.filter((sv) => sv.port === MAC_PORT + 8)) p.child.kill('SIGKILL');
       } finally {
         ahead.srv.close();
+      }
+
+      // ---- and a node one build behind on the *other* route, which the gate above
+      //      cannot see
+      //
+      // The manifest gate asks `/library/takes` about its build and answers for the
+      // whole link, but a node is two routes and they moved in different releases: the
+      // build immediately before this one serves a manifest that carries `openRefusals`
+      // - so it passes everything above - and a `/record/state` that predates
+      // `writingId` entirely. Read with a `?? null` that node is a recorder sitting
+      // idle, which is a legal state and therefore invisible: the fingerprint the
+      // gallery's poll computes is constant from the first tick, no remote start or
+      // stop can ever change it, and the shelf stops rereading the library for the
+      // machine half its tiles come from. **The object every observation happened to
+      // skip**, and it was skipped because the version question looked already asked.
+      //
+      // The stub routes on the path rather than answering everything alike, because
+      // the whole shape of this defect is one route being current while the other is
+      // not - a fixture that served one body to both could not stage it.
+      const twoRoute = (recordState) => new Promise((done) => {
+        const srv = createServer((req, res) => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify(req.url.startsWith('/record/state')
+            ? recordState()
+            : { takes: [newShape, openableShape] }));
+        });
+        srv.listen(0, '127.0.0.1', () => done({ srv, url: `http://127.0.0.1:${srv.address().port}` }));
+      });
+      // Written out rather than derived by deleting a key from the current one, for the
+      // reason `oldShape` above is: a fixture built by subtracting from today's shape
+      // follows the code it exists to outlive.
+      let served = { recording: false, takeId: null };
+      const behind = await twoRoute(() => served);
+      const carries = await twoRoute(() => ({ recording: false, takeId: null, writingId: null }));
+      try {
+        const blind = new NodeLink(behind.url, 'behind-node');
+        // Before the poll has said anything, because a link that has answered nothing
+        // is not a link that has failed - and a gate that refused on a null would
+        // refuse every node at boot while passing every row below it.
+        check(Array.isArray(await blind.takes()),
+          'a node is listed before the poll has spoken to it, since a link with no answer yet has not failed one',
+          `${blind.lastError === null ? 'no error' : blind.lastError}`);
+
+        const polled = await blind.recordState();
+        check(polled.reachable === false,
+          'a recorder state with no writingId in it is refused rather than read as a node that owns no take',
+          `reachable ${polled.reachable}, writingId ${JSON.stringify(polled.writingId)}`);
+        const refused = await blind.takes();
+        check(refused === null && /older build/.test(blind.lastError ?? '') && /writingId/.test(blind.lastError ?? ''),
+          'and the refusal reaches the listing, which is the only one of the two routes that draws anything',
+          `${refused === null ? 'null' : `${refused.length} takes`}, ${JSON.stringify(blind.lastError)}`);
+
+        // **The other arm, and the rows above are unfalsifiable without it.** A guard
+        // that refused every node would satisfy both of them while taking the link off,
+        // which is the same defect one build further along - and `writingId: null` is
+        // the exact value the absent case was being confused with, so this is the arm
+        // that says the gate reads absence rather than emptiness.
+        const well = new NodeLink(carries.url, 'carrying-node');
+        const wellPolled = await well.recordState();
+        check(wellPolled.reachable === true && wellPolled.writingId === null,
+          'a node carrying the field and simply not writing is not refused for it, so the gate reads absence rather than an idle recorder',
+          `reachable ${wellPolled.reachable}, writingId ${JSON.stringify(wellPolled.writingId)}`);
+        check(Array.isArray(await well.takes()),
+          'and its takes still list, so this is a version band rather than the poll switched off',
+          `${well.lastError === null ? 'no error' : well.lastError}`);
+
+        // **The refusal has to be able to end, and nothing else here would notice if it
+        // could not.** Parked in `lastError` it would either be wiped by the next
+        // listing that succeeded - never surviving to be read - or latch, and a node
+        // upgraded ten minutes later would stay refused until this process restarted.
+        // Both failures pass every row above, which is why the heal is its own arm.
+        served = { recording: false, takeId: null, writingId: null };
+        await blind.recordState();
+        const healed = await blind.takes();
+        check(healed !== null && blind.lastError === null,
+          'and a node upgraded under a running link is followed again within one tick, rather than staying refused until this process restarts',
+          `${healed === null ? `still refused: ${blind.lastError}` : `${healed.length} takes`}`);
+      } finally {
+        behind.srv.close();
+        carries.srv.close();
       }
     } finally {
       old.srv.close();

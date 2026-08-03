@@ -119,6 +119,7 @@ node tools/library-check.mjs --mutate refusal-declared-but-never-pushed # ... an
 node tools/library-check.mjs --mutate openable-recomputes-the-band # ... and a band that decides for itself beside the table
 node tools/library-check.mjs --mutate recording-decides-openable-itself # ... and the take being written, which answered twice
 node tools/library-check.mjs --mutate node-admits-an-old-manifest  # ... a node one build behind, refused at the link
+node tools/library-check.mjs --mutate node-admits-an-old-record-state # ... and behind on the other route, whose absent field is not an idle recorder
 node tools/library-check.mjs --mutate badges-inherit-from-object   # ... and one build ahead, whose reason still badges
 node tools/library-check.mjs --mutate refusals-must-be-nonempty    # ... and a healthy node not refused for being healthy
                                                                    #     (wide: takes the link off, so it stops at 125 of 392 -

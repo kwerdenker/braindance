@@ -61,6 +61,7 @@ export const VALID_HASH = /^sha256:[0-9a-f]{64}$/;
 // and now quote `openRefusals`, leaving `OPEN_REFUSALS.format` below and the editor's
 // `openTake`, which is handed a hello and never a manifest.
 import { PROJECT_VERSION, VALID_ID, captureFormatRefusal } from '../web/format.js';
+import { POLLED_NODE_FIELDS } from '../web/record-poll.js';
 
 export { PROJECT_VERSION };
 
@@ -419,6 +420,10 @@ export class NodeLink {
     this.url = url.replace(/\/$/, '');
     this.name = name;
     this.lastError = null;
+    // Null until the poll has spoken to the node once. A link that has answered
+    // nothing yet is not a link that has failed, so the first listing goes out and is
+    // refused by its own gate if the manifest is the half that is old.
+    this.buildRefusal = null;
   }
 
   async fetchJson(path, init) {
@@ -462,6 +467,17 @@ export class NodeLink {
    * as long as the page stayed open.
    */
   async takes(signal = null) {
+    // The poll's refusal, read here because this is the request that draws something.
+    // `recordState` is the only caller that learns the node's build is too old to be
+    // followed and it paints nothing itself, so a refusal left where it was found is
+    // one the operator never sees - the gallery would go on listing that node's takes
+    // beside a recorder state frozen at the first tick. Refused before the fetch rather
+    // than after it, because there is nothing to ask a node whose answers cannot be
+    // followed, and the reason lands in `lastError` where the shelf already prints it.
+    if (this.buildRefusal) {
+      this.lastError = this.buildRefusal;
+      return null;
+    }
     try {
       const body = await this.fetchJson('/library/takes', signal ? { signal } : undefined);
       // The hash is filtered beside the id because it is the other field of a node's
@@ -513,6 +529,39 @@ export class NodeLink {
   async recordState() {
     try {
       const body = await this.fetchJson('/record/state', { signal: AbortSignal.timeout(3000) });
+      // **The same "two machines are two builds" refusal `takes()` makes, arriving at
+      // the second route.** The manifest gate up there is passed by the build
+      // immediately before this one, whose `/record/state` predates `writingId` and
+      // omits the key entirely - and `?? null` below would read that as a node that
+      // owns no take. It is a legal value for a recorder sitting idle, so nothing
+      // would look wrong: the fingerprint the poll computes is constant from the first
+      // tick, no remote start or stop can ever change it, and the gallery quietly
+      // stops rereading the library for the machine it is drawing half its grid from.
+      // Absent and "not writing" are two different facts and only one of them may be
+      // spelled `null`.
+      //
+      // Asked of `POLLED_NODE_FIELDS` rather than of `writingId` by name, because the
+      // poll is what decides which fields matter: a field added to that fingerprint
+      // tightens this by existing, where a name written out here is a second list to
+      // keep in step and the copy that goes stale is this one - the far side is the
+      // half nobody tests on a single machine.
+      const missing = POLLED_NODE_FIELDS.filter((f) => body[f] === undefined);
+      // **Its own field rather than `lastError`, and the reason is which way each one
+      // has to move.** `lastError` is written per listing and cleared by the next one
+      // that succeeds, so a refusal parked in it would either be wiped by the very next
+      // `/library/all` - which is what it has to survive to be read - or, if `takes()`
+      // returned early on it, would latch: nothing would fetch again, so nothing would
+      // clear it, and a node upgraded ten minutes later would stay refused until this
+      // process restarted. Set and cleared on every tick of the poll instead, so the
+      // refusal lasts exactly as long as the build that earns it and an upgrade heals
+      // the link within one cadence with nobody doing anything.
+      this.buildRefusal = missing.length === 0 ? null
+        : 'it is running an older build whose recorder state carries no '
+          + `${missing.join(', ')} - the gallery cannot follow a recorder it cannot ask, `
+          + 'so its takes are not listed here. Upgrade the node to this build.';
+      if (this.buildRefusal) {
+        return { name: this.name, reachable: false, recording: false, takeId: null, writingId: null };
+      }
       return {
         name: this.name,
         reachable: true,
