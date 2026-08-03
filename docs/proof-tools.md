@@ -219,6 +219,27 @@ is named in `CLAUDE.md`, which is why the invocation list lives there rather tha
 added later is asked by existing, and the falsification control is adding a tool without
 documenting it.
 
+**Its third row is the `.knct` decoder specification**, the page at the top of
+`server/protocol.js` that issue #45 decided is a take's exit from this program instead of a
+point-cloud export. That makes it load-bearing in a way prose here usually is not: it is what
+somebody writes a reader from once nothing in this tree runs, so a constant that moved while it
+did not would send them to a reader that is plausibly shaped and quietly wrong. The row reads the
+specification's number table against the module's exports and fails on any disagreement. Two
+choices in it are the whole of why it means anything. The exports are **enumerated rather than
+listed**, so every numeric export has to appear in the specification and a constant added next
+year is asked by existing rather than added to a second table that drifts. And the values are
+read by **importing** the module rather than by a regex over its source, because
+`MAX_PAYLOAD_BYTES` is `8 * 1024 * 1024` and reads correctly one way and not the other.
+
+The control is `--mutate spec-drifts`, which substitutes `TYPE_COLOR = 3` for `4` and leaves the
+prose where it is. Both arms import through a scratch copy of the file rather than the clean arm
+importing the live path — they have to differ only in the substitution, or the run is comparing
+two mechanisms and calling the difference a catch. An anchor it cannot find and a mutation name it
+does not know both exit 2 rather than running, for the reason the exit-code section above gives.
+Mutation-tested three ways beyond its own control: a numeric export added to `protocol.js` and
+left out of the table reddens it, the specification block deleted reddens it, and a number edited
+in the table while the code stays put reddens it.
+
 **`prof-summary.mjs <profile> [warmup]`** reads `grabber --profile` output and flags any run
 under 29.5fps as contended, because the segment timings from a run that dropped frames are
 noise. That floor belongs to a profiling run that writes nothing — see the gate paragraph in

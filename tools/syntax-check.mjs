@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// Parses every JavaScript file this repo ships. Nothing else - no server, no browser,
-// no sensor, no dependencies - which is what makes it the one thing CI can run on a
-// fresh clone and mean it.
+// Parses every JavaScript file this repo ships, and asks the three questions about the
+// tree that need nothing to answer: that every tool is documented, that every cited
+// `docs/` page exists, and that the `.knct` decoder specification still agrees with the
+// module it specifies. No server, no browser, no sensor, no dependencies - which is what
+// makes it the one thing CI can run on a fresh clone and mean it.
 //
 //   node tools/syntax-check.mjs [--root <dir>]
 //
@@ -32,11 +34,32 @@ import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const argv = process.argv.slice(2);
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ROOT = argv.includes('--root') ? argv[argv.indexOf('--root') + 1] : REPO;
+
+// A literal source substitution in `server/protocol.js`, in the shape the other tools'
+// mutation tables use. It is applied to the copy the specification row actually imports,
+// so that row reads a genuinely moved constant rather than a comparison somebody nudged -
+// and the specification's own prose is left alone, which is the drift being simulated:
+// the code moved and the document did not.
+const MUTATIONS = {
+  'spec-drifts': {
+    from: 'export const TYPE_COLOR = 3;',
+    to: 'export const TYPE_COLOR = 4;',
+  },
+};
+
+// Resolved before anything runs, so a name nobody implemented costs a second rather than
+// a full parse of the tree and a verdict about the wrong thing.
+const mutateAt = argv.indexOf('--mutate');
+const mutation = mutateAt === -1 ? null : argv[mutateAt + 1];
+if (mutateAt !== -1 && !MUTATIONS[mutation]) {
+  console.log(`DID NOT RUN - no mutation named ${mutation ?? '(nothing was given)'}; this tool knows ${Object.keys(MUTATIONS).join(', ')}`);
+  process.exit(2);
+}
 
 // The server, the tools and the browser bundle. Everything else with a .js in it is
 // either vendored, built or a capture, and none of those are ours to parse.
@@ -203,9 +226,95 @@ if (!existsSync(DOC)) {
   }
 }
 
+// **And the `.knct` decoder specification has to agree with the module it specifies.**
+// Same family as the two blocks above - documentation checked against the tree rather than
+// asserted beside it - and here for the same reason they are: this tool needs nothing at
+// all, so the control costs a run of what CI already does.
+//
+// The take is the one irreplaceable artifact in the system, and issue #45 decided its exit
+// from this program is that specification rather than a point-cloud export. That makes the
+// specification load-bearing in a way prose usually is not here: it is the thing somebody
+// writes a reader from once nothing in this tree runs any more, and a constant that moved
+// while it did not would send them to a reader that is plausibly shaped and quietly wrong.
+//
+// **Enumerated from the module, not from a list.** Every numeric export has to appear in
+// the specification with its exact value, so a constant added next year is asked by
+// existing rather than added to a second table that drifts. The values come from importing
+// the module rather than from a regex over its source, because a constant that is computed
+// - `MAX_PAYLOAD_BYTES` is `8 * 1024 * 1024` - reads correctly one way and not the other.
+//
+// **Imported from a scratch copy in both arms, and that is not tidiness.** The clean run
+// and the mutated run have to differ only in the substitution; a row that imported the live
+// path when clean and a copy when mutated would be comparing two mechanisms and calling the
+// difference a catch.
+//
+// The control is `--mutate spec-drifts`, which moves `TYPE_COLOR` and leaves the prose.
+{
+  const SPEC_OPEN = '// ---- the .knct decoder specification';
+  const SPEC_SHUT = '// ---- end of the .knct decoder specification';
+  const rel = 'server/protocol.js';
+  const file = join(ROOT, rel);
+  if (!existsSync(file)) {
+    fail(`${rel} is missing, so the decoder specification has nothing to be checked against`);
+  } else {
+    let src = readFileSync(file, 'utf8');
+    if (mutation) {
+      const { from, to } = MUTATIONS[mutation];
+      // Refused rather than run. A mutation whose anchor has moved does nothing, and a run
+      // that does nothing comes back green - which gets recorded as the control passing.
+      if (!src.includes(from)) {
+        console.log(`DID NOT RUN - the ${mutation} anchor "${from}" is not in ${rel}, so nothing was mutated and this run would prove nothing`);
+        process.exit(2);
+      }
+      src = src.replace(from, to);
+    }
+    const open = src.indexOf(SPEC_OPEN);
+    const shut = src.indexOf(SPEC_SHUT);
+    let mod = null;
+    const scratch = mkdtempSync(join(tmpdir(), 'syntax-check-spec-'));
+    try {
+      // `.mjs` rather than `.js` beside a copied package.json: the parse mode has to be
+      // unambiguous here, and unlike the canary above this row is not trying to prove
+      // anything about how Node decides it.
+      const copy = join(scratch, 'protocol.mjs');
+      writeFileSync(copy, src);
+      mod = await import(pathToFileURL(copy).href);
+    } catch (err) {
+      fail(`${rel} could not be imported, so its exports could not be read: ${err.message}`);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+    const numbers = mod ? Object.entries(mod).filter(([, v]) => typeof v === 'number') : [];
+    if (open === -1 || shut === -1) {
+      fail(`${rel} carries no decoder specification block, so the archive's only written description of its own format is gone`);
+    } else if (numbers.length === 0) {
+      fail(`${rel} exports no numeric constant, so this assertion passed on nothing`);
+    } else {
+      const spec = src.slice(open, shut);
+      const wrong = [];
+      for (const [name, value] of numbers) {
+        const said = spec.match(new RegExp(`^//\\s+${name}\\s+(0x[0-9a-fA-F]+|\\d+)\\b`, 'm'));
+        if (!said) {
+          wrong.push(`${name} is exported as ${value} and the specification never gives it`);
+        } else if (Number(said[1]) !== value) {
+          wrong.push(`the specification says ${name} is ${said[1]} where the module exports ${value}`);
+        }
+      }
+      if (wrong.length) {
+        fail(`the .knct decoder specification disagrees with ${rel}: ${wrong.join('; ')}`);
+      } else {
+        console.log(`  spec/   all ${numbers.length} protocol constants match the .knct decoder specification`);
+      }
+    }
+  }
+}
+
 console.log(`\n${total} JavaScript files, ${failed} failed`);
 // Said out loud because `npm test` runs this, and a green `npm test` that meant "the
-// suite passed" would be the most expensive wrong impression in the repo. Nothing here
-// executes a line of what it parsed.
+// suite passed" would be the most expensive wrong impression in the repo. **One thing here
+// executes rather than parses**, and it is named rather than buried: the specification row
+// imports a copy of `server/protocol.js`, which is a module of constants with no imports of
+// its own, and reads its exported values. Nothing is called and no behaviour is exercised.
+// Everything else is `node --check` and nothing runs.
 console.log('syntax only - no proof tool ran here; see CLAUDE.md "Proof tools" for the suite and what each of them needs');
 process.exit(failed ? 1 : 0);
