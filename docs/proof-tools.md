@@ -332,15 +332,32 @@ rather than left to the takes that are generation zero incidentally, since a ban
 archive out of the editor.
 
 `--mutate open-ignores-format` is the control and it edits one line of `web/format.js`, which is
-the point of it rather than an implementation detail. Four doors decide whether a take may be
-opened — `openable` in `describeTake`, the badge and the dead Open button in the gallery, and
-`openTake` in the editor — and three of them are cheap to satisfy by inlining a comparison, which
-would pass every row here and drift the first time the band gains a member. So the assertion the
-mutation really carries is the *count*: it reddens **6 of 365**, one row per door plus the
-gallery's menu sentence and the editor's editing state, and the takes that must stay green stay
-green — both `no-hello-take` rows, `local-clip`'s `dateSource === 'hello'`, and all four
-generation-zero rows. A mutation that reddened fewer would mean the band had quietly become
-several predicates that agree.
+the point of it rather than an implementation detail. **There were four doors deciding whether a
+take may be opened and there are two**, which is the change the refusal table made: `openable` in
+`describeTake` and the gallery's badge and dead Open button were three separate comparisons, and
+the last two now quote `openRefusals` instead. What is left is `OPEN_REFUSALS.format`, which
+delegates the sentence, and `openTake` in the editor, which is handed a hello and never a
+manifest — so `format.js` is still where the band lives, and a comparison inlined at either door
+would still pass every row here and drift the first time the band gains a member.
+
+So the assertion the mutation really carries is the *count*: it reddens **8 of 390** — the
+listing's `openable`, the refusal the take carries, the two-table containment row, the gallery's
+badge and its Open button, the menu's sentence, and the editor's note and its refusal to open.
+The count grew when the surfaces stopped deriving, which is the right direction: quoting one
+sentence in five places means a band that stops refusing is visible in five places rather than in
+one. The takes that must stay green stay green — both `no-hello-take` rows, `local-clip`'s
+`dateSource === 'hello'`, and all four generation-zero rows. A mutation that reddened fewer would
+mean the band had quietly become several predicates that agree.
+
+**Its opposite number is `--mutate openable-recomputes-the-band`**, which puts the band back to
+being a term in `openable` rather than an entry in the table, and it exists because
+`openable` is false either way. Every row asking whether the future-format take opens passes a
+build where the band decides for itself again — measured: 4 of 390, and the three rows that
+brought the band into this suite are all still green under it. What reddens is what the take
+*carries*: the refusal itself, the containment row now declaring a `format` nothing produces, the
+badge over the poster and the sentence in the menu. **When a merge collapses two derivations into
+one, the row that proves it needs a mutation that restores the other — the shared predicate
+cannot tell them apart, which is why they were able to disagree.**
 
 Reaching all four needed the harness to stage `web/` mutations rather than leaving them to the
 browser route interception, because `server/library.js` imports `format.js` by path: served to

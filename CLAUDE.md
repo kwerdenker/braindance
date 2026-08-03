@@ -116,10 +116,11 @@ node tools/library-check.mjs --mutate open-decides-its-own-reason  # ... one tak
 node tools/library-check.mjs --mutate menu-decides-its-own-reason  # ... and the menu is a surface too
 node tools/library-check.mjs --mutate refusal-without-a-badge      # ... a reason the server declares and no page can badge
 node tools/library-check.mjs --mutate refusal-declared-but-never-pushed # ... and one nothing can ever earn
+node tools/library-check.mjs --mutate openable-recomputes-the-band # ... and a band that decides for itself beside the table
 node tools/library-check.mjs --mutate node-admits-an-old-manifest  # ... a node one build behind, refused at the link
 node tools/library-check.mjs --mutate badges-inherit-from-object   # ... and one build ahead, whose reason still badges
 node tools/library-check.mjs --mutate refusals-must-be-nonempty    # ... and a healthy node not refused for being healthy
-                                                                   #     (wide: takes the link off, so it stops at 109 of 366 -
+                                                                   #     (wide: takes the link off, so it stops at 124 of 390 -
                                                                    #      read the rows, not the total. docs/instruments.md says why)
 node tools/library-check.mjs --mutate grid-declared-twice          # ... and the sensor grid stated once
 node tools/library-check.mjs --mutate grid-declared-in-another-spelling # ... whatever notation the second one is in

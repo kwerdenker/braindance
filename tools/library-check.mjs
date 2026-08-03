@@ -1010,6 +1010,26 @@ const MUTATIONS = {
     "  if (!index.hello) openRefusals.push(refusal('no-hello'));\n",
     '',
   ]] },
+  // **The capture-format band goes back to being a term in `openable` rather than a
+  // refusal in the list**, which is the shape it arrived from `main` in and the shape the
+  // merge changed. It is the control for that change, and the reason it needs one is that
+  // the three rows `main` brought - the future-format take lists, names its generation and
+  // says it cannot be opened - are all still true here. `openable` is false either way, so
+  // every row asking `openable` passes a build where the band decides for itself again,
+  // and the difference only shows in what the take *carries*: a refusal with a sentence
+  // the tile can badge, or nothing, leaving a dead Open button with no reason on it.
+  //
+  // Two edits because the term and the push are two halves of one decision, and removing
+  // only the push would leave `openable` reading a list the band no longer writes to,
+  // which is a build that opens a take it cannot read rather than the one under test.
+  //
+  // Narrow on purpose: an empty `openRefusals` still satisfies `carriesRefusals`, so the
+  // node link stays up and the rest of the suite still measures.
+  'openable-recomputes-the-band': { file: 'server/library.js', edits: [
+    ["  if (captureFormatRefusal('this take', format) !== '') openRefusals.push(refusal('format', format));\n", ''],
+    ['    openable: openRefusals.length === 0,',
+      "    openable: Boolean(index.hello) && stamps.length >= 2 && captureFormatRefusal('this take', format) === '',"],
+  ] },
   // **One dimension of the grid stops being a literal while the other holds**, and the
   // value is deliberately unchanged - `DEPTH_W - 88` is still 424, so every page still
   // renders the same pixels and every message is still the same size. That is what
@@ -1445,6 +1465,10 @@ function stageServer() {
 }
 
 const servers = [];
+// Servers whose offset has since been claimed by another section. They are off `servers`
+// so that a lookup by port answers with whoever is on it, and they are still here so the
+// exit backstop has a list to walk rather than an argument to follow.
+const retired = [];
 
 /** Whether something already holds a port, asked of the kernel rather than of a fetch. */
 const portHeld = (port) => new Promise((done) => {
@@ -1499,8 +1523,14 @@ async function startServer(root, args, port) {
   // already rules out: the second would fail to bind, and the exit-instead-of-listening
   // throw below is what says so. Reaching here at all means the last holder let the port
   // go, which is the definition of it being the last one.
+  // Retired rather than forgotten. Every stop in this file is a SIGKILL, so the dropped
+  // child is genuinely dead and killing it again would be a no-op - but the exit backstop
+  // below exists because a server this run leaks holds its port and turns every later run
+  // in every worktree into an exit 2 naming an owner nobody can find, and "it is dead
+  // because every current caller kills it" is a reasoning step standing where a list
+  // would do.
   const stale = servers.findIndex((s) => s.port === port);
-  if (stale !== -1) servers.splice(stale, 1);
+  if (stale !== -1) retired.push(...servers.splice(stale, 1));
   const child = spawn(process.execPath, [join(root, 'server/index.js'), '--port', String(port), ...args], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -1528,7 +1558,7 @@ async function startServer(root, args, port) {
 }
 
 function stopServers() {
-  for (const { child } of servers) child.kill('SIGKILL');
+  for (const { child } of [...servers, ...retired]) child.kill('SIGKILL');
 }
 
 // **The backstop for every way out that does not reach the `finally`.** A spawned server

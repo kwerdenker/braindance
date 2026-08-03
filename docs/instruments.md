@@ -345,8 +345,8 @@ fail for different reasons and a combined row would report the wrong one.
 **The control for it is `--mutate refusals-must-be-nonempty`, and it is deliberately not
 a well-behaved one.** It reddens both arm rows, and then it reddens the node's own rows
 across the suite, because the bug it plants is exactly "every healthy node goes dark" and
-that is what that looks like from here — 109 assertions, 11 failed, where a clean run
-reaches 366. That is the blast-radius rule being broken knowingly rather than by accident:
+that is what that looks like from here — 124 assertions, 11 failed, where a clean run
+reaches 390. That is the blast-radius rule being broken knowingly rather than by accident:
 several sections assume a linked node holding remote takes, and the first of them,
 `drawn(undefined)`, waited out its own timeout and threw at 105. That one is guarded now,
 the same way the way-back anchor is; the next is the confirm dialog for a take in state
