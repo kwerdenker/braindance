@@ -169,6 +169,12 @@ node tools/editor-check.mjs --mutate lanes-clear-siblings --no-render  # ... and
 node tools/editor-check.mjs --mutate plant-unswept-control --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate import-skips-normalise --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate import-saves-before-validating --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate picker-ignores-the-boxes --no-render # ... the subset a preset is written with
+node tools/editor-check.mjs --mutate readings-tick-alone --no-render   # ... and the five weights that move as one
+node tools/editor-check.mjs --mutate group-never-reveals --no-render      # ... a panel group is open because the clip says so
+node tools/editor-check.mjs --mutate reveal-ignores-tracks --no-render    # ... and a keyframe counts where the value does not
+node tools/editor-check.mjs --mutate detail-ignores-the-reading --no-render # ... the group that answers for another group's values
+node tools/editor-check.mjs --mutate override-prunes-only-on-toggle --no-render # ... and the override the document, not the toggle, has caught up with
 node tools/editor-check.mjs --mutate panel-row-skips-parameter --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate nav-at-the-foot --no-render       # ... and must FAIL
 node tools/editor-check.mjs --mutate orbit-pumps-on-change --no-render # ... and must FAIL
@@ -222,6 +228,9 @@ node tools/editor-check.mjs --mutate refusal-strands-the-picker --no-render # ..
 node tools/editor-check.mjs --mutate resize-skips-repaint --no-render # ... and the picture a resize clears
 node tools/editor-check.mjs --mutate resume-races-the-autosave --no-render # ... the recovery is written after the edits already on the wire
 node tools/editor-check.mjs --mutate restore-accepts-view-track --no-render # ... and a track the writer never writes
+node tools/editor-check.mjs --mutate prune-ignores-movement --no-render # ... a stored collapse, against the boot it has to survive
+node tools/editor-check.mjs --mutate panel-rederives-per-write --no-render # ... and what the panel costs the render path
+node tools/editor-check.mjs --mutate envelope-unchecked --no-render     # ... the half of a preset document nothing used to read
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated
