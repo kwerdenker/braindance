@@ -5143,6 +5143,19 @@ async function runChecks() {
       JSON.stringify({ recording: listed?.recording, hash: listed?.hash, frames: listed?.frames }));
     check(listed?.openable === false,
       'and it says it cannot be opened, so the tile has something to draw rather than zeros');
+    // **The missing hash is load-bearing on the menu, so it is asserted as that too.**
+    // `resolveResume` finds the take it was last opened on by hash and by nothing else,
+    // and `lastOpened` refuses a saved entry whose `takeHash` is not a non-empty string
+    // - so a take advertising no hash is one that lookup cannot reach, which is why the
+    // menu has no branch for a take being recorded and does not need one. That used to
+    // be a branch spelling its own sentence for the case, a third telling of a reason
+    // the server declares. Read off `/library/all`, which is the response the menu
+    // actually fetches, rather than off `/library/takes` above.
+    const resolvable = (await getJson(`${url}/library/all`)).takes;
+    const shooting = resolvable.filter((t) => t.recording === true);
+    check(shooting.length > 0 && shooting.every((t) => t.hash === null),
+      'and the response the menu resolves against gives it no hash, so nothing the menu can look up is a take being recorded',
+      `${shooting.length} recording, hashes ${JSON.stringify(shooting.map((t) => t.hash))}`);
 
     // Neither removal can verify anything about a file that is still arriving, and
     // unlinking one underneath a running write stream loses the shoot in progress.

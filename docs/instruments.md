@@ -120,6 +120,29 @@ page loads. **Whenever a row reads source rather than behaviour, ask by what mec
 mutation would reach the bytes that row reads**, and do not assume the answer is the same
 for every file the tool can mutate.
 
+### A known intermittent in `library-check` section 9, written down with its signature
+
+`and it is stamped in source milliseconds rather than program time` goes red now and then,
+always reporting exactly `0ms against source 150ms at program 1.0s`. The row seeks the
+transport to program time 1.0, awaits `settled()`, presses mark, and compares the sidecar's
+`sourceMs` against `retime.sourceSecAt(1.0)`. `0ms` is not a near miss — it is the mark
+being taken with the playhead still at the start, so the seek had not been applied when
+`markHere` ran.
+
+Seen five times in about eleven runs while the refusal work was going through: four of them
+under back-to-back mutation sweeps, and **once in an unmutated baseline**, which is the part
+worth recording, because "only ever under load" was the reading until it was not. Two
+baselines run immediately afterwards on a machine with nothing else on it came back at 367
+assertions, none failed. Nothing in the diff that was being measured touches the retime
+curve, the transport or the mark sidecar, which is this file's own tell for flake rather
+than regression - a `git diff` rather than a judgement.
+
+It is recorded rather than diagnosed. The constant `0` and the constant `150` say the
+failure is discrete rather than noisy, so whatever it is has a single shape and is worth an
+hour when somebody has one: **the suspicion is that `settled()` can return before the seek
+it was waiting on has been applied**, which would make every row in that section that seeks
+and then reads a candidate rather than just this one.
+
 ### One regex over two constants cannot see one of them go missing
 
 The grid row asks whether the sensor's `512x424` is declared once, and its first spelling

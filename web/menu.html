@@ -194,7 +194,20 @@ async function resolveResume() {
   // A take only on the node has no local file to open, and downloading it is the
   // gallery's job rather than something to do on the way past.
   if (take.state === 'remote') return gallery(`${take.id} is only on the node`);
-  if (take.recording === true) return gallery(`${take.id} is still being recorded`);
+  // **A take being recorded needs no branch of its own here, and used to have one.** It
+  // spelled its own sentence - "is still being recorded" - for a case this lookup cannot
+  // produce: the match above is by hash, `describeTake` gives a take mid-write no hash
+  // on purpose, and `lastOpened` refuses a saved entry whose `takeHash` is not a
+  // non-empty string. So the branch was a third spelling of a reason the server now owns,
+  // guarding a take that cannot arrive. `library-check` asserts the hash half of that
+  // rather than leaving it as a reading, because a recording take that started carrying
+  // one would make this reachable again - and then it falls through to the block below
+  // and quotes the server, which is the right answer either way.
+  //
+  // The remote branch above stays, and the difference is the point: "only on the node"
+  // is a fact about reconciliation that no take carries in its refusals, where
+  // "recording" is a key the server declares.
+  //
   // The reason the take carries, rather than this page's own third spelling of it.
   // It used to name both causes at once - "no sensor hello, or under two frames" -
   // because it had the boolean and nothing telling it which one fired.
