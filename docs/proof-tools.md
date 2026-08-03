@@ -395,6 +395,23 @@ the editor is *reachable* rather than merely present. Its own two flaws — a pr
 and a probe that moved the page it measured — are in `docs/instruments.md`, because both are
 instances of rules that were already written down.
 
+**Sections 13 and 14 need the state the sections before them leave, and both say so in their
+own terms.** Section 13 counts lit pixels across a resize, and it presses "sensor view" first
+rather than measuring whatever twelve sections of orbiting and exporting happened to leave —
+inherited, the same claim measured 1543 lit pixels on one run and 89,625 on another, which is a
+row whose margin depends on what ran before it. It also takes the chrome off, because the camera
+path and the top-down inset live on a second canvas that `placeChrome` repaints regardless, and
+those are exactly the pixels a blank-stage build still has. Section 14 hands documents to
+`restoreProject` and asserts its own cleanup landed, because the build it matters on is the one
+that accepts what it should refuse: a `renderScale` track surviving into section 15 is
+`resize()` once per rendered frame there, which arrives as a hang rather than as a row.
+
+**Its deliverable rows size their fixtures off the take rather than writing numbers down.** The
+block used to plant a trim at a flat `in: 20, out: 40`, which the clip clamp holds inside a
+30.362s sample — so the row meaning to assert that the menu applies a trim would have been
+asserting the clamp instead. They are now read off the measured duration, and the one deliberate
+exception is `editor-check-past`, planted at 1.5x the duration precisely so that it misses.
+
 **`vendor-check` reads the built artifact as well as the source.** Sections 1-4 prove
 `third_party/` is upstream plus the declared edits; section 5 asserts the library actually
 installed at `vendor/prefix` carries `LIBFREENECT2_REG_THREADS`, the env override the threading
