@@ -75,11 +75,20 @@ async function loadPlaywright() {
   throw new Error('playwright not found - install it globally or in this project');
 }
 
-const post = async (path, body) => {
+// `timeoutMs` is offered rather than applied everywhere, because the two kinds of call
+// here want opposite answers. A claim or a finish report is worth waiting out - it is
+// the only chance to say what happened - while a heartbeat that has not been answered
+// by the time the next one is due has already failed, and the difference is not
+// cosmetic: undici's default header timeout is around 300s, so a black-hole outage that
+// drops packets without an RST leaves a beat hanging for minutes. The failure counter
+// never moves during that, so the budget below would be counting something other than
+// wall-clock seconds while its comment claimed otherwise.
+const post = async (path, body, { timeoutMs = null } = {}) => {
   const res = await fetch(URL_ + path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
   });
   return { status: res.status, body: await res.json().catch(() => ({})) };
 };
@@ -212,18 +221,29 @@ try {
       //
       // So a failure is retried, and only a budget of them gives up. Seven at the
       // default 15s beat is 105s of consecutive failure against the queue's 120s
-      // `STALE_MS`, which is deliberately inside it: past that the queue is about to
-      // declare this claim dead anyway and there is nothing left to keep alive. Any
-      // single success resets the count, because what matters is a run of failures
-      // rather than a tally of them. `--beat` scales the wall clock of that budget
-      // with it, which is how the check drives it in seconds - anything that moves the
-      // interval, the budget or `STALE_MS` moves whether a worker can outlive an
-      // outage its own queue is about to time it out for.
+      // `STALE_MS`, which is deliberately inside it: past that the queue would accept
+      // a requeue of this job anyway, so there is nothing left for a beat to keep
+      // alive. Any single success resets the count, because what matters is a run of
+      // failures rather than a tally of them. The beat carries a timeout of one
+      // interval for the arithmetic's sake - a hung request that never rejects is not
+      // a failure this counter can see, and the 105s would be a fiction.
+      //
+      // **Past the budget this worker is silent while it renders, which is the
+      // original failure bounded rather than removed - say so rather than calling it
+      // safe.** It is bounded at 105s instead of at one beat, and what it still costs
+      // is the case the queue's own rescue is for: an operator requeues the job that
+      // has gone quiet, a second worker claims it, and this one renders to the end for
+      // an outcome that will be refused on the lease. Removing the bound entirely
+      // would mean beating until a 409 says the lease is gone and aborting on it, and
+      // that is a decision about whether a worker may outlive its own stale window
+      // rather than a bug to fix in passing - `STALE_MS` and this budget are one
+      // arithmetic and moving either without the other is what makes a worker choose
+      // to be requeued underneath itself.
       const BEAT_BUDGET = 7;
       let missed = 0;
       const heartbeat = async () => {
         if (leaseLost) return;
-        const res = await post(`/jobs/${job.id}/heartbeat`, { lease: job.lease });
+        const res = await post(`/jobs/${job.id}/heartbeat`, { lease: job.lease }, { timeoutMs: BEAT_MS });
         if (res.status === 409) {
           // The lease is gone: the job was requeued or finished by something else.
           leaseLost = true;
@@ -250,7 +270,7 @@ try {
         console.error(`[worker] ${job.id} heartbeat failed (${missed}/${BEAT_BUDGET}): ${message}`);
         if (missed < BEAT_BUDGET) return;
         stopBeating();
-        console.error(`[worker] ${job.id} ${BEAT_BUDGET} heartbeats failed in a row - the render carries on and the job goes stale, which is the safe direction`);
+        console.error(`[worker] ${job.id} ${BEAT_BUDGET} heartbeats failed in a row - this claim now goes quiet while it renders, and a requeue would put a second worker on it`);
       };
       // One handler for the interval and for the first beat both, so the retry policy
       // has exactly one place to be wrong and one place for a control to name.
@@ -320,12 +340,19 @@ try {
       // rendered rather than only that something was. `server/export.js` refuses a
       // stream whose count differs from the one the export declared, so this is the
       // encoder's own number and a check can hold the file against it.
+      // **Stopped before the report rather than after it, because the report is what
+      // makes the job terminal.** A beat still in the air when `finish` lands reads the
+      // job as `done` and is answered 409, which this loop now treats as a revoked lease
+      // - so a completely successful render printed a "heartbeat refused" line and fired
+      // the abort navigation at a page it had already finished with. Only reachable with
+      // a beat interval short enough to fall inside the finish round trip, which is what
+      // the check drives.
+      stopBeating();
       const fin = await post(`/jobs/${job.id}/finish`, {
         state: 'done', output: result.output, frames: result?.frames ?? null, lease: job.lease,
       });
       if (fin.status !== 200) throw new Error(`the queue refused the report: ${fin.body.error}`);
       console.log(`[worker] ${job.id} done ${result.output} ${result?.frames ?? ''} frames`);
-      stopBeating();
     } catch (err) {
       failed++;
       const message = String(err.message ?? err);

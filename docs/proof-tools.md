@@ -156,6 +156,20 @@ held, `startServer` throws if its own child exits instead of listening, and it r
 outside the declared span so a section added at `+17` is a failure rather than a hole. Pass
 `--node-port`/`--mac-port` a range nothing else holds.
 
+**One row in it is flaky under machine contention, and it is written down here so the next
+person does not spend the afternoon on an innocent change.** `and it is stamped in source
+milliseconds rather than program time`, in the marks-on-the-scrubber section, seeks the editor
+to program 1.0s, awaits `settled()`, presses mark, and asserts the written `sourceMs` is within
+40ms of `sourceSecAt(1.0)`. Observed failing as `0ms against source 150ms` — the playhead still
+at program zero when the mark was taken — on **two of four runs at load average 34 with another
+worktree's `library-check` running concurrently**, and passing at `150ms against 150ms` on the
+other two. It failed on an unmutated tree as well as a mutated one, which is what says it is
+the row rather than the change under test. Nothing has fixed it: `settled()` resolving before
+the transport's program position has moved is a page-timing race in the editor, not a property
+of anything the section is about. A run that reddens only this row on a busy machine is a
+re-run, not a finding — and per the rule at the top of this file, that judgement comes from
+reading *which* assertion fired, never from the exit code.
+
 **`editor-check` enumerates rather than lists, and it exists because the suite tested the model
 and never the control.** The clip in/out markers were detached from the document during boot
 for the whole life of the feature — `rebuildLanes` cleared `#tBeds` of every child that was

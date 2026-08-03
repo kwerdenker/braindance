@@ -70,6 +70,18 @@ export const VALID_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
  * that opts out of the rule by saying nothing, and a codec added later would then
  * inherit the exemption silently, which is the whole failure this move exists to
  * remove.
+ *
+ * Which is why the loop below exists rather than the convention being left to the
+ * example. `spec.evenDimensions && ...` reads a missing field as false, so writing the
+ * field on both entries is a habit and not a rule - a third codec added without it
+ * would inherit exactly the silent exemption the paragraph above says has been removed,
+ * and the sentence would be an assertion about the table rather than a property of it.
+ * At module load and throwing, because a malformed entry here is a typo in a constant
+ * and not a condition to be handled: the alternative is discovering it at the first
+ * odd-dimensioned export, which is the class of late discovery this whole change is
+ * about. It has no falsification control for the same reason the dimension rule itself
+ * has none - both entries are well formed, so a mutation removing this loop changes
+ * nothing observable, and an assertion that cannot fire buys confidence with a number.
  */
 const CODECS = {
   h264: {
@@ -83,6 +95,14 @@ const CODECS = {
     args: ['-c:v', 'ffv1', '-level', '3', '-pix_fmt', 'rgb24'],
   },
 };
+for (const [name, spec] of Object.entries(CODECS)) {
+  if (typeof spec.evenDimensions !== 'boolean') {
+    throw new Error(`codec ${name} does not say whether it needs even dimensions, and a codec that says nothing about a rule is exempt from it by accident`);
+  }
+  if (typeof spec.ext !== 'string' || !Array.isArray(spec.args)) {
+    throw new Error(`codec ${name} is missing the extension or the arguments every export path dereferences`);
+  }
+}
 
 // Exported so the queue can validate a job before it is claimed. One rule with two
 // callers, the same shape `originAllowed` took: a second copy of this code in
