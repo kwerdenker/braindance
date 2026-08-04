@@ -10540,6 +10540,7 @@ const planVec = new THREE.Vector3();
 // is no clip there to compose.
 let chromeOn = false;
 let topViewVisible = true;
+let statsVisible = false;
 // Whether anything has rendered since the furniture was last drawn, so a paint
 // that produced no image does not redraw a path over a frame that never changed.
 let chromeStale = false;
@@ -10743,11 +10744,11 @@ function drawChrome() {
   }
   drawNodes((p) => projectThrough(p, viewCamera, stage));
 
-  if (!topViewVisible) return;
-
   // ── the top-down. A camera move is the one thing you cannot judge from inside
   // the camera, so this is where the path is actually edited.
   const rect = insetRect();
+
+  if (topViewVisible) {
   chromeCtx.save();
   chromeCtx.beginPath();
   chromeCtx.rect(rect.x, rect.y, rect.w, rect.h);
@@ -10814,6 +10815,90 @@ function drawChrome() {
   chromeCtx.fillStyle = '#6d7683';
   chromeCtx.font = '9px ui-monospace, Menlo, monospace';
   chromeCtx.fillText('TOP-DOWN', rect.x + 5, rect.y + rect.h - 5);
+  }
+
+  // ── stats overlay, below the top-down view or in its place when hidden.
+  if (statsVisible) {
+    const statsY = topViewVisible ? rect.y + rect.h + INSET.margin : rect.y;
+    const statsH = 156;
+    const statsRect = { x: rect.x, y: statsY, w: rect.w, h: statsH };
+
+    chromeCtx.fillStyle = 'rgba(13, 16, 20, 0.92)';
+    chromeCtx.fillRect(statsRect.x, statsRect.y, statsRect.w, statsRect.h);
+    chromeCtx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+    chromeCtx.lineWidth = 1;
+    chromeCtx.strokeRect(statsRect.x + 0.5, statsRect.y + 0.5, statsRect.w - 1, statsRect.h - 1);
+
+    chromeCtx.font = '9px ui-monospace, Menlo, monospace';
+    const lineH = 11;
+    const col1 = statsRect.x + 8;
+    const col2 = statsRect.x + 90;
+    let y = statsRect.y + 12;
+
+    // Performance
+    chromeCtx.fillStyle = '#6d7683';
+    chromeCtx.fillText('PERF', col1, y);
+    chromeCtx.fillStyle = '#e8ecf1';
+    chromeCtx.fillText(`${fps.toFixed(1)} fps`, col2, y); y += lineH;
+    chromeCtx.fillStyle = '#6d7683';
+    chromeCtx.fillText('renders', col1, y);
+    chromeCtx.fillStyle = '#e8ecf1';
+    chromeCtx.fillText(`${counters.renders}`, col2, y); y += lineH;
+    chromeCtx.fillStyle = '#6d7683';
+    chromeCtx.fillText('frames in', col1, y);
+    chromeCtx.fillStyle = '#e8ecf1';
+    chromeCtx.fillText(`${framesSeen}`, col2, y); y += lineH;
+
+    // Resolution
+    chromeCtx.fillStyle = '#6d7683';
+    chromeCtx.fillText('output', col1, y);
+    chromeCtx.fillStyle = '#e8ecf1';
+    chromeCtx.fillText(`${targetSize.w}x${targetSize.h}`, col2, y); y += lineH;
+    chromeCtx.fillStyle = '#6d7683';
+    chromeCtx.fillText('buffer', col1, y);
+    chromeCtx.fillStyle = '#e8ecf1';
+    chromeCtx.fillText(`${Math.round(uniforms.bufferHeight.value)}p`, col2, y); y += lineH;
+
+    // Geometry
+    const drawCount = geometry.drawRange.count;
+    const shedding = drawCount > POINTS;
+    chromeCtx.fillStyle = '#6d7683';
+    chromeCtx.fillText('points', col1, y);
+    chromeCtx.fillStyle = '#e8ecf1';
+    chromeCtx.fillText(`${(drawCount / 1000).toFixed(0)}k${shedding ? ' +shed' : ''}`, col2, y); y += lineH;
+
+    // Post effects
+    const posts = [afterimage.enabled && 'trail', bloom.enabled && 'bloom', grade.enabled && 'grade'].filter(Boolean);
+    chromeCtx.fillStyle = '#6d7683';
+    chromeCtx.fillText('post', col1, y);
+    chromeCtx.fillStyle = '#e8ecf1';
+    chromeCtx.fillText(posts.length ? posts.join(' ') : 'none', col2, y); y += lineH;
+
+    // Timeline
+    if (timeline) {
+      chromeCtx.fillStyle = '#6d7683';
+      chromeCtx.fillText('time', col1, y);
+      chromeCtx.fillStyle = '#e8ecf1';
+      chromeCtx.fillText(`${timeline.programSec.toFixed(2)}s${timeline.playing ? ' \u25B6' : ''}`, col2, y); y += lineH;
+      chromeCtx.fillStyle = '#6d7683';
+      chromeCtx.fillText('tracks', col1, y);
+      chromeCtx.fillStyle = '#e8ecf1';
+      chromeCtx.fillText(`${tracks.size}`, col2, y); y += lineH;
+    }
+
+    // Undo
+    chromeCtx.fillStyle = '#6d7683';
+    chromeCtx.fillText('undo', col1, y);
+    chromeCtx.fillStyle = '#e8ecf1';
+    chromeCtx.fillText(`${history.depth}`, col2, y); y += lineH;
+
+    // Camera position
+    chromeCtx.fillStyle = '#6d7683';
+    chromeCtx.fillText('cam xyz', col1, y);
+    chromeCtx.fillStyle = '#e8ecf1';
+    const cp = viewCamera.position;
+    chromeCtx.fillText(`${cp.x.toFixed(1)} ${cp.y.toFixed(1)} ${cp.z.toFixed(1)}`, col2, y);
+  }
 }
 
 function placeChrome() {
@@ -12096,8 +12181,11 @@ function stateSnapshot() {
 }
 
 shell.state.addEventListener('click', () => {
-  shell.stateDump.textContent = JSON.stringify(stateSnapshot(), null, 2);
-  openDialog(shell.stateDialog);
+  statsVisible = !statsVisible;
+  shell.state.setAttribute('aria-checked', String(statsVisible));
+  chromeStale = true;
+  drawChrome();
+  closeApplicationMenus();
 });
 
 shell.exportClose.addEventListener('click', () => ui.exportDialog.close());
