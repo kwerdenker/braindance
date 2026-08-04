@@ -2766,7 +2766,39 @@ function panelRow(name, spec) {
   input.max = String(spec.max);
   input.step = String(spec.step);
   const row = panelNode('div', 'row');
-  row.append(panelNode('span', null, spec.label), input, document.createElement('output'));
+  const out = document.createElement('output');
+  out.style.cursor = 'pointer';
+  // Clicking the readout opens it for direct number entry. The value is clamped to
+  // the slider's range on commit, so typing a number outside the range snaps it in.
+  out.addEventListener('click', () => {
+    const currentValue = out.textContent;
+    const edit = document.createElement('input');
+    edit.type = 'text';
+    edit.value = currentValue;
+    edit.style.cssText = 'width: 42px; text-align: right; font: inherit; background: transparent; color: var(--accent); border: 0; outline: 0; padding: 0; margin: 0;';
+    const commit = () => {
+      const parsed = parseFloat(edit.value);
+      // Put the output back first so writeControl can find it.
+      edit.replaceWith(out);
+      if (!isNaN(parsed)) {
+        // Clamp to the slider's range.
+        const clamped = Math.max(spec.min, Math.min(spec.max, parsed));
+        input.value = String(clamped);
+        out.textContent = input.value;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    };
+    edit.addEventListener('blur', commit);
+    edit.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      if (e.key === 'Escape') { e.preventDefault(); edit.replaceWith(out); }
+    });
+    out.replaceWith(edit);
+    edit.focus();
+    edit.select();
+  });
+  row.append(panelNode('span', null, spec.label), input, out);
   return { input, node: row };
 }
 
