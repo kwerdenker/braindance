@@ -22,6 +22,12 @@
  *
  * Binary distributions must follow the binary distribution requirements of
  * either License.
+ *
+ * MODIFIED by braindance: Make USB power state enabling non-fatal on macOS.
+ * Apple Silicon's USB controller does not support U1/U2 power states the same
+ * way as Intel/AMD, causing LIBUSB_ERROR_PIPE on enablePowerStates(). The
+ * Kinect operates correctly without these power states enabled.
+ * See third_party/UPSTREAM.md for details.
  */
 
 /** @file libfreenect2.cpp Freenect2 devices and processing implementation. */
@@ -832,8 +838,16 @@ bool Freenect2DeviceImpl::open()
   // TODO: always fails right now with error 6 - TRANSFER_OVERFLOW!
   //if(usb_control_.setPowerStateLatencies() != UsbControl::Success) return false;
   if(usb_control_.setIrInterfaceState(UsbControl::Disabled) != UsbControl::Success) return false;
+#if defined(__APPLE__)
+  // Apple Silicon's USB controller does not support U1/U2 power states, causing
+  // LIBUSB_ERROR_PIPE. The Kinect operates correctly without them, so we warn
+  // rather than fail. See third_party/UPSTREAM.md.
+  usb_control_.enablePowerStates(); // ignore result on macOS
+  usb_control_.setVideoTransferFunctionState(UsbControl::Disabled); // ignore result on macOS
+#else
   if(usb_control_.enablePowerStates() != UsbControl::Success) return false;
   if(usb_control_.setVideoTransferFunctionState(UsbControl::Disabled) != UsbControl::Success) return false;
+#endif
 
   int max_iso_packet_size;
   if(usb_control_.getIrMaxIsoPacketSize(max_iso_packet_size) != UsbControl::Success) return false;

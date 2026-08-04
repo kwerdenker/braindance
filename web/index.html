@@ -54,7 +54,7 @@
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; background: #05070a; color: var(--ink);
-    font: 12px/1.5 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; }
+    font: 14px/1.5 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; }
   canvas { display: block; }
   /* The frame edge. The stage is letterboxed to the export aspect so that what is
      framed is what is exported, and on a black page against a black background that
@@ -72,11 +72,11 @@
      panel is translucent over the live cloud, so a sticky child would have had the
      grade sliders visibly travelling underneath it. */
   #panel {
-    position: fixed; top: 32px; left: 0; width: 252px; max-height: calc(100vh - 32px);
+    position: fixed; top: 38px; left: 0; width: 302px; max-height: calc(100vh - 38px);
     display: flex; flex-direction: column; overflow: hidden;
     border: 0; border-right: 1px solid var(--line); border-radius: 0;
     background: rgba(8, 11, 16, 0.82); backdrop-filter: blur(12px); z-index: 10;
-    font-size: 9px; line-height: 1.4;
+    font-size: 11px; line-height: 1.4;
   }
   body:not(.editing) #panel { background: var(--paper-2); backdrop-filter: none; }
   #panelHead { flex: none; padding: 10px 14px 8px; border-bottom: 1px solid var(--line); }
@@ -90,7 +90,7 @@
     scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.2) transparent; }
   .panelbar { display: flex; align-items: center; gap: 8px; }
   .panelbar h1 { flex: 1; min-width: 0; }
-  #panel h1 { margin: 0 0 2px; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; }
+  #panel h1 { margin: 0 0 2px; font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; }
   #status { color: var(--dim); }
   #status b { color: var(--accent); font-weight: 500; }
 
@@ -105,7 +105,7 @@
      words rather than as the qualifier it is. Dropping the transform also drops the
      tracking that only existed to keep uppercase legible. */
   .group > label, .grouphead > label { display: block; color: var(--ink); margin-bottom: 6px;
-    font-size: 10px; }
+    font-size: 12px; }
   /* Every group's heading is in a head, whether or not the group can be shut, because
      two shapes of header is two sets of rules and the forgotten one is always the one
      nobody is looking at. The heading takes the spare width so the mark and the button
@@ -185,14 +185,14 @@
   #panel .row input[type=text] {
     flex: 1;
     min-width: 0;
-    height: 24px;
-    padding: 0 5px;
+    height: 29px;
+    padding: 0 6px;
     border: 1px solid var(--line);
     border-radius: 0;
     background: var(--paper-1);
     color: var(--ink);
     font: inherit;
-    font-size: 9px;
+    font-size: 11px;
   }
   input[type=range] { flex: 1; min-width: 0; height: 12px; appearance: none; background: transparent; }
   input[type=range]::-webkit-slider-runnable-track { height: 2px; background: var(--line-3); }
@@ -263,10 +263,10 @@
   /* Clear of the panel rather than under it. The panel is 252px at 16px from the
      left and scrolls to the full window height, so a hint sharing that column sat
      underneath the last control on any window tall enough to fill it. */
-  #hint { position: fixed; bottom: 10px; left: 266px; color: var(--dim); z-index: 10; font-size: 9px; }
+  #hint { position: fixed; bottom: 10px; left: 318px; color: var(--dim); z-index: 10; font-size: 11px; }
 
   #camNote, #recNote, #recSpace, #monNote, #sensorNote, #recLookNote, #recRange, #viewNote, #cropNote, #levelNote {
-    color: var(--dim); font-size: 10px; line-height: 1.45; opacity: 0.75; margin-top: 2px;
+    color: var(--dim); font-size: 12px; line-height: 1.45; opacity: 0.75; margin-top: 2px;
   }
   #monNote.warn { color: var(--warn); opacity: 1; }
   /* The one thing in the recorder that must not be got backwards, so it is on the
@@ -352,8 +352,8 @@
 
   .btnrow { display: flex; gap: 4px; margin-bottom: 6px; }
   .btnrow button {
-    flex: 1; padding: 5px 4px; border: 1px solid var(--line); border-radius: 0;
-    background: transparent; color: var(--dim); font: inherit; font-size: 10px; cursor: pointer;
+    flex: 1; padding: 6px 5px; border: 1px solid var(--line); border-radius: 0;
+    background: transparent; color: var(--dim); font: inherit; font-size: 12px; cursor: pointer;
   }
   .btnrow button:hover { border-color: var(--line-3); color: var(--ink); }
   .btnrow button[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: #04231f; }
@@ -362,9 +362,9 @@
      rather than as a control. It takes the row's spare width because a preset name
      is the part worth reading; `apply` is a fixed word and sizes to itself. */
   .btnrow select {
-    flex: 1; min-width: 0; padding: 5px 4px; border: 1px solid var(--line);
+    flex: 1; min-width: 0; padding: 6px 5px; border: 1px solid var(--line);
     border-radius: 0; background: var(--paper-1); color: var(--ink);
-    font: inherit; font-size: 10px; cursor: pointer;
+    font: inherit; font-size: 12px; cursor: pointer;
   }
   .btnrow select:hover { border-color: var(--line-3); }
   .btnrow select + button { flex: 0 0 68px; }
@@ -390,7 +390,7 @@
     background: transparent;
     color: var(--dim);
     font: inherit;
-    font-size: 9px;
+    font-size: 11px;
     cursor: pointer;
   }
   .paneltab:last-child { border-right: 0; }
@@ -426,9 +426,9 @@
   .dialog-field > label,
   .dialog-label {
     display: block;
-    margin-bottom: 6px;
+    margin-bottom: 7px;
     color: var(--dim);
-    font-size: 10px;
+    font-size: 12px;
     letter-spacing: normal;
     text-transform: none;
   }
@@ -437,14 +437,14 @@
   .dialog-segments button,
   .dialog-action,
   .dialog-secondary {
-    min-height: 29px;
-    padding: 0 10px;
+    min-height: 35px;
+    padding: 0 12px;
     border: 1px solid var(--line);
     border-radius: 0;
     background: transparent;
     color: var(--dim);
     font: inherit;
-    font-size: 9px;
+    font-size: 11px;
     cursor: pointer;
   }
   .dialog-segments button:hover:not(:disabled),
@@ -456,14 +456,14 @@
   .dialog-field select,
   .dialog-copy input {
     min-width: 0;
-    height: 30px;
-    padding: 0 8px;
+    height: 36px;
+    padding: 0 10px;
     border: 1px solid var(--line);
     border-radius: 0;
     background: var(--paper-2);
     color: var(--ink);
     font: inherit;
-    font-size: 10px;
+    font-size: 12px;
   }
   .dialog-input-row input,
   .dialog-copy input { flex: 1; }
@@ -486,8 +486,8 @@
   #exportDialog { width: min(480px, calc(100vw - 32px)); }
   #obsDialog { width: min(480px, calc(100vw - 32px)); }
   #stateDialog { width: min(620px, calc(100vw - 32px)); }
-  #stateDump { max-height: 60vh; overflow: auto; margin: 0; padding: 10px;
-    border: 1px solid var(--line); background: var(--paper-2); color: var(--dim); font: inherit; font-size: 9px; }
+  #stateDump { max-height: 60vh; overflow: auto; margin: 0; padding: 12px;
+    border: 1px solid var(--line); background: var(--paper-2); color: var(--dim); font: inherit; font-size: 11px; }
 
   /* The camera path, its nodes and the top-down orthographic, on a canvas of their
      own over the stage. Deliberately not in the rendered frame: that buffer is
@@ -512,7 +512,7 @@
   }
   #timeline[hidden] { display: none; }
   body.editing #hint { display: none; }
-  body.editing #panel { max-height: calc(100vh - var(--timeline-h) - var(--tlanes-h) - 32px); }
+  body.editing #panel { height: calc(100vh - var(--timeline-h) - var(--tlanes-h) - 38px); }
 
   /* The program-out source. Everything an operator needs and an encoder does not
      comes off, because a browser source captures the page rather than the canvas -
@@ -526,9 +526,9 @@
   body.program-out { background: #000; overflow: hidden; }
   #programOutReadout {
     position: fixed; left: 8px; bottom: 8px; z-index: 20;
-    font: 11px/1.5 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font: 13px/1.5 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
     color: rgba(230, 238, 248, 0.72); background: rgba(8, 11, 16, 0.6);
-    padding: 3px 8px; border-radius: 0; pointer-events: none; white-space: nowrap;
+    padding: 4px 10px; border-radius: 0; pointer-events: none; white-space: nowrap;
   }
 
   /* Two rows, both of a fixed height, and the fixedness is the load-bearing half
@@ -558,12 +558,12 @@
   .tplay:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
   .tclocks { display: flex; gap: 16px; align-items: baseline; }
-  .tclock small { display: block; font-size: 9px; letter-spacing: 0.14em;
+  .tclock small { display: block; font-size: 11px; letter-spacing: 0.14em;
     text-transform: uppercase; color: var(--faint); white-space: nowrap; }
-  .tclock output { font-size: 18px; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+  .tclock output { font-size: 22px; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
   /* Source time is derived from program time through the retime, never edited,
      so it reads as a secondary value rather than as a second control. */
-  .tclock.derived output { color: var(--dim); font-size: 12px; }
+  .tclock.derived output { color: var(--dim); font-size: 14px; }
 
   .tchips { margin-left: auto; display: flex; gap: 8px; flex-wrap: nowrap; align-items: center;
     min-width: 0; overflow-x: auto; scrollbar-width: none; }
@@ -575,14 +575,14 @@
 
   .tchip {
     flex: none;
-    display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px;
+    display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px;
     border: 1px solid var(--line); border-radius: 0; background: var(--paper-2);
-    font-size: 9px; color: var(--dim); white-space: nowrap;
+    font-size: 11px; color: var(--dim); white-space: nowrap;
   }
   /* A name is typed rather than chosen, so it is the one text field in the strip. */
   .tchip input[type=text] {
-    width: 118px; min-width: 0; border: 1px solid var(--line); border-radius: 0;
-    background: var(--paper-1); color: var(--ink); font: inherit; font-size: 9px; padding: 1px 4px;
+    width: 142px; min-width: 0; border: 1px solid var(--line); border-radius: 0;
+    background: var(--paper-1); color: var(--ink); font: inherit; font-size: 11px; padding: 1px 5px;
   }
   .tchip input[type=text]:focus-visible { outline: 1px solid var(--accent); outline-offset: 0; }
   /* The export name's refusal, keyed to the field it is now in. This rule used to name
@@ -601,11 +601,11 @@
   .tchip input[type=range] { width: 92px; flex: none; }
   .tchip select {
     border: 1px solid var(--line); border-radius: 0; background: var(--paper-3);
-    color: var(--ink); font: inherit; font-size: 9px; padding: 1px 3px;
+    color: var(--ink); font: inherit; font-size: 11px; padding: 1px 4px;
   }
   .tchip button {
     border: 1px solid var(--line); border-radius: 0; background: var(--paper-3);
-    color: var(--ink); font: inherit; font-size: 9px; padding: 1px 6px; cursor: pointer;
+    color: var(--ink); font: inherit; font-size: 11px; padding: 1px 7px; cursor: pointer;
   }
   .tchip button[disabled] { color: var(--dim); cursor: default; }
   .tchip.warn, #tNote { border-color: var(--warn); color: var(--warn); }
@@ -624,10 +624,10 @@
      a browser already has, and the gallery had to write the Escape half by hand twice
      before it stayed written. What this file owns is only how it looks. */
   dialog { border: 1px solid var(--line-2); border-radius: 0; background: var(--paper-1);
-    color: var(--ink); font: inherit; padding: 18px; width: min(460px, calc(100vw - 32px)); }
+    color: var(--ink); font: inherit; padding: 22px; width: min(552px, calc(100vw - 32px)); }
   dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
-  dialog h2 { margin: 0 0 8px; font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; }
-  dialog p { margin: 0 0 10px; color: var(--dim); font-size: 10px; line-height: 1.5; }
+  dialog h2 { margin: 0 0 10px; font-size: 13px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; }
+  dialog p { margin: 0 0 12px; color: var(--dim); font-size: 12px; line-height: 1.5; }
   #ppName {
     width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 0;
     background: var(--paper-2); color: var(--ink); font: inherit; margin-bottom: 12px;
@@ -644,25 +644,25 @@
     display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; align-content: start;
   }
   .ppgroup { margin-bottom: 10px; }
-  .ppgroup .pphead { margin-bottom: 4px; color: var(--dim); font-size: 10px;
+  .ppgroup .pphead { margin-bottom: 5px; color: var(--dim); font-size: 12px;
     letter-spacing: 0.08em; text-transform: uppercase; }
-  .ppgroup .check { font-size: 11px; margin-bottom: 3px; padding-left: 12px; }
-  .ppacts { display: flex; gap: 8px; margin-top: 14px; align-items: center; }
-  #ppCount { flex: 1; color: var(--dim); font-size: 10px; }
+  .ppgroup .check { font-size: 13px; margin-bottom: 4px; padding-left: 14px; }
+  .ppacts { display: flex; gap: 10px; margin-top: 17px; align-items: center; }
+  #ppCount { flex: 1; color: var(--dim); font-size: 12px; }
   /* `:disabled` last and every other state written as `:not(:disabled)`, because this
      is exactly where the gallery's stylesheet went wrong: `dialog .row .act.go` is
      three classes and an element, so it beat a plain `.act:disabled` on specificity
      and a disabled confirm went on looking pressable. */
   .ppacts button {
-    padding: 6px 14px; border: 1px solid var(--line); border-radius: 0;
-    background: transparent; color: var(--dim); font: inherit; font-size: 10px; cursor: pointer;
+    padding: 7px 17px; border: 1px solid var(--line); border-radius: 0;
+    background: transparent; color: var(--dim); font: inherit; font-size: 12px; cursor: pointer;
   }
   .ppacts button:hover:not(:disabled) { border-color: var(--line-3); color: var(--ink); }
   .ppacts button.go { border-color: var(--accent); color: var(--accent); background: var(--accent-low); }
   .ppacts button.go:hover:not(:disabled) { background: var(--accent); color: #04231f; }
   .ppacts button:disabled { opacity: 0.4; cursor: default; }
 
-  .tlanes { flex: 1; min-height: 0; display: grid; grid-template-columns: 96px minmax(0, 1fr); }
+  .tlanes { flex: 1; min-height: 0; display: grid; grid-template-columns: 115px minmax(0, 1fr); }
   .tcol { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .tcol.rail { border-right: 1px solid var(--line); }
   /* Clipped, which it did not need to be while the ruler always showed the whole clip
@@ -702,11 +702,11 @@
   .trow.ruler { flex: 1; min-height: 0; border-top: 0; }
   .tcol.rail .trow { display: flex; align-items: center; justify-content: space-between;
     gap: 6px; padding: 0 8px; overflow: hidden; }
-  .tcol.rail .trow span { color: var(--dim); font-size: 9px; overflow: hidden;
+  .tcol.rail .trow span { color: var(--dim); font-size: 11px; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; }
   .tcol.rail .trow.ruler span, .tcol.rail .trow.head span { color: var(--faint);
     letter-spacing: 0.14em; text-transform: uppercase; }
-  .tcol.rail .trow b { color: var(--ink); font-weight: 500; font-size: 9px;
+  .tcol.rail .trow b { color: var(--ink); font-weight: 500; font-size: 11px;
     font-variant-numeric: tabular-nums; flex: none; }
 
   /* ── the overview strip ────────────────────────────────────────────────────
@@ -714,9 +714,9 @@
      lanes keep the height they had. Nothing in here is drawn through `view.pct` -
      it is the whole clip by definition, which is the one thing the window cannot
      tell you about itself. */
-  .tmini { flex: none; height: 22px; display: grid; grid-template-columns: 96px minmax(0, 1fr);
+  .tmini { flex: none; height: 26px; display: grid; grid-template-columns: 115px minmax(0, 1fr);
     align-items: center; border-top: 1px solid var(--line); }
-  .tmini > span { padding: 0 8px; font-size: 9px; letter-spacing: 0.14em;
+  .tmini > span { padding: 0 10px; font-size: 11px; letter-spacing: 0.14em;
     text-transform: uppercase; color: var(--faint); }
   .tminibed { position: relative; height: 100%; overflow: hidden; cursor: pointer;
     touch-action: none; background: var(--paper-2); }
@@ -754,7 +754,7 @@
   .tbed { position: relative; cursor: pointer; touch-action: none; }
   .truler { position: absolute; inset: 0; }
   .ttick { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--line-2); }
-  .ttick label { position: absolute; top: 3px; left: 4px; font-size: 9px; color: var(--faint);
+  .ttick label { position: absolute; top: 3px; left: 5px; font-size: 11px; color: var(--faint);
     font-variant-numeric: tabular-nums; }
   /* The take's marks, on the ruler the playhead runs along. They live on the take
      rather than in any project, so every edit of that take shows the same ticks -
