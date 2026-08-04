@@ -432,19 +432,26 @@ await page.waitForFunction(() => !!globalThis.__kinect);
 // makes the buffer 640x360 with a 20px offset unless told otherwise. That moves
 // every buffer-size expectation and every pointer coordinate in this file.
 await page.evaluate('globalThis.__kinect.setTargetSize?.("640x400")');
-// And the viewport is sized to whatever the strip actually is, measured rather than
-// assumed. `TIMELINE_H` was a constant that went stale the moment the bar became two
-// rows, and staleness here is silent by construction: every image in this file is
-// compared against another image from the same run, so a stage 44px shorter than the
-// one named above agrees with itself perfectly and the header quietly stops being
-// true. The buffer is then asserted, because a tool whose first line says "640x400"
-// should be the thing that enforces it.
+// And the viewport is sized to whatever fixed furniture actually surrounds the stage,
+// measured rather than assumed. `TIMELINE_H` was a constant that went stale the moment
+// the bar became two rows, and the Pencil shell adds the same risk at the top: every
+// image in this file is compared against another image from the same run, so a shorter
+// stage agrees with itself perfectly and the header quietly stops being true. The
+// buffer is then asserted, because a tool whose first line says "640x400" should be the
+// thing that enforces it.
 {
-  const strip = await page.evaluate(`(() => {
-    const el = document.getElementById('timeline');
-    return el && !el.hidden ? Math.round(el.getBoundingClientRect().height) : 0;
+  const furniture = await page.evaluate(`(() => {
+    const strip = document.getElementById('timeline');
+    const appBar = document.getElementById('appBar');
+    return {
+      strip: strip && !strip.hidden ? Math.round(strip.getBoundingClientRect().height) : 0,
+      shell: appBar && !appBar.hidden ? Math.round(appBar.getBoundingClientRect().height) : 0,
+    };
   })()`);
-  await page.setViewportSize({ width: STAGE.width, height: STAGE.height + strip });
+  await page.setViewportSize({
+    width: STAGE.width,
+    height: STAGE.height + furniture.strip + furniture.shell,
+  });
 }
 await page.waitForFunction(() => !!globalThis.__kinect.timeline.transport(), null, { timeout: 20000 });
 await page.evaluate(INSTALL);
@@ -1263,7 +1270,7 @@ console.log('\n== 5. a look change while paused rebuilds the image and the estim
   })()`);
 
   // The speed slider needs its own, because its travel is logarithmic and its `value`
-  // is therefore a position rather than a rate. Writing 1.05 into it lands at 4x - the
+  // is therefore a position rather than a rate. Writing 1.20 into it lands at 4x - the
   // top of the range - and every assertion downstream would go on passing about a rate
   // nobody asked for. So the rate goes through the page's own mapping, and the rate
   // that came out is checked against the rate that went in rather than assumed.
@@ -1342,7 +1349,9 @@ console.log('\n== 5. a look change while paused rebuilds the image and the estim
   // (c) The control that makes the above mean something. Nudging the rate away
   // and back was what used to correct both surfaces, so if the repaint really
   // happened it has already done everything the nudge would do.
-  await slideRate(1.05);
+  // 1.20x is outside the editor's intentional 1.00x detent. The old 1.05x arm was
+  // correctly snapped back to 1.00x and crashed this proof on an unchanged main.
+  await slideRate(1.2);
   await settle();
   await slideRate(1);
   await settle();
@@ -1355,6 +1364,7 @@ console.log('\n== 5. a look change while paused rebuilds the image and the estim
   // (d) The grading move itself: a slider, dragged on the panel. `wake` because
   // it moves both surfaces at once - the image through the surface memory and the
   // estimate through the fade-and-wake half of the pre-roll.
+  await page.locator('#panelTabLook').click();
   const beforeWake = await renders();
   await slide('wake', 2500);
   await settle();

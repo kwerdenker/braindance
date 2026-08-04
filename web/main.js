@@ -74,6 +74,7 @@ function rememberOpened() {
 }
 
 const statusEl = document.getElementById('status');
+const appStatusEl = document.getElementById('appStatus');
 // Read here rather than beside the rest of the timeline, because `resize` runs at
 // boot and has to know how much of the window the strip is taking. Hidden it
 // measures zero, which is what keeps the live viewer's viewport exactly what it
@@ -1358,6 +1359,37 @@ function buildExportMenu(select) {
   return select;
 }
 
+/** The ratio controls are another view over `EXPORT_SIZES`, never another list. */
+function buildExportRatios(container, select) {
+  if (!container || !select) return [];
+  const buttons = EXPORT_SIZES.map((group) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.dataset.ratio = group.ratio;
+    button.textContent = group.ratio.replace(' DCI', '');
+    button.addEventListener('click', () => {
+      const values = new Set(group.sizes.map(([w, h]) => `${w}x${h}`));
+      if (!values.has(select.value)) {
+        const [w, h] = group.sizes[0];
+        select.value = `${w}x${h}`;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      paintExportRatioSelection(buttons, select);
+    });
+    container.appendChild(button);
+    return button;
+  });
+  paintExportRatioSelection(buttons, select);
+  return buttons;
+}
+
+function paintExportRatioSelection(buttons, select) {
+  const selected = select.selectedOptions[0]?.parentElement?.label ?? '';
+  for (const button of buttons) {
+    button.setAttribute('aria-pressed', String(button.dataset.ratio === selected));
+  }
+}
+
 /**
  * Adopt an output size: the editor reframes to it and the project remembers it.
  *
@@ -1492,10 +1524,10 @@ function resize() {
   // ask whether this call actually reallocated it. See the comment there for why the
   // question is worth asking rather than assuming the answer is always yes.
   const wasBuffer = renderer.getDrawingBufferSize(new THREE.Vector2());
-  // The stage is the window less whatever the timeline strip is taking, which is
-  // nothing at all while it is hidden. Overlaying it on the image instead would
-  // have cost nothing here and hidden the bottom of every frame being graded.
-  // The stage is the window less the timeline strip, and then the largest box of the
+  // The stage is the window less the application bar and whatever the timeline strip
+  // is taking, which is nothing at all while it is hidden. Overlaying either on the
+  // image would hide part of every frame being graded.
+  // Inside that space it is the largest box of the
   // target aspect that fits inside it. The letterbox is what makes the editor
   // WYSIWYG: the camera's aspect is the canvas's aspect is the file's aspect, so
   // nothing is stretched and nothing is cropped between here and the export.
@@ -1505,7 +1537,8 @@ function resize() {
   // wider than the window sees *more* world than the window is showing, and no mask
   // can draw what was never rendered.
   const availW = innerWidth;
-  const availH = Math.max(1, innerHeight - timelineEl.offsetHeight);
+  const appBarHeight = document.getElementById('appBar')?.offsetHeight ?? 0;
+  const availH = Math.max(1, innerHeight - timelineEl.offsetHeight - appBarHeight);
   const fitH = Math.max(1, Math.min(availH, Math.round(availW / targetAspect())));
   const fitW = Math.max(1, Math.round(fitH * targetAspect()));
   const width = outputSize ? outputSize.w : fitW;
@@ -1533,7 +1566,7 @@ function resize() {
   // this function is a temporal-dead-zone throw on the very first `resize()`.
   if (!outputSize) {
     stageBox.left = Math.round((availW - fitW) / 2);
-    stageBox.top = Math.round((availH - fitH) / 2);
+    stageBox.top = appBarHeight + Math.round((availH - fitH) / 2);
     renderer.domElement.style.position = 'fixed';
     renderer.domElement.style.left = `${stageBox.left}px`;
     renderer.domElement.style.top = `${stageBox.top}px`;
@@ -1777,8 +1810,8 @@ const PANEL_GROUPS = [
   // Source is what the point is coloured *by* and treatment is what is then made of
   // it, which is the axis worth seeing on the panel - picking a treatment used to
   // mean picking its source with it and there was no way to say otherwise.
-  { key: 'source', label: 'Reading · source' },
-  { key: 'treatment', label: 'Reading · treatment' },
+  { key: 'source', label: 'Reading · source', tab: 'look' },
+  { key: 'treatment', label: 'Reading · treatment', tab: 'look' },
   // What each reading is *made of*, rather than which reading you are in. Every one of
   // these was a literal in the fragment shader, so a reading was a picture you could
   // select and not adjust - and because they are ordinary registry parameters they
@@ -1793,6 +1826,7 @@ const PANEL_GROUPS = [
   {
     key: 'detail',
     label: 'Reading · detail',
+    tab: 'look',
     lookgroup: true,
     collapses: true,
     // The one group the default rule is not enough for, and it *widens* that rule rather
@@ -1825,6 +1859,7 @@ const PANEL_GROUPS = [
   {
     key: 'framing',
     label: 'Framing (metres)',
+    tab: 'framing',
     // Levelling sits above the box rather than below it, and it is a button and a note
     // around two ordinary sliders rather than a group of its own. Document state,
     // unlike the `sensor view` it sits under - the angle a bracket ended up at belongs
@@ -1848,22 +1883,22 @@ const PANEL_GROUPS = [
   // signal is conditioned into, where the points are moved to, how they are drawn,
   // what colour they take, what persists between frames, and what the optics do to
   // the result.
-  { key: 'conditioning', label: 'Depth conditioning', lookgroup: true },
-  { key: 'displacement', label: 'Displacement', lookgroup: true, collapses: true },
+  { key: 'conditioning', label: 'Depth conditioning', tab: 'look', lookgroup: true },
+  { key: 'displacement', label: 'Displacement', tab: 'region', lookgroup: true, collapses: true },
   // One region in the room, read three ways: it displaces, it scrambles, and it
   // masks. Everything here is metres in the sensor frame, so a look holds at any
   // output size without being referred to 1080p the way the screen-space terms are.
   // Half-extents at zero with a radius is a sphere; raise them and it becomes a
   // rounded box; take two to zero and it is a capsule. No shape selector, because an
   // enum could not keyframe and these sliders can.
-  { key: 'region', label: 'Region (metres)', lookgroup: true, collapses: true },
-  { key: 'points', label: 'Points', lookgroup: true },
-  { key: 'colour', label: 'Colour & tone', lookgroup: true },
+  { key: 'region', label: 'Region (metres)', tab: 'region', lookgroup: true, collapses: true },
+  { key: 'points', label: 'Points', tab: 'look', lookgroup: true },
+  { key: 'colour', label: 'Colour & tone', tab: 'look', lookgroup: true },
   // The three terms that accumulate across frames, together. Fade and wake are the
   // surface memory and trails is the afterimage buffer; they were two groups apart
   // while doing one thing, which is how a look gets tuned twice.
-  { key: 'time', label: 'Time (ms)', lookgroup: true },
-  { key: 'optical', label: 'Optical', lookgroup: true, collapses: true },
+  { key: 'time', label: 'Time (ms)', tab: 'look', lookgroup: true },
+  { key: 'optical', label: 'Optical', tab: 'look', lookgroup: true, collapses: true },
   // The two parameters that are not part of the clip, in the one group that says so.
   // They are tagged `view` in the registry, they get no keyframe control and no
   // preset carries them - and while they sat inside look groups that read as an
@@ -1871,6 +1906,7 @@ const PANEL_GROUPS = [
   {
     key: 'viewer',
     label: 'Viewer',
+    tab: 'camera',
     lookgroup: true,
     after: () => [panelNote('viewNote', 'Not saved with the clip and not exported: these '
       + 'change what you are looking at, not what the frame is.')],
@@ -2325,6 +2361,50 @@ function normalise(name, spec, value) {
 
 const values = new Map();
 const panelControls = new Map();
+// Declared up here beside `panelControls` rather than down with the button that fills
+// it, because `writeControl` reads it and `params.set` calls `writeControl` while the
+// registry is being seeded - long before the panel generator further down has run. A
+// `const` read before its own declaration is a TDZ error rather than an empty map, so
+// the map that gets read during boot has to be declared where boot can already see it.
+const resetButtons = new Map();
+
+/**
+ * What a reset puts back, asked of the same function that decides what `set` stores.
+ *
+ * Not the registry's `def` literal. `set` puts every value through `normalise`, which
+ * clamps to the bounds and snaps to the step grid, and several defaults do not survive
+ * that untouched - `rim` is declared `0.55` against a `0.01` step and `exposure` `1.15`
+ * against `0.05`. Comparing a stored value against the raw literal would report a row as
+ * modified while it sits exactly where a reset would leave it, so the row would offer to
+ * revert a parameter already on its default and go on offering after the press. One
+ * function deciding both what gets stored and what "default" means is the only shape in
+ * which those two cannot drift apart.
+ */
+function resetTarget(name) {
+  const spec = specOf(name);
+  return normalise(name, spec, spec.def);
+}
+
+/**
+ * Whether this row is offering a reset, re-derived from the write that moved the value.
+ *
+ * The state is read off the registry every time rather than remembered beside it. A
+ * boolean kept here would be a second answer to "has this parameter been moved", and the
+ * registry is reached by presets, by project files, by undo and by step 5's tracks as
+ * well as by the slider - so a remembered flag would be right only for the writes that
+ * happened to go through the panel, and silently wrong for every other door.
+ */
+function refreshReset(name, value) {
+  const button = resetButtons.get(name);
+  if (!button) return;
+  const modified = value !== resetTarget(name);
+  button.dataset.modified = modified ? 'yes' : 'no';
+  // `disabled` rather than `hidden`, and the CSS hides it by visibility: the slot is
+  // reserved whether or not the control occupies it, so a row does not change width the
+  // moment a parameter leaves its default. A row that reflows under the pointer is how a
+  // drag that began on a slider ends on the control that slid into its place.
+  button.disabled = !modified;
+}
 
 function writeControl(name, value) {
   const el = panelControls.get(name);
@@ -2338,6 +2418,12 @@ function writeControl(name, value) {
   // so the readout says exactly what the slider says even if they ever disagree.
   const out = el.parentElement.querySelector('output');
   if (out) out.textContent = el.value;
+  // Refreshed here for the reason `writeControl` exists at all: this is the one place a
+  // scalar's shown state is brought level with the registry, so a reset offered on a row
+  // whose value has gone back to its default would be the panel and the registry
+  // disagreeing about what modified means. Every door into the registry ends up on this
+  // line, which is what makes a preset and an undo move the control as surely as a drag.
+  refreshReset(name, value);
 }
 
 // Announced after every registry write, so whatever is showing the image can
@@ -2530,6 +2616,87 @@ function makeKeyButton(name) {
   return button;
 }
 
+// The reset glyph, drawn as a stroked path rather than set as a background image. The
+// panel's controls take their colour from the state around them - dim at rest, brighter
+// under the pointer, and gone while the row is on its default - and a background image
+// needs one copy of the asset per colour it appears in, which is how the state nobody
+// looks at ends up wearing the wrong one. A stroke of `currentColor` is one asset that
+// cannot disagree with the rule that coloured it.
+function resetGlyph() {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '2.5');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  // Decorative: the button already carries the whole of what this means in its label,
+  // and a screen reader reading the glyph as well would announce the control twice.
+  svg.setAttribute('aria-hidden', 'true');
+  for (const d of ['M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8', 'M3 3v5h5']) {
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('d', d);
+    svg.append(path);
+  }
+  return svg;
+}
+
+/**
+ * One reset control per keyframable slider, built in the pass that built the row.
+ *
+ * It writes through `params.set` and nothing else. A reset that assigned the default
+ * straight into the value map would be a second write path around the registry's one
+ * door - it would skip `apply`, so the image would keep the old value; it would skip
+ * `paramWritten`, so nothing downstream would rebuild; and it would skip the group
+ * reveal, so a group open only because this parameter was carrying something would stay
+ * open over a parameter that is no longer carrying anything.
+ */
+function makeResetButton(name) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'reset';
+  // The parameter name, so a sweep can credit any row's reset by the attribute instead
+  // of naming the rows that have one today - a rule listing the rows that happen to be
+  // off their defaults stops covering the row moved tomorrow.
+  button.dataset.reset = name;
+  button.setAttribute('aria-label', `${name} reset to default`);
+  button.append(resetGlyph());
+  button.addEventListener('click', () => {
+    params.set(name, resetTarget(name));
+    history.commit();
+    // The press removes its own control: writing the default makes the row unmodified,
+    // which takes the button out of the tab order while it is the focused element, and
+    // focus falls to the document body with no way back into the panel short of tabbing
+    // from the top. It moves to the slider this reset just changed, which is both the
+    // control the operator was reasoning about and the one whose value now needs reading.
+    const slider = panelControls.get(name);
+    slider.focus();
+    // And the slider is not always there to take it. `params.set` ends in
+    // `groupRevealChanged`, and a collapsible group is open *because* one of its
+    // parameters is carrying something - so resetting the last one that was takes away
+    // the evidence holding the group open, the group shuts, and `.group.shut` puts
+    // `display: none` on every row in it. That happens inside the write above, before
+    // the line above this ran, and `focus()` on a node that is not being displayed is a
+    // no-op that reports nothing: the caret is left on the body exactly as if this
+    // handler had never tried. The group's own toggle is the nearest thing still on
+    // screen, and it is what the operator would press to get the row back.
+    if (document.activeElement !== slider) {
+      const toggle = button.closest('.group')?.querySelector('.grouptoggle');
+      if (toggle) toggle.focus();
+    }
+  });
+  // Born closed, the way the keyframe button beside it is born `none`. `params.reset()`
+  // runs after this generator and writes every parameter, so the first real answer
+  // arrives through `writeControl` before anything is painted - but a control whose
+  // state is undefined until some later write is a control that is briefly neither
+  // shown nor hidden, and the CSS rule that hides it keys off this attribute.
+  button.dataset.modified = 'no';
+  button.disabled = true;
+  resetButtons.set(name, button);
+  return button;
+}
+
 // The panel is a view on the registry and holds no parameter data of its own, and it
 // is now built from the registry rather than written out beside it. A parameter used
 // to cost three edits that had to agree: an entry here, a hand-written row in
@@ -2683,6 +2850,7 @@ for (const group of PANEL_GROUPS) {
   // `#recordGroup` and `#recLookGroup`, and a generated group minting ids in the same
   // shape is one registry key away from colliding with one of them silently.
   groupNode.dataset.group = group.key;
+  groupNode.dataset.panelTab = group.tab;
   // Named apart from the keyframe button the row loop below declares, which is a
   // different button in a narrower scope: one `button` meaning two things in one loop
   // is how the wrong element ends up registered.
@@ -2730,7 +2898,12 @@ for (const group of PANEL_GROUPS) {
         checkrow.append(row, button);
         groupNode.append(checkrow);
       } else {
-        row.append(button);
+        // The reset sits after the keyframe control, which is the order the design puts
+        // them in and the order the row reads in: what this value is, whether it is
+        // keyed, and how to put it back. Only the slider rows get one - a step
+        // parameter's control is its own label and there is no slot beside it, which is
+        // why the checkbox branch above appends nothing here.
+        row.append(button, makeResetButton(name));
         groupNode.append(row);
       }
     } else {
@@ -2780,6 +2953,36 @@ for (const group of PANEL_GROUPS) {
     throw new Error(`the panel generator emitted ${panelRowsEmitted} rows for ${owned.length} `
       + 'parameters: a panel that is not the registry is a look nothing can reach');
   }
+}
+
+// The four Pencil inspectors are views over the one registry-built panel. Groups are
+// tagged where they are declared above, so adding a parameter to a group inherits its
+// inspector without another list of control ids. Hiding never removes a row from the
+// document: the registry and proof sweeps still see the complete surface.
+const panelTabsEl = document.getElementById('panelTabs');
+const panelTabButtons = [...panelTabsEl.querySelectorAll('.paneltab')];
+let activePanelTab = 'look';
+
+function setPanelTab(tab) {
+  if (!['camera', 'framing', 'look', 'region'].includes(tab)) return false;
+  activePanelTab = tab;
+  for (const button of panelTabButtons) {
+    button.setAttribute('aria-selected', String(button.dataset.panelTab === tab));
+  }
+  for (const group of document.querySelectorAll('#panelBody > [data-panel-tab]')) {
+    group.hidden = group.dataset.panelTab !== tab;
+  }
+  document.getElementById('panelBody').scrollTop = 0;
+  return true;
+}
+
+for (const button of panelTabButtons) {
+  button.addEventListener('click', () => setPanelTab(button.dataset.panelTab));
+}
+
+function showInspector() {
+  panelTabsEl.hidden = false;
+  setPanelTab(activePanelTab);
 }
 
 params.reset();
@@ -2905,6 +3108,18 @@ function applyDeliverable(deliverable) {
   }
   timingChanged();
   paintDeliverable();
+  // The format segments, beside the readout that was already repainted here. They read
+  // the codec off the deliverable and are painted nowhere else, so adopting a stored
+  // document moved the codec the render will use while the buttons went on showing
+  // whichever one was last pressed - the dialog disagreeing with the document about what
+  // it is about to encode, in the one direction where the document is right.
+  //
+  // This is the rule `paintExportFormats` states in its own comment, and the same shape as
+  // the reset rows: a control that shows document state has to be repainted by every door
+  // into that state, not only by the door it happens to sit next to. A project file, an
+  // autosave and this dialog all reach a deliverable, and only one of them is these three
+  // buttons.
+  paintExportFormats();
 }
 
 function setClipInOut(values) {
@@ -4183,6 +4398,10 @@ function setStatus() {
     nodes.push(document.createElement('br'), note);
   }
   statusEl.replaceChildren(...nodes);
+  if (appStatusEl) {
+    appStatusEl.textContent = `${sensorLabel}${sensorLabel ? ' · ' : ''}${rate.textContent} fps in`
+      + (sensorState ? ` · ${sensorState}` : '');
+  }
 }
 
 async function pumpColorDecode() {
@@ -6512,7 +6731,6 @@ const ui = {
   shadeIn: document.getElementById('tShadeIn'),
   shadeOut: document.getElementById('tShadeOut'),
   note: document.getElementById('tNote'),
-  cameraGroup: document.getElementById('cameraGroup'),
   camKey: document.getElementById('camKey'),
   camClear: document.getElementById('camClear'),
   camView: document.getElementById('camView'),
@@ -6522,6 +6740,9 @@ const ui = {
   levelNote: document.getElementById('levelNote'),
   cropReset: document.getElementById('cropReset'),
   exportSize: buildExportMenu(document.getElementById('tExportSize')),
+  exportRatios: document.getElementById('exportRatios'),
+  exportFormats: document.getElementById('exportFormats'),
+  exportDialog: document.getElementById('exportDialog'),
   exportGo: document.getElementById('tExport'),
   exportNote: document.getElementById('tExportNote'),
   exportName: document.getElementById('tExportName'),
@@ -6534,6 +6755,8 @@ const ui = {
   setOut: document.getElementById('tSetOut'),
   clearRange: document.getElementById('tClearRange'),
   ease: document.getElementById('tEase'),
+  prevKey: document.getElementById('tPrevKey'),
+  nextKey: document.getElementById('tNextKey'),
   deleteKey: document.getElementById('tDeleteKey'),
   deliverable: document.getElementById('tDeliverable'),
   deliverableNew: document.getElementById('tDeliverableNew'),
@@ -6570,6 +6793,56 @@ const ui = {
   recRange: document.getElementById('recRange'),
   extended: document.getElementById('extended'),
 };
+
+const exportRatioButtons = buildExportRatios(ui.exportRatios, ui.exportSize);
+
+/**
+ * The output format, as one segmented control over the deliverable's `codec`.
+ *
+ * The three buttons carry the codec name the server's table is keyed by rather than a
+ * label the dialog translates: a translation table here would be a second place that has
+ * to agree with `CODECS` in `server/export.js`, and the one that drifts is the one nobody
+ * exports with. MP4 was markup and the other two were disabled buttons carrying a
+ * `title` that said the renderer could not do it - which stopped being true when the
+ * server learned prores and the image sequence, and a control that lies about a
+ * capability is worse than one that is missing, because nobody goes looking for it.
+ *
+ * The selection is painted from the document and never remembered here, for the same
+ * reason the row resets are: the deliverable is reached by the project file and by the
+ * autosave as well as by this dialog, so a pressed state kept beside it would be right
+ * only for the presses that came through these three buttons.
+ */
+// The keys are the server's, not this file's: `CODECS` in `server/export.js` is where a
+// codec is declared and `validateExport` is what refuses an unknown one at both doors.
+// This list exists only to say which of them the dialog puts on screen - `lossless` is a
+// real codec the dialog does not offer - so a name added here that the table does not
+// carry is a button that fails at the end of a render rather than at the press.
+// `editor-check` reads the table out of that file and asserts these are a subset of it,
+// so the two cannot drift in silence.
+const EXPORT_CODECS = ['h264', 'prores', 'pngseq'];
+
+function paintExportFormats() {
+  const codec = activeDeliverable?.codec ?? 'h264';
+  for (const button of ui.exportFormats.querySelectorAll('button[data-codec]')) {
+    button.setAttribute('aria-pressed', String(button.dataset.codec === codec));
+  }
+}
+
+function setExportCodec(codec) {
+  // Refused here rather than trusted, because the value comes off an attribute in the
+  // markup and a typo there would otherwise travel all the way to ffmpeg's argument list.
+  if (!EXPORT_CODECS.includes(codec)) {
+    throw new Error(`unknown export codec ${JSON.stringify(codec)}: the dialog offers ${EXPORT_CODECS.join(', ')}`);
+  }
+  ensureActiveDeliverable();
+  activeDeliverable.codec = codec;
+  paintDeliverable();
+  paintExportFormats();
+}
+
+for (const button of ui.exportFormats.querySelectorAll('button[data-codec]')) {
+  button.addEventListener('click', () => setExportCodec(button.dataset.codec));
+}
 
 // The chips strip hides its scrollbar so the bar keeps its 51px and the lanes stay
 // where a dragged key expects them - which also hid the only evidence that anything
@@ -9291,6 +9564,260 @@ const documentsIn = async (kind) => {
   return body[kind];
 };
 
+/**
+ * The preset picker: a trigger that names the chosen preset and a listbox that can hold
+ * what a native `<option>` cannot - a mark on the entry currently applied, and a delete on
+ * the entries that have one.
+ *
+ * **The trigger keeps `value`, and that is deliberate rather than incidental.** A
+ * `<button>` has a `value` IDL attribute, so `el.value` goes on meaning exactly what it
+ * meant when this was a `<select>`: the name of the chosen preset. Every reader downstream
+ * and every tool that drives this surface is unchanged, and the failure recorded in
+ * `docs/instruments.md` about a control whose `value` stops meaning the quantity it is
+ * named after does not arise, because the quantity did not move.
+ *
+ * **Only user presets get a delete.** A shipped look lives in a second directory the store
+ * reads and never writes, so `DELETE` on one is refused at the server; drawing a control
+ * that is always refused would be worse than drawing none. The slot is not reserved for it
+ * either - unlike the panel's reset, where a row moving sideways mid-drag was the failure
+ * being avoided, nothing here is dragged and a missing glyph on a shipped look reads as
+ * "this one is not yours" rather than as a gap.
+ *
+ * The add button is on the editor's picker and not on the recorder's, because "add" is the
+ * save flow under another name and the recorder has no save control to open. Pencil draws
+ * it the same way - the add button is in the editor's menu and the Record surface's preset
+ * row has none - so this is the design being followed rather than a corner being cut.
+ */
+// Built the way `resetGlyph` above builds its own, and for the same reason: a stroke of
+// `currentColor` is one asset that cannot disagree with the rule that coloured it, and it
+// is nodes rather than a string of markup, so nothing here is ever parsed as HTML.
+// `lucide/trash-2`, which is what the design names.
+function trashGlyph() {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '2');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  // Decorative: the button's own label already says which preset this deletes.
+  svg.setAttribute('aria-hidden', 'true');
+  for (const d of ['M3 6h18', 'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6',
+    'M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2', 'M10 11v6', 'M14 11v6']) {
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('d', d);
+    svg.append(path);
+  }
+  return svg;
+}
+
+const TYPE_AHEAD_MS = 700;
+const pickers = [];
+
+function definePicker(trigger, list, { adds = null, note = null } = {}) {
+  const picker = { trigger, list, adds, note, docs: [], typed: '', typedAt: 0 };
+  pickers.push(picker);
+
+  trigger.addEventListener('click', () => (list.hidden ? openPicker(picker) : closePicker(picker)));
+  trigger.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      openPicker(picker);
+    }
+  });
+  list.addEventListener('keydown', (event) => pickerKey(picker, event));
+  // On the list rather than on each option, so an option built by a later rebuild is
+  // driven by existing rather than by having had a listener attached to it.
+  list.addEventListener('click', (event) => {
+    const remove = event.target.closest('.pickerdelete');
+    const option = event.target.closest('.pickeroption');
+    if (remove && option) {
+      event.stopPropagation();
+      deletePreset(picker, option.dataset.name);
+      return;
+    }
+    if (option) choosePicker(picker, option.dataset.name, { close: true });
+  });
+  return picker;
+}
+
+function openPicker(picker) {
+  for (const other of pickers) if (other !== picker) closePicker(other);
+  picker.list.hidden = false;
+  picker.trigger.setAttribute('aria-expanded', 'true');
+  const here = picker.list.querySelector('.pickeroption.here') ?? picker.list.querySelector('.pickeroption');
+  if (here) here.focus();
+  else picker.list.focus();
+}
+
+function closePicker(picker, { restoreFocus = false } = {}) {
+  if (picker.list.hidden) return;
+  picker.list.hidden = true;
+  picker.trigger.setAttribute('aria-expanded', 'false');
+  // The caret has to land somewhere it can be seen. A list that shuts while holding focus
+  // strands it on the body, which is the class `menu-close-strands-focus` already polices
+  // on the application menus.
+  if (restoreFocus || picker.list.contains(document.activeElement)) picker.trigger.focus();
+}
+
+/** Every option currently in the list, in the order a keyboard walks them. */
+const pickerOptions = (picker) => [...picker.list.querySelectorAll('.pickeroption')];
+
+function pickerKey(picker, event) {
+  const options = pickerOptions(picker);
+  if (!options.length) return;
+  const at = options.indexOf(document.activeElement.closest('.pickeroption'));
+  const move = (to) => {
+    event.preventDefault();
+    options[Math.max(0, Math.min(options.length - 1, to))].focus();
+  };
+  if (event.key === 'ArrowDown') return move(at + 1);
+  if (event.key === 'ArrowUp') return move(at - 1);
+  if (event.key === 'Home') return move(0);
+  if (event.key === 'End') return move(options.length - 1);
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    return closePicker(picker, { restoreFocus: true });
+  }
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    const option = document.activeElement.closest('.pickeroption');
+    if (option) choosePicker(picker, option.dataset.name, { close: true });
+    return;
+  }
+  // Type-ahead. One printable character at a time, accumulated inside a window, which is
+  // what makes `bl` reach blackwall rather than landing on whatever begins with `l`.
+  if (event.key.length !== 1 || event.altKey || event.ctrlKey || event.metaKey) return;
+  const now = performance.now();
+  picker.typed = now - picker.typedAt > TYPE_AHEAD_MS ? event.key : picker.typed + event.key;
+  picker.typedAt = now;
+  const wanted = picker.typed.toLowerCase();
+  const hit = options.find((option) => option.dataset.name.toLowerCase().startsWith(wanted));
+  if (hit) {
+    event.preventDefault();
+    hit.focus();
+  }
+}
+
+/** Write the chosen name onto the trigger, which is where every reader looks for it. */
+function choosePicker(picker, name, { close = false } = {}) {
+  picker.trigger.value = name ?? '';
+  paintPicker(picker);
+  if (close) closePicker(picker, { restoreFocus: true });
+}
+
+function paintPicker(picker) {
+  const chosen = picker.trigger.value;
+  picker.trigger.querySelector('.pickervalue').textContent = chosen || '—';
+  for (const option of pickerOptions(picker)) {
+    const here = option.dataset.name === chosen;
+    option.classList.toggle('here', here);
+    option.setAttribute('aria-selected', String(here));
+    option.querySelector('.pickercheck').textContent = here ? '✓' : '';
+  }
+}
+
+function buildPicker(picker, docs) {
+  picker.docs = docs;
+  const rows = docs.map((doc) => {
+    const option = document.createElement('div');
+    option.className = 'pickeroption';
+    option.setAttribute('role', 'option');
+    option.setAttribute('aria-selected', 'false');
+    option.tabIndex = -1;
+    option.dataset.name = doc.name;
+    option.dataset.builtin = String(Boolean(doc.builtin));
+    const check = document.createElement('span');
+    check.className = 'pickercheck';
+    const label = document.createElement('span');
+    label.className = 'pickerlabel';
+    // The shipped mark the `<select>` carried, kept: it says the same thing the trailing
+    // dot said, that saving over this one forks it rather than editing it.
+    label.textContent = doc.builtin ? `${doc.name} ·` : doc.name;
+    option.append(check, label);
+    if (!doc.builtin) {
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'pickerdelete';
+      remove.setAttribute('aria-label', `Delete preset ${doc.name}`);
+      remove.tabIndex = -1;
+      remove.append(trashGlyph());
+      option.append(remove);
+    }
+    return option;
+  });
+  picker.list.replaceChildren(...rows);
+  if (picker.adds) {
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'pickeradd';
+    add.id = picker.adds;
+    add.setAttribute('aria-label', 'Save the current look as a new preset');
+    add.textContent = '+';
+    add.addEventListener('click', () => {
+      closePicker(picker, { restoreFocus: true });
+      ui.presetSave.click();
+    });
+    picker.list.append(add);
+  }
+  paintPicker(picker);
+}
+
+/**
+ * Delete a user preset, and put the caret somewhere afterwards.
+ *
+ * The rebuild is the whole difficulty: the row holding focus is the row being removed, so
+ * the list that comes back has no element the browser could have kept the caret on. The
+ * name of the row that will take its place is worked out *before* the refresh and looked up
+ * after, which is the shape `viewer-drops-focus-on-rebuild` already polices in the gallery -
+ * a rebuild that strands focus leaves a keyboard with nowhere to be.
+ */
+async function deletePreset(picker, name) {
+  const options = pickerOptions(picker);
+  const at = options.findIndex((option) => option.dataset.name === name);
+  const successor = options[at + 1]?.dataset.name ?? options[at - 1]?.dataset.name ?? null;
+  await withPresetGesture(picker.note ?? ui.note, () => whileWriting(async () => {
+    // The content type is declared even though a delete carries no body, because every
+    // route in the table that changes something requires it - the rule is about the
+    // request being a deliberate one from a page that meant it, not about there being
+    // JSON to read. Without it the server answers 415 and the entry stays in the list,
+    // which is exactly how this arrived: section 19 deleted nothing and said so.
+    const res = await fetch(`/presets/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!res.ok) throw new Error(`${res.status} ${(await res.text()).trim() || res.statusText}`);
+    // The chosen name goes with the document it named. Leaving it on the trigger would
+    // leave `apply` pointed at a preset the server would answer 404 for.
+    if (picker.trigger.value === name) picker.trigger.value = '';
+    await refreshPresets();
+  })).catch((err) => {
+    if (picker.note) picker.note.textContent = `could not delete ${name}: ${err.message}`;
+    else showTimelineError(err);
+    console.error(err);
+  });
+  if (picker.list.hidden) return;
+  const back = successor
+    ? picker.list.querySelector(`.pickeroption[data-name="${CSS.escape(successor)}"]`)
+    : null;
+  if (back) back.focus();
+  else closePicker(picker, { restoreFocus: true });
+}
+
+definePicker(ui.preset, document.getElementById('tPresetList'), { adds: 'tPresetAdd' });
+definePicker(ui.recPreset, document.getElementById('recPresetList'), { note: ui.recLookNote });
+
+// A press outside any open list shuts it, which is what makes this behave like the menu it
+// replaces rather than like a box that has to be dismissed by its own control.
+addEventListener('pointerdown', (event) => {
+  for (const picker of pickers) {
+    if (!picker.list.hidden && !picker.trigger.contains(event.target) && !picker.list.contains(event.target)) {
+      closePicker(picker);
+    }
+  }
+});
+
 async function refreshPresets() {
   const list = await documentsIn('presets');
   // Both selectors, because the preset library is one library and the recorder is
@@ -9298,14 +9825,21 @@ async function refreshPresets() {
   // grade towards is the whole reason presets are a library rather than two
   // hardcoded modes. The two are never visible at once, so this is one list with two
   // views rather than two lists that could drift.
-  for (const el of [ui.preset, ui.recPreset]) {
-    el.replaceChildren(new Option('—', ''));
-    // A shipped look is marked rather than segregated into its own group, because it
-    // is the same kind of document and saving over one forks it: a separator implying
-    // two libraries would be describing the storage rather than what you can do. The
-    // value stays the bare name, so everything downstream is unchanged.
-    for (const doc of list) el.appendChild(new Option(doc.builtin ? `${doc.name} ·` : doc.name, doc.name));
-    if (appliedPreset) el.value = appliedPreset.name;
+  // A shipped look is marked rather than segregated into its own group, because it is
+  // the same kind of document and saving over one forks it: a separator implying two
+  // libraries would be describing the storage rather than what you can do. The value
+  // stays the bare name, so everything downstream is unchanged.
+  for (const picker of pickers) {
+    buildPicker(picker, list);
+    // Only when the applied preset is still in the library. It is not, the moment one is
+    // deleted - and writing a name the list no longer offers back onto the trigger would
+    // leave `apply` aimed at a document the server answers 404 for, which is the state
+    // the delete above is careful to leave the trigger out of.
+    if (appliedPreset && list.some((doc) => doc.name === appliedPreset.name)) {
+      choosePicker(picker, appliedPreset.name);
+    } else {
+      paintPicker(picker);
+    }
   }
   return list;
 }
@@ -9765,6 +10299,43 @@ function paintEase() {
   ui.ease.classList.toggle('off', !selected);
   for (const btn of ui.ease.querySelectorAll('button[data-ease]')) btn.disabled = !shapeable;
   ui.deleteKey.disabled = !selected;
+  // A third condition, and deliberately not `selected`: walking to the next key is
+  // meaningful the moment the track has one to walk to, and it is how you *reach* a key
+  // in order to select it. Tying it to a selection would make the control that finds a
+  // key require a key to have been found.
+  ui.prevKey.disabled = neighbourKeyTime(-1) === null;
+  ui.nextKey.disabled = neighbourKeyTime(1) === null;
+}
+
+/**
+ * The nearest key strictly before or after the playhead on the selected parameter's
+ * track, or null when there is none that way.
+ *
+ * Strictly, and by more than the key tolerance: a key the playhead is already sitting on
+ * is not somewhere to go, and `keyAt` uses the same tolerance to decide the playhead is
+ * *at* a key, so anything closer than that would be a press that appears to do nothing.
+ * The owner is the selection's when there is one and the retime otherwise, because the
+ * retime curve is the one track that exists without anything in the panel being chosen.
+ */
+function neighbourKeyTime(direction) {
+  if (!timeline) return null;
+  const owner = selection?.owner ?? null;
+  if (owner === null) return null;
+  const now = playheadSec();
+  const tol = keyTolerance();
+  const times = keysOf(owner)
+    .map((k) => k.t)
+    .filter((t) => (direction < 0 ? t < now - tol : t > now + tol));
+  if (times.length === 0) return null;
+  return direction < 0 ? Math.max(...times) : Math.min(...times);
+}
+
+for (const [button, direction] of [[ui.prevKey, -1], [ui.nextKey, 1]]) {
+  button.addEventListener('click', () => {
+    const t = neighbourKeyTime(direction);
+    if (t === null) return;
+    goTo(t);
+  });
 }
 
 ui.deleteKey.addEventListener('click', () => { deleteSelectedKey(); });
@@ -9896,6 +10467,7 @@ const planVec = new THREE.Vector3();
 // Whether the furniture is on screen at all. Off in the live viewer, because there
 // is no clip there to compose.
 let chromeOn = false;
+let topViewVisible = true;
 // Whether anything has rendered since the furniture was last drawn, so a paint
 // that produced no image does not redraw a path over a frame that never changed.
 let chromeStale = false;
@@ -10099,6 +10671,8 @@ function drawChrome() {
   }
   drawNodes((p) => projectThrough(p, viewCamera, stage));
 
+  if (!topViewVisible) return;
+
   // ── the top-down. A camera move is the one thing you cannot judge from inside
   // the camera, so this is where the path is actually edited.
   const rect = insetRect();
@@ -10202,7 +10776,8 @@ function viewUnder(clientX, clientY) {
   const y = clientY - canvas.top;
   if (x < 0 || y < 0 || x > canvas.width || y > canvas.height) return null;
   const inset = insetRect();
-  const plan = x >= inset.x && x <= inset.x + inset.w && y >= inset.y && y <= inset.y + inset.h;
+  const plan = topViewVisible
+    && x >= inset.x && x <= inset.x + inset.w && y >= inset.y && y <= inset.y + inset.h;
   return { plan, x, y };
 }
 
@@ -10723,10 +11298,25 @@ ui.exportName.addEventListener('input', paintExportName);
 let lastExport = null;
 
 function paintExportSave() {
-  ui.exportSave.disabled = !lastExport || !CAN_SAVE_AS;
-  ui.exportSave.title = CAN_SAVE_AS
-    ? (lastExport ? `Save a copy of ${lastExport.file}` : 'Render something first')
-    : 'This browser has no file picker - the render is in the exports directory on the server';
+  // **A sequence is a directory, and this button hands over one file.** `done.href` for
+  // the image-sequence codec names the directory the numbered frames were written into,
+  // not a file, so the fetch behind this button would ask the static handler for a
+  // directory and be answered with a 404 - a save that fails at the end, after the
+  // picker has already asked the operator where to put it. `frameExt` is the server's
+  // own answer to "is this artifact a directory", carried on `done` for exactly this,
+  // so the refusal is read off the export rather than inferred from the file name.
+  //
+  // Refused rather than quietly saving the first frame, and refused here rather than
+  // inside the click, because a button that opens a picker and then fails is worse than
+  // one that says beforehand why it cannot: the frames are already on the server, and
+  // saying where they are is more use than a sheet that leads nowhere.
+  const sequence = lastExport?.frameExt != null;
+  ui.exportSave.disabled = !lastExport || !CAN_SAVE_AS || sequence;
+  ui.exportSave.title = !CAN_SAVE_AS
+    ? 'This browser has no file picker - the render is in the exports directory on the server'
+    : sequence
+      ? `${lastExport.file} is a directory of ${lastExport.frameExt} frames - it is in the exports directory on the server`
+      : (lastExport ? `Save a copy of ${lastExport.file}` : 'Render something first');
 }
 
 // The export control: one size, a name and one button. What is exported is the clip,
@@ -10750,7 +11340,7 @@ ui.exportGo.addEventListener('click', async () => {
         sayExport(`export ${Math.round((n / total) * 100)}% · frame ${n}/${total}`);
       },
     });
-    lastExport = { href: done.href, file: done.href.split('/').pop() };
+    lastExport = { href: done.href, file: done.href.split('/').pop(), frameExt: done.frameExt ?? null };
     sayExport(`${lastExport.file} · ${done.frames} frames · ${(done.bytes / 1e6).toFixed(1)} MB `
       + `in ${(done.elapsedMs / 1000).toFixed(1)}s`);
   } catch (err) {
@@ -10791,7 +11381,11 @@ paintExportSave();
 
 // Changing the export size reframes the editor, because the point of letterboxing
 // the stage is that the two are never allowed to disagree.
-ui.exportSize.addEventListener('change', () => { setTargetSize(ui.exportSize.value); history.commit(); });
+ui.exportSize.addEventListener('change', () => {
+  setTargetSize(ui.exportSize.value);
+  paintExportRatioSelection(exportRatioButtons, ui.exportSize);
+  history.commit();
+});
 setTargetSize(DEFAULT_EXPORT_SIZE, { fromDocument: true });
 
 ui.mark.addEventListener('click', () => { markHere().catch(showTimelineError); });
@@ -11021,7 +11615,10 @@ ui.presetFile.addEventListener('change', () => {
     try {
       const saved = await importPresetFile(file);
       await refreshPresets();
-      ui.preset.value = saved.name;
+      // Through the picker rather than by assigning `value`, so the name on the trigger
+      // and the mark in the list are written by one call. Assigning the property alone
+      // would leave the control reading its old name over a library that has the new one.
+      choosePicker(pickers.find((p) => p.trigger === ui.preset), saved.name);
       say(`imported ${saved.name} · ${saved.rev.slice(7, 15)}`);
     } catch (err) {
       showTimelineError(err);
@@ -11141,6 +11738,344 @@ ui.deliverableNew.addEventListener('click', async () => {
     say(`saved deliverable ${name}`);
   } catch (err) {
     showTimelineError(err);
+  }
+});
+
+// ---------------------------------------------------------- application shell
+
+const shell = {
+  surfaceName: document.getElementById('surfaceName'),
+  menus: [...document.querySelectorAll('.appmenu')],
+  saveProject: document.getElementById('menuSaveProject'),
+  render: document.getElementById('menuRender'),
+  export: document.getElementById('menuExport'),
+  obs: document.getElementById('menuObs'),
+  cameraReset: document.getElementById('menuCameraReset'),
+  topView: document.getElementById('menuTopView'),
+  lookImport: document.getElementById('menuLookImport'),
+  lookExport: document.getElementById('menuLookExport'),
+  state: document.getElementById('menuState'),
+  exportClose: document.getElementById('exportClose'),
+  obsDialog: document.getElementById('obsDialog'),
+  obsClose: document.getElementById('obsClose'),
+  obsDone: document.getElementById('obsDone'),
+  obsProgram: document.getElementById('obsProgramMode'),
+  obsViewport: document.getElementById('obsViewportMode'),
+  obsResolution: document.getElementById('obsResolution'),
+  obsCustomSize: document.getElementById('obsCustomSize'),
+  obsBrowserUrl: document.getElementById('obsBrowserUrl'),
+  obsWebcamUrl: document.getElementById('obsWebcamUrl'),
+  obsCopyBrowser: document.getElementById('obsCopyBrowser'),
+  obsCopyWebcam: document.getElementById('obsCopyWebcam'),
+  obsOpen: document.getElementById('obsOpen'),
+  obsStatus: document.getElementById('obsStatus'),
+  obsStatusText: document.getElementById('obsStatusText'),
+  stateDialog: document.getElementById('stateDialog'),
+  stateClose: document.getElementById('stateClose'),
+  stateDump: document.getElementById('stateDump'),
+};
+
+shell.surfaceName.textContent = EDITING ? 'Editor' : 'Record';
+for (const control of [shell.saveProject, shell.render, shell.export, shell.lookImport, shell.lookExport]) {
+  control.disabled = !EDITING;
+}
+shell.topView.disabled = !EDITING;
+
+function closeApplicationMenus({ restore = false } = {}) {
+  for (const menu of shell.menus) {
+    const trigger = menu.querySelector('.appmenu-trigger');
+    const popover = menu.querySelector('.appmenu-popover');
+    const wasOpen = !popover.hidden;
+    popover.hidden = true;
+    trigger.setAttribute('aria-expanded', 'false');
+    if (restore && wasOpen) trigger.focus();
+  }
+}
+
+for (const menu of shell.menus) {
+  const trigger = menu.querySelector('.appmenu-trigger');
+  const popover = menu.querySelector('.appmenu-popover');
+  trigger.addEventListener('click', () => {
+    const opening = popover.hidden;
+    closeApplicationMenus();
+    popover.hidden = !opening;
+    trigger.setAttribute('aria-expanded', String(opening));
+    if (opening) popover.querySelector('[role="menuitem"]:not(:disabled)')?.focus();
+  });
+}
+
+document.addEventListener('pointerdown', (event) => {
+  if (!event.target.closest('.appmenu')) closeApplicationMenus();
+});
+
+function openDialog(dialog) {
+  // A menu command is hidden before the modal opens. Native dialog focus restoration
+  // cannot return to that hidden command, so remember its visible trigger instead.
+  // Without this, closing Export, OBS or State leaves focus on the body and the next
+  // keyboard gesture starts from nowhere in the application shell.
+  const active = document.activeElement;
+  const returnFocus = active instanceof HTMLElement
+    ? active.closest('.appmenu')?.querySelector('.appmenu-trigger') ?? active
+    : null;
+  closeApplicationMenus();
+  if (!dialog.open) {
+    const restoreFocus = () => {
+      dialog.removeEventListener('close', restoreFocus);
+      returnFocus?.focus();
+    };
+    dialog.addEventListener('close', restoreFocus);
+    dialog.showModal();
+  }
+}
+
+function openExportDialog() {
+  paintExportRatioSelection(exportRatioButtons, ui.exportSize);
+  openDialog(ui.exportDialog);
+}
+
+shell.render.addEventListener('click', openExportDialog);
+shell.export.addEventListener('click', () => {
+  closeApplicationMenus();
+  if (lastExport && CAN_SAVE_AS) ui.exportSave.click();
+  else openExportDialog();
+});
+shell.saveProject.addEventListener('click', () => {
+  closeApplicationMenus();
+  ui.projectSave.click();
+});
+shell.lookImport.addEventListener('click', () => {
+  closeApplicationMenus();
+  ui.presetImport.click();
+});
+shell.lookExport.addEventListener('click', () => {
+  closeApplicationMenus();
+  ui.presetExport.click();
+});
+
+shell.cameraReset.addEventListener('click', () => {
+  closeApplicationMenus();
+  controls.reset();
+  requestRepaint();
+});
+
+shell.topView.addEventListener('click', () => {
+  topViewVisible = !topViewVisible;
+  shell.topView.setAttribute('aria-checked', String(topViewVisible));
+  chromeStale = true;
+  drawChrome();
+  closeApplicationMenus();
+});
+
+function setObsMode(mode) {
+  const value = mode === 'viewport' ? 'mirror' : 'camera';
+  if (progModeEl.value !== value) {
+    progModeEl.value = value;
+    progModeEl.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  shell.obsProgram.setAttribute('aria-pressed', String(value === 'camera'));
+  shell.obsViewport.setAttribute('aria-pressed', String(value === 'mirror'));
+}
+
+/**
+ * The footer's dot, driven by what the server is actually serving.
+ *
+ * It replaces the literal `ready`, which was wired to nothing: it said the same word on
+ * a machine with nothing reading the stream and on one where OBS had been pulling for
+ * an hour, so it could not be wrong because it was not about anything.
+ *
+ * `/record/state` rather than a route invented for this, because it already carries
+ * `webcam.subscribers` - the recorder's refusal is made of the same list, and a second
+ * route answering the same question is the second copy that drifts. It is memory the
+ * process already holds, measured on this rig at 1.2ms against the library listing's
+ * 145ms, which is what makes a two-second cadence affordable while somebody is looking
+ * at the dialog. Nothing polls while it is shut.
+ *
+ * **Loopback subscribers count.** The costing rule filters them out, correctly, because
+ * a stream that never leaves the machine is not competing with the depth packets for a
+ * radio. This is a different question - the operator is asking whether anything is
+ * reading - and OBS on the same machine is the ordinary answer, so a dot that ignored
+ * loopback would be dark in exactly the case it exists for.
+ */
+const OBS_POLL_MS = 2000;
+let obsPollTimer = null;
+let obsPollInFlight = false;
+
+async function refreshObsStatus() {
+  // One question outstanding at a time. A tick landing on an unanswered one would queue
+  // behind it and paint the older of the two answers last.
+  if (obsPollInFlight) return;
+  obsPollInFlight = true;
+  try {
+    const state = await (await fetch('/record/state')).json();
+    const webcam = state?.webcam ?? {};
+    const n = (webcam.subscribers ?? []).length;
+    shell.obsStatus.classList.toggle('live', n > 0);
+    // A server with no colour camera is a third state and not a quiet kind of idle.
+    // `idle` over a replay server invites somebody to go looking for the source that
+    // is not reading, where the server already knows the answer and says it in a
+    // sentence - so the sentence is what goes on screen.
+    shell.obsStatusText.textContent = webcam.unavailable
+      ? webcam.unavailable
+      : (n === 0
+        ? 'idle - nothing is reading'
+        : `streaming to ${n} ${n === 1 ? 'source' : 'sources'}`);
+  } catch {
+    // Say so rather than holding the last answer. A stale count left on screen after the
+    // server went away reads as a live stream, which is the one reading this dot must
+    // never produce.
+    shell.obsStatus.classList.remove('live');
+    shell.obsStatusText.textContent = 'status unavailable';
+  } finally {
+    obsPollInFlight = false;
+  }
+}
+
+function startObsStatusPoll() {
+  stopObsStatusPoll();
+  refreshObsStatus();
+  obsPollTimer = setInterval(refreshObsStatus, OBS_POLL_MS);
+}
+
+function stopObsStatusPoll() {
+  if (obsPollTimer !== null) clearInterval(obsPollTimer);
+  obsPollTimer = null;
+}
+
+// On the dialog's own `close` rather than on the done button, because Escape and the
+// close glyph are doors too and a poll left running behind a shut dialog is a request
+// every two seconds for a number nobody can see.
+shell.obsDialog.addEventListener('close', stopObsStatusPoll);
+
+function paintObsDialog() {
+  shell.obsBrowserUrl.value = new URL('/program', location.href).href;
+  shell.obsWebcamUrl.value = new URL('/camera.mjpg', location.href).href;
+  for (const option of shell.obsResolution.querySelectorAll('option[data-current]')) option.remove();
+  if (![...shell.obsResolution.options].some((option) => option.value === progSizeEl.value)) {
+    const option = document.createElement('option');
+    option.value = progSizeEl.value;
+    option.textContent = `${progSizeEl.value} · current`;
+    option.dataset.current = '';
+    shell.obsResolution.appendChild(option);
+  }
+  shell.obsResolution.value = progSizeEl.value;
+  // Shut on every open, because the synthesised `· current` entry above already shows a
+  // size that is not one of the three - so a dialog reopened on a custom size shows it in
+  // the picker rather than in a field the operator has to be looking at to read.
+  shell.obsCustomSize.hidden = true;
+  setObsMode(progModeEl.value === 'mirror' ? 'viewport' : 'program');
+  startObsStatusPoll();
+}
+
+shell.obs.addEventListener('click', () => {
+  paintObsDialog();
+  openDialog(shell.obsDialog);
+});
+shell.obsProgram.addEventListener('click', () => setObsMode('program'));
+shell.obsViewport.addEventListener('click', () => setObsMode('viewport'));
+shell.obsResolution.addEventListener('change', () => {
+  // `custom` names no size, so it writes nothing. It reveals the field beside it and hands
+  // it the caret; the write happens when that field is committed, through the same
+  // `#progSize` the fixed options go through. Writing the literal string here would put
+  // "custom" into the output size and let the recorder refuse it, which is a refusal the
+  // dialog invented rather than one the operator asked for.
+  if (shell.obsResolution.value === 'custom') {
+    shell.obsCustomSize.hidden = false;
+    shell.obsCustomSize.value = progSizeEl.value;
+    shell.obsCustomSize.focus();
+    shell.obsCustomSize.select();
+    return;
+  }
+  shell.obsCustomSize.hidden = true;
+  progSizeEl.value = shell.obsResolution.value;
+  progSizeEl.dispatchEvent(new Event('change', { bubbles: true }));
+});
+
+// The custom size, committed through the one control that validates it. `#progSize`
+// already refuses anything that is not WIDTHxHEIGHT and puts the previous value back, so
+// this deliberately does not test the string first: a second parser here would be a second
+// opinion about what an output size is, and the one that drifts is the one nothing writes
+// through. Repainting afterwards is what shows the operator which of the two answers it
+// took - the size it typed, or the one it was given back.
+shell.obsCustomSize.addEventListener('change', () => {
+  progSizeEl.value = shell.obsCustomSize.value;
+  progSizeEl.dispatchEvent(new Event('change', { bubbles: true }));
+  paintObsDialog();
+});
+
+async function copyObsValue(input) {
+  try {
+    await navigator.clipboard.writeText(input.value);
+    shell.obsStatus.textContent = 'copied';
+  } catch {
+    input.select();
+    const copied = document.execCommand('copy');
+    shell.obsStatus.textContent = copied ? 'copied' : 'copy unavailable';
+  }
+}
+
+shell.obsCopyBrowser.addEventListener('click', () => copyObsValue(shell.obsBrowserUrl));
+shell.obsCopyWebcam.addEventListener('click', () => copyObsValue(shell.obsWebcamUrl));
+shell.obsOpen.addEventListener('click', () => {
+  globalThis.open(shell.obsBrowserUrl.value, '_blank', 'noopener');
+  shell.obsStatus.textContent = 'source opened';
+});
+
+function stateSnapshot() {
+  return {
+    surface: EDITING ? 'edit' : 'record',
+    sensor: sensorLabel,
+    fps: Number(fps.toFixed(1)),
+    output: { mode: progModeEl.value, size: progSizeEl.value },
+    targetSize: { ...targetSize },
+    take: openTakeId,
+    timeline: timeline ? { frame: timeline.frame, programSec: timeline.programSec, playing: timeline.playing } : null,
+    record: EDITING ? null : recordState,
+    parameters: Object.fromEntries(params.names().map((name) => [name, params.get(name)])),
+  };
+}
+
+shell.state.addEventListener('click', () => {
+  shell.stateDump.textContent = JSON.stringify(stateSnapshot(), null, 2);
+  openDialog(shell.stateDialog);
+});
+
+shell.exportClose.addEventListener('click', () => ui.exportDialog.close());
+shell.obsClose.addEventListener('click', () => shell.obsDialog.close());
+shell.obsDone.addEventListener('click', () => shell.obsDialog.close());
+shell.stateClose.addEventListener('click', () => shell.stateDialog.close());
+
+addEventListener('keydown', (event) => {
+  // **Asked before anything below it, Escape included.** A key another control has already
+  // consumed is not this handler's to act on a second time, and Escape is the one key in
+  // this program that more than one thing listens for: the level selection arms on a press
+  // and cancels on Escape, calling `preventDefault` when it does. That listener is
+  // registered earlier, so it runs first - and with this test below the Escape branch, a
+  // press meant to cancel a floor selection also shut whichever application menu happened
+  // to be open, which reads as the menu closing itself. `shortcuts-ignore-consumed` is the
+  // mutation this repo already carries for the class, and the guard belongs above every
+  // branch rather than in front of most of them.
+  if (event.defaultPrevented) return;
+  if (event.key === 'Escape') {
+    closeApplicationMenus({ restore: true });
+    return;
+  }
+  // `isTyping` stays below Escape rather than above it: shutting an open menu is the right
+  // answer to Escape wherever the caret is, and with no menu open the call is a no-op. The
+  // command keys below are the ones a text field has a claim on.
+  if (isTyping(event.target) || !(event.metaKey || event.ctrlKey)) return;
+  const key = event.key.toLowerCase();
+  if (key === 'o') {
+    event.preventDefault();
+    location.assign('/gallery');
+  } else if (key === 's' && event.shiftKey && EDITING) {
+    event.preventDefault();
+    ui.projectSave.click();
+  } else if (key === 'r' && EDITING) {
+    event.preventDefault();
+    openExportDialog();
+  } else if (key === 'e' && EDITING) {
+    event.preventDefault();
+    shell.export.click();
   }
 });
 
@@ -11430,7 +12365,7 @@ async function openTake(id) {
   view.fit();
   document.body.classList.add('editing');
   ui.root.hidden = false;
-  ui.cameraGroup.hidden = false;
+  showInspector();
   // The path, its nodes and the top-down go on with the timeline and only with it.
   // A live viewer has no clip to compose and the pinned drive hashes images, so
   // furniture in either would be furniture nobody asked for in pixels somebody is
@@ -11747,6 +12682,7 @@ globalThis.__kinect = {
     /** The furniture, so a check can prove it is out of the frame and not merely small. */
     chrome: {
       on: () => chromeOn,
+      topView: () => topViewVisible,
       set(on) { chromeOn = on; placeChrome(); },
       inset: insetRect,
     },
@@ -11916,6 +12852,11 @@ globalThis.__kinect = {
     loadProject: loadProjectNamed,
     applyStoredPreset,
     presetFromCurrentLook,
+    // The product's own re-list, exposed rather than re-implemented. A proof tool that
+    // plants a preset on the server needs the page to read the library again, and the
+    // alternative is a reload - which this suite already has one crash from, and which
+    // would throw away the document the section under it is standing on.
+    refreshPresets,
     setActiveDeliverable,
     activeDeliverable: () => activeDeliverable,
     appliedPreset: () => appliedPreset,

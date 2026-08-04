@@ -255,6 +255,24 @@ const CONTROL_MARGIN = 5;
 // exactly-once refusal below is the whole safety property, so splitting the
 // namespace would only make it possible to have two rules about it.
 const MUTATIONS = {
+  // **The container kept and the stream swapped.** `prores` goes on writing a `.mov`,
+  // so the extension row and every path the sidecar builds are untouched, and only what
+  // is inside it moves - which is the half a row asking about the filename cannot see.
+  // Aimed at `server/export.js` rather than at the bundle because the codec table is the
+  // thing that decides, and the browser never sees it.
+  'prores-writes-h264': { file: 'server/export.js', edits: [[
+    "    args: ['-c:v', 'prores_ks', '-profile:v', '3', '-pix_fmt', 'yuv422p10le'],",
+    "    args: ['-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p'],",
+  ]] },
+  // The sequence stops being a sequence: `frameExt` null is what `export.js` documents as
+  // the answer to "is this artifact a directory", so nulling it writes one animated file
+  // at the path the row expects a directory at. `readdirSync` then throws ENOTDIR, loudly,
+  // which is the direction this row is built to fail in - a PNG sequence that quietly
+  // became one file is the defect the count exists to refuse.
+  'pngseq-writes-one-file': { file: 'server/export.js', edits: [[
+    "    ext: 'pngseq',\n    frameExt: 'png',",
+    "    ext: 'pngseq',\n    frameExt: null,",
+  ]] },
   // The dominant screen-space term goes back to framebuffer pixels.
   'pointsize-absolute': { file: 'web/main.js', edits: [[
     'gl_PointSize = clamp(pointSize * k / max(0.15, -mv.z), 1.0, 64.0);',
@@ -1017,17 +1035,23 @@ async function onFreshPage(what, work, attempts = 3) {
  * whole point of them.
  */
 async function setStage(page, size) {
-  // The strip's real height, off the page. It is `--timeline-h` plus a row per lane
-  // and neither term depends on the viewport, so one measurement is normally exact -
-  // the second pass only earns its keep if a lane appeared between the read and the
-  // resize, which changes the strip and therefore the stage under it.
+  // The fixed furniture's real height, off the page. The strip is `--timeline-h` plus
+  // a row per lane, and the Pencil shell adds its application bar above the stage. One
+  // measurement is normally exact; the second pass earns its keep if a lane appeared
+  // between the read and the resize, which changes the strip and therefore the stage.
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const strip = await page.evaluate(`(() => {
-      const el = document.getElementById('timeline');
-      if (!el || el.hidden) return 0;
-      return Math.round(el.getBoundingClientRect().height);
+    const furniture = await page.evaluate(`(() => {
+      const strip = document.getElementById('timeline');
+      const appBar = document.getElementById('appBar');
+      return {
+        strip: strip && !strip.hidden ? Math.round(strip.getBoundingClientRect().height) : 0,
+        shell: appBar && !appBar.hidden ? Math.round(appBar.getBoundingClientRect().height) : 0,
+      };
     })()`);
-    await page.setViewportSize({ width: size.width, height: size.height + strip });
+    await page.setViewportSize({
+      width: size.width,
+      height: size.height + furniture.strip + furniture.shell,
+    });
     // Optional, because the cross-build arms load an older `main.js` on purpose and
     // that build has no letterbox - its buffer is the viewport, which is exactly what
     // the wait below already expects. Guarding here rather than branching at the call
@@ -1892,6 +1916,60 @@ if (lossless.ok && twice[0]?.ok) {
     'decoded back, the file is byte-for-byte the frames the browser sent, right way up and in order',
     `${matched}/${lossless.done.frameHashes.length} frames matched`);
 
+  // **The two deliverables the dialog offers that nothing here encoded.** The format
+  // segments were proved as far as the document they write and no further, so `prores`
+  // and `pngseq` were two buttons whose whole journey past `setExportCodec` was
+  // untested - and they are the two entries in `CODECS` that differ from `h264` in the
+  // things that break: one changes the container, the other stops the artifact being a
+  // file at all.
+  //
+  // They are asserted differently on purpose. A ProRes deliverable is a `.mov` and the
+  // question is what stream is inside it, so `probe` answers. A PNG sequence is a
+  // **directory** - `server/export.js` says so in as many words, and `frameExt` is the
+  // field that decides it - so probing it as a file is not a weaker version of the same
+  // row, it is a row that cannot run. Counting what landed in the directory is the only
+  // form the claim has here, and the per-frame size still has to come from ffprobe
+  // because a file that exists is not a picture of the right shape.
+  const movRun = await onFreshPage('the ProRes deliverable', async (page) =>
+    page.evaluate(`globalThis.__kinect.export.run(${JSON.stringify({ ...LOSSLESS, name: 'check-mov', codec: 'prores' })})`));
+  if (movRun.ok) {
+    const p = probe(movRun.value.output);
+    const wantFrames = EXPORT_FRAMES + 1;
+    // The codec name as well as the extension, because a `.mov` carrying h264 is exactly
+    // what a table that lost its `args` would write, and it is the shape a row asking
+    // only about the container passes.
+    check(movRun.value.output.endsWith('.mov') && p.codec === 'prores'
+      && p.frames === wantFrames && p.width === STAGE.width && p.height === STAGE.height,
+      'prores: the deliverable is a .mov holding a ProRes stream of the frames that were asked for',
+      `${movRun.value.output.split('/').pop()}: ${p.frames} frames of ${p.width}x${p.height} in ${p.codec}, `
+      + `wanted ${wantFrames} of ${STAGE.width}x${STAGE.height} in prores`);
+  } else {
+    check(false, 'prores: the deliverable is a .mov holding a ProRes stream of the frames that were asked for', movRun.error);
+  }
+
+  const seqRun = await onFreshPage('the PNG sequence deliverable', async (page) =>
+    page.evaluate(`globalThis.__kinect.export.run(${JSON.stringify({ ...LOSSLESS, name: 'check-pngseq', codec: 'pngseq' })})`));
+  if (seqRun.ok) {
+    const dir = seqRun.value.output;
+    // `readdirSync` on a path that is not a directory throws ENOTDIR, which is the
+    // failure this row wants to be loud about rather than to catch: an artifact that
+    // stopped being a directory is the defect, not a condition to handle.
+    const files = readdirSync(dir).filter((f) => f.endsWith('.png')).sort();
+    const wantFrames = EXPORT_FRAMES + 1;
+    check(files.length === wantFrames,
+      'pngseq: the artifact is a directory holding one numbered PNG per frame',
+      `${files.length} png files in ${dir.split('/').pop()}, wanted ${wantFrames}`
+      + (files.length ? ` - first ${files[0]}, last ${files[files.length - 1]}` : ''));
+    if (files.length) {
+      const p = probe(join(dir, files[0]));
+      check(p.codec === 'png' && p.width === STAGE.width && p.height === STAGE.height,
+        'and each of them is a PNG of the size that was asked for',
+        `${files[0]}: ${p.width}x${p.height} in ${p.codec}, wanted ${STAGE.width}x${STAGE.height} in png`);
+    }
+  } else {
+    check(false, 'pngseq: the artifact is a directory holding one numbered PNG per frame', seqRun.error);
+  }
+
   // Output resolution is an ordinary export setting, which is the property the
   // resolution work above exists to make true - so one export is asked for at a
   // size the editor is not, and the file is measured rather than the request
@@ -2064,6 +2142,58 @@ console.log('\n[6] a failed export leaves the previous file and its record exact
         : `no done message: ${first.error ?? 'the socket just closed'}`);
     if (!first.done || !existsSync(OUT) || !existsSync(SIDECAR)) {
       throw new Error('the good export did not produce a file to protect');
+    }
+
+    // **The two formats the dialog gained, asked here rather than only in section 5, and
+    // the reason is delivery.** Section 5 exports through the server named by `--url`,
+    // which is a process this tool did not start and cannot stage - so a mutation of
+    // `server/export.js` reaches nothing there, and a control aimed at it runs the clean
+    // build and reports itself caught-by-nothing at exit 0. Measured exactly that way
+    // before this block existed: `prores-writes-h264` came back 45/45 passed, NOT CAUGHT,
+    // with the section 5 rows green because the build under them was never mutated. That
+    // is the silent-delivery failure this suite already carries two entries about.
+    //
+    // This section imports the module itself, `serverSource` carries the mutation, so the
+    // claim about what a codec writes is asked where an edit to the codec table can be
+    // seen. Section 5 keeps its rows: they are the end-to-end confirmation through the
+    // real server, and this is the half that can be falsified.
+    for (const [codec, wantExt] of [['prores', 'mov'], ['pngseq', 'pngseq']]) {
+      const sock = await socketTo(server.port);
+      sock.send({ begin: { ...SHAPE, name: `${NAME}-${codec}`, codec } });
+      const armReady = await untilReady(sock);
+      if (armReady.error) {
+        check(false, `${codec}: the module writes the artifact its codec table names`, armReady.error);
+        continue;
+      }
+      for (let n = 0; n < SHAPE.frames; n++) sock.send(frameOf(n));
+      sock.send({ end: true });
+      const out = await settle(sock);
+      const path = armReady.output;
+      if (!out.done) {
+        check(false, `${codec}: the module writes the artifact its codec table names`,
+          `no done message: ${out.error ?? 'the socket just closed'}`);
+        continue;
+      }
+      if (codec === 'pngseq') {
+        // A sequence is a directory, so `readdirSync` is the question and its ENOTDIR is
+        // the answer when the artifact has stopped being one. Counting the frames is the
+        // only form this claim has - probing the path as a file cannot run at all.
+        let files = null;
+        let why = '';
+        try {
+          files = readdirSync(path).filter((f) => f.endsWith('.png'));
+        } catch (err) { why = err.code ?? err.message; }
+        check(files !== null && files.length === SHAPE.frames,
+          `${codec}: the module writes the artifact its codec table names`,
+          files === null
+            ? `${path.split('/').pop()} is not a directory: ${why}`
+            : `${files.length} png frames in ${path.split('/').pop()}, wanted ${SHAPE.frames}`);
+      } else {
+        const p = probe(path);
+        check(path.endsWith(`.${wantExt}`) && p.codec === codec,
+          `${codec}: the module writes the artifact its codec table names`,
+          `${path.split('/').pop()} holds ${p.codec}, wanted a .${wantExt} holding ${codec}`);
+      }
     }
     const fileBefore = createHash('sha256').update(readFileSync(OUT)).digest('hex');
     const recordBefore = readFileSync(SIDECAR, 'utf8');

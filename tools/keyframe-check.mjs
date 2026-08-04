@@ -2347,6 +2347,10 @@ console.log('\n== 6e. keying from the panel, and dragging a handle ==');
   await setTracks({});
   await applyLook(BLACKWALL_LOOK);
   await settle();
+  // Bloom now lives on the Look inspector. The look above opens Optical through the
+  // document-derived group rule; this selects the parent surface a hand must cross
+  // before the diamond is visible.
+  await page.click('#panelTabLook');
 
   // (a) the keyframe button, clicked.
   const seekTo = (sec) => page.evaluate(

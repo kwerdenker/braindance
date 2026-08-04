@@ -1820,6 +1820,38 @@ code reads.** If the answer is "the dispatcher", the table is documentation, and
 that looks like enforcement is worse than none — somebody will add a rule to it and believe the
 class is closed.
 
+### The widest rule in the table is not the last resort, and its own predicate says so
+
+Its neighbour above is about rule bodies that never execute. This is the opposite situation
+and worth reading beside it: every body runs, the walk is honest, `covered()` consults the
+table exactly as it claims to — and a whole class of control still lands outside it.
+
+`DRIVER_RULES` is ordered with the widest entry last, and the widest is `look`:
+`inGroup(row, '#panel') && (row.type === 'range' || row.type === 'checkbox')`. Sitting at the
+foot of an ordered table, under a comment explaining that ordering is precedence, it reads
+like the panel's fallback. It is not one. The group test is the half a reader sees and the
+type test is the half that decides, and joined by `&&` the narrower one is the rule — so it
+covers two of the values a panel control's `type` can hold and is silent about every other.
+Sliders and the generated step rows are those two, which is why it looked total for as long
+as the panel held nothing else.
+
+Then the per-parameter resets arrived, one per look scalar, and a reset is a `<button>`:
+`el.type` answers `submit`, which is neither of the two. None of them matched `look`, none
+matched `keyframe`, which wants `row.kf`, and none matched a group rule, because they sit in
+`#panel` and in no narrower group. `covered()` returned null for every one and the sweep
+named them. **That is the loud direction, and it is the whole reason this cost a red run
+rather than a hole** — a control the table cannot attribute fails by name, where a control
+the table attributes *wrongly* is silently counted as driven by a section that has never
+touched it, which is the misattribution the dialog-before-panel ordering already exists to
+stop. The repair is a `reset` rule keyed on `Boolean(row.reset)`.
+
+**Ask what a control would have to *be* to fall through the last row of the table.** If the
+answer is "anything the enumeration does not list", the table has no last row, whatever its
+ordering suggests. And **key a rule on the property that makes the control that kind of
+control**, not on a DOM attribute that happens to sort today's population correctly: `type`
+separated sliders from checkboxes for exactly as long as those were the only two things in
+the panel, and it was never the reason a slider is a look parameter.
+
 **A section that stages its subject one way cannot see a defect that only exists the other
 way.** The gallery's five-second poll was proved by a section that opened the gallery on the
 server holding the recorder, where "this machine's recorder" and "the recorder that owns the

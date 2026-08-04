@@ -180,6 +180,9 @@ node tools/editor-check.mjs --mutate detail-ignores-the-reading --no-render # ..
 node tools/editor-check.mjs --mutate override-prunes-only-on-toggle --no-render # ... and the override the document, not the toggle, has caught up with
 node tools/editor-check.mjs --mutate panel-row-skips-parameter --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate nav-at-the-foot --no-render       # ... and must FAIL
+node tools/editor-check.mjs --mutate panel-tabs-show-everything --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate dialog-close-strands-focus --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate obs-forgets-custom-resolution --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate orbit-pumps-on-change --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate camera-motion-keeps-history --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate orbit-uses-scrub-draft --no-render # ... and must FAIL
@@ -234,6 +237,13 @@ node tools/editor-check.mjs --mutate restore-accepts-view-track --no-render # ..
 node tools/editor-check.mjs --mutate prune-ignores-movement --no-render # ... a stored collapse, against the boot it has to survive
 node tools/editor-check.mjs --mutate panel-rederives-per-write --no-render # ... and what the panel costs the render path
 node tools/editor-check.mjs --mutate envelope-unchecked --no-render     # ... the half of a preset document nothing used to read
+node tools/editor-check.mjs --mutate reset-missing-on-a-row --no-render # ... a reset per look scalar, enumerated off the registry
+node tools/editor-check.mjs --mutate reset-skips-a-tab --no-render      # ... and a whole inspector that lost them
+node tools/editor-check.mjs --mutate reset-remembers-its-own-state --no-render # ... what a row offers, re-read rather than remembered
+node tools/editor-check.mjs --mutate reset-collapses-the-slot --no-render # ... and the slot kept for it, so the row does not move
+node tools/editor-check.mjs --mutate reset-strands-focus --no-render    # ... the caret after the press that removed its own control
+node tools/editor-check.mjs --mutate reset-writes-around-the-registry --no-render # ... and a press that is a registry write rather than an assignment
+node tools/editor-check.mjs --mutate format-segments-paint-the-press --no-render # ... the export format shown, read off the deliverable rather than off the last click
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated

@@ -1900,7 +1900,7 @@ globalThis.__library = {
    * measurement.
    */
   controls: () => [...document.querySelectorAll(
-    '.head a, .tab, .tile .act, .tile .mi, #viewer .act, #viewer .mi, #viewer .mk, dialog .act, dialog input',
+    '.appbar a, .tab, .tile .act, .tile .mi, #viewer .act, #viewer .mi, #viewer .mk, dialog .act, dialog input',
   )].map((el) => ({
     // `||` and never `??`, because the DOM answers the absent ones with an empty
     // string rather than with undefined - `el.id` on a button that has no id is `''`,

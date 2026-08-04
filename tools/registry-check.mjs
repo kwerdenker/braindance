@@ -197,6 +197,17 @@ const STRIDE = Number(flag('--stride', '4'));
 const SUBSTEPS = Number(flag('--substeps', '3'));
 
 const VIEW = { width: 640, height: 400 };
+// The current editor gives this height to its fixed application bar. Historical
+// comparison pages have no shell, so their viewport is shortened by the same amount
+// to make both arms render the same content box rather than two different layouts.
+// editor-check independently asserts the bar's height and fixed position.
+const APP_BAR_HEIGHT = 32;
+const SHELL_CONTENT = {
+  width: Math.round(VIEW.width * ((VIEW.height - APP_BAR_HEIGHT) / VIEW.height)),
+  height: VIEW.height - APP_BAR_HEIGHT,
+};
+const COMPARISON_VIEW = { width: VIEW.width, height: VIEW.height + APP_BAR_HEIGHT };
+let RENDER_BUFFER = { width: VIEW.width, height: VIEW.height };
 const POINTS = 512 * 424;
 // THREE.NormalBlending and THREE.AdditiveBlending, by value, because the check
 // reads the material rather than the registry.
@@ -425,7 +436,7 @@ const EXPECT = {
   denoise: (v) => (v ? 1 : 0),
   edgeTol: (v) => v,
   // three floors width * pixelRatio, and the context runs at deviceScaleFactor 1.
-  renderScale: (v) => Math.floor(VIEW.width * (v / 100)),
+  renderScale: (v) => Math.floor(RENDER_BUFFER.width * (v / 100)),
   // Both read the whole pair, because both land on the same rotation: a `tilt` set on
   // its own has to compose with whatever `roll` currently is, which the one-at-a-time
   // sweep leaves at its default and the all-at-once pass does not.
@@ -652,8 +663,16 @@ const fixture = buildFixture(CAPTURE);
 // the mutated one. The arms that name a source are the historical revisions, and they
 // are deliberately left alone: mutating the thing a comparison is measured *against*
 // would move both sides and prove nothing.
-async function openPage({ source = mutatedSource, pin = false } = {}) {
+async function openPage({
+  source = mutatedSource,
+  pin = false,
+  viewportSize = VIEW,
+  comparisonShell = false,
+} = {}) {
   const page = await context.newPage();
+  if (viewportSize.width !== VIEW.width || viewportSize.height !== VIEW.height) {
+    await page.setViewportSize(viewportSize);
+  }
   const errors = [];
   page.on('pageerror', (err) => errors.push(String(err)));
   page.on('console', (msg) => { if (msg.type() === 'error') errors.push(`${msg.text()} @ ${JSON.stringify(msg.location())}`); });
@@ -709,6 +728,24 @@ async function openPage({ source = mutatedSource, pin = false } = {}) {
       + `so the ${BEFORE_REV} arm loaded the tree's own page`);
   }
   await page.waitForFunction(() => !!globalThis.__kinect);
+  if (comparisonShell) {
+    // The comparison build predates the fixed application bar. Canonicalise both
+    // revisions onto its existing bottom-strip allocation before changing target
+    // aspect, so the comparison viewport gives both the same 640x400 content box
+    // through the same layout mechanism. The real current shell is measured separately
+    // below and by editor-check; this arm is about shader identity across the old mode
+    // boundary, at the fixed 640x400 frame it was originally calibrated against.
+    await page.evaluate((height) => {
+      const appBar = document.getElementById('appBar');
+      if (appBar) appBar.style.display = 'none';
+      const timeline = document.getElementById('timeline');
+      timeline.hidden = false;
+      timeline.style.height = `${height}px`;
+      timeline.style.minHeight = `${height}px`;
+      timeline.style.maxHeight = `${height}px`;
+      dispatchEvent(new Event('resize'));
+    }, APP_BAR_HEIGHT);
+  }
   // **The page frames at the stage this tool asked for.** The editor letterboxes
   // itself to the export aspect now, so a viewport alone no longer decides the
   // drawing buffer: a 640x400 stage is 1.6, the menu's default is 16:9, and the fit
@@ -788,7 +825,10 @@ async function bootState(opts, reader = landingReader) {
   return { out, poses, errors, page };
 }
 
-const beforeArm = await bootState({ source: beforeSource }, tolerantLandingReader);
+const beforeArm = await bootState(
+  { source: beforeSource, viewportSize: SHELL_CONTENT },
+  tolerantLandingReader,
+);
 await beforeArm.page.close();
 const afterArm = await bootState({});
 await afterArm.page.close();
@@ -886,6 +926,11 @@ const GOLDEN_ABSENT = new Set([
   // and the snapshot walks `#panel input` - if it ever becomes an input it will
   // arrive here as a failure, which is the right way round.
   'progSize',
+  // A file chooser is a control over a document, not a registry parameter. It arrived
+  // with look import and has no earlier value to hold against the pre-registry page;
+  // section 12 of editor-check drives the file through validation and back into the
+  // renderer, while this tool's markup scan still refuses any parameter data in HTML.
+  'tPresetFile',
 ]);
 const absentBefore = (name, before) => GOLDEN_ABSENT.has(name) && before === undefined;
 
@@ -951,6 +996,18 @@ for (const stage of Object.keys(beforeArm.out)) {
     `and pointSize moved by exactly 1080/600 everywhere it appears, because its unit did`,
     wrong.length ? wrong.join('; ') : seen.join(', '));
 }
+
+// The fixed shell gives the renderer 32 fewer vertical pixels. With the proof's
+// 640x400 target aspect that content box is 589x368. The historical page has no target
+// fit, so it is opened directly at that content size; both arms must then land on the
+// same exact buffer rather than gaining a layout exception in the golden comparison.
+check(
+  beforeArm.out.boot.landing.renderScale === SHELL_CONTENT.width
+    && afterArm.out.boot.landing.renderScale === SHELL_CONTENT.width,
+  'and renderScale lands on exactly the fixed shell content fit',
+  `${beforeArm.out.boot.landing.renderScale}->${afterArm.out.boot.landing.renderScale}, `
+    + `wanted ${SHELL_CONTENT.width}->${SHELL_CONTENT.width}`,
+);
 
 // With no camera keys the pose is a single value the clip holds, so two renders at
 // different program times land on the same place. That is the whole of the
@@ -1043,6 +1100,20 @@ console.log(`\n[registry] each reading renders what its mode rendered, at ${AGAI
       const times = globalThis.__kinect.drive.times();
       return times.slice(0, ${SOURCE_FRAMES});
     })()`);
+    const meta = await p.evaluate(`(() => {
+      const k = globalThis.__kinect;
+      const gl = k.renderer.getContext();
+      const box = k.renderer.domElement.getBoundingClientRect();
+      return {
+        window: [innerWidth, innerHeight],
+        canvas: [gl.drawingBufferWidth, gl.drawingBufferHeight],
+        css: [box.x, box.y, box.width, box.height],
+        composer: [k.composer.renderTarget1.width, k.composer.renderTarget1.height],
+        afterimage: [k.afterimage._textureComp.width, k.afterimage._textureComp.height],
+        cameraAspect: k.freeCamera.aspect,
+        bufferHeight: k.uniforms.bufferHeight.value,
+      };
+    })()`);
     const out = {};
     for (const [reading, mode] of Object.entries(READING_WAS)) {
       out[reading] = await p.evaluate(`(async () => {
@@ -1060,11 +1131,18 @@ console.log(`\n[registry] each reading renders what its mode rendered, at ${AGAI
       })()`.replace(/\$MODE/g, String(mode)).replace(/\$READING/g, JSON.stringify(reading)));
     }
     await p.close();
-    return { out, errors };
+    return { out, errors, meta };
   };
 
-  const oldArm = await hashesFor({ source: againstSource }, 'k.uniforms.mode.value = $MODE;');
-  const newArm = await hashesFor({}, 'k.readings().forEach((n) => k.params.set(n, 0)); k.params.set($READING, 1);');
+  const oldArm = await hashesFor(
+    { source: againstSource, viewportSize: COMPARISON_VIEW, comparisonShell: true },
+    'k.uniforms.mode.value = $MODE;',
+  );
+  const newArm = await hashesFor(
+    { viewportSize: COMPARISON_VIEW, comparisonShell: true },
+    'k.readings().forEach((n) => k.params.set(n, 0)); k.params.set($READING, 1);',
+  );
+  console.log(`  comparison geometry old ${JSON.stringify(oldArm.meta)} new ${JSON.stringify(newArm.meta)}`);
 
   for (const [reading, mode] of Object.entries(READING_WAS)) {
     const a = oldArm.out[reading];
@@ -1098,6 +1176,10 @@ console.log(`\n[registry] each reading renders what its mode rendered, at ${AGAI
 
 const main = await openPage({ pin: true });
 const { page } = main;
+RENDER_BUFFER = await page.evaluate(`(() => {
+  const gl = globalThis.__kinect.renderer.getContext();
+  return { width: gl.drawingBufferWidth, height: gl.drawingBufferHeight };
+})()`);
 
 const declared = await page.evaluate(`(() => {
   const k = globalThis.__kinect;
@@ -1435,7 +1517,10 @@ console.log('\n[registry] the side effects that are not a uniform write');
   const scales = [];
   for (const v of [40, 100, 200]) {
     const r = await setAndRead({ renderScale: v });
-    const want = [Math.floor(VIEW.width * v / 100), Math.floor(VIEW.height * v / 100)];
+    const want = [
+      Math.floor(RENDER_BUFFER.width * v / 100),
+      Math.floor(RENDER_BUFFER.height * v / 100),
+    ];
     if (!eq(r.buffer, want)) scales.push(`renderScale=${v} -> ${show(r.buffer)} want ${show(want)}`);
   }
   check(scales.length === 0, 'render scale resizes the drawing buffer', scales.join('; '));

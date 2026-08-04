@@ -4,16 +4,25 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Kinect v2 · point cloud</title>
+<link rel="icon" href="data:," />
 <!-- Before the page's own rules on purpose: nav.css owns how the chips look and the
      page owns where they sit, so a placement rule here has to win the tie. -->
 <link rel="stylesheet" href="/nav.css" />
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
   :root {
     --ink: #e8ecf1;
     --dim: #7d8794;
     --line: rgba(255, 255, 255, 0.1);
     --accent: #5ad1c4;
-    --red: #ff3b4e;
+    /* The record button's red, and deliberately not the gallery's `--rec`. The design
+       carries two: `#ff3b4e` for the RECORD heading on the home screen, which is a label
+       being shouted, and this darker `#cc3333` for the arm button in the recorder's own
+       sidebar, which sits under a pointer and is read against a lit panel rather than
+       across a dark page. `menu.html` and `library.html` declare `--rec: #ff3b4e` and are
+       right to; the two are not a drift to reconcile, and a session that unified them
+       would be undoing a distinction the source makes on purpose. */
+    --red: #cc3333;
 
     /* This block is the palette. The gallery and the menu restate it in their own
        names rather than importing a shared token file, because two copies of a
@@ -45,7 +54,7 @@
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; background: #05070a; color: var(--ink);
-    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; }
+    font: 12px/1.5 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; }
   canvas { display: block; }
   /* The frame edge. The stage is letterboxed to the export aspect so that what is
      framed is what is exported, and on a black page against a black background that
@@ -63,25 +72,40 @@
      panel is translucent over the live cloud, so a sticky child would have had the
      grade sliders visibly travelling underneath it. */
   #panel {
-    position: fixed; top: 16px; left: 16px; width: 252px; max-height: calc(100vh - 32px);
+    position: fixed; top: 32px; left: 0; width: 252px; max-height: calc(100vh - 32px);
     display: flex; flex-direction: column; overflow: hidden;
-    border: 1px solid var(--line); border-radius: 10px;
+    border: 0; border-right: 1px solid var(--line); border-radius: 0;
     background: rgba(8, 11, 16, 0.82); backdrop-filter: blur(12px); z-index: 10;
+    font-size: 9px; line-height: 1.4;
   }
-  #panelHead { flex: none; padding: 14px 14px 0; }
+  body:not(.editing) #panel { background: var(--paper-2); backdrop-filter: none; }
+  #panelHead { flex: none; padding: 10px 14px 8px; border-bottom: 1px solid var(--line); }
+  /* The editor's application bar already carries the surface and connection state.
+     Keeping the recorder's device head here preserves its operator context, while
+     drawing the same title twice in the editor pushes the Pencil tab rail down. */
+  body.editing #panelHead { display: none; }
   /* `min-height: 0` because a flex item refuses to shrink below its content without it,
      which would push the panel past the window rather than scrolling inside it. */
   #panelBody { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 14px 14px;
     scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.2) transparent; }
   .panelbar { display: flex; align-items: center; gap: 8px; }
   .panelbar h1 { flex: 1; min-width: 0; }
-  #panel h1 { margin: 0 0 2px; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; }
+  #panel h1 { margin: 0 0 2px; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; }
   #status { color: var(--dim); }
   #status b { color: var(--accent); font-weight: 500; }
 
-  .group { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
-  .group > label, .grouphead > label { display: block; color: var(--dim); margin-bottom: 6px;
-    letter-spacing: 0.08em; text-transform: uppercase; font-size: 10px; }
+  .group { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; }
+  /* OBS is an editor command and dialog in the Pencil shell. The recorder keeps this
+     inline block because its output is part of the live shooting setup. */
+  body.editing #programOutGroup { display: none; }
+  /* The heading is shown in the case the registry already writes it in. Every group's
+     `label` is declared sentence case there - `Reading · source`, `Colour & tone` - and
+     the uppercase that used to sit here was a second opinion about the same string,
+     which is how the middle dot ended up reading as a separator between two shouted
+     words rather than as the qualifier it is. Dropping the transform also drops the
+     tracking that only existed to keep uppercase legible. */
+  .group > label, .grouphead > label { display: block; color: var(--ink); margin-bottom: 6px;
+    font-size: 10px; }
   /* Every group's heading is in a head, whether or not the group can be shut, because
      two shapes of header is two sets of rules and the forgotten one is always the one
      nobody is looking at. The heading takes the spare width so the mark and the button
@@ -103,19 +127,39 @@
      of being left hanging under a closed heading. */
   .group.shut > *:not(.grouphead) { display: none; }
 
-  /* The chevron is the whole control: a caret rotated a quarter turn, pointing down when
-     the group is open and right when it is shut, which is the direction convention every
-     disclosure control on this machine already uses. */
+  /* The disclosure marker is a filled triangle at the *head* of the heading, pointing
+     down when the group is open and right when it is shut - the direction convention
+     every disclosure control on this machine already uses, now reading in the order the
+     words do rather than answering from the far end of the row.
+
+     `order` and not a move in the generator, because the heading has to stay the first
+     element inside the head: `sensor-view-check` names a group by the text of the first
+     label it finds there, so a marker placed ahead of the heading in the DOM would rename
+     thirteen groups at once in a tool that has nothing to do with disclosure.
+
+     Only a group that can actually be shut gets one. A marker on a heading that discloses
+     nothing is an affordance that lies, and this panel has six fixed groups that would
+     each have grown one.
+
+     A triangle built from borders cannot be recoloured with a single `border-color`: the
+     two transparent edges are what give it its shape, and setting all four would fill it
+     into a square. So each state names the one edge that is visible. */
   .grouptoggle {
-    flex: 0 0 16px; width: 16px; height: 16px; display: grid; place-items: center;
+    order: -1;
+    flex: 0 0 10px; width: 10px; height: 16px; display: grid; place-items: center;
     border: 0; background: transparent; padding: 0; cursor: pointer;
   }
   .grouptoggle i {
-    width: 5px; height: 5px; border-right: 1px solid var(--faint);
-    border-bottom: 1px solid var(--faint); transform: rotate(45deg) translate(-1px, -1px);
+    width: 0; height: 0;
+    border-left: 4px solid transparent; border-right: 4px solid transparent;
+    border-top: 5px solid var(--dim); border-bottom: 0;
   }
-  .grouptoggle:hover i { border-color: var(--ink); }
-  .grouptoggle[aria-expanded=false] i { transform: rotate(-45deg) translate(-1px, -1px); }
+  .grouptoggle:hover i { border-top-color: var(--ink); }
+  .grouptoggle[aria-expanded=false] i {
+    border-left: 5px solid var(--dim); border-right: 0;
+    border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+  }
+  .grouptoggle[aria-expanded=false]:hover i { border-left-color: var(--ink); }
 
   /* A shut group that is carrying something has to say so, or the panel is quietly
      lying about what is shaping the frame - which is the exact worry this feature
@@ -131,18 +175,95 @@
   .groupmark:empty { min-width: 6px; width: 6px; height: 6px; padding: 0; border-radius: 3px;
     background: var(--accent); }
 
-  .row { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+  /* 4px under a 16px row is the design's 20px pitch. The gap is the only half of that
+     stated here - the height belongs to `.kf`/`.reset`, which are the tallest things a
+     row holds and therefore what decides it. */
+  .row { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; }
   .row span { flex: 0 0 74px; color: var(--dim); }
   .row output { flex: 0 0 42px; text-align: right; font-variant-numeric: tabular-nums; }
-  input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); height: 3px; }
+  #panel .row select,
+  #panel .row input[type=text] {
+    flex: 1;
+    min-width: 0;
+    height: 24px;
+    padding: 0 5px;
+    border: 1px solid var(--line);
+    border-radius: 0;
+    background: var(--paper-1);
+    color: var(--ink);
+    font: inherit;
+    font-size: 9px;
+  }
+  input[type=range] { flex: 1; min-width: 0; height: 12px; appearance: none; background: transparent; }
+  input[type=range]::-webkit-slider-runnable-track { height: 2px; background: var(--line-3); }
+  input[type=range]::-webkit-slider-thumb { appearance: none; width: 4px; height: 8px;
+    margin-top: -3px; border: 0; border-radius: 0; background: var(--accent); }
+  input[type=range]::-moz-range-track { height: 2px; background: var(--line-3); }
+  input[type=range]::-moz-range-thumb { width: 4px; height: 8px; border: 0; border-radius: 0; background: var(--accent); }
 
-  .check { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; cursor: pointer; }
-  .check input { accent-color: var(--accent); margin: 0; }
+  /* The preset picker. A trigger that reads like the `<select>` it replaces, and a list
+     that can hold what a native option cannot: the mark on the applied entry and a delete
+     on the entries that have one. Sizes are the design's - a 24px trigger, a 12px trash
+     glyph, a 24x24 add button. */
+  .picker { position: relative; flex: 1; min-width: 0; }
+  .pickertrigger {
+    width: 100%; min-width: 0; height: 24px;
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 6px; border: 1px solid var(--line-2); border-radius: 0;
+    background: var(--paper-2); color: var(--ink); font: inherit; cursor: pointer;
+  }
+  .pickertrigger:hover { border-color: var(--line-3); }
+  .pickertrigger[aria-expanded="true"] { border-color: var(--accent); }
+  .pickervalue { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+  .pickerarrow { flex: none; color: var(--dim); }
+  /* Above the rows below it rather than in flow, so opening the list does not push the
+     rest of the panel down - the panel scrolls, and a list that moved its own trigger
+     out from under the pointer would be a menu you cannot click twice. */
+  .pickerlist {
+    position: absolute; z-index: 30; top: 25px; left: 0; right: 0;
+    max-height: 220px; overflow-y: auto;
+    padding: 2px 0; background: var(--paper-2); border: 1px solid var(--line-2);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.36);
+  }
+  .pickerlist[hidden] { display: none; }
+  .pickeroption {
+    display: flex; align-items: center; gap: 6px;
+    min-height: 20px; padding: 0 6px; cursor: pointer;
+  }
+  .pickeroption:hover, .pickeroption.here { background: var(--accent-low); }
+  .pickercheck { flex: none; width: 8px; color: var(--accent); }
+  .pickerlabel { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Only user presets carry one, so the slot is not reserved: a shipped look has no
+     delete and nothing about the row should suggest it is missing one. */
+  .pickerdelete {
+    flex: none; width: 16px; height: 16px; display: grid; place-items: center;
+    border: 0; background: transparent; padding: 0; color: var(--dim); cursor: pointer;
+  }
+  .pickerdelete svg { width: 12px; height: 12px; display: block; }
+  .pickerdelete:hover { color: var(--rec); }
+  .pickeradd {
+    width: 24px; height: 24px; margin: 2px 6px; display: grid; place-items: center;
+    border: 1px solid var(--line-2); border-radius: 0;
+    background: transparent; color: var(--dim); font: inherit; cursor: pointer;
+  }
+  .pickeradd:hover { border-color: var(--accent); color: var(--accent); }
+
+  .check { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; cursor: pointer; }
+  /* Scoped to `.check` rather than written bare, because a bare `input[type=checkbox]`
+     reaches every checkbox this page renders and this box is a look for one of them.
+     The monitor's `allow cost` sits in a `.row` beside a `<span>` label and has always
+     drawn the platform's own control - a 12px hollow square is the panel's idiom and
+     that row is not the panel. The generated step rows and the preset subset dialog's
+     boxes are all inside `.check`, so scoping keeps them and drops only the one that
+     was never meant to have it. */
+  .check input[type=checkbox] { appearance: none; width: 12px; height: 12px; flex: none; margin: 0;
+    border: 1px solid var(--line-3); border-radius: 0; background: transparent; }
+  .check input[type=checkbox]:checked { border-color: var(--accent); background: var(--accent); box-shadow: inset 0 0 0 2px var(--paper-1); }
 
   /* Clear of the panel rather than under it. The panel is 252px at 16px from the
      left and scrolls to the full window height, so a hint sharing that column sat
      underneath the last control on any window tall enough to fill it. */
-  #hint { position: fixed; bottom: 14px; left: 300px; color: var(--dim); z-index: 10; }
+  #hint { position: fixed; bottom: 10px; left: 266px; color: var(--dim); z-index: 10; font-size: 9px; }
 
   #camNote, #recNote, #recSpace, #monNote, #sensorNote, #recLookNote, #recRange, #viewNote, #cropNote, #levelNote {
     color: var(--dim); font-size: 10px; line-height: 1.45; opacity: 0.75; margin-top: 2px;
@@ -195,19 +316,43 @@
      the parameter is a single value, outlined means it has keys elsewhere, filled
      means there is one here at the playhead. Only look parameters get one: view
      state is not part of the clip, so there is nothing there to key. */
-  .kf { flex: 0 0 18px; width: 18px; height: 18px; display: grid; place-items: center;
+  .kf { flex: 0 0 16px; width: 16px; height: 16px; display: grid; place-items: center;
     border: 0; background: transparent; padding: 0; cursor: pointer; }
   .kf i { width: 7px; height: 7px; transform: rotate(45deg); border: 1px solid var(--faint); }
   .kf:hover i { border-color: var(--ink); }
   .kf[data-kf=some] i { border-color: var(--accent); }
   .kf[data-kf=here] i { border-color: var(--accent); background: var(--accent); }
   .kf:disabled { cursor: default; opacity: 0.35; }
-  .checkrow { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
+
+  /* The reset beside it, on the same rhythm: a 16px box like the keyframe control so
+     the two read as one pair, holding the 10px glyph the design draws.
+
+     16 rather than 18 because these two boxes are the tallest thing in a panel row, so
+     they and not the slider are what set the row's height - measured at 18px tall rows
+     on a 24px pitch before, against the 16px rows on a 20px pitch the design draws. The
+     glyph did not move: 10px inside 16 still clears the edge, and the keyframe diamond
+     is 7px on the diagonal.
+
+     Hidden by visibility and never by `display`, because the slot is reserved whether or
+     not a row is offering a reset. Collapsing it would move the slider and the readout
+     sideways the instant a parameter left its default — which is to say, in the middle
+     of the drag that moved it — and a control that shifts under the pointer mid-drag is
+     the one class of layout bug a screenshot of either state looks perfectly fine in.
+     `visibility` keeps the box, takes the button out of the tab order, and swallows the
+     click, so the hidden state cannot be reached by pointer or by keyboard. */
+  .reset { flex: 0 0 16px; width: 16px; height: 16px; display: grid; place-items: center;
+    border: 0; background: transparent; padding: 0; cursor: pointer; color: var(--dim); }
+  .reset svg { width: 10px; height: 10px; display: block; }
+  .reset:hover { color: var(--ink); }
+  .reset:disabled { cursor: default; }
+  .reset[data-modified=no] { visibility: hidden; }
+
+  .checkrow { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; }
   .checkrow .check { margin-bottom: 0; flex: 1; }
 
   .btnrow { display: flex; gap: 4px; margin-bottom: 6px; }
   .btnrow button {
-    flex: 1; padding: 5px 4px; border: 1px solid var(--line); border-radius: 5px;
+    flex: 1; padding: 5px 4px; border: 1px solid var(--line); border-radius: 0;
     background: transparent; color: var(--dim); font: inherit; font-size: 10px; cursor: pointer;
   }
   .btnrow button:hover { border-color: var(--line-3); color: var(--ink); }
@@ -218,11 +363,131 @@
      is the part worth reading; `apply` is a fixed word and sizes to itself. */
   .btnrow select {
     flex: 1; min-width: 0; padding: 5px 4px; border: 1px solid var(--line);
-    border-radius: 5px; background: var(--paper-1); color: var(--ink);
+    border-radius: 0; background: var(--paper-1); color: var(--ink);
     font: inherit; font-size: 10px; cursor: pointer;
   }
   .btnrow select:hover { border-color: var(--line-3); }
   .btnrow select + button { flex: 0 0 68px; }
+
+  /* The inspector is one panel with four views, not four partial panels. Every row
+     remains in the document so the registry sweep can enumerate it; the active tab
+     only decides which declared groups are on screen. */
+  #panelTabs {
+    flex: none;
+    height: 30px;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    border-bottom: 1px solid var(--line);
+    background: var(--paper-1);
+  }
+  #panelTabs[hidden] { display: none; }
+  .paneltab {
+    min-width: 0;
+    border: 0;
+    border-right: 1px solid var(--line);
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    color: var(--dim);
+    font: inherit;
+    font-size: 9px;
+    cursor: pointer;
+  }
+  .paneltab:last-child { border-right: 0; }
+  .paneltab:hover { color: var(--ink); background: var(--paper-2); }
+  .paneltab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+  .paneltab:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+  #panel .group[hidden] { display: none; }
+  #lookPresetGroup > label { margin-bottom: 6px; }
+
+  .dialog-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: -18px -18px 14px;
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  .dialog-head h2 { margin: 0; font-size: 14px; font-weight: 500; letter-spacing: normal; text-transform: none; }
+  .dialog-close {
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--dim);
+    font: inherit;
+    cursor: pointer;
+  }
+  .dialog-close:hover { color: var(--ink); background: var(--paper-2); }
+  .dialog-field { margin-bottom: 14px; }
+  .dialog-field > label,
+  .dialog-label {
+    display: block;
+    margin-bottom: 6px;
+    color: var(--dim);
+    font-size: 10px;
+    letter-spacing: normal;
+    text-transform: none;
+  }
+  .dialog-segments { display: flex; gap: 5px; flex-wrap: wrap; }
+  .dialog-segments > * { flex: 1 1 0; justify-content: center; text-align: center; }
+  .dialog-segments button,
+  .dialog-action,
+  .dialog-secondary {
+    min-height: 29px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 0;
+    background: transparent;
+    color: var(--dim);
+    font: inherit;
+    font-size: 9px;
+    cursor: pointer;
+  }
+  .dialog-segments button:hover:not(:disabled),
+  .dialog-secondary:hover:not(:disabled) { border-color: var(--line-3); color: var(--ink); }
+  .dialog-segments button[aria-pressed="true"] { border-color: var(--accent); color: #04231f; background: var(--accent); }
+  .dialog-segments button:disabled { opacity: 0.35; cursor: default; }
+  .dialog-input-row { display: flex; gap: 6px; }
+  .dialog-input-row input,
+  .dialog-field select,
+  .dialog-copy input {
+    min-width: 0;
+    height: 30px;
+    padding: 0 8px;
+    border: 1px solid var(--line);
+    border-radius: 0;
+    background: var(--paper-2);
+    color: var(--ink);
+    font: inherit;
+    font-size: 10px;
+  }
+  .dialog-input-row input,
+  .dialog-copy input { flex: 1; }
+  .dialog-field select { width: 100%; }
+  .dialog-copy { display: flex; gap: 6px; margin-bottom: 7px; }
+  .dialog-copy button { flex: 0 0 52px; }
+  .dialog-actions { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
+  .dialog-actions .note { flex: 1; min-width: 0; color: var(--dim); font-size: 9px; }
+  /* The 8px dot the design draws, dim until something is actually pulling the stream.
+     Both halves move together - a lit dot beside dim text, or the reverse, would be two
+     answers to one question. */
+  .dialog-actions .note { display: flex; align-items: center; gap: 6px; }
+  .obsdot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--line-3); }
+  .note.live .obsdot { background: var(--accent); }
+  .note.live { color: var(--accent); }
+  .dialog-action { border-color: var(--accent); background: var(--accent); color: #04231f; }
+  .dialog-action:hover:not(:disabled) { filter: brightness(1.08); }
+  .dialog-action:disabled,
+  .dialog-secondary:disabled { opacity: 0.38; cursor: default; }
+  #exportDialog { width: min(480px, calc(100vw - 32px)); }
+  #obsDialog { width: min(480px, calc(100vw - 32px)); }
+  #stateDialog { width: min(620px, calc(100vw - 32px)); }
+  #stateDump { max-height: 60vh; overflow: auto; margin: 0; padding: 10px;
+    border: 1px solid var(--line); background: var(--paper-2); color: var(--dim); font: inherit; font-size: 9px; }
 
   /* The camera path, its nodes and the top-down orthographic, on a canvas of their
      own over the stage. Deliberately not in the rendered frame: that buffer is
@@ -261,9 +526,9 @@
   body.program-out { background: #000; overflow: hidden; }
   #programOutReadout {
     position: fixed; left: 8px; bottom: 8px; z-index: 20;
-    font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    font: 11px/1.5 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
     color: rgba(230, 238, 248, 0.72); background: rgba(8, 11, 16, 0.6);
-    padding: 3px 8px; border-radius: 5px; pointer-events: none; white-space: nowrap;
+    padding: 3px 8px; border-radius: 0; pointer-events: none; white-space: nowrap;
   }
 
   /* Two rows, both of a fixed height, and the fixedness is the load-bearing half
@@ -286,7 +551,7 @@
 
   .tplay {
     width: 34px; height: 34px; flex: none; display: grid; place-items: center;
-    border: 1px solid var(--line-2); border-radius: 4px;
+    border: 1px solid var(--line-2); border-radius: 0;
     background: var(--paper-2); color: var(--ink); font: inherit; font-size: 13px; cursor: pointer;
   }
   .tplay:hover { background: var(--paper-3); border-color: var(--line-3); }
@@ -308,35 +573,25 @@
      the bar keeps its 51px and the lanes stay where a dragged key expects them. */
   .tchips.more { mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
 
-  /* The pinned end of the bar: never scrolled, so the render control is on screen at
-     every window width. It gives ground before the scroller does - the note truncates
-     rather than squeezing the chips that carry controls.
-
-     `min-width: 0` on everything inside it is the actual fix for the clipping, and it
-     is narrower than "the bar had too much in it". A flex child's default is
-     `min-width: auto`, which means "never shrink below your intrinsic width" - and a
-     `<select>` takes its intrinsic width from its longest option. So one long
-     deliverable name set a floor this 46% box could not shrink under, the pin
-     overflowed its container, and the render button went off the edge still believing
-     it was laid out. Nothing about it was visible: it was not hidden, it was outside. */
-  .tpin { flex: none; display: flex; gap: 8px; align-items: center; max-width: 46%; min-width: 0; }
-  .tpin > * { min-width: 0; }
-  .tpin select { min-width: 0; text-overflow: ellipsis; }
-  .tpin #tExportNote { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tpin #tExportNote:empty { display: none; }
   .tchip {
     flex: none;
     display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px;
-    border: 1px solid var(--line); border-radius: 4px; background: var(--paper-2);
+    border: 1px solid var(--line); border-radius: 0; background: var(--paper-2);
     font-size: 9px; color: var(--dim); white-space: nowrap;
   }
   /* A name is typed rather than chosen, so it is the one text field in the strip. */
   .tchip input[type=text] {
-    width: 118px; min-width: 0; border: 1px solid var(--line); border-radius: 3px;
+    width: 118px; min-width: 0; border: 1px solid var(--line); border-radius: 0;
     background: var(--paper-1); color: var(--ink); font: inherit; font-size: 9px; padding: 1px 4px;
   }
   .tchip input[type=text]:focus-visible { outline: 1px solid var(--accent); outline-offset: 0; }
-  .tchip.bad input[type=text] { border-color: var(--red); }
+  /* The export name's refusal, keyed to the field it is now in. This rule used to name
+     `.tchip`, which is where the name input lived while the export controls were pinned
+     to the document bar; they moved into the dialog and the rule did not, so
+     `classList.toggle('bad')` went on running against a selector that matched nothing and
+     an invalid output name was refused in silence. There is one writer of the class and
+     one rule for it, and they name the same element. */
+  .dialog-field.bad input[type=text] { border-color: var(--red); }
   /* The ease presets. Disabled until a key with a shapeable segment is selected,
      because a row of live buttons that write nothing is the same dead affordance the
      handle on a flat segment was. */
@@ -345,11 +600,11 @@
   .tchip b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; }
   .tchip input[type=range] { width: 92px; flex: none; }
   .tchip select {
-    border: 1px solid var(--line); border-radius: 3px; background: var(--paper-3);
+    border: 1px solid var(--line); border-radius: 0; background: var(--paper-3);
     color: var(--ink); font: inherit; font-size: 9px; padding: 1px 3px;
   }
   .tchip button {
-    border: 1px solid var(--line); border-radius: 3px; background: var(--paper-3);
+    border: 1px solid var(--line); border-radius: 0; background: var(--paper-3);
     color: var(--ink); font: inherit; font-size: 9px; padding: 1px 6px; cursor: pointer;
   }
   .tchip button[disabled] { color: var(--dim); cursor: default; }
@@ -368,13 +623,13 @@
      gallery's ⋯ menus: modality, a backdrop and an Escape that closes are behaviours
      a browser already has, and the gallery had to write the Escape half by hand twice
      before it stayed written. What this file owns is only how it looks. */
-  dialog { border: 1px solid var(--line-2); border-radius: 10px; background: var(--paper-1);
+  dialog { border: 1px solid var(--line-2); border-radius: 0; background: var(--paper-1);
     color: var(--ink); font: inherit; padding: 18px; width: min(460px, calc(100vw - 32px)); }
   dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
   dialog h2 { margin: 0 0 8px; font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; }
   dialog p { margin: 0 0 10px; color: var(--dim); font-size: 10px; line-height: 1.5; }
   #ppName {
-    width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 5px;
+    width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 0;
     background: var(--paper-2); color: var(--ink); font: inherit; margin-bottom: 12px;
   }
   #ppName:focus-visible { outline: 1px solid var(--accent); outline-offset: 0; }
@@ -399,7 +654,7 @@
      three classes and an element, so it beat a plain `.act:disabled` on specificity
      and a disabled confirm went on looking pressable. */
   .ppacts button {
-    padding: 6px 14px; border: 1px solid var(--line); border-radius: 5px;
+    padding: 6px 14px; border: 1px solid var(--line); border-radius: 0;
     background: transparent; color: var(--dim); font: inherit; font-size: 10px; cursor: pointer;
   }
   .ppacts button:hover:not(:disabled) { border-color: var(--line-3); color: var(--ink); }
@@ -612,26 +867,96 @@
 </style>
 </head>
 <body>
+  <header class="appbar" id="appBar">
+    <!-- `aria-current` is on the name and not on the anchor around it, because the
+         anchor goes to the menu and marking a link to somewhere else as the current
+         page is a sentence that is simply false. The span is the thing that names
+         which surface this is - `main.js` writes Editor or Record into it - so it is
+         the thing that carries the mark. The old `.surfacenav` put it on a chip in a
+         list of surfaces; that list is gone and the app bar names one surface, which
+         is the same claim with nowhere else to put it. -->
+    <a class="appback" id="toMenu" href="/"><span class="arrow">&lt;</span><span id="surfaceName" aria-current="page">Editor</span></a>
+    <nav class="appmenus" id="navRow" aria-label="Application commands">
+      <div class="appmenu">
+        <button class="appmenu-trigger" id="fileMenuButton" type="button" aria-expanded="false" aria-controls="fileMenu">File</button>
+        <div class="appmenu-popover" id="fileMenu" role="menu" hidden>
+          <a class="menu-command" id="toLibrary" href="/gallery" role="menuitem"><span>Open</span><kbd>&#8984;O</kbd></a>
+          <button class="menu-command" id="menuSaveProject" type="button" role="menuitem"><span>Save as</span><kbd>&#8679;&#8984;S</kbd></button>
+        </div>
+      </div>
+      <div class="appmenu">
+        <button class="appmenu-trigger" id="outputMenuButton" type="button" aria-expanded="false" aria-controls="outputMenu">Output</button>
+        <div class="appmenu-popover" id="outputMenu" role="menu" hidden>
+          <button class="menu-command" id="menuRender" type="button" role="menuitem"><span>Render</span><kbd>&#8984;R</kbd></button>
+          <button class="menu-command" id="menuExport" type="button" role="menuitem"><span>Export</span><kbd>&#8984;E</kbd></button>
+          <div class="menu-separator"></div>
+          <button class="menu-command" id="menuObs" type="button" role="menuitem"><span>Output to OBS</span><kbd></kbd></button>
+        </div>
+      </div>
+      <div class="appmenu">
+        <button class="appmenu-trigger" id="viewMenuButton" type="button" aria-expanded="false" aria-controls="viewMenu">View</button>
+        <div class="appmenu-popover" id="viewMenu" role="menu" hidden>
+          <button class="menu-command" id="menuCameraReset" type="button" role="menuitem"><span>Default camera position</span><kbd></kbd></button>
+          <button class="menu-command" id="menuTopView" type="button" role="menuitemcheckbox" aria-checked="true"><span>Show top view</span><kbd></kbd></button>
+          <div class="menu-separator"></div>
+          <button class="menu-command" id="menuLookImport" type="button" role="menuitem"><span>Import Look</span><kbd></kbd></button>
+          <button class="menu-command" id="menuLookExport" type="button" role="menuitem"><span>Export Look</span><kbd></kbd></button>
+          <div class="menu-separator"></div>
+          <button class="menu-command" id="menuState" type="button" role="menuitem"><span>State for nerds</span><kbd></kbd></button>
+        </div>
+      </div>
+    </nav>
+    <div class="appstatus" id="appStatus">connecting&hellip;</div>
+  </header>
+
   <div id="panel">
-    <!-- The head does not scroll, and the nav is here rather than at the foot of the
-         column for the reason web/nav.css gives at length. The markup below is the
-         same on all three surfaces, character for character apart from which chip
-         carries `aria-current` - neither does here, because this is neither of them. -->
     <div id="panelHead">
       <div class="panelbar">
         <h1>Kinect v2</h1>
-        <nav class="surfacenav" id="navRow" aria-label="Surfaces">
-          <a id="toMenu" href="/">menu</a>
-          <a id="toLibrary" href="/gallery">gallery</a>
-        </nav>
       </div>
       <div id="status">connecting…</div>
+    </div>
+
+    <div id="panelTabs" role="tablist" aria-label="Inspector" hidden>
+      <button class="paneltab" id="panelTabCamera" type="button" role="tab" data-panel-tab="camera" aria-selected="false">Camera</button>
+      <button class="paneltab" id="panelTabFraming" type="button" role="tab" data-panel-tab="framing" aria-selected="false">Framing</button>
+      <button class="paneltab" id="panelTabLook" type="button" role="tab" data-panel-tab="look" aria-selected="true">Look</button>
+      <button class="paneltab" id="panelTabRegion" type="button" role="tab" data-panel-tab="region" aria-selected="false">Region</button>
     </div>
 
   <!-- Everything below scrolls. Left at its old indentation on purpose: this is a box
        drawn around a block that did not otherwise change, and re-indenting a hundred
        and eighty lines to say so would bury the change that was actually made. -->
   <div id="panelBody">
+    <div class="group" id="lookPresetGroup" data-panel-tab="look" hidden>
+      <label>Preset</label>
+      <!-- The picker the design draws, and the reason it is not a `<select>` any more is
+           the two things a native one cannot hold: a mark on the entry currently applied,
+           and a per-entry delete on the entries that can be deleted. A `<select>` renders
+           its options as the platform sees fit and nothing may sit inside one.
+
+           Owning it means owning what the platform gave away - `role=listbox`, arrow keys,
+           type-ahead, and focus that survives the rebuild a delete causes. `main.js`
+           carries that half. The trigger keeps the id `tPreset` because it is still the
+           control that names which preset is chosen, and every tool that drives this
+           surface is anchored on it. -->
+      <div class="btnrow">
+        <div class="picker" id="tPresetPicker">
+          <button class="pickertrigger" id="tPreset" type="button" role="combobox"
+            aria-haspopup="listbox" aria-expanded="false" aria-controls="tPresetList"
+            aria-label="Preset"><span class="pickervalue">&mdash;</span><span class="pickerarrow" aria-hidden="true">&#9662;</span></button>
+          <div class="pickerlist" id="tPresetList" role="listbox" aria-label="Presets" tabindex="-1" hidden></div>
+        </div>
+        <button id="tPresetApply" type="button">apply</button>
+      </div>
+      <div class="btnrow">
+        <button id="tPresetSave" type="button">save</button>
+        <button id="tPresetExport" type="button">export</button>
+        <button id="tPresetImport" type="button">import</button>
+        <input id="tPresetFile" type="file" accept=".json,application/json" hidden>
+      </div>
+    </div>
+
     <!-- The shooting controls, and the four-fifths of them that are load-bearing:
          record, mark and how much time is left. Nothing here is a look. -->
     <div class="group" id="recordGroup">
@@ -651,13 +976,21 @@
     <div class="group" id="recLookGroup">
       <label>Look</label>
       <div class="btnrow">
-        <select id="recPreset"><option value="">—</option></select>
+        <!-- The same control, because it is the same library. Pencil draws a preset row on
+             the Record surface too, so this is not the editor's picker leaking onto a
+             surface that wanted a plainer one. -->
+        <div class="picker" id="recPresetPicker">
+          <button class="pickertrigger" id="recPreset" type="button" role="combobox"
+            aria-haspopup="listbox" aria-expanded="false" aria-controls="recPresetList"
+            aria-label="Preset"><span class="pickervalue">&mdash;</span><span class="pickerarrow" aria-hidden="true">&#9662;</span></button>
+          <div class="pickerlist" id="recPresetList" role="listbox" aria-label="Presets" tabindex="-1" hidden></div>
+        </div>
         <button id="recPresetApply" type="button">apply</button>
       </div>
       <div id="recLookNote">&nbsp;</div>
     </div>
 
-    <div class="group" id="cameraGroup" hidden>
+    <div class="group" id="cameraGroup" data-panel-tab="camera" hidden>
       <label>Camera &middot; composition</label>
       <div class="btnrow">
         <button id="camKey" type="button">key here</button>
@@ -792,22 +1125,21 @@
              handle drag is usually reaching for, and a drag is still there for the
              shape none of them is. -->
         <span class="tchip tease off" id="tEase">selected key
+          <!-- Walking the selected parameter's own keys, which is the only reading that
+               makes the pair meaningful: the playhead is one thing and a track's keys are
+               another, so "previous" has to mean previous *on this track*. They seek
+               through `goTo`, the same door the ruler and the in/out controls use, so the
+               pause and the clamp into the clip range are stated once. Disabled when there
+               is no key that way, rather than seeking to where the playhead already is -
+               a control that answers a press by doing nothing is one you press twice. -->
+          <button id="tPrevKey" type="button" title="Previous keyframe on this parameter" aria-label="Previous keyframe">&lt;</button>
+          <button id="tNextKey" type="button" title="Next keyframe on this parameter" aria-label="Next keyframe">&gt;</button>
           <button data-ease="linear" type="button">lin</button>
           <button data-ease="in" type="button">in</button>
           <button data-ease="out" type="button">out</button>
           <button data-ease="smooth" type="button">smooth</button>
           <button data-ease="hold" type="button">hold</button>
           <button id="tDeleteKey" type="button" title="Delete the selected key (Del)">delete</button></span>
-        <!-- A look is a file, so it leaves and arrives as one. `export` writes the same
-             bytes the store holds and `import` reads them back through the registry's
-             own door, which is what makes a hand-edited file fail at the key that is
-             wrong rather than load as a plausible look. The file input is hidden
-             because a bare one cannot be styled into the strip and its label is the
-             button beside it. A name ending in `·` in the picker is one that ships. -->
-        <label class="tchip">look<select id="tPreset"><option value="">—</option></select>
-          <button id="tPresetApply" type="button">apply</button><button id="tPresetSave" type="button">save</button
-          ><button id="tPresetExport" type="button">export</button><button id="tPresetImport" type="button">import</button>
-          <input id="tPresetFile" type="file" accept=".json,application/json" hidden></label>
         <label class="tchip">project<select id="tProject"><option value="">—</option></select>
           <button id="tProjectOpen" type="button">open</button><button id="tProjectSave" type="button">save</button></label>
         <!-- The auto-save, offered back only when there is one to offer. Beside the
@@ -827,23 +1159,6 @@
         <label class="tchip">deliverable<select id="tDeliverable"><option value="">—</option></select>
           <button id="tDeliverableNew" type="button">new</button>
           <b id="tDeliverableReadout"></b></label>
-      </div>
-      <!-- Outside the scroller on purpose, and the scrollbar is hidden so the bar
-           cannot grow and push the lanes out of the bottom. Export was the last chip
-           in a single scrolling row, which put the render button off the right edge
-           with nothing on screen to say it existed: the one control that produces the
-           deliverable, unreachable on the machine the tool ships for.
-           The size select is built from EXPORT_SIZES in main.js rather than written
-           here, so a proof tool sweeping the sizes sweeps the sizes the menu offers -
-           the step 6 hole was a check whose four arms were all 1.6 while the menu was
-           all 16:9, and neither list knew about the other. -->
-      <div class="tpin">
-        <span class="tchip" id="tExportNote"></span>
-        <label class="tchip" id="tExportNameChip">name<input id="tExportName" type="text" spellcheck="false"
-          title="letters, digits, dot, dash and underscore - it names a file"></label>
-        <label class="tchip">export<select id="tExportSize"></select>
-          <button id="tExport" type="button">render</button>
-          <button id="tExportSave" type="button" disabled>save a copy&hellip;</button></label>
       </div>
     </div>
     <!-- The lanes live inside `tRailLanes`/`tLanes` rather than directly in these two
@@ -891,6 +1206,105 @@
       </div>
     </div>
   </section>
+
+  <dialog id="exportDialog" aria-labelledby="exportTitle">
+    <div class="dialog-head">
+      <h2 id="exportTitle">Export</h2>
+      <button class="dialog-close" id="exportClose" type="button" aria-label="Close">&times;</button>
+    </div>
+    <div class="dialog-field">
+      <span class="dialog-label">Aspect ratio</span>
+      <div class="dialog-segments" id="exportRatios"></div>
+    </div>
+    <div class="dialog-field">
+      <label for="tExportSize">Resolution</label>
+      <select id="tExportSize"></select>
+    </div>
+    <div class="dialog-field">
+      <span class="dialog-label">Format</span>
+      <div class="dialog-segments" id="exportFormats">
+        <button type="button" data-codec="h264" aria-pressed="true">MP4</button>
+        <button type="button" data-codec="prores" aria-pressed="false">MOV</button>
+        <button type="button" data-codec="pngseq" aria-pressed="false">PNG sequence</button>
+      </div>
+    </div>
+    <div class="dialog-field" id="tExportNameChip">
+      <label for="tExportName">Output name</label>
+      <div class="dialog-input-row">
+        <input id="tExportName" type="text" spellcheck="false"
+          title="letters, digits, dot, dash and underscore - it names a file">
+      </div>
+    </div>
+    <div class="dialog-actions">
+      <span class="note" id="tExportNote"></span>
+      <button class="dialog-secondary" id="tExportSave" type="button" disabled>save a copy&hellip;</button>
+      <button class="dialog-action" id="tExport" type="button">render</button>
+    </div>
+  </dialog>
+
+  <dialog id="obsDialog" aria-labelledby="obsTitle">
+    <div class="dialog-head">
+      <h2 id="obsTitle">Output to OBS</h2>
+      <button class="dialog-close" id="obsClose" type="button" aria-label="Close">&times;</button>
+    </div>
+    <div class="dialog-field">
+      <span class="dialog-label">Camera</span>
+      <div class="dialog-segments">
+        <button id="obsProgramMode" type="button" aria-pressed="true">Program</button>
+        <button id="obsViewportMode" type="button" aria-pressed="false">Viewport</button>
+      </div>
+    </div>
+    <div class="dialog-field">
+      <label for="obsResolution">Resolution</label>
+      <div class="dialog-input-row">
+        <select id="obsResolution">
+          <option value="1920x1080">1920x1080</option>
+          <option value="1280x720">1280x720</option>
+          <option value="3840x2160">3840x2160</option>
+          <!-- The way back to an arbitrary size. The recorder's own `#progSize` is a free
+               text field and takes any WIDTHxHEIGHT it can parse, but the editor hides the
+               block it sits in, so once this dialog became the editor's only door to the
+               program output the three fixed entries here were the only sizes an editor
+               could ever ask for. This entry reveals the field beside it, which writes
+               through `#progSize` exactly as the fixed options do - one control still owns
+               the value, and this is a second way to reach it rather than a second copy. -->
+          <option value="custom">custom&hellip;</option>
+        </select>
+        <input id="obsCustomSize" type="text" spellcheck="false" hidden
+          aria-label="Custom output size" placeholder="1920x1080"
+          title="WIDTHxHEIGHT - the recorder refuses anything it cannot parse">
+      </div>
+    </div>
+    <div class="dialog-field">
+      <span class="dialog-label">Browser source</span>
+      <div class="dialog-copy"><input id="obsBrowserUrl" type="text" readonly><button class="dialog-secondary" id="obsCopyBrowser" type="button">copy</button></div>
+      <span class="dialog-label">Webcam source</span>
+      <div class="dialog-copy"><input id="obsWebcamUrl" type="text" readonly><button class="dialog-secondary" id="obsCopyWebcam" type="button">copy</button></div>
+    </div>
+    <p id="obsNote">The browser source renders the program camera. The webcam URL serves the Kinect colour camera directly.</p>
+    <div class="dialog-actions">
+      <!-- The dot is lit off the server's own subscriber list rather than off the fact
+           that this dialog is open. The literal it replaces said `ready` on a machine
+           nothing was reading and on one where OBS had been pulling for an hour, which
+           is a status line that cannot be wrong because it is not about anything.
+
+           There is no Stop control beside it. The design draws one, and the product has
+           no start/stop API for the camera route to call - a source stops when the thing
+           reading it goes away. A button that only looked like it stopped something is
+           worse than the absence. -->
+      <span class="note" id="obsStatus"><i class="obsdot" id="obsDot"></i><span id="obsStatusText">reading&hellip;</span></span>
+      <button class="dialog-secondary" id="obsOpen" type="button">open source</button>
+      <button class="dialog-action" id="obsDone" type="button">done</button>
+    </div>
+  </dialog>
+
+  <dialog id="stateDialog" aria-labelledby="stateTitle">
+    <div class="dialog-head">
+      <h2 id="stateTitle">State for nerds</h2>
+      <button class="dialog-close" id="stateClose" type="button" aria-label="Close">&times;</button>
+    </div>
+    <pre id="stateDump"></pre>
+  </dialog>
 
   <!-- Which look values the preset about to be written is going to carry, asked before
        it is written rather than after. Both doors a look leaves by come through here -

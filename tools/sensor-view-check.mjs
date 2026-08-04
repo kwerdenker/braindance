@@ -702,6 +702,7 @@ const PROBE = `(() => {
       return {
         blocks,
         surface: k.surface(),
+        activeTab: document.querySelector('#panelTabs .paneltab[aria-selected="true"]')?.dataset.panelTab ?? null,
         kfButtons: document.querySelectorAll('#panel .kf').length,
         lookNames: look.length,
         keyed: keyed.length,
@@ -950,6 +951,16 @@ async function onFreshPage(what, open, work, attempts = 3) {
   }
 }
 
+// The editor now keeps sensor navigation behind its Framing inspector tab, while
+// the recorder uses the same control without tabs. Drive the visible surface first
+// and then press the real button in both cases; a direct `sensorView()` call would
+// skip the click-handler mutations this tool is responsible for catching.
+async function clickSensorView(page) {
+  const framingTab = page.locator('#panelTabFraming');
+  if (await framingTab.isVisible()) await framingTab.click();
+  await page.click('#camSensor');
+}
+
 // ------------------------------------------------------------------- the stores
 //
 // The resource rather than the bookkeeping that claims to track it, on both sides.
@@ -1055,7 +1066,7 @@ try {
     // damping momentum in it, which the press then spends. Three updates rather
     // than one so the residual is a running orbit rather than a single step.
     const spun = await page.evaluate('globalThis.__sv.displace({ spin: true, updates: 3 })');
-    await page.click('#camSensor');
+    await clickSensorView(page);
     const spunPose = await page.evaluate('globalThis.__sv.pose()');
     return { before, applied, spun, spunPose };
   });
@@ -1241,7 +1252,7 @@ try {
     // The real gesture: the button, clicked. A direct call to `sensorView` would
     // walk straight past a handler that keys the camera around it, which is exactly
     // the shape `sensor-view-keys-camera` plants.
-    await page.click('#camSensor');
+    await clickSensorView(page);
     await page.evaluate('globalThis.__sv.settled()');
     // The auto-save is fire-and-forget, so a read taken the moment the click resolves
     // records an absence the write is still on its way to filling. An absence is the
@@ -1299,7 +1310,7 @@ try {
     // session editing at the same time would move for reasons this tool is not
     // about.
     const before = await page.evaluate('globalThis.__sv.document()');
-    await page.click('#camSensor');
+    await clickSensorView(page);
     const after = await page.evaluate('globalThis.__sv.document()');
     const pose = await page.evaluate('globalThis.__sv.pose()');
     const live = await page.evaluate(`(() => {
@@ -1359,10 +1370,16 @@ try {
   // The claims are asserted as rules over every block in the panel rather than as a
   // list of ids, because a check that names three of six is a check for those three.
   // The last rule is the closer: everything the first three do not name has to be
-  // visible on both surfaces, so a group added later is asked about by existing.
+  // reachable on both surfaces, so a group added later is asked about by existing.
   console.log('\n[6] the recorder and the editor are different panels, in the ways claimed');
-  const panelRun = await onFreshPage('the panel arms', { }, async ({ page }) =>
-    page.evaluate('globalThis.__sv.panel()'));
+  const panelRun = await onFreshPage('the panel arms', { }, async ({ page }) => {
+    const states = {};
+    for (const tab of ['camera', 'framing', 'look', 'region']) {
+      await page.click(`#panelTab${tab[0].toUpperCase()}${tab.slice(1)}`);
+      states[tab] = await page.evaluate('globalThis.__sv.panel()');
+    }
+    return states;
+  });
   const recPanelRun = await onFreshPage('the recorder panel arm', { path: RECORDER_PATH }, async ({ page }) => ({
     panel: await page.evaluate('globalThis.__sv.panel()'),
     extended: await page.evaluate('globalThis.__sv.extended()'),
@@ -1370,14 +1387,26 @@ try {
   if (!panelRun.ok) throw new Error(`the editor panel arm did not run: ${panelRun.error}`);
   if (!recPanelRun.ok) throw new Error(`the recorder panel arm did not run: ${recPanelRun.error}`);
   {
-    const ed = panelRun.value;
+    const edStates = panelRun.value;
+    const ed = edStates.camera;
     const rec = recPanelRun.value.panel;
     const ext = recPanelRun.value.extended;
+    const editorBlocks = new Map(ed.blocks.map((block) => [block.key, {
+      ...block,
+      visible: Object.values(edStates).some((state) => state.blocks.find((b) => b.key === block.key)?.visible),
+      controlsOnScreen: Math.max(...Object.values(edStates).map(
+        (state) => state.blocks.find((b) => b.key === block.key)?.controlsOnScreen ?? 0,
+      )),
+    }]));
+    const edAcrossTabs = { ...ed, blocks: [...editorBlocks.values()] };
     // Without this every visibility row below is a row about a function that returned
     // undefined, which is falsy, which reads as "hidden" for everything.
     check(ed.supported && rec.supported,
       '`checkVisibility` exists, so the rows below are about layout rather than about undefined',
       `editor ${ed.supported}, recorder ${rec.supported}`);
+    check(Object.entries(edStates).every(([tab, state]) => state.activeTab === tab),
+      'the four editor inspector tabs each activate the panel view they name',
+      Object.entries(edStates).map(([tab, state]) => `${tab}:${state.activeTab}`).join(' '));
 
     // (a) the keyframe controls
     check(rec.kfButtons === 0 && rec.keyed === 0,
@@ -1398,8 +1427,8 @@ try {
       `${ed.lookNames}/${rec.lookNames} parameters, ${ed.blocks.length}/${rec.blocks.length} blocks`);
 
     // (c) which blocks are on screen, as four rules over the whole panel
-    const RECORDER_ONLY = ['recordGroup', 'recLookGroup', 'sensorGroup', 'monitorGroup', 'extendedRow'];
-    const EDITOR_ONLY = ['cameraGroup'];
+    const RECORDER_ONLY = ['recordGroup', 'recLookGroup', 'sensorGroup', 'monitorGroup', 'programOutGroup', 'extendedRow'];
+    const EDITOR_ONLY = ['cameraGroup', 'lookPresetGroup'];
     const named = new Set([...RECORDER_ONLY, ...EDITOR_ONLY]);
     const on = (blocks, keys) => keys.filter((key) => blocks.find((b) => b.key === key)?.visible);
     const off = (blocks, keys) => keys.filter((key) => !blocks.find((b) => b.key === key)?.visible);
@@ -1411,12 +1440,14 @@ try {
       listed(rec.blocks).join(' '));
     check(off(rec.blocks, RECORDER_ONLY).length === 0,
       'the recorder shows the shooting blocks', `visible: ${on(rec.blocks, RECORDER_ONLY).join(' ')}`);
-    check(on(ed.blocks, RECORDER_ONLY).length === 0,
-      'and the editor shows none of them', `still visible: ${on(ed.blocks, RECORDER_ONLY).join(' ') || 'none'}`);
+    check(on(edAcrossTabs.blocks, RECORDER_ONLY).length === 0,
+      'and the editor shows none of them in any inspector tab',
+      `still visible: ${on(edAcrossTabs.blocks, RECORDER_ONLY).join(' ') || 'none'}`);
     check(on(rec.blocks, EDITOR_ONLY).length === 0,
       'the recorder hides the composition block', `still visible: ${on(rec.blocks, EDITOR_ONLY).join(' ') || 'none'}`);
-    check(off(ed.blocks, EDITOR_ONLY).length === 0,
-      'and the editor shows it', `visible: ${on(ed.blocks, EDITOR_ONLY).join(' ')}`);
+    check(off(edAcrossTabs.blocks, EDITOR_ONLY).length === 0,
+      'and the editor reaches its composition and preset blocks through the inspector',
+      `reachable: ${on(edAcrossTabs.blocks, EDITOR_ONLY).join(' ')}`);
     // **Counted in controls as well as in headings, and the pair is the point.** A
     // group's node stays visible when the collapse rule shuts it - `shut` hides the
     // rows, not the box around them - so "9 look groups, all 9 visible" went on being
@@ -1451,7 +1482,7 @@ try {
     // everything open fails the controls.
     const sum = (list, key) => list.reduce((n, b) => n + b[key], 0);
     const recLook = rec.blocks.filter((b) => b.look);
-    const edLook = ed.blocks.filter((b) => b.look);
+    const edLook = edAcrossTabs.blocks.filter((b) => b.look);
     const edOpen = edLook.filter((b) => !b.shut);
     const edShut = edLook.filter((b) => b.shut);
     check(recLook.length > 0 && recLook.every((b) => !b.visible) && sum(recLook, 'controlsOnScreen') === 0,
@@ -1461,17 +1492,17 @@ try {
     check(edLook.length > 0 && edLook.every((b) => b.visible)
       && edOpen.length > 0 && edOpen.every((b) => b.controls > 0 && b.controlsOnScreen === b.controls)
       && edShut.every((b) => b.controlsOnScreen === 0),
-      'and open on the editor, where grading is the job - measured in controls on screen rather than in headings',
-      `${edLook.length} look groups, all ${edLook.filter((b) => b.visible).length} visible, `
+      'and reachable through the editor inspectors, where grading is the job - measured in controls on screen rather than in headings',
+      `${edLook.length} look groups, all ${edLook.filter((b) => b.visible).length} reachable, `
       + `${sum(edLook, 'controlsOnScreen')} of ${sum(edLook, 'controls')} controls on screen; `
       + `${edOpen.length} left open by the collapse rule show ${sum(edOpen, 'controlsOnScreen')} of `
       + `${sum(edOpen, 'controls')}; shut by it: ${edShut.map((b) => b.key).join(' ') || 'none'}`);
     // The closer. Everything the rules above do not name is common furniture and has
     // to be on both surfaces, so a block added later is covered without being listed.
     const commonRec = rec.blocks.filter((b) => !named.has(b.key) && !b.look);
-    const commonEd = ed.blocks.filter((b) => !named.has(b.key) && !b.look);
+    const commonEd = edAcrossTabs.blocks.filter((b) => !named.has(b.key) && !b.look);
     check(commonRec.length > 0 && commonRec.every((b) => b.visible) && commonEd.every((b) => b.visible),
-      'and every other block in the panel is on both surfaces, named or not',
+      'and every other block in the panel is visible on the recorder and reachable through an editor tab, named or not',
       `${commonRec.map((b) => b.key).join(' ')} - hidden on the recorder [`
       + `${commonRec.filter((b) => !b.visible).map((b) => b.key).join(' ')}], on the editor [`
       + `${commonEd.filter((b) => !b.visible).map((b) => b.key).join(' ')}]`);
@@ -1575,7 +1606,7 @@ try {
     // The button, clicked, and then nothing at all - no settle, no seek, no pointer.
     // A person who presses it and sits still is what the report describes, so the
     // wait is the whole gesture rather than an await that would do the work for it.
-    await page.click('#camSensor');
+    await clickSensorView(page);
     await page.waitForTimeout(2000);
     const after = await page.screenshot({ clip });
     const rendersAfter = await page.evaluate('globalThis.__sv.renders()');

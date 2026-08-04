@@ -69,6 +69,14 @@
 //   node tools/editor-check.mjs --mutate refusal-strands-the-picker --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate resize-skips-repaint   --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate restore-accepts-view-track --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate dialog-close-strands-focus --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate obs-forgets-custom-resolution --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate reset-missing-on-a-row --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate reset-skips-a-tab      --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate reset-remembers-its-own-state --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate reset-collapses-the-slot --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate reset-strands-focus     --no-render # must FAIL
+//   node tools/editor-check.mjs --mutate reset-writes-around-the-registry --no-render # must FAIL
 //   node tools/editor-check.mjs --mutate export-ignores-name              # must FAIL
 //
 // `--no-render` drops the real-export rows and says so in the verdict, the way
@@ -89,6 +97,13 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { PROJECT_VERSION } from '../web/format.js';
+// The server's own validator, imported rather than re-stated. The export dialog's
+// format segments carry their codec in an attribute, and the question "is this a codec
+// the encoder will take" has exactly one answer in this repo - `validateExport`, which
+// both the socket's `begin` and `POST /jobs` call. A list of codec names retyped here
+// would be a third copy that can drift from both, and a typo in the markup would then
+// be discovered a minute into a render instead of by this row.
+import { validateExport } from '../server/export.js';
 
 const argv = process.argv.slice(2);
 const flag = (name, fallback = null) => {
@@ -708,36 +723,295 @@ const MUTATIONS = {
     ],
   },
 
-  // The control for the placement rows in section 1, and it is the bug being put back
-  // rather than an invention: the nav spent its whole life at the foot of the panel,
-  // under every slider, on the one surface where the column is long enough to scroll.
-  // It stays a working nav that goes to the right places - the failure being restored
-  // is that you cannot see it, which is why the rows it must redden are the geometric
-  // ones and not the sweep.
-  //
-  // The second anchor had to move when the panel started generating its grade: it used
-  // to be the Viewer lookgroup's closing tag, and there is no static lookgroup left to
-  // close. The end of `#panelBody` is the position that survives that, and it is still
-  // the foot the bug had - the generated groups are placed against `#extendedRow` and
-  // walk down from there, so a nav written in last still ends up under every slider.
+  // The control for the application-bar placement rows in section 1. It moves the
+  // working bar into the scrolling inspector after the registry has built the whole
+  // column, restoring the original failure at the new shell boundary: all commands and
+  // both destinations still exist, but they are below the controls when the page opens.
   'nav-at-the-foot': {
     file: 'web/index.html',
+    edits: [[
+      '  </div><!-- #panelBody -->',
+      '    <script>\n'
+      + "      const plantedBar = document.getElementById('appBar');\n"
+      + "      plantedBar.style.position = 'static';\n"
+      + "      document.getElementById('panelBody').append(plantedBar);\n"
+      + '    </script>\n'
+      + '  </div><!-- #panelBody -->',
+    ]],
+  },
+
+  // The outer inspector switch stops hiding inactive groups. Every registry row still
+  // exists and every group collapse still works, so only the four tab-visibility rows
+  // must redden; a wider failure would be testing the panel generator instead.
+  'panel-tabs-show-everything': {
+    file: 'web/main.js',
+    edits: [[
+      '    group.hidden = group.dataset.panelTab !== tab;',
+      '    group.hidden = false;',
+    ]],
+  },
+
+  // ------------------------------------------------------ the per-parameter reset
+  //
+  // Six controls for section 17, and they are six rather than one because the reset is
+  // four claims wearing one button: that every look scalar has one, that what it offers
+  // is re-read off the registry rather than remembered, that hiding it costs the row no
+  // layout, and that pressing it is an ordinary registry write which leaves the caret
+  // somewhere a hand can use. A single break would redden most of the section and say
+  // which of the four had gone.
+
+  // One row emitted without its reset, and the parameter is chosen for being one
+  // nothing else in the section touches: `noiseSpeed` sits in `displacement`, which is
+  // on the region inspector, so no press row, no geometry row and no preset row reads
+  // it. The existence row is the only thing that can see it go.
+  //
+  // Must redden: **two rows**, and the second is what makes the driver rule honest.
+  // `every look parameter the registry declares as a scalar carries exactly one reset
+  // naming itself` reports `noiseSpeed`, and `every reset the panel renders was pressed
+  // here` reports it too - the press sweep drags the parameter, waits for a reset that
+  // never appears, and says so rather than pressing nothing quietly. The stray row stays
+  // green on purpose: it asks whether every reset that exists is in the right row, which
+  // a missing one does not affect, and a count folded into it would make two rows one row
+  // written twice.
+  //
+  // Measured at `web/main.js` 09567ae2: `396 assertions, 3 failed`, the third being the
+  // export dialog's `and the format segments follow the document ...`, which is red on
+  // that tree on its own account. Read the fired list and subtract it.
+  'reset-missing-on-a-row': {
+    file: 'web/main.js',
+    edits: [[
+      '        row.append(button, makeResetButton(name));',
+      "        row.append(...(name === 'noiseSpeed' ? [button] : [button, makeResetButton(name)]));",
+    ]],
+  },
+
+  // The same hole one class wider: the generator emits the reset only for the groups on
+  // the look inspector, so the framing and region tabs lose theirs entirely. It is kept
+  // beside the mutation above rather than folded into it because the two fail
+  // differently - one parameter going missing is a filter with a typo in it, a whole
+  // inspector going missing is a condition somebody wrote on purpose - and the existence
+  // row prints its count per tab, so the reader can tell which of the two happened
+  // without running anything else.
+  //
+  // Must redden: **two rows** - the same existence row, naming the twenty-three
+  // parameters on the framing and region inspectors, eight and fifteen, and the press
+  // sweep beside it for the same twenty-three. Everything else in the section reads rows
+  // on the look inspector, so a wider failure would mean the section had stopped being
+  // able to say which tab lost them.
+  //
+  // Measured at `web/main.js` 09567ae2: `396 assertions, 4 failed`, the other two being
+  // the export dialog's format-door row and section 13's auto-save ordering row, both red
+  // on that tree for their own reasons.
+  'reset-skips-a-tab': {
+    file: 'web/main.js',
+    edits: [[
+      '        row.append(button, makeResetButton(name));',
+      "        row.append(...(group.tab === 'look' ? [button, makeResetButton(name)] : [button]));",
+    ]],
+  },
+
+  // The control for the claim the whole feature rests on: what a row offers is the
+  // registry's opinion, re-read after every write, and never a note the panel keeps
+  // about its own gestures. This restores the shape that is easiest to write and wrong
+  // for every door but one - a set the slider's own handler adds to and the reset's
+  // click removes from, with `refreshReset` reading the set instead of comparing the
+  // value against its default.
+  //
+  // It is deliberately *right* for the slider, which is what makes it a control rather
+  // than a break: drag a parameter and the reset appears, press it and the reset goes,
+  // exactly as on the shipped build. What it cannot follow is the registry being reached
+  // by anything else - a preset, a project, an undo, step 5's tracks - and that is a
+  // whole class of door with one arm pointed at it.
+  //
+  // Must redden: **one row** - section 17's `a preset applied from the picker moves
+  // which rows offer a reset, with no reset pressed`. The press rows and the geometry
+  // rows stay green because they establish their state through the control, which is the
+  // one path this build gets right, and a control that reddened them too could not say
+  // which door it had closed. **That is also why the preset block runs before them**: a
+  // sticky flag set by the geometry block's fourteen drags would still be set when the
+  // preset landed, and the row would then be red about the leftovers rather than about
+  // the door.
+  //
+  // Measured at `web/main.js` 09567ae2: `396 assertions, 3 failed`, the other two being
+  // the export dialog's format-door row and section 13's auto-save ordering row.
+  'reset-remembers-its-own-state': {
+    file: 'web/main.js',
     edits: [
+      ['const resetButtons = new Map();', 'const resetButtons = new Map();\nconst resetTouched = new Set();'],
+      ['  const modified = value !== resetTarget(name);', '  const modified = resetTouched.has(name);'],
       [
-        '        <nav class="surfacenav" id="navRow" aria-label="Surfaces">\n'
-        + '          <a id="toMenu" href="/">menu</a>\n'
-        + '          <a id="toLibrary" href="/gallery">gallery</a>\n'
-        + '        </nav>\n',
-        '',
+        'function writeFromControl(name, value) {\n  const applied = params.set(name, value);',
+        'function writeFromControl(name, value) {\n  resetTouched.add(name);\n  const applied = params.set(name, value);',
       ],
       [
-        '  </div><!-- #panelBody -->',
-        '    <nav class="surfacenav" id="navRow" aria-label="Surfaces">\n'
-        + '      <a id="toMenu" href="/">menu</a>\n'
-        + '      <a id="toLibrary" href="/gallery">gallery</a>\n'
-        + '    </nav>\n  </div><!-- #panelBody -->',
+        '    params.set(name, resetTarget(name));\n    history.commit();',
+        '    resetTouched.delete(name);\n    params.set(name, resetTarget(name));\n    history.commit();',
       ],
     ],
+  },
+
+  // The stylesheet's half of the contract, and the one edit that looks like a tidy-up.
+  // A reset that is not being offered is taken out of the flow instead of merely being
+  // made invisible, so the row it was in reflows the moment a parameter leaves its
+  // default - which is to say in the middle of the drag that moved it.
+  //
+  // **Nothing about the two states looks different in a screenshot of either one**, which
+  // is why the row that catches this measures both and compares them: `checkVisibility`
+  // answers false under both spellings, so a row asking whether the hidden button is on
+  // the screen passes this mutation with everything green.
+  //
+  // Must redden: **two rows** - `the reset keeps its box while it is not being offered`
+  // and `and nothing else in the row moved between the two states`. The first is the
+  // mechanism and the second is the harm; they are separate because a layout where
+  // nothing downstream of the reset could move would leave the second unable to fail, and
+  // this one is not that layout. Measured on the shipped panel at 1512px: the slider goes
+  // 39px wide to 64px, the readout from x=145 to x=170 and the keyframe diamond from
+  // x=194 to x=219, against a clean build where all three are identical to the hundredth
+  // of a pixel across the same pair of states.
+  //
+  // Measured at `web/index.html` a242d097: `396 assertions, 4 failed`, the two named
+  // above plus the export dialog's format-door row and section 13's auto-save ordering
+  // row, both red on that tree for their own reasons.
+  'reset-collapses-the-slot': {
+    file: 'web/index.html',
+    edits: [[
+      '  .reset[data-modified=no] { visibility: hidden; }',
+      '  .reset[data-modified=no] { display: none; }',
+    ]],
+  },
+
+  // The press stops handing the caret anywhere, which is the state the shipped code's
+  // own comment describes and exists to avoid: writing the default makes the row
+  // unmodified, `refreshReset` disables the button while it is the focused element, and
+  // focus falls to the body with no way back into the panel short of tabbing from the
+  // top.
+  //
+  // **Both halves in one mutation, and the second half is the one this control was
+  // re-anchored for.** The handler reaches for the slider and then, where the write shut
+  // the group and took the slider out of the display, falls back to the group's own
+  // toggle. Removing only the first leaves the fallback catching the caret on exactly
+  // the case that matters, so the mutation would be green on the row that carries the
+  // claim - which is the two-gates-that-agree shape read from the other side: a control
+  // that cannot reach both terms is a control for neither.
+  //
+  // `const slider` is left standing and unused rather than taken with them, because a
+  // mutation that also has to keep a declaration in step with its uses is a mutation
+  // that goes stale twice as fast.
+  //
+  // Must redden: **two rows** - `pressing a reset leaves the caret on that row's own
+  // slider` and `a press that shuts the group it was in still leaves the caret somewhere
+  // in the panel`. The two are separate rows because the two paths through the handler
+  // are separate code, and this build answers both; the second was red on the build
+  // before the fallback existed and is what said so - `the caret is on body` there,
+  // `the caret is on opticalToggle` once the fallback landed.
+  //
+  // Measured at `web/main.js` 09567ae2: `396 assertions, 4 failed`, the two named above
+  // plus the export dialog's format-door row and section 13's auto-save ordering row.
+  'reset-strands-focus': {
+    file: 'web/main.js',
+    edits: [
+      ['    slider.focus();\n', ''],
+      [
+        "    if (document.activeElement !== slider) {\n"
+        + "      const toggle = button.closest('.group')?.querySelector('.grouptoggle');\n"
+        + '      if (toggle) toggle.focus();\n'
+        + '    }\n',
+        '',
+      ],
+    ],
+  },
+
+  // The press writes the value straight into the map instead of going through the
+  // registry's one door. It is the failure `makeResetButton`'s own docstring enumerates:
+  // no `apply`, so the image keeps the old value; no `writeControl`, so the slider and
+  // the readout go on showing what was there; no `paramWritten`, so nothing downstream
+  // rebuilds; and no group reveal, so a group open only because this parameter was
+  // carrying something stays open over a parameter that is no longer carrying anything.
+  //
+  // `values.set` rather than deleting the call, because a press that did nothing at all
+  // would be caught by a row asking whether the value moved - and that row would pass a
+  // build that moved the value and told nobody, which is the one this mutation is about.
+  //
+  // Must redden: **three rows** - the press row reading the registry, the slider and the
+  // readout back, the row saying the press stops the reset being offered, and the row
+  // saying the group the parameter was in re-derives shut. Each is a different thing
+  // `params.set` does on the way out, so between them they say *which* of the write's
+  // effects went missing rather than that one did.
+  //
+  // **The two focus rows pass under it, and that is the mutation being precise rather
+  // than the rows being weak.** Nothing about this edit touches the focus handling: the
+  // group never shuts, so the slider is still rendered when the handler reaches for it
+  // and the fallback is never needed. A control that also reddened those could not tell
+  // a write that went nowhere from a caret that went nowhere.
+  //
+  // Measured at `web/main.js` 09567ae2: `396 assertions, 4 failed`, the three named above
+  // plus the export dialog's format-door row.
+  'reset-writes-around-the-registry': {
+    file: 'web/main.js',
+    edits: [[
+      '    params.set(name, resetTarget(name));',
+      '    values.set(name, resetTarget(name));',
+    ]],
+  },
+
+  // The export dialog's format segments paint themselves from the last press instead of
+  // from the deliverable, which is the same defect `reset-remembers-its-own-state` plants
+  // one surface over and is worth a control of its own because the two are different code
+  // reached by different doors. `paintExportFormats` keeps its own note of what was
+  // clicked; pressing a segment still looks perfect, and a deliverable adopted from the
+  // picker leaves the dialog showing a codec the document does not have.
+  //
+  // Must redden: **one row** - section 1's `and the format segments follow the document
+  // rather than the press that last touched them`. The press row above it stays green,
+  // deliberately: a control that reddened both could not tell a button that is not wired
+  // from a button wired only to itself.
+  //
+  // **It cannot be shown to discriminate on the tree it was written against, and that is
+  // stated rather than left to be discovered.** The shipped build already fails that row
+  // for a neighbouring reason - `paintDeliverable` never calls `paintExportFormats`, so
+  // nothing repaints the segments when the document moves - so this mutation reddens
+  // exactly the rows that were already red. Re-run it once the paint follows the document
+  // and it must redden that row and no other.
+  'format-segments-paint-the-press': {
+    file: 'web/main.js',
+    edits: [
+      [
+        "const EXPORT_CODECS = ['h264', 'prores', 'pngseq'];",
+        "const EXPORT_CODECS = ['h264', 'prores', 'pngseq'];\nlet formatPressed = null;",
+      ],
+      ["  const codec = activeDeliverable?.codec ?? 'h264';", "  const codec = formatPressed ?? 'h264';"],
+      [
+        '  button.addEventListener(\'click\', () => setExportCodec(button.dataset.codec));',
+        '  button.addEventListener(\'click\', () => { formatPressed = button.dataset.codec; setExportCodec(button.dataset.codec); });',
+      ],
+    ],
+  },
+
+  // A modal opened from a menu closes back onto the body instead of the visible menu
+  // trigger. The command it came from is already hidden, so native dialog restoration
+  // cannot provide a usable target on its own. Only the focus row in section 1 should
+  // redden: the dialog still opens, changes OBS state and closes normally.
+  'dialog-close-strands-focus': {
+    file: 'web/main.js',
+    edits: [['      returnFocus?.focus();', '      document.body.focus();']],
+  },
+
+  // The OBS dialog forgets a valid custom size accepted by the existing output control.
+  // Assigning a value with no option leaves the select blank, which looks like no output
+  // size is active even while the source is rendering one. The custom-resolution row is
+  // the intended and only failure.
+  'obs-forgets-custom-resolution': {
+    file: 'web/main.js',
+    edits: [[
+      "  if (![...shell.obsResolution.options].some((option) => option.value === progSizeEl.value)) {\n"
+      + "    const option = document.createElement('option');\n"
+      + '    option.value = progSizeEl.value;\n'
+      + '    option.textContent = `${progSizeEl.value} · current`;\n'
+      + "    option.dataset.current = '';\n"
+      + '    shell.obsResolution.appendChild(option);\n'
+      + '  }',
+      '',
+    ]],
   },
 
   // The bug that started this file. The rebuild goes back to clearing its columns of
@@ -762,6 +1036,65 @@ const MUTATIONS = {
   // whatever the redraw armed while it ran. The accurate image is still produced,
   // but OrbitControls damping advances at rebuild rate instead of display rate. The
   // row it must redden is therefore the page-side count, not the picture.
+  // The caret stranded by the rebuild a delete causes. The delete itself keeps working and
+  // the entry still goes, so the row about the library is untouched and only the focus row
+  // reddens - which is the split that says which of the two claims this control tested.
+  'picker-drops-focus-on-rebuild': {
+    file: 'web/main.js',
+    edits: [[
+      '  if (back) back.focus();\n  else closePicker(picker, { restoreFocus: true });',
+      '  if (back) picker.list.blur();',
+    ]],
+  },
+  // A delete drawn on every entry, shipped looks included. The server refuses one on a
+  // builtin, so this is a control that is always refused wearing the shape of a control -
+  // the row asks which entries carry the glyph rather than what happens when it is pressed,
+  // because the refusal is the server's and this claim is the page's.
+  'picker-offers-a-builtin-delete': {
+    file: 'web/main.js',
+    edits: [[
+      '    if (!doc.builtin) {\n      const remove = document.createElement(\'button\');',
+      '    if (true) {\n      const remove = document.createElement(\'button\');',
+    ]],
+  },
+  // `EXPORT_CODECS` gone stale against the markup it validates. One entry dropped, and
+  // `pngseq` rather than `h264` because h264 is the fallback every other row falls back
+  // to - dropping it would redden half of section 1 for reasons that have nothing to do
+  // with the drift row. The button stays in the markup, so the sweep still finds three
+  // segments and only the press raises.
+  'export-codecs-drops-an-entry': {
+    file: 'web/main.js',
+    edits: [[
+      "const EXPORT_CODECS = ['h264', 'prores', 'pngseq'];",
+      "const EXPORT_CODECS = ['h264', 'prores'];",
+    ]],
+  },
+  // The two halves of section 18, one control each, because a mutation that reddened
+  // both could not say which of the two claims it had tested. The first leaves the walk
+  // working and only stops the control going quiet; the second leaves the quiet correct
+  // and only sends the walk the wrong way.
+  'keynav-never-disables': {
+    file: 'web/main.js',
+    edits: [[
+      "  ui.prevKey.disabled = neighbourKeyTime(-1) === null;\n"
+      + '  ui.nextKey.disabled = neighbourKeyTime(1) === null;',
+      '  ui.prevKey.disabled = false;\n  ui.nextKey.disabled = false;',
+    ]],
+  },
+  // The walk lands on the far end of the track rather than on the neighbour, which is
+  // the wrong key while still being a key on the right side of the playhead. The filter
+  // is untouched on purpose, so "is there anything that way" keeps its correct answer and
+  // the three disabled rows stay green - a mutation that emptied the list would redden
+  // them too and could not then say which half of the section it had tested. Three keys
+  // at 1, 5 and 9 are what make it visible: with two, the nearest and the farthest are
+  // the same key and this edit would change nothing.
+  'keynav-walks-to-the-far-key': {
+    file: 'web/main.js',
+    edits: [[
+      '  return direction < 0 ? Math.max(...times) : Math.min(...times);',
+      '  return direction < 0 ? Math.min(...times) : Math.max(...times);',
+    ]],
+  },
   'orbit-pumps-on-change': {
     file: 'web/main.js',
     edits: [[
@@ -1593,6 +1926,19 @@ const DRIVER_RULES = [
     match: (row) => inGroup(row, '#presetPick'),
   },
   {
+    key: 'shelldialogs',
+    what: 'a control in the Export, OBS, or state dialog',
+    by: 'section 1 opens each application dialog, drives every enabled control, and '
+      + 'asserts every format the export dialog offers is one the server encodes',
+    match: (row) => inGroup(row, '#exportDialog', '#obsDialog', '#stateDialog'),
+  },
+  {
+    key: 'paneltabs',
+    what: 'an inspector tab',
+    by: 'section 1 presses all four tabs and reads which declared panel groups remain on screen',
+    match: (row) => inGroup(row, '#panelTabs'),
+  },
+  {
     key: 'groupreveal',
     what: 'the control that shuts or opens a panel group',
     // Named because section 16 enumerates them off the page and presses every one it
@@ -1609,6 +1955,22 @@ const DRIVER_RULES = [
     // the barren-rule row below exists to catch, which is where this would have surfaced
     // if the sweep had been the thing that caught it.
     match: (row) => Boolean(row.groupToggle),
+  },
+  {
+    key: 'reset',
+    what: 'the control that puts one look parameter back on its default',
+    // A rule and not fifty-one ids, for the reason the group toggle above is a rule:
+    // a parameter gains one of these by being a look scalar in the registry, so the
+    // fifty-second appears here without anybody editing this file. **This entry arrived
+    // late and the sweep is what said so** - the reset shipped as a `type=button` inside
+    // `#panel`, which the look rule below does not match because that rule is about a
+    // range and a checkbox, so section 1 was red with fifty-one uncovered controls the
+    // first time it was run against the feature. That is the sweep doing its job, and it
+    // is worth knowing that no amount of driving the buttons by hand would have said it.
+    by: 'section 17 presses every one of them - the list is the registry\'s, walked per '
+      + 'inspector - and reads the registry, the slider and the readout back afterwards; '
+      + 'two of the presses are read further, for the group they shut and the caret they left',
+    match: (row) => Boolean(row.reset),
   },
   {
     key: 'output',
@@ -1638,11 +2000,23 @@ const DRIVER_RULES = [
     match: (row) => row.mark,
   },
   {
-    key: 'nav',
-    what: 'navigation out of the editor',
-    by: 'sensor-view-check and library-check follow both links, and the rows below '
-      + 'assert where the nav sits and where its two anchors go',
-    match: (row) => inGroup(row, '#navRow'),
+    key: 'appbar',
+    what: 'an application-bar command or navigation link',
+    by: 'section 1 opens every menu, drives the commands that stay on this page, and '
+      + 'asserts the two real navigation destinations in the markup',
+    match: (row) => inGroup(row, '#appBar'),
+  },
+  {
+    key: 'preset',
+    what: 'an entry, its delete, or the add button inside the preset picker',
+    // Before the panel-wide rule below it, because that one is the widest and ordering is
+    // precedence. These have no ids to name them one at a time - an option is built per
+    // document in the library, so the set is the library's length and not a list anything
+    // here could write down - which is exactly the case a rule is for.
+    by: 'section 19 opens the picker, walks it with the keyboard, applies an entry, '
+      + 'and deletes one and reads where the caret went',
+    match: (row) => inGroup(row, '#lookPresetGroup')
+      && (row.tag === 'DIV' || row.label.startsWith('Delete preset') || row.id === 'tPresetAdd'),
   },
   {
     key: 'look',
@@ -1671,6 +2045,8 @@ const DRIVER_IDS = {
   tClearRange: 'section 3 - puts the range back to the whole clip',
   tMark: 'library-check writes a mark and reads the sidecar back',
   tDeleteKey: 'section 5 - removes the selected key',
+  tPrevKey: 'section 18 - walks the selected track and reads which key the playhead landed on',
+  tNextKey: 'section 18 - walks the selected track and reads which key the playhead landed on',
   tPreset: 'library-check applies a preset and compares the look',
   tPresetApply: 'library-check',
   tPresetSave: 'library-check',
@@ -1872,8 +2248,15 @@ try {
     // records costing three separate holes. Two containers arriving from two directions
     // at once is the argument for the shape rather than against it: the enumeration is
     // one place, so a surface added outside it is a row that goes missing here.
-    const els = [...document.querySelectorAll('.tbar input, .tbar select, .tbar button, .tbar a, '
-      + '#panel input, #panel select, #panel button, #panel a, '
+    // `[role=option]` is in the list because the preset picker's entries are `<div>`s -
+    // a native `<option>` cannot hold the mark and the delete the design draws, so the
+    // control that replaced the `<select>` renders elements this selector had no reason
+    // to name. A pressable control the page renders and the sweep cannot see is the
+    // sweep claiming a coverage it never had, which `docs/instruments.md` records
+    // costing a rule that matched nothing and said nothing.
+    const els = [...document.querySelectorAll('.appbar input, .appbar select, .appbar button, .appbar a, '
+      + '.tbar input, .tbar select, .tbar button, .tbar a, '
+      + '#panel input, #panel select, #panel button, #panel a, #panel [role=option], '
       + '.tlanes input, .tlanes select, .tlanes button, .tlanes a, '
       + 'dialog input, dialog select, dialog button, dialog a')];
     return els.map((el) => ({
@@ -1887,9 +2270,15 @@ try {
       // group key rather than a boolean, so the row below can say which group had no
       // driver instead of saying that one of them did not.
       groupToggle: el.dataset ? el.dataset.groupToggle || null : null,
+      // The parameter a reset puts back, serialised for the same reason the group key
+      // above is - and `||` rather than `??`, because the DOM answers an absent dataset
+      // key with the empty string, so `??` keeps it and every reset would be credited
+      // under the name of every other one.
+      reset: el.dataset ? el.dataset.reset || null : null,
       inTbar: Boolean(el.closest('.tbar')),
-      groups: ['#panel', '#cameraGroup', '#navRow', '#recordGroup', '#recLookGroup',
-        '#sensorGroup', '#monitorGroup', '#extendedRow', '#programOutGroup', '#presetPick']
+      groups: ['#appBar', '#panel', '#panelTabs', '#lookPresetGroup', '#cameraGroup', '#navRow',
+        '#recordGroup', '#recLookGroup', '#sensorGroup', '#monitorGroup', '#extendedRow',
+        '#programOutGroup', '#presetPick', '#exportDialog', '#obsDialog', '#stateDialog']
         .filter((g) => el.closest(g)),
       kf: el.classList.contains('kf'),
       mark: el.classList.contains('tmk'),
@@ -1922,7 +2311,8 @@ try {
   // went on saying "in the panel" about sixty-odd controls in a modal - a diagnostic
   // that names the wrong surface is how a reader stops being able to tell a sweep that
   // grew from one that moved.
-  const inDialog = sweep.filter((r) => r.groups.includes('#presetPick')).length;
+  const DIALOG_GROUPS = ['#presetPick', '#exportDialog', '#obsDialog', '#stateDialog'];
+  const inDialog = sweep.filter((r) => DIALOG_GROUPS.some((group) => r.groups.includes(group))).length;
   const inTbar = sweep.filter((r) => r.inTbar).length;
   note(`${sweep.length} interactive controls on the editor`,
     `${inTbar} in the strip, ${sweep.length - inTbar - inDialog} in the panel, ${inDialog} in a dialog`);
@@ -1984,7 +2374,7 @@ try {
   check(composition.length > 0 && withControls.length === 0,
     'and no composition parameter has one, because composition is edited in the world',
     withControls.length ? `${withControls.join(', ')} has a control` : `${composition.length} checked: ${composition.join(', ')}`);
-  check(sweep.some((r) => r.id === 'tExport') && sweep.some((r) => r.id === 'tIn' || true),
+  check(sweep.some((r) => r.id === 'tPlay') && sweep.some((r) => r.id === 'tSetIn'),
     'the strip is among what was swept', `${sweep.filter((r) => r.inTbar).map((r) => r.id).filter(Boolean).slice(0, 6).join(', ')}...`);
 
   // Being in the document is not the same as being reachable, which is the whole of
@@ -1999,60 +2389,374 @@ try {
   // panel - `nav-at-the-foot` came back 683px down and comfortably visible, and the row
   // only reddened on the structural half of its condition. The end a foot-nav fails is
   // the top, where the panel sits when you arrive. So both are read.
+  // Stand on the longest inspector. Camera is deliberately short, so moving the bar
+  // to its foot there can leave it visible and put the falsification control in a
+  // dead zone. Look has enough declared groups for both ends of the scroll to differ.
+  await page.locator('.paneltab[data-panel-tab="look"]').click();
   const nav = await page.evaluate(`(${(() => {
-    const el = document.getElementById('navRow');
-    const panel = document.getElementById('panel');
+    const el = document.getElementById('appBar');
     const body = document.getElementById('panelBody');
-    if (!el || !panel || !body) return { present: false, hasBody: !!body };
+    if (!el || !body) return { present: false, hasBody: !!body };
     const was = body.scrollTop;
     const at = (to) => {
       body.scrollTop = to;
       const r = el.getBoundingClientRect();
-      const p = panel.getBoundingClientRect();
       return {
         scrolled: Math.round(body.scrollTop),
-        top: Math.round(r.top - p.top),
-        inside: r.top >= p.top - 0.5 && r.bottom <= p.bottom + 0.5,
+        top: Math.round(r.top),
+        bottom: Math.round(r.bottom),
+        inside: r.top >= -0.5 && r.bottom <= innerHeight + 0.5,
       };
     };
     const travel = body.scrollHeight - body.clientHeight;
     const top = at(0);
     const end = at(body.scrollHeight);
-    // Put the column back where it was found. Section 8 drives the crop sliders by
-    // pointer coordinate, and a panel left scrolled to its end puts every one of them
-    // somewhere else - which is what happened: the crop rows moved from 0.005% apart
-    // to 0.446% and read as a rendering regression this change had caused. This probe
-    // is the one thing in section 1 that alters the page it is measuring, so it is also
-    // the one thing that has to undo itself.
     body.scrollTop = was;
     return {
       present: true,
       hasBody: true,
-      // How far the column can travel. A nav that cannot scroll out of sight is a nav
-      // this claim was never tested on, so the number is a row of its own.
       travel: Math.round(travel),
       inBody: !!el.closest('#panelBody'),
       top,
       end,
-      // Destinations off the markup rather than off a click handler, because that is
-      // where they live now and a browser can only follow what it can read.
-      hrefs: [...el.querySelectorAll('a')].map((a) => a.getAttribute('href')),
+      height: Math.round(el.getBoundingClientRect().height),
+      surface: document.getElementById('surfaceName')?.textContent?.trim(),
+      hrefs: ['toMenu', 'toLibrary'].map((id) => document.getElementById(id)?.getAttribute('href') ?? null),
     };
   }).toString()})()`);
 
-  check(nav.present, 'the panel has a head and a nav in it',
-    nav.present ? `${nav.hrefs.length} links` : `navRow/panelBody present: ${nav.hasBody}`);
+  check(nav.present, 'the editor has one application bar carrying its navigation and commands',
+    nav.present ? `${nav.height}px high, surface ${nav.surface}` : `appBar/panelBody present: ${nav.hasBody}`);
   check(nav.travel > 0, 'and the panel body genuinely scrolls, so the rows below are measuring something',
     `${nav.travel}px of travel`);
-  check(nav.present && nav.top.inside && nav.end.inside,
-    'the way out is on screen at both ends of that travel, which is what "not at the foot" means',
-    nav.present ? `${nav.top.top}px below the panel top at rest, ${nav.end.top}px scrolled to the end` : 'absent');
+  check(nav.present && nav.top.inside && nav.end.inside && nav.top.top === 0 && nav.end.top === 0,
+    'the application bar stays on screen at both ends of the inspector travel',
+    nav.present ? `top ${nav.top.top}px at rest, ${nav.end.top}px at the end` : 'absent');
   check(nav.present && !nav.inBody,
-    'and it is outside the scrolling column rather than merely near its top',
+    'and it is outside the scrolling inspector rather than merely near its top',
     `in the scrolling body: ${nav.inBody}`);
-  check(nav.present && nav.hrefs.join(' ') === '/ /gallery',
-    'and both chips carry the destination in the markup, in the order every surface uses',
-    nav.hrefs.join(' '));
+  check(nav.present && nav.surface === 'Editor' && nav.hrefs.join(' ') === '/ /gallery',
+    'and it names the surface while both exits remain real URLs in the markup',
+    `${nav.surface}: ${nav.hrefs.join(' ')}`);
+
+  // The tabs are an outer visibility layer over one registry-built panel. Each group
+  // remains in the document, and pressing a tab must leave only the groups declared
+  // for that view on screen. One row per tab makes `panel-tabs-show-everything`
+  // discriminate at every state instead of passing on whichever tab happens to own
+  // most of the panel.
+  for (const tab of ['camera', 'framing', 'look', 'region']) {
+    await page.locator(`.paneltab[data-panel-tab="${tab}"]`).click();
+    const state = await page.evaluate(`(${((name) => {
+      const groups = [...document.querySelectorAll('#panelBody > [data-panel-tab]')];
+      const visible = groups.filter((group) => group.getClientRects().length > 0);
+      return {
+        active: document.querySelector('.paneltab[aria-selected="true"]')?.dataset.panelTab ?? null,
+        visible: visible.map((group) => group.dataset.group || group.id),
+        wrong: visible.filter((group) => group.dataset.panelTab !== name)
+          .map((group) => group.dataset.group || group.id),
+        total: groups.length,
+      };
+    }).toString()})(${JSON.stringify(tab)})`);
+    check(state.active === tab && state.visible.length > 0 && state.wrong.length === 0,
+      `the ${tab} inspector shows only the groups declared for it`,
+      `${state.visible.join(', ')}; wrong: ${state.wrong.join(', ') || 'none'}; ${state.total} groups remain in the document`);
+  }
+  await page.locator('.paneltab[data-panel-tab="camera"]').click();
+
+  await page.locator('#fileMenuButton').click();
+  const fileMenu = await page.evaluate(`(() => ({
+    open: !document.getElementById('fileMenu').hidden,
+    items: [...document.querySelectorAll('#fileMenu [role=menuitem]')].map((el) => el.textContent.trim()),
+  }))()`);
+  check(fileMenu.open && fileMenu.items.length === 2,
+    'File opens from the fixed bar and offers the two designed commands', fileMenu.items.join(' | '));
+  let savePrompt = '';
+  page.once('dialog', async (dialog) => { savePrompt = dialog.message(); await dialog.dismiss(); });
+  await page.locator('#menuSaveProject').click();
+  await new Promise((r) => setTimeout(r, 100));
+  check(savePrompt.startsWith('save this edit as'), 'Save as reaches the existing project writer', savePrompt || 'no prompt');
+
+  await page.locator('#outputMenuButton').click();
+  await page.locator('#menuRender').click();
+  const exportDialog = await page.evaluate(`(() => ({
+    open: document.getElementById('exportDialog').open,
+    ratios: [...document.querySelectorAll('#exportRatios button')].map((button) => ({
+      label: button.textContent, selected: button.getAttribute('aria-pressed'),
+    })),
+    // The format segments, read as a set rather than by id. This row used to name
+    // exportFormatMov and exportFormatPng and assert both were disabled, which encoded
+    // a claim that has since stopped being true - the server grew prores and an image
+    // sequence, so a row pinning them as unavailable would have been holding the dialog
+    // to a limitation nobody has any more. Worse, it read disabled off the result of
+    // getElementById without a guard, so when the segments were rebuilt around a codec
+    // attribute the two ids went and the read threw: 17 assertions ran, 0 failed, exit 2,
+    // for every mutation of every section. That is the crash wearing the shape of a catch
+    // this repo has three entries about, and while it lasted no mutation in this file
+    // could be reported as missed, because the count it is missed by was never zero.
+    // Enumerated off the attribute so a fourth format is asked by existing.
+    // No backticks in this comment on purpose - it lives inside a template literal, and
+    // one here ends the literal. That is the fifth time in this repo.
+    formats: [...document.querySelectorAll('#exportFormats button[data-codec]')].map((button) => ({
+      codec: button.dataset.codec, disabled: button.disabled,
+      pressed: button.getAttribute('aria-pressed') === 'true',
+    })),
+  }))()`);
+  // **One claim per row, because the five that were folded together could not say which
+  // of them had gone.** The conjunction here was `open && a ratio selected && formats
+  // offered && none disabled && exactly one pressed && no stranger codecs`, which is red
+  // for any of six reasons and names none of them - the shape `docs/instruments.md` calls
+  // out where a conjunct has to be able to fail while its neighbours hold.
+  //
+  // **And the codec table is asked of the function that enforces it, not of its source.**
+  // The previous spelling sliced `const CODECS = {` out of `server/export.js` and read the
+  // keys back with a regex, which is a guess at a table wearing the shape of a reading -
+  // the same mistake this repo spent nine rounds on when it tried to answer "is this
+  // number written here" with a pattern. `validateExport` is exported precisely so that
+  // the socket's `begin` and the job queue share one answer, so a third caller inherits
+  // the rule by calling it. It also asks a stronger question than key membership: an
+  // entry demanding even dimensions refuses an odd frame here rather than inside ffmpeg.
+  //
+  // The containment is deliberately one-way and the note says so. `lossless` is declared
+  // by the server and not offered by the dialog, which is a choice about what an operator
+  // is shown rather than drift, so a row demanding the two sets be equal would be red
+  // over a build that is correct.
+  const offered = exportDialog.formats.map((format) => format.codec);
+  const codecRefused = offered.map((codec) => {
+    try {
+      validateExport({ name: 'editor-check-codec', width: 1920, height: 1080, fps: 30, codec });
+      return null;
+    } catch (err) {
+      return `${codec || '(unnamed)'}: ${err.message}`;
+    }
+  }).filter(Boolean);
+  check(exportDialog.open && exportDialog.ratios.some((ratio) => ratio.selected === 'true'),
+    'Render opens the designed Export dialog from the authoritative size table',
+    `${exportDialog.ratios.length} ratios, selected `
+    + `${exportDialog.ratios.filter((r) => r.selected === 'true').map((r) => r.label).join(', ') || 'none'}`);
+  check(offered.length >= 2 && exportDialog.formats.every((format) => !format.disabled),
+    'and it offers a format per codec with every one of them enabled, rather than showing a refusal the encoder no longer makes',
+    exportDialog.formats.map((f) => `${f.codec}${f.disabled ? ' DISABLED' : ''}`).join(', ') || 'no format segments');
+  check(offered.length > 0 && codecRefused.length === 0,
+    "and every codec it offers is one the server's own validator accepts, so the dialog cannot drift from the encoder",
+    codecRefused.length ? codecRefused.join('; ') : `${offered.join(', ')} all pass validateExport`);
+  check(exportDialog.formats.filter((format) => format.pressed).length === 1,
+    'and exactly one of them shows as chosen, because a format is a choice among them rather than a set of them',
+    `pressed ${exportDialog.formats.filter((f) => f.pressed).map((f) => f.codec).join(', ') || 'none'}`);
+
+  // **Pressed rather than looked at.** Every row above is about what the dialog contains,
+  // and this whole file exists because the suite once tested the model and never the
+  // control - three segments that are present, enabled and correctly painted are three
+  // segments a build could render while wiring none of them. The codec pressed is the one
+  // that is not already chosen, so a build that painted the press and wrote nothing fails
+  // on the document rather than passing on the paint.
+  const liveDeliverable = await page.evaluate('({ ...__kinect.library.activeDeliverable() })');
+  // Guarded rather than indexed into, because the rows above are what say this exists and
+  // a `undefined.codec` here would be a TypeError inside section 1 - which is exactly how
+  // this block's predecessor took the whole tool down at 17 assertions with none failed.
+  // A dialog with no unchosen segment is a failed row naming what it found.
+  const other = exportDialog.formats.find((format) => !format.pressed);
+  if (!other) {
+    check(false, 'pressing a format writes it into the deliverable the render reads, and shows itself as the one chosen',
+      `no unchosen segment to press: ${exportDialog.formats.map((f) => `${f.codec}=${f.pressed}`).join(', ') || 'no segments'}`);
+  } else {
+    await page.locator(`#exportFormats button[data-codec="${other.codec}"]`).click();
+    const afterPress = await page.evaluate(`(() => ({
+      pressed: [...document.querySelectorAll('#exportFormats button[data-codec]')]
+        .filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.dataset.codec),
+      codec: globalThis.__kinect.library.activeDeliverable()?.codec ?? null,
+    }))()`);
+    check(afterPress.codec === other.codec && afterPress.pressed.join(',') === other.codec,
+      'pressing a format writes it into the deliverable the render reads, and shows itself as the one chosen',
+      `pressed ${other.codec}: the document reads ${afterPress.codec}, the dialog shows ${afterPress.pressed.join(',') || 'none'}`);
+
+    // **Every segment, not the one that happened to be unchosen.** The row above proves a
+    // press is wired; it presses exactly one, so two of the three formats the dialog offers
+    // could be wired to nothing and it would still be green. This walks all of them and
+    // asks each to write *its own* codec, which is the claim the row above makes about one.
+    //
+    // It needs no page hook, and the reason is worth stating because it is what makes the
+    // row cheap: `setExportCodec` refuses a codec `EXPORT_CODECS` does not carry, by
+    // throwing. So a table that has gone stale against the markup does not paint a wrong
+    // format - the press raises, `pageerror` records it, and the codec never moves. The
+    // discriminator is the codec the document reads back, and the throw is what guarantees
+    // a missing entry cannot quietly succeed. `export-codecs-drops-an-entry` is the control.
+    const drift = [];
+    for (const format of exportDialog.formats) {
+      await page.locator(`#exportFormats button[data-codec="${format.codec}"]`).click();
+      const got = await page.evaluate(`(() => ({
+        codec: globalThis.__kinect.library.activeDeliverable()?.codec ?? null,
+        pressed: [...document.querySelectorAll('#exportFormats button[data-codec]')]
+          .filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.dataset.codec).join(','),
+      }))()`);
+      drift.push({ asked: format.codec, ...got });
+    }
+    const wrong = drift.filter((d) => d.codec !== d.asked || d.pressed !== d.asked);
+    check(drift.length >= 2 && wrong.length === 0,
+      'and every format the dialog offers writes its own codec when pressed, so a segment cannot be markup with nothing behind it',
+      wrong.length
+        ? wrong.map((d) => `${d.asked} -> document ${d.codec}, shown ${d.pressed || 'none'}`).join('; ')
+        : drift.map((d) => `${d.asked} -> ${d.codec}`).join(', '));
+
+  // **The other door, and it is the same argument the panel's row resets rest on.** The
+  // deliverable is reached by a project file, by the autosave and by the deliverable
+  // picker as well as by these three buttons - `paintExportFormats` says so in its own
+  // docstring - so a control painted from its own clicks is right for the clicks and
+  // silently wrong for every other way the document moves. The document is changed here
+  // with no segment pressed, and the segments have to follow it.
+  //
+  // The planted deliverable differs from the live one in its codec and in nothing else,
+  // on purpose: adopting one runs `setClipInOut`, and a trim arriving here would move the
+  // playhead under section 8's crop rows seven sections later. This file already carries
+  // two scars from a probe in section 1 changing what a later section measured.
+    const codecDoor = `ec${process.pid}-codec`;
+    const doorCodec = offered.find((codec) => codec !== afterPress.codec);
+    const doorBody = JSON.stringify({ ...liveDeliverable, name: codecDoor, codec: doorCodec });
+    await page.evaluate(`(async () => {
+      const res = await fetch('/deliverables/' + encodeURIComponent(${JSON.stringify(codecDoor)}), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: ${JSON.stringify(doorBody)},
+      });
+      return res.ok;
+    })()`);
+    await page.evaluate(`(() => {
+      const el = document.getElementById('tDeliverable');
+      if (![...el.options].some((o) => o.value === ${JSON.stringify(codecDoor)})) {
+        el.append(new Option(${JSON.stringify(codecDoor)}, ${JSON.stringify(codecDoor)}));
+      }
+      el.value = ${JSON.stringify(codecDoor)};
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await settle();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const afterDoor = await page.evaluate(`(() => ({
+      pressed: [...document.querySelectorAll('#exportFormats button[data-codec]')]
+        .filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.dataset.codec),
+      codec: globalThis.__kinect.library.activeDeliverable()?.codec ?? null,
+      name: globalThis.__kinect.library.activeDeliverable()?.name ?? null,
+    }))()`);
+    check(afterDoor.codec === doorCodec && afterDoor.name === codecDoor,
+      'a stored deliverable naming another codec really was adopted, or the row below tests nothing',
+      `the document reads ${afterDoor.codec} under the name ${afterDoor.name}`);
+    check(afterDoor.pressed.join(',') === doorCodec,
+      'and the format segments follow the document rather than the press that last touched them',
+      `the document reads ${afterDoor.codec}, the dialog shows ${afterDoor.pressed.join(',') || 'none'}`);
+
+    // Put the deliverable back as this block found it and take the planted document off
+    // the server, because every section from 3 onward reads the live one. The repaint goes
+    // through whichever segment carries the live codec if there is one - `lossless` is a
+    // codec the server encodes and the dialog does not offer, so a deliverable holding it
+    // would otherwise leave this line waiting thirty seconds for a button that does not
+    // exist, which is a crash where a restore was meant.
+    await page.evaluate(`(() => {
+      globalThis.__kinect.library.setActiveDeliverable(${JSON.stringify(liveDeliverable)});
+      const el = document.getElementById('tDeliverable');
+      const planted = [...el.options].find((o) => o.value === ${JSON.stringify(codecDoor)});
+      if (planted) planted.remove();
+      el.value = '';
+      const segment = document.querySelector('#exportFormats button[data-codec=' + CSS.escape(${JSON.stringify(liveDeliverable.codec ?? '')}) + ']');
+      if (segment) segment.click();
+    })()`);
+    const codecCleanup = await page.evaluate(`(async () => {
+      const res = await fetch('/deliverables/' + encodeURIComponent(${JSON.stringify(codecDoor)}), {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      });
+      return res.ok;
+    })()`);
+    check(codecCleanup, 'and the deliverable this block planted was removed again',
+      codecCleanup ? `${codecDoor} deleted` : `DELETE refused for ${codecDoor}`);
+  }
+  await page.locator('#exportClose').click();
+  await page.locator('#outputMenuButton').click();
+  await page.locator('#menuExport').click();
+  check(await page.evaluate('document.getElementById("exportDialog").open'),
+    'Export opens the same dialog before a render exists, rather than inventing a second path');
+  await page.locator('#exportClose').click();
+
+  const cameraBefore = await page.evaluate('__kinect.freeCamera.position.toArray()');
+  await page.evaluate('__kinect.freeCamera.position.x += 2; __kinect.controls.update()');
+  await page.locator('#viewMenuButton').click();
+  await page.locator('#menuCameraReset').click();
+  const cameraReset = await page.evaluate('__kinect.freeCamera.position.toArray()');
+  check(cameraReset.every((value, i) => Math.abs(value - cameraBefore[i]) < 1e-6),
+    'Default camera position reaches OrbitControls reset', `${cameraBefore.join(',')} -> ${cameraReset.join(',')}`);
+
+  await page.locator('#viewMenuButton').click();
+  await page.locator('#menuTopView').click();
+  check(await page.evaluate('__kinect.keyframes.chrome.topView()') === false,
+    'Show top view turns the plan overlay off through the View command');
+  await page.locator('#viewMenuButton').click();
+  await page.locator('#menuTopView').click();
+  check(await page.evaluate('__kinect.keyframes.chrome.topView()') === true,
+    'and the same command turns it back on');
+
+  const fileChooser = page.waitForEvent('filechooser');
+  await page.locator('#viewMenuButton').click();
+  await page.locator('#menuLookImport').click();
+  check(Boolean(await fileChooser), 'Import Look reaches the existing file input');
+  await page.locator('#viewMenuButton').click();
+  await page.locator('#menuLookExport').click();
+  await page.waitForFunction('document.getElementById("presetPick").open');
+  check(await page.evaluate('document.getElementById("presetPick").open'),
+    'Export Look reaches the existing subset dialog');
+  await page.locator('#ppCancel').click();
+
+  await page.locator('#viewMenuButton').click();
+  await page.locator('#menuState').click();
+  const nerdState = await page.evaluate(`(() => ({
+    open: document.getElementById('stateDialog').open,
+    state: JSON.parse(document.getElementById('stateDump').textContent),
+  }))()`);
+  check(nerdState.open && nerdState.state.surface === 'edit' && nerdState.state.parameters,
+    'State for nerds opens a real snapshot of the running editor',
+    `${nerdState.state.surface}, ${Object.keys(nerdState.state.parameters || {}).length} parameters`);
+  await page.locator('#stateClose').click();
+
+  await page.evaluate(`(() => {
+    globalThis.__obsCopied = [];
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async (value) => { globalThis.__obsCopied.push(value); } },
+    });
+    globalThis.__openedObs = null;
+    globalThis.open = (...args) => { globalThis.__openedObs = args; return null; };
+    const size = document.getElementById('progSize');
+    size.value = '1440x900';
+    size.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await page.locator('#outputMenuButton').click();
+  await page.locator('#menuObs').click();
+  const customObsSize = await page.evaluate(`(() => ({
+    value: document.getElementById('obsResolution').value,
+    option: [...document.getElementById('obsResolution').options]
+      .find((entry) => entry.value === '1440x900')?.textContent ?? null,
+  }))()`);
+  check(customObsSize.value === '1440x900' && customObsSize.option?.includes('current'),
+    'Output to OBS reflects a valid custom size the existing control already accepted',
+    JSON.stringify(customObsSize));
+  await page.locator('#obsViewportMode').click();
+  await page.locator('#obsResolution').selectOption('1280x720');
+  await page.locator('#obsCopyBrowser').click();
+  await page.locator('#obsCopyWebcam').click();
+  await page.locator('#obsOpen').click();
+  const obs = await page.evaluate(`(() => ({
+    open: document.getElementById('obsDialog').open,
+    mode: document.getElementById('progMode').value,
+    size: document.getElementById('progSize').value,
+    copied: globalThis.__obsCopied,
+    opened: globalThis.__openedObs,
+  }))()`);
+  check(obs.open && obs.mode === 'mirror' && obs.size === '1280x720'
+      && obs.copied.length === 2 && obs.opened?.[0] === obs.copied[0],
+    'Output to OBS drives the existing mode and size and exposes both real source URLs', JSON.stringify(obs));
+  await page.locator('#obsProgramMode').click();
+  await page.locator('#obsDone').click();
+  // The close event is queued after close(), so yield once before reading focus.
+  // Keep this bounded: the mutation must fail an assertion rather than time out.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const obsReturnFocus = await page.evaluate('document.activeElement?.id');
+  check(obsReturnFocus === 'outputMenuButton',
+    'closing the OBS dialog returns focus to the visible Output trigger', obsReturnFocus || 'body');
 
   // =====================================================================
   console.log('\n[2] the keyboard, and the guard that has to come with it');
@@ -2119,7 +2823,9 @@ try {
 
   // The typing guard. `i`, `o` and `m` are all letters somebody has to be able to put
   // in a filename, so a shortcut handler with no guard makes the one text field in
-  // the strip unusable while quietly editing the clip.
+  // the export dialog unusable while quietly editing the clip.
+  await page.locator('#outputMenuButton').click();
+  await page.locator('#menuRender').click();
   await page.evaluate(`(() => { const el = document.getElementById('tExportName'); el.value = ''; el.focus(); })()`);
   const beforeTyping = await range();
   const keysBeforeTyping = await lanes();
@@ -2133,6 +2839,7 @@ try {
   check(JSON.stringify(keysBeforeTyping) === JSON.stringify(await lanes()),
     'and deleted no key');
   await page.evaluate(`(() => { const el = document.getElementById('tExportName'); el.value = ''; el.blur(); })()`);
+  await page.locator('#exportClose').click();
   await focusStage();
 
   // =====================================================================
@@ -3095,7 +3802,7 @@ try {
     `${neighbourBefore.toFixed(4)} -> ${neighbourAfter.toFixed(4)} at 3s`);
 
   // =====================================================================
-  console.log('\n[6] the strip stays a fixed height and the render button stays reachable');
+  console.log('\n[6] the strip stays a fixed height and the render dialog stays reachable');
   // =====================================================================
   // A long option in every select the *scroller* holds, which is the realistic stress
   // and the one the product can actually produce: a deliverable, a project and a look
@@ -3120,6 +3827,8 @@ try {
   }).toString()})(${JSON.stringify(LONG_OPTION)})`);
   note('a long option planted in every select the scroller holds',
     `${await page.evaluate('globalThis.__planted.length')} selects`);
+  await page.locator('#outputMenuButton').click();
+  await page.locator('#menuRender').click();
   for (const width of WIDTHS) {
     await page.setViewportSize({ width, height: VIEWPORT.height });
     await new Promise((r) => setTimeout(r, 250));
@@ -3253,6 +3962,14 @@ try {
     check(saved.sha256 === serverHash && saved.length === bytes.length,
       '  and what went through it is byte-identical to the file on the server',
       `${saved.length} bytes, ${saved.sha256.slice(0, 16)}… against ${bytes.length} bytes, ${serverHash.slice(0, 16)}…`);
+  }
+
+  // The export surface is a modal now, so leave it through the same control a person
+  // uses before the rest of the editor proof reaches back into the timeline. Keeping
+  // it open would make the browser correctly refuse those pointer events, which is a
+  // harness failure rather than a product failure.
+  if (await page.evaluate('document.getElementById("exportDialog").open')) {
+    await page.locator('#exportClose').click();
   }
 
   // **A deliverable chosen from the menu replaces the trim, and a speed gesture holds a
@@ -3570,6 +4287,7 @@ try {
   // lit pixel by nothing at all. Counts split by half-frame are what carry the
   // direction; the bounding box was a probe standing where the answer is the same
   // either way.
+  await page.locator('#panelTabFraming').click();
   // **The scene is put back to a plain one first, and that is not tidiness.** The
   // sections above leave an animated `bloom` track behind, and bloom lifts most of the
   // frame over any sensible threshold - so the first run of these rows measured 903477
@@ -3783,6 +4501,7 @@ try {
   // would pass on a fast enough machine while the amplification was still there, and
   // the amplification is the bug. `orbit-pumps-on-change` is the control.
   {
+    await page.locator('#panelTabCamera').click();
     await page.evaluate('__kinect.timeline.transport().pause()');
     await page.evaluate('__kinect.timeline.transport().seek(4.0)');
     await settle();
@@ -4999,6 +5718,7 @@ try {
   // it - which is also what makes "a refused file never reaches the library" below a
   // statement about this run. Cleanup deletes only what this run created, and a delete
   // that does not answer ok is a failed row rather than a silent leak.
+  await page.locator('#panelTabLook').click();
   const nonce = `ec${process.pid}-${Date.now().toString(36)}`;
   const NAME_EDITED = `${nonce}-edited-outside`;
   const NAME_BAD = `${nonce}-not-a-look`;
@@ -5263,7 +5983,20 @@ try {
     // had happened. On a partial apply that names a revision this gesture did not apply,
     // and on a clip with no stamp at all it throws inside the handler - which the
     // surrounding catch turns into "could not apply" over an apply that worked.
-    await page.evaluate(`(() => { document.getElementById('tPreset').value = ${JSON.stringify(NAME_PART)}; })()`);
+    // **The name that went in, checked against the name that came out.** The picker stopped
+    // being a `<select>`, and `value` on the button that replaced it is a real IDL
+    // attribute - so this assignment still means what it always meant. That is exactly the
+    // shape `docs/instruments.md` records going wrong silently and in the passing
+    // direction, so it is asserted here rather than assumed: a build where the trigger's
+    // `value` stopped naming the chosen preset fails on this row instead of on whatever it
+    // confused seven rows later.
+    const wroteName = await page.evaluate(`(() => {
+      const el = document.getElementById('tPreset');
+      el.value = ${JSON.stringify(NAME_PART)};
+      return el.value;
+    })()`);
+    check(wroteName === NAME_PART, 'the picker holds the preset name that was written to it',
+      `wrote ${JSON.stringify(NAME_PART)}, the control reads ${JSON.stringify(wroteName)}`);
     await presetIdle();
     await page.evaluate("document.getElementById('tPresetApply').click()");
     await page.waitForFunction("document.getElementById('tNote').textContent.startsWith('applied')", null, { timeout: 15000 })
@@ -6289,6 +7022,7 @@ try {
     // and preset importing happened to leave - 1543 lit pixels of 947 thousand on one
     // run against 89 thousand on another, which is a row whose margin depends on what
     // ran before it rather than on the claim it makes.
+    await page.locator('#panelTabFraming').click();
     await page.locator('#camSensor').click();
     await settle();
     await new Promise((r) => setTimeout(r, 150));
@@ -6512,6 +7246,7 @@ try {
           expanded: toggle ? toggle.getAttribute('aria-expanded') : null,
           markVisible: vis(mark),
           mark: mark ? mark.textContent : null,
+          tab: g.dataset.panelTab,
           inDom: rows(g).length,
           onScreen: rows(g).filter(vis).length,
         };
@@ -6519,6 +7254,12 @@ try {
     })()`;
     const groups = () => page.evaluate(GROUP_STATE);
     const groupOf = async (key) => (await groups()).find((g) => g.key === key);
+    const showGroup = async (key) => {
+      const group = await groupOf(key);
+      if (group?.tab) await page.click(`#panelTabs [data-panel-tab="${group.tab}"]`);
+      await settle();
+      return groupOf(key);
+    };
     const stored = () => page.evaluate("localStorage.getItem('kinect.panelGroupsOpen')");
     // Back to a document nobody has touched. `params.reset` over the look tag is what
     // `restoreProject` itself uses, so this is the state a fresh project arrives in
@@ -6568,10 +7309,11 @@ try {
     // Playwright's click waits for the element to be visible - so a `framing` that
     // could be shut turns a row eight sections back into a thirty-second timeout, which
     // arrives as a crash carrying no failed assertion rather than as a finding.
-    const framing = all.find((g) => g.key === 'framing');
+    const framing = await showGroup('framing');
     check(Boolean(framing) && !framing.collapsible && framing.onScreen === framing.inDom,
       'framing is not collapsible, because the crop button under it is one section 8 has to click',
       framing ? `collapsible: ${framing.collapsible}, ${framing.onScreen} of ${framing.inDom} rows on screen` : 'no framing group');
+    await showGroup('optical');
 
     // ---- 15b. a document nobody has touched renders them shut
     const fresh = (await groups()).filter((g) => g.collapsible);
@@ -6884,7 +7626,7 @@ try {
     // open it, so it is open *because of the store*. A group whose parameters had come
     // back off their defaults would derive open on its own and pass on a build that had
     // forgotten the entry entirely.
-    const pinCarried = await groupOf('detail');
+    const pinCarried = await showGroup('detail');
     const quietAfter = await page.evaluate(`(() => {
       const k = globalThis.__kinect;
       const known = new Set(k.params.names());
@@ -6932,6 +7674,7 @@ try {
     await settle();
     const driven = [];
     for (const g of (await groups()).filter((x) => x.collapsible)) {
+      await showGroup(g.key);
       const before = await groupOf(g.key);
       await page.click(`[data-group-toggle=${g.key}]`);
       await settle();
@@ -7039,9 +7782,651 @@ try {
     await freshLook();
   }
 
-  // ================================ 17. the pinned drive takes the loop away with it
+  // =====================================================================
+  console.log('\n[17] a parameter can be put back, and the offer to put it back is the registry speaking');
+  // =====================================================================
+  //
+  // The reset beside each look slider is four claims wearing one button, and they fail
+  // apart rather than together: that every look scalar has one, that whether it is
+  // offered is re-read off the registry rather than remembered from the panel's own
+  // gestures, that hiding it costs the row no layout, and that pressing it is an
+  // ordinary registry write which leaves the caret somewhere a hand can carry on from.
+  //
+  // **The rows are enumerated from the registry and never from the panel.** A list of
+  // the rows that have a reset today is a list that stops covering the row somebody adds
+  // next year, which is the failure this whole file exists to refuse - and the panel is
+  // generated, so asking the panel what it emitted is asking the thing under test to
+  // grade itself.
+  //
+  // **And the state is driven through a second door on purpose.** Every row here could
+  // be satisfied by a button that remembered its own clicks, because a click is the one
+  // write a panel-local flag follows correctly. So the block that decides whether this
+  // control reads the registry drives the registry from somewhere else entirely - the
+  // preset picker - and presses nothing.
+  {
+    // One shape, read for every parameter the registry declares, and the comparison it
+    // carries is against `normalise(default)` rather than against the declared literal.
+    // Several defaults are not values a slider can hold - rim is declared 0.55 against a
+    // 0.01 step and exposure 1.15 against 0.05 - so a row comparing against the literal
+    // would call a parameter modified while it sits exactly where a reset would leave
+    // it, and would go on saying so after the press.
+    const RESET_STATE = `(() => {
+      const k = globalThis.__kinect;
+      const vis = (el) => Boolean(el) && el.checkVisibility({ checkVisibilityCSS: true });
+      const rowOf = (input) => input.closest('.row') || input.closest('.checkrow') || input.closest('.check');
+      const params = k.params.names().map((name) => {
+        const spec = k.params.spec(name);
+        const input = document.getElementById(name);
+        const row = input ? rowOf(input) : null;
+        const own = row ? [...row.querySelectorAll('.reset')] : [];
+        const button = own.length === 1 ? own[0] : null;
+        const group = row ? row.closest('.group[data-group]') : null;
+        const scalar = spec.kind !== 'pose';
+        const value = scalar ? k.params.get(name) : null;
+        const def = scalar ? k.params.normalise(name, spec.default) : null;
+        return {
+          name,
+          tag: spec.tag,
+          kind: spec.kind,
+          control: input ? input.type : null,
+          tab: group ? group.dataset.panelTab || null : null,
+          group: group ? group.dataset.group || null : null,
+          collapsible: Boolean(group && group.querySelector(':scope > .grouphead > .grouptoggle')),
+          // Every reset in the row and the name each one claims, so a row carrying two
+          // of them, or one carrying its neighbour's name, is visible here rather than
+          // counted as one.
+          claims: own.map((b) => b.dataset.reset || ''),
+          offered: button ? button.dataset.modified : null,
+          disabled: button ? button.disabled : null,
+          onScreen: button ? vis(button) : null,
+          rowOnScreen: vis(row),
+          offDefault: scalar ? value !== def : null,
+          value,
+          def,
+          slider: input ? input.value : null,
+          readout: row ? (row.querySelector('output') ? row.querySelector('output').textContent : null) : null,
+        };
+      });
+      // Asked of the whole document rather than of the rows the walk above expects, so a
+      // reset planted in a group head, in the strip, or beside a control that is not a
+      // parameter at all is seen. A sweep that only looks where it expects to find
+      // something cannot report one anywhere else.
+      const planted = [...document.querySelectorAll('.reset')].map((b) => {
+        const row = b.closest('.row') || b.closest('.checkrow') || b.closest('.check');
+        const input = row ? row.querySelector('input') : null;
+        return { claims: b.dataset.reset || '', inRowOf: input ? input.id : null };
+      });
+      return { params, planted };
+    })()`;
+    const resetState = () => page.evaluate(RESET_STATE);
+    // The state a fresh project arrives in, spelled the way `restoreProject` spells it.
+    const freshLook = async () => {
+      await page.evaluate('__kinect.keyframes.setTracks({})');
+      await page.evaluate("__kinect.params.reset(__kinect.params.names('look'))");
+      await settle();
+    };
+    // The control's own path and never `params.set`, because half of what this section
+    // is about is which door a write came through - and the value that came out is read
+    // back against the value that went in, which is this repo's rule for any `.value` a
+    // tool assigns by hand.
+    const driveSlider = async (name, value) => page.evaluate(`(() => {
+      const el = document.getElementById(${JSON.stringify(name)});
+      el.value = String(${JSON.stringify(value)});
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return globalThis.__kinect.params.get(${JSON.stringify(name)});
+    })()`);
+    // One step off the default, taken off the registry's own grid rather than chosen,
+    // so this cannot become a write of the value that was already there - which would
+    // leave every row below asserting the state it started in.
+    const oneStepOff = (name) => page.evaluate(`(() => {
+      const k = globalThis.__kinect;
+      const spec = k.params.spec(${JSON.stringify(name)});
+      const def = k.params.normalise(${JSON.stringify(name)}, spec.default);
+      return def + spec.step <= spec.max ? def + spec.step : def - spec.step;
+    })()`);
 
-  console.log('\n[17] pinning the drive drops what the loop was going to serve');
+    await freshLook();
+    await page.locator('.paneltab[data-panel-tab="look"]').click();
+    await settle();
+
+    // ---- 17a. the set of rows that carry one, computed from the registry
+    const rest = await resetState();
+    const scalars = rest.params.filter((p) => p.tag === 'look' && p.kind === 'scalar');
+    const missing = scalars.filter((p) => p.claims.length !== 1 || p.claims[0] !== p.name);
+    const tabs = [...new Set(scalars.map((p) => p.tab))];
+    const perTab = tabs.map((t) => {
+      const on = scalars.filter((p) => p.tab === t);
+      return `${t} ${on.filter((p) => p.claims.length === 1).length}/${on.length}`;
+    }).join(', ');
+    check(scalars.length > 0 && missing.length === 0,
+      `every look parameter the registry declares as a scalar carries exactly one reset naming itself (${scalars.length})`,
+      missing.length ? `${missing.length} wrong: ${missing.map((p) => `${p.name}[${p.tab}] ${p.claims.join('+') || 'none'}`).join(', ')}`
+        : `per inspector: ${perTab}`);
+
+    // The set above is the registry's `scalar`, and the generator's condition is the
+    // rendered control not being a checkbox. Those are two spellings of one rule and
+    // nothing made them agree, so a `kind` that stopped implying its control would leave
+    // the row above asserting about the wrong population while reading perfectly.
+    const looks = rest.params.filter((p) => p.tag === 'look');
+    const splitWrong = looks.filter((p) => (p.kind === 'scalar') !== (p.control === 'range'));
+    check(looks.length > 0 && splitWrong.length === 0,
+      'and the registry kind that decides it is the control the panel renders, so the row above is about the set it names',
+      splitWrong.length ? splitWrong.map((p) => `${p.name} is ${p.kind} on a ${p.control}`).join(', ')
+        : `${looks.filter((p) => p.kind === 'scalar').length} scalars on ranges, `
+          + `${looks.filter((p) => p.kind === 'step').length} steps on checkboxes`);
+
+    // The other direction. A row is missing a reset or a row has one it should not, and
+    // only the first has been asked so far - so this asks whether every reset that
+    // exists is in the row of a parameter entitled to one. No count in it, deliberately:
+    // a count here would redden for a row that lost its reset as well, and two rows
+    // failing for one reason is one row written twice.
+    const entitled = new Set(scalars.map((p) => p.name));
+    const strayButton = rest.planted.filter((b) => !entitled.has(b.claims) || b.inRowOf !== b.claims);
+    const strayRow = rest.params.filter((p) => !entitled.has(p.name) && p.claims.length > 0);
+    check(rest.planted.length > 0 && strayButton.length === 0 && strayRow.length === 0,
+      'and nothing else carries one: not a step parameter, not a view parameter, not a control that is no parameter at all',
+      strayButton.length || strayRow.length
+        ? `${strayButton.map((b) => `${b.claims || '(unnamed)'} sits in the row of ${b.inRowOf || 'nothing'}`).join(', ')} `
+          + `${strayRow.map((p) => `${p.name} (${p.kind}/${p.tag}) carries ${p.claims.join('+')}`).join(', ')}`
+        : `${rest.planted.length} resets, each in its own parameter's row`);
+
+    // ---- 17b. a look nobody has touched offers nothing
+    const carried = (state) => state.params.filter((p) => p.claims.length === 1 && p.claims[0] === p.name);
+    const quiet = carried(rest);
+    const offeredAtRest = quiet.filter((p) => p.offered !== 'no' || p.disabled !== true);
+    check(quiet.length > 0 && quiet.every((p) => !p.offDefault) && offeredAtRest.length === 0,
+      'a look sitting at its defaults offers no reset anywhere, and every one of them is disabled',
+      offeredAtRest.length
+        ? offeredAtRest.map((p) => `${p.name} offered=${p.offered} disabled=${p.disabled} value ${p.value} against ${p.def}`).join(', ')
+        : `${quiet.length} rows, all unoffered and disabled, all on their defaults`);
+
+    // The attribute against the rendered result, because the attribute is only the half
+    // this file can read cheaply and the stylesheet is the half a person sees. A build
+    // that set `data-modified` perfectly with the rule that hides it deleted would pass
+    // every other row in this section.
+    const shownAtRest = quiet.filter((p) => p.rowOnScreen);
+    check(shownAtRest.length >= 10 && shownAtRest.every((p) => p.onScreen === false),
+      'and a reset that is not offered is not on the screen either, so the attribute is the rendered state',
+      `${shownAtRest.filter((p) => p.onScreen === false).length} of ${shownAtRest.length} rows on screen show nothing`);
+
+    // ---- 17c. the door this control has to read, and it is not its own
+    //
+    // **The row this whole section turns on.** Everything above and below could be
+    // satisfied by a button that remembered its own clicks, because a click is exactly
+    // the write a panel-local flag follows correctly. The registry is reached by a
+    // preset, by a project file, by undo and by step 5's tracks as well as by the
+    // slider, so the question is whether the offer follows a write that arrived through
+    // one of those - and the answer has to be taken with nothing pressed.
+    //
+    // Driven through the rendered picker rather than through `applyStoredPreset`, for
+    // the reason section 12 states about the subset dialog: a probe attached below the
+    // control passes on a build whose control is wired to nothing.
+    const presetIdle = () => page.waitForFunction(
+      '!globalThis.__kinect.library.presetGestureRunning()', null, { timeout: 15000 });
+    // Whichever look the library holds, preferring the one this repo grades against.
+    // A name written down here would be a name that has to exist on somebody else's
+    // server, and the row cares only that applying it moves several parameters.
+    // Read off the picker's own entries rather than off `.options`. The control stopped
+    // being a `<select>` when it grew the mark and the per-entry delete Pencil draws, so
+    // `options` is undefined on it and `selectOption` has nothing to select - both threw
+    // here, which is the loud direction and is why this row is the one that found it.
+    const presetName = await page.evaluate(`(() => {
+      const values = [...document.querySelectorAll('#tPresetList .pickeroption')]
+        .map((o) => o.dataset.name).filter(Boolean);
+      return values.includes('blackwall') ? 'blackwall' : (values[0] ?? null);
+    })()`);
+    const beforeApply = carried(await resetState()).filter((p) => p.offered === 'yes').map((p) => p.name);
+    await presetIdle();
+    // Through the control rather than by assignment, because a picker whose entries had
+    // stopped being pressable would still take a written `value` and this row would go on
+    // measuring the apply behind a menu nobody could operate.
+    await page.click('#tPreset');
+    await page.click(`#tPresetList .pickeroption[data-name="${presetName}"]`);
+    await page.click('#tPresetApply');
+    await presetIdle();
+    await settle();
+    const applied = await resetState();
+    const withReset = carried(applied);
+    const moved = withReset.filter((p) => p.offDefault);
+    const disagree = withReset.filter((p) => (p.offered === 'yes') !== p.offDefault);
+    check(Boolean(presetName) && beforeApply.length === 0 && moved.length >= 3 && disagree.length === 0,
+      'a preset applied from the picker moves which rows offer a reset, with no reset pressed',
+      disagree.length
+        ? `${disagree.length} disagree: ${disagree.slice(0, 8).map((p) => `${p.name} offered=${p.offered} value ${p.value} against ${p.def}`).join(', ')}`
+        : `${presetName} moved ${moved.length} of ${withReset.length} rows off their defaults, `
+          + `${beforeApply.length} were offered before it`);
+
+    // The half that keeps a hidden control unreachable rather than merely unseen, asked
+    // over both populations at once because this state has both in it - a `visibility`
+    // rule takes the button out of the tab order, and `disabled` is what makes that true
+    // of a build whose stylesheet somebody rewrites.
+    const enabledWrong = withReset.filter((p) => p.disabled !== (p.offered === 'no'));
+    check(withReset.length > 0 && moved.length > 0 && moved.length < withReset.length && enabledWrong.length === 0,
+      'and disabled agrees with it on every row, so a reset nobody is being offered cannot be pressed or tabbed to',
+      enabledWrong.length
+        ? enabledWrong.map((p) => `${p.name} offered=${p.offered} disabled=${p.disabled}`).join(', ')
+        : `${moved.length} offered and enabled, ${withReset.length - moved.length} unoffered and disabled`);
+
+    // ---- 17d. the slot is reserved, so a row does not move when the offer appears
+    //
+    // Measured over the rows that are on screen and in a group nothing can collapse, so
+    // the two snapshots differ in the reset's own state and in nothing else. A
+    // collapsible group would open or shut somewhere between them and the comparison
+    // would be about the panel's height.
+    //
+    // The readout is not a confound here and it was worth checking rather than assuming:
+    // `<output>` is `flex: 0 0 42px` with tabular numerals, so a value going from one
+    // character to three moves nothing. Both strings are printed for that reason.
+    await freshLook();
+    await settle();
+    const stable = (await resetState()).params
+      .filter((p) => p.tag === 'look' && p.kind === 'scalar' && p.rowOnScreen && !p.collapsible)
+      .map((p) => p.name);
+    const GEOM = (names) => `(() => {
+      const box = (el) => {
+        const r = el.getBoundingClientRect();
+        return [Math.round(r.x * 100) / 100, Math.round(r.width * 100) / 100];
+      };
+      return ${JSON.stringify(names)}.map((name) => {
+        const input = document.getElementById(name);
+        const row = input.closest('.row');
+        const button = row.querySelector('.reset');
+        return {
+          name,
+          offered: button.dataset.modified,
+          resetBox: box(button),
+          children: [...row.children].map((c) => [c.tagName + '.' + (c.className || ''), ...box(c)]),
+          readout: row.querySelector('output').textContent,
+        };
+      });
+    })()`;
+    const hiddenGeom = await page.evaluate(GEOM(stable));
+    for (const name of stable) await driveSlider(name, await oneStepOff(name));
+    await settle();
+    const shownGeom = await page.evaluate(GEOM(stable));
+    const shownOf = (name) => shownGeom.find((s) => s.name === name);
+    // The precondition, and without it "identical" is what a page where nothing happened
+    // also reports. Both snapshots have to be the states they are named after - which is
+    // also the round trip on every `value` written above, since a write that did not land
+    // leaves the row still reading unoffered.
+    const bothStates = stable.length >= 8
+      && hiddenGeom.every((r) => r.offered === 'no') && shownGeom.every((r) => r.offered === 'yes');
+    check(bothStates,
+      'the two snapshots really are the hidden state and the shown state, or the two rows below compare nothing',
+      `${stable.length} rows in a group nothing collapses: ${stable.join(', ')}`);
+    const boxLost = hiddenGeom.filter((r) => r.resetBox[1] !== shownOf(r.name).resetBox[1] || r.resetBox[1] === 0);
+    check(bothStates && boxLost.length === 0,
+      'the reset keeps its box on the row while it is not being offered, rather than being taken out of the flow',
+      boxLost.length ? boxLost.map((r) => `${r.name} ${r.resetBox.join('x')} against ${shownOf(r.name).resetBox.join('x')}`).join(', ')
+        : `${hiddenGeom.length} rows, every reset ${hiddenGeom.length ? hiddenGeom[0].resetBox[1] : '?'}px wide in both states`);
+    const reflowed = hiddenGeom.filter((r) => JSON.stringify(r.children) !== JSON.stringify(shownOf(r.name).children));
+    check(bothStates && reflowed.length === 0,
+      'and nothing else in the row moved between the two states, so a drag that moves a value does not move the control under the pointer',
+      reflowed.length
+        ? reflowed.slice(0, 3).map((r) => `${r.name} ${JSON.stringify(r.children)} -> ${JSON.stringify(shownOf(r.name).children)}`).join(' | ')
+        : `${hiddenGeom.length} rows identical to the hundredth of a pixel, readouts `
+          + `${hiddenGeom.length ? `${hiddenGeom[0].readout} -> ${shownGeom[0].readout}` : 'none'}`);
+
+    // ---- 17e. the press, and what a press is
+    //
+    // Three observables rather than one, because the registry agreeing with itself is
+    // exactly what a build writing around the registry produces: the value the registry
+    // holds, the position the slider is at, and the number the row prints are three
+    // things a single write path keeps level and a bypass does not.
+    //
+    // **Every press below is arm-then-check-then-click, and the middle step is the one
+    // that keeps a broken build reportable.** Playwright waits for a control to be
+    // visible and enabled before it clicks, so a build where the drag stopped offering
+    // the reset turns each of these into a thirty-second timeout - which arrives as a
+    // crash carrying no failed assertion, the shape this repo has three entries about. A
+    // bounded wait turns it into a row.
+    const armReset = async (name) => {
+      await driveSlider(name, await oneStepOff(name));
+      await settle();
+      const armed = await page.waitForFunction(
+        `(() => { const b = document.querySelector('.reset[data-reset=${name}]');
+          return Boolean(b) && !b.disabled && b.checkVisibility({ checkVisibilityCSS: true }); })()`,
+        null, { timeout: 2500 }).then(() => true, () => false);
+      if (armed) await page.click(`.reset[data-reset=${name}]`);
+      await settle();
+      return armed;
+    };
+
+    // **Every one of them, and the count is what makes the driver rule honest.** Section
+    // 1 credits all fifty-one of these controls to this section by their `data-reset`
+    // attribute, and a rule crediting fifty-one while a section pressed three is the
+    // sweep claiming coverage it does not have - the same failure the mark rule had when
+    // it matched nothing, arriving from the other direction. So the loop is over the
+    // registry's own list: drag the parameter off its default, wait for the row to offer
+    // the reset, press it, and move on. A parameter added next year is pressed here by
+    // existing rather than by being remembered.
+    //
+    // Grouped by inspector because a reset in a hidden tab cannot be clicked, and the
+    // press is a real click rather than a synthesised event - Playwright waits for the
+    // control to be visible and enabled, which is the same waiting a hand does.
+    await freshLook();
+    await settle();
+    const unarmed = [];
+    const byTab = new Map();
+    for (const p of scalars) {
+      if (!byTab.has(p.tab)) byTab.set(p.tab, []);
+      byTab.get(p.tab).push(p.name);
+    }
+    for (const [tab, names] of byTab) {
+      await page.locator(`.paneltab[data-panel-tab="${tab}"]`).click();
+      await settle();
+      for (const name of names) if (!(await armReset(name))) unarmed.push(name);
+    }
+    check(unarmed.length === 0 && scalars.length > 0,
+      `every reset the panel renders was pressed here, each offered by its own drag first (${scalars.length})`,
+      unarmed.length ? `${unarmed.length} never offered after the drag, so they were never pressed: ${unarmed.join(', ')}`
+        : `${scalars.length} of ${scalars.length} across ${[...byTab.keys()].join(', ')}`);
+
+    // One read after the whole sweep rather than one per press, because the claim is
+    // about the state each press left and every one of them has now happened. Three
+    // observables and not one: a build writing around the registry keeps the value map
+    // right and leaves the slider and the readout showing what was there.
+    const afterPresses = carried(await resetState());
+    const notBack = afterPresses.filter((p) => p.value !== p.def
+      || p.slider !== String(p.def) || p.readout !== String(p.def));
+    check(afterPresses.length > 0 && notBack.length === 0,
+      'pressing a reset puts the registry, the slider and the readout back on the normalised default together',
+      notBack.length
+        ? `${notBack.length} of ${afterPresses.length} did not: `
+          + notBack.slice(0, 4).map((p) => `${p.name} registry ${p.value}, slider ${p.slider}, readout ${p.readout}, default ${p.def}`).join('; ')
+        : `${afterPresses.length} rows, including pointSize ${afterPresses.find((p) => p.name === 'pointSize')?.value}, `
+          + `rim ${afterPresses.find((p) => p.name === 'rim')?.value}, exposure ${afterPresses.find((p) => p.name === 'exposure')?.value}`);
+    const stillOffered = afterPresses.filter((p) => p.offered !== 'no' || p.disabled !== true);
+    check(stillOffered.length === 0,
+      'and the row stops offering it, because the offer is the comparison and the comparison has just become an equality',
+      stillOffered.length
+        ? `${stillOffered.length} still offered: ${stillOffered.slice(0, 6).map((p) => `${p.name} offered=${p.offered} disabled=${p.disabled}`).join(', ')}`
+        : `${afterPresses.length} rows unoffered and disabled again`);
+    await page.locator('.paneltab[data-panel-tab="look"]').click();
+    await settle();
+
+    // The press is a registry write and not an assignment, and the group is where that
+    // shows: `optical` is open only because `bloom` is carrying something, so putting
+    // `bloom` back has to reach the reveal rule as well as the value map. A build
+    // writing straight into the map leaves the group open over a parameter that is no
+    // longer carrying anything, with the value correct and nothing downstream told.
+    await freshLook();
+    await settle();
+    await driveSlider('bloom', await oneStepOff('bloom'));
+    await settle();
+    const openedBy = (await resetState()).params.find((p) => p.name === 'bloom');
+    const opticalOpen = await page.evaluate(
+      "!document.querySelector('.group[data-group=optical]').classList.contains('shut')");
+    check(openedBy.offered === 'yes' && opticalOpen,
+      'a value moved into a collapsible group opens it and offers the reset, or the three rows below test nothing',
+      `bloom offered=${openedBy.offered}, optical open=${opticalOpen}`);
+    // Conditional for the reason `armReset` above is bounded: a press into a control the
+    // build is not offering is a thirty-second timeout rather than a finding, and the row
+    // above has just said whether it is being offered.
+    if (openedBy.offered === 'yes') await page.click('.reset[data-reset=bloom]');
+    await settle();
+    const bloomDefault = await page.evaluate(
+      "__kinect.params.normalise('bloom', __kinect.params.spec('bloom').default)");
+    const afterBloom = await page.evaluate(`(() => ({
+      shut: document.querySelector('.group[data-group=optical]').classList.contains('shut'),
+      value: globalThis.__kinect.params.get('bloom'),
+      focus: document.activeElement === null ? 'null'
+        : (document.activeElement.id || document.activeElement.tagName.toLowerCase()),
+      onBody: document.activeElement === null || document.activeElement === document.body,
+    }))()`);
+    check(afterBloom.shut && afterBloom.value === bloomDefault,
+      'and the group re-derives shut behind it, so the press reached everything a registry write reaches',
+      `optical shut=${afterBloom.shut}, bloom reads ${afterBloom.value} against a default of ${bloomDefault}`);
+
+    // ---- 17f. where the caret is afterwards
+    //
+    // The press removes its own control: writing the default makes the row unmodified,
+    // which disables the button while it is the focused element, and focus falls to the
+    // body with no way back into the panel short of tabbing from the top. This repo
+    // already polices that class in three places - `dialog-close-strands-focus`,
+    // `viewer-drops-focus-on-rebuild` and `menu-close-strands-focus` - so it is a row
+    // here rather than a detail.
+    //
+    // **Two rows, because the two cases are answered by different code and only one of
+    // them is answered.** Outside a collapsible group the slider is still rendered when
+    // the handler reaches for it and the caret lands there. Inside one, the write shuts
+    // the group on its way out - `params.set` runs `groupRevealChanged` before the
+    // handler gets its turn - so the slider is `display: none` by then, `focus()` is a
+    // no-op on it, and the caret is on the body. That is the row below and it is red on
+    // this tree: twenty-six of the fifty-one parameters live in a group that collapses.
+    // It is written as "not stranded" and prints where the caret landed, rather than
+    // demanding the slider by name, because focusing the group's own toggle would be a
+    // perfectly good answer and a row naming the input would stay red over it.
+    check(!afterBloom.onBody,
+      'a press that shuts the group it was in still leaves the caret somewhere in the panel',
+      `the caret is on ${afterBloom.focus}`);
+    await freshLook();
+    await settle();
+    await armReset('pointSize');
+    const caret = await page.evaluate(`(() => (document.activeElement === null ? 'null'
+      : (document.activeElement.id || document.activeElement.tagName.toLowerCase())))()`);
+    check(caret === 'pointSize',
+      "pressing a reset leaves the caret on that row's own slider, which is the control the press was about",
+      `the caret is on ${caret}`);
+
+    // Put the look and the store back. The section after this drags a pointer across the
+    // stage and pins the drive, and a panel left with a group open and a value planted is
+    // a different page from the one that row was measured on.
+    await page.evaluate("localStorage.removeItem('kinect.panelGroupsOpen')");
+    await freshLook();
+  }
+
+  // ================================ 18. walking the selected parameter's own keys
+
+  console.log('\n[18] prev and next walk the selected track, and go quiet at its ends');
+
+  // The pair the design draws beside the ease presets. Two claims, and they are separated
+  // because they fail for different reasons: where the playhead *lands*, and whether the
+  // control offers a press at all when there is nothing that way.
+  //
+  // The disabled half is deliberately first and carries the weight, because it is
+  // decided by arithmetic over a planted track and is the same answer on a loaded
+  // machine as on an idle one. The landing half is a seek, and a seek on this rig can
+  // resolve without moving - so it asserts the playhead against *the time of the key it
+  // was walking to* and prints both, rather than asking whether the playhead changed.
+  // "It moved" is true of a build that walks to the wrong key.
+  {
+    const setTracks = async (spec) => {
+      await page.evaluate(`__kinect.keyframes.setTracks(${JSON.stringify(spec)})`);
+      await settle();
+    };
+    const at = async () => page.evaluate('__kinect.timeline.transport().programSec');
+    const navState = async () => page.evaluate(`(() => ({
+      prev: document.getElementById('tPrevKey').disabled,
+      next: document.getElementById('tNextKey').disabled,
+    }))()`);
+    const park = async (t) => {
+      await page.evaluate(`__kinect.timeline.transport().pause()`);
+      await page.evaluate(`__kinect.timeline.transport().seek(${t})`);
+      await settle();
+    };
+
+    // Three keys at distinct times, so a build that walks to the *nearest* key rather
+    // than the next one in the asked direction, or one that always lands on the first,
+    // disagrees with this fixture. A two-key track answers the same either way.
+    const KEYS = [1, 5, 9];
+    await setTracks({ bloom: KEYS.map((t, i) => ({ t, value: 0.2 + i * 0.3 })) });
+    await page.evaluate(`__kinect.editor.select('bloom', 0)`);
+    await park(0);
+
+    const atHead = await navState();
+    check(atHead.prev === true && atHead.next === false,
+      'parked before every key, there is nowhere back and somewhere forward',
+      `prev disabled ${atHead.prev}, next disabled ${atHead.next}`);
+
+    // Read before pressing, and fail the row rather than driving a control that is not
+    // there to drive. A build that walks to the wrong key arrives at the end of the track
+    // early, which leaves the next press aimed at a disabled button - and an unguarded
+    // `click` on one waits out its full timeout and ends the run as a crash, with the rows
+    // after it never reached. `keynav-walks-to-the-far-key` did exactly that before this
+    // guard: 397 of 404 with one failure, which reads as a catch and is a run that stopped.
+    const walk = async (button, want, label) => {
+      const before = await navState();
+      const armed = button === '#tNextKey' ? !before.next : !before.prev;
+      if (!armed) {
+        check(false, label, `the control was disabled before the press, so the walk stopped short of ${want}s`);
+        return false;
+      }
+      await page.locator(button).click();
+      await settle();
+      const landed = await at();
+      check(near(landed, want, 1e-3), label,
+        `landed ${landed.toFixed(4)}s against the key's ${want.toFixed(4)}s`);
+      return true;
+    };
+
+    for (const want of KEYS) await walk('#tNextKey', want, `next walks to the key at ${want}s`);
+
+    const atTail = await navState();
+    check(atTail.next === true && atTail.prev === false,
+      'and on the last key there is nowhere further forward',
+      `prev disabled ${atTail.prev}, next disabled ${atTail.next}`);
+
+    for (const want of [5, 1]) await walk('#tPrevKey', want, `prev walks back to the key at ${want}s`);
+
+    // A track with nothing on it is the other end of the same rule, and it is the row a
+    // build that decided the state from the selection rather than from the keys would
+    // fail: something is still selected here, and there is nothing to walk to.
+    await setTracks({ bloom: [] });
+    await park(4);
+    const empty = await navState();
+    check(empty.prev === true && empty.next === true,
+      'a track with no keys offers neither direction',
+      `prev disabled ${empty.prev}, next disabled ${empty.next}`);
+  }
+
+  // ================================ 19. the preset picker the design draws
+
+  console.log('\n[19] the preset picker: roles, a keyboard, and a delete that leaves a caret somewhere');
+
+  // The control that replaced the `<select>`. What a native one gave away for free is
+  // what this section is about - the roles, the arrow keys, the type-ahead - because
+  // owning the widget means owning all of it, and the half nobody writes is the half that
+  // only a keyboard finds.
+  {
+    const trigger = '#tPreset';
+    const list = '#tPresetList';
+    const shape = async () => page.evaluate(`(() => {
+      const t = document.getElementById('tPreset');
+      const l = document.getElementById('tPresetList');
+      const options = [...l.querySelectorAll('.pickeroption')];
+      return {
+        role: t.getAttribute('role'),
+        popup: t.getAttribute('aria-haspopup'),
+        expanded: t.getAttribute('aria-expanded'),
+        listRole: l.getAttribute('role'),
+        hidden: l.hidden,
+        value: t.value,
+        shown: t.querySelector('.pickervalue').textContent,
+        names: options.map((o) => o.dataset.name),
+        optionRoles: [...new Set(options.map((o) => o.getAttribute('role')))],
+        deletable: options.filter((o) => o.querySelector('.pickerdelete')).map((o) => o.dataset.name),
+        builtin: options.filter((o) => o.dataset.builtin === 'true').map((o) => o.dataset.name),
+        add: (() => { const a = document.getElementById('tPresetAdd'); return a ? [a.offsetWidth, a.offsetHeight] : null; })(),
+        // Or-else and not nullish-coalescing. The DOM answers an absent id or dataset key
+        // with the empty string, which is not nullish, so nullish-coalescing stops there
+        // and reports it - and a row asking whether focus is off the body then passes on a
+        // caret that is exactly on it. Measured: the drops-focus control came back NOT
+        // CAUGHT at 415 assertions and none failed while this line coalesced. The suite
+        // notes carry the same trap costing the gallery two red rows about nothing.
+        focus: document.activeElement?.dataset?.name
+          || document.activeElement?.id || document.activeElement?.tagName || 'nothing',
+      };
+    })()`);
+
+    const shut = await shape();
+    check(shut.role === 'combobox' && shut.popup === 'listbox' && shut.listRole === 'listbox'
+      && shut.optionRoles.length === 1 && shut.optionRoles[0] === 'option' && shut.names.length > 1,
+      'the picker announces itself as a listbox and every entry in it as an option',
+      `trigger ${shut.role}/${shut.popup}, list ${shut.listRole}, `
+      + `${shut.names.length} entries as ${shut.optionRoles.join('/') || 'nothing'}`);
+    await page.click(trigger);
+    const open = await shape();
+    // Measured with the list open, and that is not a detail. The add button lives inside
+    // the list, a shut list is `hidden`, and a hidden element's box is 0x0 - so the first
+    // spelling of this row read the button while nothing could see it and reported `0x0`
+    // against a control that is exactly the size it should be. A geometric row taken where
+    // the geometry does not exist is the dead-zone rule in its plainest form.
+    check(open.add && open.add[0] === 24 && open.add[1] === 24,
+      'and it carries the 24x24 add button the design draws',
+      open.add ? `${open.add[0]}x${open.add[1]}` : 'no add button');
+    check(open.hidden === false && open.expanded === 'true' && open.names.includes(open.focus),
+      'opening it says so and hands the caret to an entry rather than leaving it on the trigger',
+      `expanded ${open.expanded}, focus on ${open.focus}`);
+
+    await page.keyboard.press('ArrowDown');
+    const down = (await shape()).focus;
+    await page.keyboard.press('ArrowUp');
+    const up = (await shape()).focus;
+    check(down !== up && open.names.includes(down) && open.names.includes(up),
+      'the arrow keys walk the entries, which is the whole of what a native option gave away',
+      `down to ${down}, back up to ${up}`);
+
+    // Type-ahead against an entry that is not the one already focused, or the row cannot
+    // tell a search from standing still. Two characters, because one is answered by any
+    // build that jumps to the first entry beginning with a letter.
+    const wanted = open.names.find((n) => n !== up && n.length > 1) ?? open.names[0];
+    for (const ch of wanted.slice(0, 2)) await page.keyboard.press(ch);
+    const typed = (await shape()).focus;
+    check(typed === wanted, 'and typing a name reaches it, so a long library is navigable without the pointer',
+      `typed ${JSON.stringify(wanted.slice(0, 2))} and landed on ${typed}, wanted ${wanted}`);
+
+    await page.keyboard.press('Escape');
+    const escaped = await shape();
+    check(escaped.hidden === true && escaped.focus === 'tPreset',
+      'Escape shuts it and puts the caret back on the trigger rather than on the body',
+      `hidden ${escaped.hidden}, focus ${escaped.focus}`);
+
+    // A library of shipped looks alone cannot show what a delete does, and the fixture has
+    // only those - so one is planted through the real route. `builtin` is the server's word
+    // for "in a directory the store reads and never writes", which is what decides whether
+    // an entry gets a delete at all.
+    const PLANTED = `ec${process.pid}-picker`;
+    const seed = await (await fetch(`${URL_BASE}/presets/${encodeURIComponent(shut.names[0])}`)).json();
+    await fetch(`${URL_BASE}/presets/${encodeURIComponent(PLANTED)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version: seed.version, values: seed.values }),
+    });
+    await page.evaluate('__kinect.library.refreshPresets()');
+    const planted = await shape();
+    check(planted.names.includes(PLANTED) && planted.deletable.join(',') === PLANTED
+      && planted.builtin.length === planted.names.length - 1,
+      'a delete is drawn on the entries that have one and on no others, which is the shipped looks left alone',
+      `${planted.names.length} entries, ${planted.builtin.length} shipped, deletable: `
+      + `${planted.deletable.join(', ') || 'none'}`);
+
+    // The claim the class `viewer-drops-focus-on-rebuild` already polices, arriving here:
+    // the row holding the caret is the row being removed, so the list that comes back has
+    // no element the browser could have kept it on.
+    await page.click(trigger);
+    await page.focus(`${list} .pickeroption[data-name="${PLANTED}"]`);
+    await page.click(`${list} .pickeroption[data-name="${PLANTED}"] .pickerdelete`);
+    await page.waitForFunction(
+      '!globalThis.__kinect.library.presetGestureRunning()', null, { timeout: 15000 },
+    );
+    const after = await shape();
+    check(!after.names.includes(PLANTED),
+      'deleting an entry takes it out of the library the picker is drawn from',
+      `${after.names.length} entries: ${after.names.join(', ')}`);
+    // Asked positively - the caret is on one of the entries that are left, or back on the
+    // trigger - rather than as "not the body". A negative row is satisfied by every value
+    // the probe could report by mistake, which is how the first spelling of this one passed
+    // against a build that stranded focus exactly as its mutation intended.
+    check(after.names.includes(after.focus) || after.focus === 'tPreset',
+      'and the caret survives the rebuild the delete causes, landing on an entry or the trigger',
+      `focus landed on ${after.focus}, of ${after.names.join(', ')} or the trigger`);
+  }
+
+  // ================================ 20. the pinned drive takes the loop away with it
+
+  console.log('\n[20] pinning the drive drops what the loop was going to serve');
 
   // The third state that strands an armed position, and the only one `pumpParkedDraft`
   // cannot notice on its own: `drive.pin` calls `setAnimationLoop(null)`, so that
