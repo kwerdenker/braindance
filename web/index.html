@@ -744,9 +744,7 @@
   /* What the export keeps, so the overview answers "where is my clip" as well as
      "where am I looking". */
   .tminirange { position: absolute; top: 0; bottom: 0; background: var(--accent-low); }
-  .tminimarks { position: absolute; inset: 0; pointer-events: none; }
-  .tminimarks span { position: absolute; top: 50%; width: 3px; height: 3px;
-    margin: -1.5px 0 0 -1.5px; background: var(--accent); transform: rotate(45deg); }
+  .tminimarks { display: none; }
   .tminihead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--ink);
     pointer-events: none; }
   /* The window itself. A minimum width so a deep zoom leaves something to grab -
@@ -787,9 +785,10 @@
      that seek to the mark, and a layer that swallowed nothing would have swallowed
      the drag as well. */
   .tmarks { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
-  .tmk { position: absolute; bottom: 2px; width: 5px; height: 5px; margin-left: -2.5px;
-    padding: 0; border: 0; background: var(--accent); transform: rotate(45deg);
-    pointer-events: auto; cursor: pointer; }
+  .tmk { position: absolute; top: 0; width: 10px; height: 12px; margin-left: -5px;
+    padding: 0; border: 0; background: transparent; color: var(--accent);
+    pointer-events: auto; cursor: pointer; display: grid; place-items: center; }
+  .tmk svg { display: block; }
   /* A mark the edit never reaches stacks at the right edge rather than being
      dropped: the moment is still in the footage, and a tick nobody can explain is
      better than a tick that silently vanished when the curve was retimed.
@@ -800,13 +799,13 @@
      its resting colour while hovered and while focused. Focus was the worse half: the
      rule below turns the native outline off on the grounds that the colour change says
      the same thing, so a beyond tick answered a keyboard with no change of any kind. */
-  .tmk.beyond { background: var(--faint); }
-  .tmk:hover { background: var(--ink); }
-  /* Rotated 45 degrees, so the focus ring would be a diamond around a diamond and
-     land under the neighbouring lane. Drawn as the same colour change hovering
-     gives, which is the state the ring would have been describing anyway - which is
-     only true while these sit after every rule that sets a resting colour. */
-  .tmk:focus-visible { outline: 0; background: var(--ink); }
+  .tmk.beyond { color: var(--faint); }
+  .tmk:hover { color: var(--ink); }
+  /* Drawn as the same colour change hovering gives, which is the state the ring
+     would have been describing anyway - which is only true while these sit after
+     every rule that sets a resting colour. */
+  .tmk:focus-visible { outline: 0; color: var(--ink); }
+  .tmk.sel { color: var(--ink); }
 
   .tplayhead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--ink);
     pointer-events: none; z-index: 3; }

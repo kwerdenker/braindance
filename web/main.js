@@ -3778,7 +3778,11 @@ function refreshGroups() {
     // against a boolean can match that, so the untouched case costs two Map lookups.
     const pair = `${want}/${inUse}`;
     const settled = groupSeen.get(key);
+    // Track what the prune deleted: if user explicitly closed (want === false) and
+    // prune removes it, auto-keep-open must not undo that decision.
+    let prunedClose = false;
     if (settled !== undefined && settled !== pair && want === inUse) {
+      prunedClose = want === false;
       groupOverride.delete(key);
       groupOverrideDirty = true;
     }
@@ -3786,9 +3790,11 @@ function refreshGroups() {
     // A group that is currently open stays open until explicitly closed. Without this,
     // resetting the last modified parameter in a group would auto-collapse it, which
     // feels like the UI fighting the user. Only auto-open, never auto-close.
+    // Skip this when the prune just deleted a `false` override - that was an explicit
+    // close, and undoing it would make the toggle appear broken.
     const wasOpen = !node.classList.contains('shut');
     let open = groupIsOpen(group);
-    if (wasOpen && !open && groupOverride.get(key) === undefined) {
+    if (wasOpen && !open && groupOverride.get(key) === undefined && !prunedClose) {
       groupOverride.set(key, true);
       groupOverrideDirty = true;
       open = true;
@@ -7458,6 +7464,8 @@ let scrubbing = false;
 
 ui.bed.addEventListener('pointerdown', (e) => {
   if (!timeline) return;
+  // Clicking the bed deselects any selected mark
+  if (selectedMark) { selectedMark = null; paintMarks(); }
   ui.bed.setPointerCapture(e.pointerId);
   scrubbing = true;
   pauseTransport();
@@ -8008,7 +8016,12 @@ addEventListener('keydown', (e) => {
       if (e.shiftKey) goTo(clipOut ?? timeline.duration);
       else setClipRangeFromPlayhead('out');
       return;
-    case 'Delete': case 'Backspace': e.preventDefault(); deleteSelectedKey(); return;
+    case 'Delete': case 'Backspace':
+      e.preventDefault();
+      // Delete selected mark first, then try keyframe selection
+      if (selectedMark) { deleteMark(selectedMark).catch(showTimelineError); return; }
+      deleteSelectedKey();
+      return;
     case 'm': case 'M': e.preventDefault(); markHere().catch(showTimelineError); return;
     // The other half of item three, and the half that is actually usable: a tick is
     // five pixels of diamond, so pressing one is a gesture and stepping through them
@@ -8914,6 +8927,7 @@ function paintLanes() {
   }
   for (const [name, btn] of keyButtons) paintKeyButton(name, btn);
   paintRateKey();
+  paintMarkButton();
   paintEase();
 }
 
@@ -9012,6 +9026,7 @@ function timingChanged({ moved = false } = {}) {
 // gallery can draw them without loading anything that knows about edits.
 let takeMarks = [];
 let openTakeId = null;
+let selectedMark = null; // The currently selected mark object, or null
 
 // Where a mark is allowed to be on the ruler. A mark past the end of the edit stacks
 // at the edge rather than being dropped, and the tick and the key that jumps to it
@@ -9074,13 +9089,15 @@ function paintMarks() {
     // from being the control it looks like.
     const el = document.createElement('button');
     el.type = 'button';
+    el.innerHTML = '<svg width="10" height="12" viewBox="0 0 10 12" fill="none"><path d="M1 1l8 0 0 7-4 3-4-3z" fill="currentColor"/></svg>';
     // A mark the edit never reaches is drawn at the edge in the dim colour rather
     // than dropped. `programSecAt` returns where the curve ends for a source
     // position it never gets to, so this is the honest reading of that answer: the
     // moment is still in the footage, and a tick that silently vanished when
     // somebody shortened the clip would be worse than one that needs explaining.
     const beyond = program >= total - 1e-9 && mark.sourceMs / 1000 > retime.sourceSecAt(total) + 1e-9;
-    el.className = beyond ? 'tmk beyond' : 'tmk';
+    const selected = selectedMark?.id === mark.id;
+    el.className = (beyond ? 'tmk beyond' : 'tmk') + (selected ? ' sel' : '');
     const at = clampToClip(program, total);
     el.style.left = `${view.pct(at)}%`;
     el.hidden = !view.holds(at);
@@ -9091,28 +9108,57 @@ function paintMarks() {
     // never reaches it has to seek to the edge it is drawn at, or pressing it lands
     // the playhead somewhere the tick is not.
     //
-    // Both events are stopped, and the pointerdown is the one that matters. The bed
-    // scrubs on `pointerdown` rather than on `click`, so a click-only guard leaves
-    // the press starting a scrub to wherever the pointer was, and the tick's own seek
-    // arriving afterwards reads as a drag that happened to end on a mark.
-    el.addEventListener('pointerdown', (e) => e.stopPropagation());
-    // **A tick outside the trim declines and says so, rather than seeking somewhere it
-    // is not.** The seek would be clamped to the boundary, so pressing a diamond drawn
-    // inside the shading moved the playhead to the edge of the edit - a control that
-    // answers, in the one way that is worse than not answering, by doing something
-    // other than what it shows. The keys already refuse these; a class closed on one
-    // surface and left open on the other is the same defect with a second address.
-    //
-    // Said out loud rather than declined in silence, because a press is a person
-    // pointing at a specific thing: a key that steps past nothing has nothing to report,
-    // and a diamond that was aimed at does.
-    el.addEventListener('click', (e) => {
+    // Pointerdown handles both selection and the start of a drag. Stopping propagation
+    // prevents the bed from starting a scrub.
+    let dragging = false;
+    let dragStartX = 0;
+    el.addEventListener('pointerdown', (e) => {
       e.stopPropagation();
-      if (!reachableInClip(at)) {
-        say('that mark is outside the clip range, so the edit cannot reach it');
-        return;
+      // Select this mark, clear keyframe selection
+      selectedMark = mark;
+      if (selection) { selection = null; lanesChanged(); }
+      paintMarks();
+      // Prepare for potential drag
+      dragging = false;
+      dragStartX = e.clientX;
+      el.setPointerCapture(e.pointerId);
+    });
+    el.addEventListener('pointermove', (e) => {
+      if (!el.hasPointerCapture(e.pointerId)) return;
+      // Start dragging after a small threshold to distinguish from clicks
+      if (!dragging && Math.abs(e.clientX - dragStartX) > 3) {
+        dragging = true;
       }
-      goTo(at);
+      if (dragging) {
+        // Update the mark position visually during drag
+        const rect = host.getBoundingClientRect();
+        const pct = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
+        el.style.left = `${pct}%`;
+      }
+    });
+    el.addEventListener('pointerup', (e) => {
+      if (!el.hasPointerCapture(e.pointerId)) return;
+      el.releasePointerCapture(e.pointerId);
+      if (dragging) {
+        // Compute new source position from drop location
+        const rect = host.getBoundingClientRect();
+        const pct = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
+        const programSec = view.lo + (pct / 100) * (view.hi - view.lo);
+        const sourceSec = retime.sourceSecAt(programSec);
+        const newSourceMs = Math.round(sourceSec * 1000);
+        moveMark(mark, newSourceMs).catch(showTimelineError);
+      } else {
+        // Just a click - seek to the mark position
+        if (!reachableInClip(at)) {
+          say('that mark is outside the clip range, so the edit cannot reach it');
+          return;
+        }
+        goTo(at);
+      }
+    });
+    el.addEventListener('lostpointercapture', () => {
+      // If capture is lost without pointerup, repaint to reset position
+      if (dragging) paintMarks();
     });
     host.appendChild(el);
   }
@@ -9131,6 +9177,7 @@ function paintMarks() {
 }
 
 async function loadMarks(id) {
+  selectedMark = null;
   try {
     const res = await fetch(`/capture/${encodeURIComponent(id)}/marks`);
     takeMarks = res.ok ? (await res.json()).marks : [];
@@ -9138,6 +9185,7 @@ async function loadMarks(id) {
     takeMarks = [];
   }
   paintMarks();
+  paintMarkButton();
 }
 
 /**
@@ -9156,6 +9204,40 @@ async function markHere() {
   });
   takeMarks = (await res.json()).marks;
   paintMarks();
+  paintMarkButton();
+}
+
+/** Deletes the given mark by writing a tombstone. */
+async function deleteMark(mark) {
+  if (!openTakeId || !mark) return;
+  const rec = { id: mark.id, deleted: true, at: Date.now() };
+  const res = await fetch(`/capture/${encodeURIComponent(openTakeId)}/marks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ marks: [rec] }),
+  });
+  takeMarks = (await res.json()).marks;
+  if (selectedMark?.id === mark.id) selectedMark = null;
+  paintMarks();
+  paintMarkButton();
+}
+
+/** Moves a mark to a new source position. */
+async function moveMark(mark, newSourceMs) {
+  if (!openTakeId || !mark) return;
+  const rec = { ...mark, sourceMs: newSourceMs, at: Date.now() };
+  const res = await fetch(`/capture/${encodeURIComponent(openTakeId)}/marks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ marks: [rec] }),
+  });
+  takeMarks = (await res.json()).marks;
+  // Keep the mark selected after moving
+  if (selectedMark?.id === mark.id) {
+    selectedMark = takeMarks.find((m) => m.id === mark.id) ?? null;
+  }
+  paintMarks();
+  paintMarkButton();
 }
 
 // ------------------------------------------------------------- the preset library
@@ -10150,6 +10232,8 @@ ui.beds.addEventListener('pointerdown', (e) => {
     // Read before anything in the drag can change it - see `view.duration`.
     duration: timeline.duration,
   };
+  // Clear mark selection when selecting a keyframe
+  if (selectedMark) { selectedMark = null; paintMarks(); }
   selection = { owner: el.__row.owner, key: el.__key };
   lanesChanged();
 });
@@ -10498,6 +10582,30 @@ function paintRateKey() {
   ui.rateKey.dataset.kf = retime.keys.length === 0
     ? 'none'
     : (retime.keys.some((k) => Math.abs(k.t - t) <= tol) ? 'here' : 'some');
+}
+
+/** Updates the mark button icon: filled when playhead is on a mark, stroked otherwise. */
+function paintMarkButton() {
+  if (!ui.mark) return;
+  const t = playheadSec();
+  const tol = keyTolerance();
+  // Marks are stored in source milliseconds. Convert each to program time and compare.
+  const onMark = takeMarks.some((m) => {
+    const program = retime.programSecAt(m.sourceMs / 1000);
+    return Math.abs(program - t) <= tol;
+  });
+  // Toggle between stroked (default) and filled (on mark) by updating the SVG path.
+  const svg = ui.mark.querySelector('svg');
+  if (!svg) return;
+  const path = svg.querySelector('path');
+  if (!path) return;
+  if (onMark) {
+    path.setAttribute('fill', 'currentColor');
+    path.setAttribute('stroke', 'none');
+  } else {
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', 'currentColor');
+  }
 }
 
 // --------------------------------------------- composition in the world
@@ -12910,6 +13018,7 @@ globalThis.__kinect = {
     setMarks(list) {
       takeMarks = list.map((m) => ({ ...m }));
       paintMarks();
+      paintMarkButton();
     },
     selection: () => (selection ? { owner: selection.owner, t: selection.key.t } : null),
     select(owner, index) {
