@@ -1858,24 +1858,19 @@ const PANEL_GROUPS = [
   // group, which adopts the program camera whose pose is document state.
   {
     key: 'framing',
-    label: 'Framing (metres)',
+    label: '',
     tab: 'framing',
-    collapses: true,
-    // Levelling sits above the box rather than below it, and it is a button and a note
-    // around two ordinary sliders rather than a group of its own. Document state,
-    // unlike the `sensor view` it sits under - the angle a bracket ended up at belongs
-    // to the take, so it rotates the room and not the camera, and the top-down,
-    // auto-orbit and the exported frame come level with the picture.
+    collapses: false,
+    // Levelling sits above the sliders. Document state, unlike the `sensor view` it
+    // sits under - the angle a bracket ended up at belongs to the take, so it rotates
+    // the room and not the camera, and the top-down, auto-orbit and the exported frame
+    // come level with the picture.
     before: () => [
       panelButtonRow(['camSensor', 'sensor view']),
       panelButtonRow(['camLevel', 'select floor'], ['camLevelReset', 'reset rotation']),
-      panelNote('levelNote', 'Select floor, then click a flat floor or ceiling plane in the picture. '
-        + 'The selection levels the room; tilt and roll below remain available for small corrections.'),
     ],
     after: () => [
-      panelButtonRow(['cropReset', 'open the box']),
-      panelNote('cropNote', 'The top-down draws this box in x and z. It has no y, so the '
-        + 'bottom and top faces do not show there — judge those in the picture.'),
+      panelButtonRow(['cropReset', 'revert all to default']),
       panelNote('recRange', 'preview only'),
     ],
   },
@@ -2895,7 +2890,7 @@ for (const group of PANEL_GROUPS) {
   // different button in a narrower scope: one `button` meaning two things in one loop
   // is how the wrong element ends up registered.
   const { head, button: headButton, mark: headMark } = panelHead(group);
-  groupNode.append(head);
+  if (group.label || group.collapses) groupNode.append(head);
   if (group.before) groupNode.append(...group.before());
   const names = [];
   panelGroupParams.set(group.key, names);
@@ -6793,7 +6788,6 @@ const ui = {
   camSensor: document.getElementById('camSensor'),
   camLevel: document.getElementById('camLevel'),
   camLevelReset: document.getElementById('camLevelReset'),
-  levelNote: document.getElementById('levelNote'),
   cropReset: document.getElementById('cropReset'),
   exportSize: buildExportMenu(document.getElementById('tExportSize')),
   exportRatios: document.getElementById('exportRatios'),
@@ -11067,12 +11061,11 @@ function viewUnder(clientX, clientY) {
 // surface cannot strand the next orbit inside a mode the user forgot was armed.
 let levelSelectionArmed = false;
 
-function setLevelSelection(on, note) {
+function setLevelSelection(on) {
   levelSelectionArmed = on;
   ui.camLevel.setAttribute('aria-pressed', String(on));
   ui.camLevel.textContent = on ? 'cancel selection' : 'select floor';
   document.body.classList.toggle('selecting-level', on);
-  if (note) ui.levelNote.textContent = note;
 }
 
 // On the window and in capture phase for the same reason the node drag below lives
@@ -11087,15 +11080,9 @@ addEventListener('pointerdown', (e) => {
   e.stopImmediatePropagation();
   const view = viewUnder(e.clientX, e.clientY);
   if (!view) return;
-  if (chromeOn && view.plan) {
-    ui.levelNote.textContent = 'Select the floor in the main picture, outside the top-down inset.';
-    return;
-  }
+  if (chromeOn && view.plan) return;
   const result = levelAtStagePoint(view.x, view.y);
-  if (!result.ok) {
-    ui.levelNote.textContent = `${result.reason}. Choose another point or press Escape to cancel.`;
-    return;
-  }
+  if (!result.ok) return;
   setLevelSelection(false,
     `levelled on ${result.samples} samples, ${(result.rms * 1000).toFixed(1)}mm from flat`);
 }, true);
@@ -11509,19 +11496,18 @@ ui.camLevel.addEventListener('click', () => {
   // between arming and selection. Finish the orbit here, while there is still a frame
   // before the user can click the surface, rather than moving it underneath that click.
   finishOrbitDrift();
-  setLevelSelection(true, 'Click a flat floor or ceiling plane in the picture. Press Escape to cancel.');
+  setLevelSelection(true);
 });
 
 ui.camLevelReset.addEventListener('click', () => {
   setLevelSelection(false);
   resetWorldRotation();
-  ui.levelNote.textContent = 'World rotation reset to 0° tilt and 0° roll.';
 });
 
 addEventListener('keydown', (e) => {
   if (!levelSelectionArmed || e.key !== 'Escape') return;
   e.preventDefault();
-  setLevelSelection(false, 'Floor selection cancelled.');
+  setLevelSelection(false);
 });
 setLevelSelection(false);
 
