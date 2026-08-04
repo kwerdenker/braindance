@@ -1810,8 +1810,8 @@ const PANEL_GROUPS = [
   // Source is what the point is coloured *by* and treatment is what is then made of
   // it, which is the axis worth seeing on the panel - picking a treatment used to
   // mean picking its source with it and there was no way to say otherwise.
-  { key: 'source', label: 'Reading · source', tab: 'look' },
-  { key: 'treatment', label: 'Reading · treatment', tab: 'look' },
+  { key: 'source', label: 'Reading · source', tab: 'look', collapses: true },
+  { key: 'treatment', label: 'Reading · treatment', tab: 'look', collapses: true },
   // What each reading is *made of*, rather than which reading you are in. Every one of
   // these was a literal in the fragment shader, so a reading was a picture you could
   // select and not adjust - and because they are ordinary registry parameters they
@@ -1860,6 +1860,7 @@ const PANEL_GROUPS = [
     key: 'framing',
     label: 'Framing (metres)',
     tab: 'framing',
+    collapses: true,
     // Levelling sits above the box rather than below it, and it is a button and a note
     // around two ordinary sliders rather than a group of its own. Document state,
     // unlike the `sensor view` it sits under - the angle a bracket ended up at belongs
@@ -1883,7 +1884,7 @@ const PANEL_GROUPS = [
   // signal is conditioned into, where the points are moved to, how they are drawn,
   // what colour they take, what persists between frames, and what the optics do to
   // the result.
-  { key: 'conditioning', label: 'Depth conditioning', tab: 'look', lookgroup: true },
+  { key: 'conditioning', label: 'Depth conditioning', tab: 'look', lookgroup: true, collapses: true },
   { key: 'displacement', label: 'Displacement', tab: 'region', lookgroup: true, collapses: true },
   // One region in the room, read three ways: it displaces, it scrambles, and it
   // masks. Everything here is metres in the sensor frame, so a look holds at any
@@ -1892,12 +1893,12 @@ const PANEL_GROUPS = [
   // rounded box; take two to zero and it is a capsule. No shape selector, because an
   // enum could not keyframe and these sliders can.
   { key: 'region', label: 'Region (metres)', tab: 'region', lookgroup: true, collapses: true },
-  { key: 'points', label: 'Points', tab: 'look', lookgroup: true },
-  { key: 'colour', label: 'Colour & tone', tab: 'look', lookgroup: true },
+  { key: 'points', label: 'Points', tab: 'look', lookgroup: true, collapses: true },
+  { key: 'colour', label: 'Colour & tone', tab: 'look', lookgroup: true, collapses: true },
   // The three terms that accumulate across frames, together. Fade and wake are the
   // surface memory and trails is the afterimage buffer; they were two groups apart
   // while doing one thing, which is how a look gets tuned twice.
-  { key: 'time', label: 'Time (ms)', tab: 'look', lookgroup: true },
+  { key: 'time', label: 'Time (ms)', tab: 'look', lookgroup: true, collapses: true },
   { key: 'optical', label: 'Optical', tab: 'look', lookgroup: true, collapses: true },
   // The two parameters that are not part of the clip, in the one group that says so.
   // They are tagged `view` in the registry, they get no keyframe control and no
@@ -1908,6 +1909,7 @@ const PANEL_GROUPS = [
     label: 'Viewer',
     tab: 'camera',
     lookgroup: true,
+    collapses: true,
     after: () => [panelNote('viewNote', 'Not saved with the clip and not exported: these '
       + 'change what you are looking at, not what the frame is.')],
   },
@@ -2819,8 +2821,14 @@ const panelGroupParams = new Map();
 // groups at once in a tool that has nothing to do with this feature.
 function panelHead(group) {
   const head = panelNode('div', 'grouphead');
-  head.append(panelNode('label', null, group.label));
+  const label = panelNode('label', null, group.label);
+  head.append(label);
   if (!group.collapses) return { head, button: null, mark: null };
+
+  // The label is clickable too, so the whole heading row toggles the group rather
+  // than only the small triangle. Cursor indicates the affordance.
+  label.style.cursor = 'pointer';
+  label.addEventListener('click', () => toggleGroup(group.key));
 
   // A count of the parameters in this group that are carrying something, shown only
   // while the group is shut. Without it a collapsed group in use is the panel lying
@@ -6763,7 +6771,6 @@ const ui = {
   markCount: document.getElementById('tMarkCount'),
   mark: document.getElementById('tMark'),
   preset: document.getElementById('tPreset'),
-  presetApply: document.getElementById('tPresetApply'),
   presetSave: document.getElementById('tPresetSave'),
   presetExport: document.getElementById('tPresetExport'),
   presetImport: document.getElementById('tPresetImport'),
@@ -9613,8 +9620,8 @@ function trashGlyph() {
 const TYPE_AHEAD_MS = 700;
 const pickers = [];
 
-function definePicker(trigger, list, { adds = null, note = null } = {}) {
-  const picker = { trigger, list, adds, note, docs: [], typed: '', typedAt: 0 };
+function definePicker(trigger, list, { adds = null, note = null, autoApply = false } = {}) {
+  const picker = { trigger, list, adds, note, autoApply, docs: [], typed: '', typedAt: 0 };
   pickers.push(picker);
 
   trigger.addEventListener('click', () => (list.hidden ? openPicker(picker) : closePicker(picker)));
@@ -9703,21 +9710,51 @@ function choosePicker(picker, name, { close = false } = {}) {
   picker.trigger.value = name ?? '';
   paintPicker(picker);
   if (close) closePicker(picker, { restoreFocus: true });
+  // Auto-apply the preset when selected, if this picker has that behavior enabled.
+  if (picker.autoApply) {
+    if (name) {
+      withPresetGesture(picker.note ?? ui.note, () => whileWriting(async () => {
+        try {
+          const applied = applyStoredPreset(await (await fetch(`/presets/${encodeURIComponent(name)}`)).json());
+          say(presetAppliedNote(name, applied));
+        } catch (err) {
+          showTimelineError(err);
+        }
+      }));
+    } else {
+      // "none" selected: reset all look parameters to their defaults.
+      params.reset(params.names('look'));
+      history.commit();
+      say('reset to defaults');
+    }
+  }
 }
 
 function paintPicker(picker) {
   const chosen = picker.trigger.value;
-  picker.trigger.querySelector('.pickervalue').textContent = chosen || '—';
+  picker.trigger.querySelector('.pickervalue').textContent = chosen || 'none';
   for (const option of pickerOptions(picker)) {
     const here = option.dataset.name === chosen;
     option.classList.toggle('here', here);
     option.setAttribute('aria-selected', String(here));
-    option.querySelector('.pickercheck').textContent = here ? '✓' : '';
   }
 }
 
 function buildPicker(picker, docs) {
   picker.docs = docs;
+  // The "none" option at the top, clearing any applied preset.
+  const noneOption = document.createElement('div');
+  noneOption.className = 'pickeroption';
+  noneOption.setAttribute('role', 'option');
+  noneOption.setAttribute('aria-selected', 'false');
+  noneOption.tabIndex = -1;
+  noneOption.dataset.name = '';
+  noneOption.dataset.builtin = 'false';
+  const noneLabel = document.createElement('span');
+  noneLabel.className = 'pickerlabel';
+  noneLabel.textContent = 'none';
+  noneOption.append(noneLabel);
+
   const rows = docs.map((doc) => {
     const option = document.createElement('div');
     option.className = 'pickeroption';
@@ -9726,14 +9763,10 @@ function buildPicker(picker, docs) {
     option.tabIndex = -1;
     option.dataset.name = doc.name;
     option.dataset.builtin = String(Boolean(doc.builtin));
-    const check = document.createElement('span');
-    check.className = 'pickercheck';
     const label = document.createElement('span');
     label.className = 'pickerlabel';
-    // The shipped mark the `<select>` carried, kept: it says the same thing the trailing
-    // dot said, that saving over this one forks it rather than editing it.
-    label.textContent = doc.builtin ? `${doc.name} ·` : doc.name;
-    option.append(check, label);
+    label.textContent = doc.name;
+    option.append(label);
     if (!doc.builtin) {
       const remove = document.createElement('button');
       remove.type = 'button';
@@ -9745,7 +9778,7 @@ function buildPicker(picker, docs) {
     }
     return option;
   });
-  picker.list.replaceChildren(...rows);
+  picker.list.replaceChildren(noneOption, ...rows);
   if (picker.adds) {
     const add = document.createElement('button');
     add.type = 'button';
@@ -9803,7 +9836,7 @@ async function deletePreset(picker, name) {
   else closePicker(picker, { restoreFocus: true });
 }
 
-definePicker(ui.preset, document.getElementById('tPresetList'), { adds: 'tPresetAdd' });
+definePicker(ui.preset, document.getElementById('tPresetList'), { adds: 'tPresetAdd', autoApply: true });
 definePicker(ui.recPreset, document.getElementById('recPresetList'), { note: ui.recLookNote });
 
 // A press outside any open list shuts it, which is what makes this behave like the menu it
@@ -11428,7 +11461,7 @@ function paintPreviewRange(minDepth, maxDepth) {
 // sits on the handlers rather than inside `applyStoredPreset`, because that function and
 // `restoreProject` beside it are exposed raw for the proof tools to drive: a guard
 // pushed down there would start silently dropping calls that are not gestures at all.
-const PRESET_WRITERS = [ui.presetSave, ui.presetExport, ui.presetApply, ui.presetImport, ui.recPresetApply];
+const PRESET_WRITERS = [ui.presetSave, ui.presetExport, ui.presetImport, ui.recPresetApply];
 
 // Whether one of those gestures is running. It is a flag on the program rather than a
 // state of a control, because what has to be true is that there is one gesture, not that
@@ -11519,17 +11552,6 @@ ui.recPresetApply.addEventListener('click', () => withPresetGesture(ui.recLookNo
     // surface the person pressing the button cannot see.
     ui.recLookNote.textContent = `could not apply ${name}: ${err.message}`;
     console.error(err);
-  }
-})));
-
-ui.presetApply.addEventListener('click', () => withPresetGesture(ui.note, () => whileWriting(async () => {
-  const name = ui.preset.value;
-  if (!name) return;
-  try {
-    const applied = applyStoredPreset(await (await fetch(`/presets/${encodeURIComponent(name)}`)).json());
-    say(presetAppliedNote(name, applied));
-  } catch (err) {
-    showTimelineError(err);
   }
 })));
 

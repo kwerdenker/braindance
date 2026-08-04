@@ -205,9 +205,9 @@
      that can hold what a native option cannot: the mark on the applied entry and a delete
      on the entries that have one. Sizes are the design's - a 24px trigger, a 12px trash
      glyph, a 24x24 add button. */
-  .picker { position: relative; flex: 1; min-width: 0; }
+  .picker { position: relative; flex: 1; min-width: 0; margin-bottom: 6px; }
   .pickertrigger {
-    width: 100%; min-width: 0; height: 24px;
+    width: 100%; min-width: 0; height: 29px;
     display: flex; align-items: center; gap: 6px;
     padding: 0 6px; border: 1px solid var(--line-2); border-radius: 0;
     background: var(--paper-2); color: var(--ink); font: inherit; cursor: pointer;
@@ -220,7 +220,7 @@
      rest of the panel down - the panel scrolls, and a list that moved its own trigger
      out from under the pointer would be a menu you cannot click twice. */
   .pickerlist {
-    position: absolute; z-index: 30; top: 25px; left: 0; right: 0;
+    position: absolute; z-index: 30; top: 30px; left: 0; right: 0;
     max-height: 220px; overflow-y: auto;
     padding: 2px 0; background: var(--paper-2); border: 1px solid var(--line-2);
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.36);
@@ -231,7 +231,7 @@
     min-height: 20px; padding: 0 6px; cursor: pointer;
   }
   .pickeroption:hover, .pickeroption.here { background: var(--accent-low); }
-  .pickercheck { flex: none; width: 8px; color: var(--accent); }
+  .pickercheck { display: none; }
   .pickerlabel { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* Only user presets carry one, so the slot is not reserved: a shipped look has no
      delete and nothing about the row should suggest it is missing one. */
@@ -242,7 +242,7 @@
   .pickerdelete svg { width: 12px; height: 12px; display: block; }
   .pickerdelete:hover { color: var(--rec); }
   .pickeradd {
-    width: 24px; height: 24px; margin: 2px 6px; display: grid; place-items: center;
+    width: 24px; height: 24px; margin: 4px auto; display: grid; place-items: center;
     border: 1px solid var(--line-2); border-radius: 0;
     background: transparent; color: var(--dim); font: inherit; cursor: pointer;
   }
@@ -940,15 +940,12 @@
            carries that half. The trigger keeps the id `tPreset` because it is still the
            control that names which preset is chosen, and every tool that drives this
            surface is anchored on it. -->
-      <div class="btnrow">
-        <div class="picker" id="tPresetPicker">
+      <div class="picker" id="tPresetPicker">
           <button class="pickertrigger" id="tPreset" type="button" role="combobox"
             aria-haspopup="listbox" aria-expanded="false" aria-controls="tPresetList"
             aria-label="Preset"><span class="pickervalue">&mdash;</span><span class="pickerarrow" aria-hidden="true">&#9662;</span></button>
           <div class="pickerlist" id="tPresetList" role="listbox" aria-label="Presets" tabindex="-1" hidden></div>
         </div>
-        <button id="tPresetApply" type="button">apply</button>
-      </div>
       <div class="btnrow">
         <button id="tPresetSave" type="button">save</button>
         <button id="tPresetExport" type="button">export</button>
