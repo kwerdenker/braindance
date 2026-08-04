@@ -64,7 +64,7 @@ function rememberOpened() {
       takeId: openTakeId,
       // The picker is where the open project's name already lives, so this reads it
       // rather than keeping a second copy that could disagree with what is on screen.
-      project: ui.project.value || null,
+      project: ui.project?.value || null,
     }));
   } catch {
     // Private browsing, a full quota, storage disabled by policy. Resuming is a
@@ -6781,6 +6781,9 @@ const ui = {
   camKey: document.getElementById('camKey'),
   camClear: document.getElementById('camClear'),
   camView: document.getElementById('camView'),
+  // Timeline camera controls (duplicate of panel controls for quick access)
+  tCamKey: document.getElementById('tCamKey'),
+  tCamView: document.getElementById('tCamView'),
   camSensor: document.getElementById('camSensor'),
   camLevel: document.getElementById('camLevel'),
   camLevelReset: document.getElementById('camLevelReset'),
@@ -6939,6 +6942,7 @@ const sayExport = (text) => {
  * throw out of the fetch handler - a save failure eating its own message.
  */
 function say(text) {
+  if (!ui.note) return;
   ui.note.textContent = text;
   ui.note.title = text;
   // An empty note is the strip being cleared, and scrolling a cleared strip to its
@@ -7132,7 +7136,7 @@ const view = {
 };
 
 function paintUndoCount() {
-  ui.undo.textContent = String(history.depth);
+  if (ui.undo) ui.undo.textContent = String(history.depth);
 }
 
 function paintDeliverable() {
@@ -7200,23 +7204,23 @@ function paintTimeline(t) {
   // `view.duration` here and `view.pct` in the positions above, and the split is the
   // distinction the rename was for: this is a *length*, which the window cannot change,
   // where a marker is a *place*, which is all the window changes.
-  ui.inOut.textContent = timecode(clipIn);
-  ui.outOut.textContent = clipOut === null ? 'end' : timecode(clipOut);
-  ui.clipLen.textContent = `${Math.max(0, (clipOut ?? view.duration) - clipIn).toFixed(2)}s`;
+  if (ui.inOut) ui.inOut.textContent = timecode(clipIn);
+  if (ui.outOut) ui.outOut.textContent = clipOut === null ? 'end' : timecode(clipOut);
+  if (ui.clipLen) ui.clipLen.textContent = `${Math.max(0, (clipOut ?? view.duration) - clipIn).toFixed(2)}s`;
   const plan = t.preroll(program);
   // Both halves, because which one wins is the whole point of computing it: the
   // surface half moves with fade, wake, speed and output rate, the trails half
   // only with damp, and a reader who sees one number cannot tell them apart.
-  ui.preroll.textContent = `${plan.frames} frames · ${plan.sec.toFixed(2)} s `
+  if (ui.preroll) ui.preroll.textContent = `${plan.frames} frames · ${plan.sec.toFixed(2)} s `
     + `(surface ${plan.surface}, trails ${plan.trails})`;
-  ui.cost.textContent = t.lastCostMs
+  if (ui.cost) ui.cost.textContent = t.lastCostMs
     ? `${t.drafted ? 'draft' : 'seek'} ${t.lastCostMs.toFixed(1)} ms`
     : '—';
   // Playback never drops a frame to keep up, so falling behind is a fact about
   // the machine rather than about the edit, and it belongs on screen for the same
   // reason the decimation setting does: an instrument that silently changes its
   // own scale is worse than none.
-  ui.behind.textContent = t.playing && t.behindMs > BEHIND_NOTICE_MS
+  if (ui.behind) ui.behind.textContent = t.playing && t.behindMs > BEHIND_NOTICE_MS
     ? `${(t.behindMs / 1000).toFixed(1)}s behind`
     : '';
   paintUndoCount();
@@ -7890,9 +7894,9 @@ function setClipRangeFromPlayhead(which) {
   history.commit();
 }
 
-ui.setIn.addEventListener('click', () => setClipRangeFromPlayhead('in'));
-ui.setOut.addEventListener('click', () => setClipRangeFromPlayhead('out'));
-ui.clearRange.addEventListener('click', () => {
+ui.setIn?.addEventListener('click', () => setClipRangeFromPlayhead('in'));
+ui.setOut?.addEventListener('click', () => setClipRangeFromPlayhead('out'));
+ui.clearRange?.addEventListener('click', () => {
   // `null` rather than the duration, so the range keeps meaning "to the end" if the
   // retime later makes the program longer.
   setClipInOut({ in: 0, out: null });
@@ -8428,7 +8432,7 @@ ui.rate.addEventListener('input', () => {
   pumpDraft();
 });
 
-ui.fps.addEventListener('change', () => {
+ui.fps?.addEventListener('change', () => {
   if (!timeline) return;
   const held = timeline.programSec;
   const fps = Number(ui.fps.value);
@@ -8988,7 +8992,7 @@ function timingChanged({ moved = false } = {}) {
   // has nothing left to say: it would set a slope only the extrapolated ends read.
   // Saying so is better than leaving a live control that moves nothing visible.
   ui.rate.disabled = retime.keys.length > 0;
-  ui.fps.value = String(timeline.outputFps);
+  if (ui.fps) ui.fps.value = String(timeline.outputFps);
   buildRuler();
   paintMarks();
   // The window is fractions of a duration this may just have changed, so everything
@@ -9051,7 +9055,7 @@ function paintMarks() {
   const host = ui.marks;
   if (!host) return;
   host.replaceChildren();
-  ui.markCount.textContent = String(takeMarks.length);
+  if (ui.markCount) ui.markCount.textContent = String(takeMarks.length);
   if (!timeline) return;
   // The clip's length, not the window's: whether a mark is past the end of the edit is
   // a fact about the edit, and it must not change because somebody scrolled.
@@ -10010,7 +10014,7 @@ async function importPresetFile(file) {
 let offeredWorkingBody = null;
 
 function offerWorkingDocument(projects) {
-  ui.resume.hidden = true;
+  if (ui.resume) ui.resume.hidden = true;
   offeredWorkingBody = null;
   const working = projects?.find((doc) => doc.name === WORKING_PROJECT);
   if (!working) return;
@@ -10039,31 +10043,36 @@ function offerWorkingDocument(projects) {
   // The store still has one slot, so a reload before the offer is taken still loses the
   // older document - that is a property of autosaving to a single name and is not what
   // this is fixing. What is fixed is a button that advertised one thing and did another.
+  if (!ui.resume) return;
   offeredWorkingBody = JSON.parse(JSON.stringify(working.body));
-  ui.resumeWhen.textContent = `autosaved ${new Date(working.savedAt).toLocaleString()}`;
+  if (ui.resumeWhen) ui.resumeWhen.textContent = `autosaved ${new Date(working.savedAt).toLocaleString()}`;
   ui.resume.hidden = false;
 }
 
 async function refreshProjects() {
   const list = await documentsIn('projects');
-  ui.project.replaceChildren(new Option('—', ''));
-  // The auto-save is not a document anybody chose, and it is always the newest file
-  // in the directory, so listing it beside real projects offers "the thing you were
-  // just doing" under a name that reads like a mistake. It stays on disk and stays
-  // loadable by name; it is simply not something the picker proposes.
-  for (const doc of list) {
-    if (doc.name === WORKING_PROJECT) continue;
-    ui.project.appendChild(new Option(doc.name, doc.name));
+  if (ui.project) {
+    ui.project.replaceChildren(new Option('—', ''));
+    // The auto-save is not a document anybody chose, and it is always the newest file
+    // in the directory, so listing it beside real projects offers "the thing you were
+    // just doing" under a name that reads like a mistake. It stays on disk and stays
+    // loadable by name; it is simply not something the picker proposes.
+    for (const doc of list) {
+      if (doc.name === WORKING_PROJECT) continue;
+      ui.project.appendChild(new Option(doc.name, doc.name));
+    }
   }
   return list;
 }
 
 async function refreshDeliverables() {
   const list = await documentsIn('deliverables');
-  const current = ui.deliverable.value;
-  ui.deliverable.replaceChildren(new Option('—', ''));
-  for (const doc of list) ui.deliverable.appendChild(new Option(doc.name, doc.name));
-  if (list.some((d) => d.name === current)) ui.deliverable.value = current;
+  if (ui.deliverable) {
+    const current = ui.deliverable.value;
+    ui.deliverable.replaceChildren(new Option('—', ''));
+    for (const doc of list) ui.deliverable.appendChild(new Option(doc.name, doc.name));
+    if (list.some((d) => d.name === current)) ui.deliverable.value = current;
+  }
   return list;
 }
 
@@ -10081,6 +10090,7 @@ async function refreshDeliverables() {
  * clip is actually on" rather than "the one somebody remembered to record".
  */
 function showAdoptedDeliverable(name) {
+  if (!ui.deliverable) return;
   ui.deliverable.value = name;
   ui.deliverable.dataset.adopted = name;
 }
@@ -10446,7 +10456,7 @@ function paintKeyButton(name, btn) {
 
 // The retime's own key control, beside the speed slider rather than in a lane,
 // because the lane only exists once there is a curve to draw in it.
-ui.rateKey.addEventListener('click', () => {
+ui.rateKey?.addEventListener('click', () => {
   if (!timeline) return;
   const t = playheadSec();
   const tol = keyTolerance();
@@ -10482,6 +10492,7 @@ ui.rateKey.addEventListener('click', () => {
 });
 
 function paintRateKey() {
+  if (!ui.rateKey) return;
   const t = playheadSec();
   const tol = keyTolerance();
   ui.rateKey.dataset.kf = retime.keys.length === 0
@@ -11053,7 +11064,8 @@ for (const type of ['pointerup', 'pointercancel']) {
   });
 }
 
-ui.camKey.addEventListener('click', () => {
+// Camera keyframe handler used by both panel and timeline controls
+function keyCameraHere() {
   if (!timeline) return;
   const track = trackFor('camera');
   // The pose you are looking from, which is what makes orbiting to a shot and
@@ -11076,7 +11088,9 @@ ui.camKey.addEventListener('click', () => {
   lanesChanged();
   requestRepaint();
   history.commit();
-});
+}
+ui.camKey.addEventListener('click', keyCameraHere);
+ui.tCamKey?.addEventListener('click', keyCameraHere);
 
 ui.camClear.addEventListener('click', () => {
   const track = tracks.get('camera');
@@ -11772,8 +11786,8 @@ ui.presetFile.addEventListener('change', () => {
   }));
 });
 
-ui.projectSave.addEventListener('click', async () => {
-  const name = prompt('save this edit as', ui.project.value || `${openTakeId ?? 'clip'}-edit`);
+ui.projectSave?.addEventListener('click', async () => {
+  const name = prompt('save this edit as', ui.project?.value || `${openTakeId ?? 'clip'}-edit`);
   if (!name) return;
   try {
     // The take is named by content hash rather than by path, which is what makes a
@@ -11789,7 +11803,7 @@ ui.projectSave.addEventListener('click', async () => {
     const saved = await res.json();
     if (saved.error) throw new Error(saved.error);
     await refreshProjects();
-    ui.project.value = saved.name;
+    if (ui.project) ui.project.value = saved.name;
     say(`saved ${saved.name} · ${saved.bytes} bytes`);
     rememberOpened();
   } catch (err) {
@@ -11797,8 +11811,8 @@ ui.projectSave.addEventListener('click', async () => {
   }
 });
 
-ui.projectOpen.addEventListener('click', async () => {
-  const name = ui.project.value;
+ui.projectOpen?.addEventListener('click', async () => {
+  const name = ui.project?.value;
   if (!name) return;
   try {
     await loadProjectNamed(name);
@@ -11813,7 +11827,7 @@ ui.projectOpen.addEventListener('click', async () => {
 // The offer withdraws itself on success because the document on screen is now the one
 // it was offering, and an offer to restore what is already there is a button that
 // looks like it does something.
-ui.resumeOpen.addEventListener('click', async () => {
+ui.resumeOpen?.addEventListener('click', async () => {
   try {
     const accepted = offeredWorkingBody;
     await loadProjectNamed(WORKING_PROJECT, accepted);
@@ -11837,7 +11851,7 @@ ui.resumeOpen.addEventListener('click', async () => {
     // finishes first.
     const kept = await writeWorking(accepted);
     if (!kept.ok) throw new Error(`restored on screen, but the auto-save could not be rewritten: ${(await kept.text().catch(() => '')).slice(0, 80)}`);
-    ui.resume.hidden = true;
+    if (ui.resume) ui.resume.hidden = true;
     offeredWorkingBody = null;
     say('restored the autosaved edit');
   } catch (err) {
@@ -11845,7 +11859,7 @@ ui.resumeOpen.addEventListener('click', async () => {
   }
 });
 
-ui.deliverable.addEventListener('change', async () => {
+ui.deliverable?.addEventListener('change', async () => {
   const name = ui.deliverable.value;
   if (!name) return;
   try {
@@ -11866,12 +11880,12 @@ ui.deliverable.addEventListener('change', async () => {
     //
     // The message stays on `#tNote` either way, so this is not a refusal being swallowed - it
     // is the refusal being told in one place instead of contradicted in a second.
-    ui.deliverable.value = ui.deliverable.dataset.adopted ?? '';
+    if (ui.deliverable) ui.deliverable.value = ui.deliverable.dataset.adopted ?? '';
     showTimelineError(err);
   }
 });
 
-ui.deliverableNew.addEventListener('click', async () => {
+ui.deliverableNew?.addEventListener('click', async () => {
   const name = prompt('name this deliverable', `deliverable-${Date.now()}`);
   if (!name) return;
   ensureActiveDeliverable();
@@ -11987,7 +12001,7 @@ shell.export.addEventListener('click', () => {
 });
 shell.saveProject.addEventListener('click', () => {
   closeApplicationMenus();
-  ui.projectSave.click();
+  ui.projectSave?.click();
 });
 shell.lookImport.addEventListener('click', () => {
   closeApplicationMenus();
@@ -12218,7 +12232,7 @@ addEventListener('keydown', (event) => {
     location.assign('/gallery');
   } else if (key === 's' && event.shiftKey && EDITING) {
     event.preventDefault();
-    ui.projectSave.click();
+    ui.projectSave?.click();
   } else if (key === 'r' && EDITING) {
     event.preventDefault();
     openExportDialog();
@@ -12290,7 +12304,7 @@ async function loadProjectNamed(name, offered = null) {
   applyDeliverable(activeDeliverable);
   await timeline.seek(timeline.programSec);
   if (resume && gen === transportGen) timeline.play();
-  ui.project.value = name;
+  if (ui.project) ui.project.value = name;
   say(`opened ${name}`);
   rememberOpened();
   return doc;
@@ -12401,12 +12415,16 @@ ui.extended.addEventListener('click', () => {
   ui.extended.textContent = on ? 'fewer settings' : 'extended settings';
 });
 
-ui.camView.addEventListener('click', () => {
+// Camera view toggle handler used by both panel and timeline controls
+function toggleCameraView() {
   const program = viewCamera === freeCamera;
   setViewCamera(program ? programCamera : freeCamera);
   ui.camView.setAttribute('aria-pressed', String(program));
+  ui.tCamView?.setAttribute('aria-pressed', String(program));
   requestRepaint();
-});
+}
+ui.camView.addEventListener('click', toggleCameraView);
+ui.tCamView?.addEventListener('click', toggleCameraView);
 
 /**
  * Opens a take on the timeline. The live socket is never opened on this path.

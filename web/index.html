@@ -49,7 +49,7 @@
        one thing allowed to grow it, and they do it through a second variable the
        lane builder writes - a lane appearing is a structural change and should
        move the stage, where a three-digit frame count should not. */
-    --timeline-h: 170px;
+    --timeline-h: 126px;
     --tlanes-h: 0px;
   }
   * { box-sizing: border-box; }
@@ -547,7 +547,6 @@
   .tbar { flex: none; display: flex; align-items: center; gap: 16px;
     padding: 8px 12px; border-bottom: 1px solid var(--line); }
   .tbar.transport { height: 51px; }
-  .tbar.document { height: 44px; gap: 10px; }
 
   .tplay {
     width: 34px; height: 34px; flex: none; display: grid; place-items: center;
@@ -565,8 +564,8 @@
      so it reads as a secondary value rather than as a second control. */
   .tclock.derived output { color: var(--dim); font-size: 14px; }
 
-  .tchips { margin-left: auto; display: flex; gap: 8px; flex-wrap: nowrap; align-items: center;
-    min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .tchips { flex: 1; display: flex; gap: 8px; flex-wrap: nowrap; align-items: center;
+    justify-content: center; min-width: 0; overflow-x: auto; scrollbar-width: none; }
   .tchips::-webkit-scrollbar { display: none; }
   /* The strip has to say when it has more, because hiding the scrollbar hid the only
      evidence that anything was off the right edge. A fade rather than a scrollbar so
@@ -617,6 +616,28 @@
      rather than against the one chip that needed it, so the next chip that hides is
      covered by existing. */
   .tchip[hidden] { display: none; }
+  /* Speed control and mark button next to clocks. */
+  .tspeed { display: flex; align-items: center; gap: 8px; flex: none; }
+  .tspeed .tchip { display: inline-flex; align-items: center; gap: 7px; }
+  /* The mark button beside the speed slider. Matches Pencil design exactly. */
+  .tmark {
+    width: 26px; height: 26px; flex: none;
+    display: grid; place-items: center;
+    border: 1px solid var(--line); border-radius: 0;
+    background: var(--paper-2); cursor: pointer;
+  }
+  .tmark:hover { background: var(--paper-3); border-color: var(--line-3); }
+  .tmark:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .tmark svg { display: block; color: var(--dim); }
+  /* The camera section at the right of the transport bar. No outline, just label and buttons. */
+  .tcamera { flex: none; display: inline-flex; align-items: center; gap: 7px;
+    font-size: 11px; color: var(--dim); white-space: nowrap; }
+  .tcamera button { display: inline-flex; align-items: center; justify-content: center;
+    width: 20px; height: 20px; padding: 0;
+    border: 1px solid var(--line); border-radius: 0; background: var(--paper-2); cursor: pointer; }
+  .tcamera button:hover { background: var(--paper-3); border-color: var(--line-3); }
+  .tcamera button svg { display: block; color: var(--ink); }
+  .tcamera button[aria-pressed="true"] { background: var(--accent); color: #04231f; border-color: var(--accent); }
 
   /* The dialog that asks which look values a preset is written with. A `<dialog>`
      rather than a positioned div, for the reason `library.js` gives beside the
@@ -1078,9 +1099,10 @@
       <button id="tPlay" class="tplay" type="button" aria-label="Play">&#9654;</button>
       <div class="tclocks">
         <div class="tclock"><small>program</small><output id="tProgram">00:00.000</output></div>
-        <div class="tclock derived"><small>source &middot; derived</small><output id="tSource">00:00.000</output></div>
+        <div class="tclock derived"><small>source</small><output id="tSource">00:00.000</output></div>
       </div>
-      <div class="tchips">
+      <!-- Speed control and mark button, positioned next to clocks -->
+      <div class="tspeed">
         <!-- The slider's coordinate is not the rate, and the range here is deliberately
              0..1 rather than 0.1..4. Program length goes as 1/rate, so a control linear
              in rate spends most of its travel where the ruler barely moves: one 0.05 step
@@ -1089,46 +1111,18 @@
              beside the mapping that reads this, so there is one copy of them. `value` is
              written from `retime.rate` at boot for the same reason - a position spelled
              out here would be a second statement of where 1.00x sits. -->
-        <label class="tchip">speed<input id="tRate" type="range" min="0" max="1" step="any"><b id="tRateOut">1.00&times;</b>
-          <button class="kf" id="tRateKey" type="button" aria-label="Retime keyframe"><i></i></button></label>
-        <label class="tchip">out fps<select id="tFps"><option>24</option><option>30</option><option>60</option><option>120</option></select></label>
-        <!-- The range the export takes, as numbers rather than only as two lines on
-             the ruler. The markers stay draggable; this is for reading the answer and
-             for setting it exactly where the playhead already is. -->
-        <span class="tchip">in <b id="tInOut">00:00.000</b><button id="tSetIn" type="button">set</button></span>
-        <span class="tchip">out <b id="tOutOut">end</b><button id="tSetOut" type="button">set</button></span>
-        <span class="tchip">length <b id="tClipLen">&mdash;</b><button id="tClearRange" type="button">whole clip</button></span>
-        <span class="tchip">marks <b id="tMarkCount">0</b><button id="tMark" type="button">mark here</button></span>
-        <!-- Controls above, readouts below, and the order is the whole of what makes
-             the scroller safe. This strip hides its scrollbar so the bar cannot grow,
-             so whatever sits at the right-hand end is off screen at a narrow window
-             with nothing to say it exists - which is exactly how the render button
-             was lost. A readout that scrolls away can be scrolled back to; a button
-             nobody knows about cannot. `pre-roll` in particular is the widest thing
-             in the bar and it grows with the retime, so it goes after everything
-             anybody has to press. -->
-        <span class="tchip">pre-roll <b id="tPreroll">&mdash;</b></span>
-        <span class="tchip">last <b id="tCost">&mdash;</b></span>
-        <span class="tchip">undo <b id="tUndo">0</b></span>
-        <span class="tchip warn" id="tBehind"></span>
-        <span class="tchip" id="tNote"></span>
+        <label class="tchip">speed<input id="tRate" type="range" min="0" max="1" step="any"><b id="tRateOut">1.00&times;</b></label>
+        <button class="tmark" id="tMark" type="button" aria-label="Mark here">
+          <svg width="10" height="12" viewBox="0 0 10 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M1 1l8 0 0 7-4 3-4-3z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" fill="none"/>
+          </svg>
+        </button>
       </div>
-    </div>
-
-    <!-- Row two: what the clip *is* and what comes out of it. -->
-    <div class="tbar document">
       <div class="tchips">
         <!-- Applies to whichever key is selected in a lane. The five cover what a
              handle drag is usually reaching for, and a drag is still there for the
              shape none of them is. -->
-        <span class="tchip tease off" id="tEase">selected key
-          <!-- Walking the selected parameter's own keys, which is the only reading that
-               makes the pair meaningful: the playhead is one thing and a track's keys are
-               another, so "previous" has to mean previous *on this track*. They seek
-               through `goTo`, the same door the ruler and the in/out controls use, so the
-               pause and the clamp into the clip range are stated once. Disabled when there
-               is no key that way, rather than seeking to where the playhead already is -
-               a control that answers a press by doing nothing is one you press twice. -->
+        <span class="tchip tease off" id="tEase">key options
           <button id="tPrevKey" type="button" title="Previous keyframe on this parameter" aria-label="Previous keyframe">&lt;</button>
           <button id="tNextKey" type="button" title="Next keyframe on this parameter" aria-label="Next keyframe">&gt;</button>
           <button data-ease="linear" type="button">lin</button>
@@ -1137,26 +1131,15 @@
           <button data-ease="smooth" type="button">smooth</button>
           <button data-ease="hold" type="button">hold</button>
           <button id="tDeleteKey" type="button" title="Delete the selected key (Del)">delete</button></span>
-        <label class="tchip">project<select id="tProject"><option value="">—</option></select>
-          <button id="tProjectOpen" type="button">open</button><button id="tProjectSave" type="button">save</button></label>
-        <!-- The auto-save, offered back only when there is one to offer. Beside the
-             project picker because that is what it is, and a chip of its own rather
-             than an entry in that picker because the picker hides `__working__` on
-             purpose: it is always the newest document in the directory, so listing it
-             beside real projects offers "the thing you were just doing" under a name
-             that reads like a mistake.
-             A button and not a sentence telling somebody to edit the URL. The offer
-             began as text naming `?project=__working__`, which drops the `take` the
-             editor boots on, so following it literally left the query with no take in
-             it and the boot path sent the browser to the gallery - an instruction that
-             reads as a recovery path and is a way out of the page. `openTake` shows
-             this and `loadProjectNamed` is what it presses, which is the same door the
-             resume URL opens and therefore the same hash refusal on the way in. -->
-        <span class="tchip" id="tResume" hidden><b id="tResumeWhen"></b><button id="tResumeOpen" type="button">restore autosave</button></span>
-        <label class="tchip">deliverable<select id="tDeliverable"><option value="">—</option></select>
-          <button id="tDeliverableNew" type="button">new</button>
-          <b id="tDeliverableReadout"></b></label>
       </div>
+      <!-- Camera controls for composition keyframing -->
+      <span class="tcamera" id="tCamera">camera
+        <button id="tCamView" type="button" title="Look through camera" aria-label="Look through camera" aria-pressed="false">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z" fill="currentColor"/>
+          </svg>
+        </button>
+        <button class="kf" id="tCamKey" type="button" aria-label="Camera keyframe"><i></i></button></span>
     </div>
     <!-- The lanes live inside `tRailLanes`/`tLanes` rather than directly in these two
          columns, and that containment is a bug fix rather than tidiness. `rebuildLanes`
