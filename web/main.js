@@ -2411,13 +2411,13 @@ function writeControl(name, value) {
   if (!el) return;
   if (el.type === 'checkbox') {
     el.checked = value;
-    return;
+  } else {
+    el.value = String(value);
+    // Read the value back off the element rather than formatting the number here,
+    // so the readout says exactly what the slider says even if they ever disagree.
+    const out = el.parentElement.querySelector('output');
+    if (out) out.textContent = el.value;
   }
-  el.value = String(value);
-  // Read the value back off the element rather than formatting the number here,
-  // so the readout says exactly what the slider says even if they ever disagree.
-  const out = el.parentElement.querySelector('output');
-  if (out) out.textContent = el.value;
   // Refreshed here for the reason `writeControl` exists at all: this is the one place a
   // scalar's shown state is brought level with the registry, so a reset offered on a row
   // whose value has gone back to its default would be the panel and the registry
@@ -2895,14 +2895,12 @@ for (const group of PANEL_GROUPS) {
         // row of their own. The recorder gets the bare label, which is what keeps
         // `.check`'s own layout rather than `.checkrow`'s.
         const checkrow = panelNode('div', 'checkrow');
-        checkrow.append(row, button);
+        checkrow.append(row, button, makeResetButton(name));
         groupNode.append(checkrow);
       } else {
         // The reset sits after the keyframe control, which is the order the design puts
         // them in and the order the row reads in: what this value is, whether it is
-        // keyed, and how to put it back. Only the slider rows get one - a step
-        // parameter's control is its own label and there is no slot beside it, which is
-        // why the checkbox branch above appends nothing here.
+        // keyed, and how to put it back.
         row.append(button, makeResetButton(name));
         groupNode.append(row);
       }
