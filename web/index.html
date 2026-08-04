@@ -384,8 +384,6 @@
   .paneltab {
     min-width: 0;
     border: 0;
-    border-right: 1px solid var(--line);
-    border-bottom: 2px solid transparent;
     border-radius: 0;
     background: transparent;
     color: var(--dim);
@@ -393,9 +391,8 @@
     font-size: 11px;
     cursor: pointer;
   }
-  .paneltab:last-child { border-right: 0; }
   .paneltab:hover { color: var(--ink); background: var(--paper-2); }
-  .paneltab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+  .paneltab[aria-selected="true"] { color: var(--accent); }
   .paneltab:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
   #panel .group[hidden] { display: none; }
   #lookPresetGroup > label { margin-bottom: 6px; }
@@ -770,7 +767,7 @@
   .tminiwin i.w { left: -5px; }
   .tminiwin i.e { right: -5px; }
 
-  .tbed { position: relative; cursor: pointer; touch-action: none; }
+  .tbed { position: relative; cursor: pointer; touch-action: none; user-select: none; }
   .truler { position: absolute; inset: 0; }
   .ttick { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--line-2); }
   .ttick label { position: absolute; top: 3px; left: 5px; font-size: 11px; color: var(--faint);
