@@ -3783,7 +3783,16 @@ function refreshGroups() {
       groupOverrideDirty = true;
     }
     groupSeen.set(key, `${groupOverride.get(key)}/${inUse}`);
-    const open = groupIsOpen(group);
+    // A group that is currently open stays open until explicitly closed. Without this,
+    // resetting the last modified parameter in a group would auto-collapse it, which
+    // feels like the UI fighting the user. Only auto-open, never auto-close.
+    const wasOpen = !node.classList.contains('shut');
+    let open = groupIsOpen(group);
+    if (wasOpen && !open && groupOverride.get(key) === undefined) {
+      groupOverride.set(key, true);
+      groupOverrideDirty = true;
+      open = true;
+    }
     const touched = groupTouchedCount(key);
     const state = `${open}/${inUse}/${touched}`;
     if (groupPainted.get(key) === state) continue;
@@ -3799,7 +3808,7 @@ function refreshGroups() {
     // case with nothing to count is `detail` revealed by a reading, which shows the
     // mark without a number rather than a misleading zero.
     mark.hidden = open || !inUse;
-    mark.textContent = touched > 0 ? String(touched) : '';
+    mark.textContent = '';
     mark.title = touched > 0
       ? `${touched} of these are set to something` : 'this group is in use';
   }
