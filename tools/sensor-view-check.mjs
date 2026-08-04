@@ -273,8 +273,8 @@ const MUTATIONS = {
   'tanv-uses-fx': {
     file: 'web/main.js',
     edits: [[
-      '  const tanV = (DH / 2) / fy;',
-      '  const tanV = (DH / 2) / fx;',
+      '  const tanV = (DEPTH_H / 2) / fy;',
+      '  const tanV = (DEPTH_H / 2) / fx;',
     ]],
   },
   // Navigation that leaves a trace. Modelled on the `key here` handler beside it
@@ -670,6 +670,24 @@ const PROBE = `(() => {
         visible: vis(el),
         display: getComputedStyle(el).display,
         look: el.classList.contains('lookgroup'),
+        // **The block's own controls, because a block is visible for a different reason
+        // than its controls are.** Collapse puts \`shut\` on the group and the rule under
+        // it hides the *rows*, so the node goes on passing \`checkVisibility\` with
+        // nothing gradeable underneath it - which is what let "all 9 visible" mean "all
+        // 9 have a heading" for a while. Counted off \`input, select\` rather than off
+        // the row classes so this holds no second copy of a class list that could drift
+        // from the generator's.
+        controls: el.querySelectorAll('input, select').length,
+        controlsOnScreen: [...el.querySelectorAll('input, select')].filter(vis).length,
+        // Whether the collapse rule governs this one at all, so a group with no rows on
+        // screen can be told from a group that has been shut.
+        collapsible: !!el.querySelector(':scope > .grouphead > .grouptoggle'),
+        // And whether it has been. Read off the class the panel sets rather than inferred
+        // from the count, which is what lets the rows below partition the look groups and
+        // then assert about the controls in each half - a build lying about this fails
+        // both halves at once, since a group claiming to be open has to show its controls
+        // and a group claiming to be shut has to show none.
+        shut: el.classList.contains('shut'),
       }));
       const look = k.params.names('look');
       // A keyframe control belongs to a parameter when it shares a row with that
@@ -698,16 +716,42 @@ const PROBE = `(() => {
     /** The extended toggle, driven as a user drives it and read back both ways. */
     extended() {
       const btn = document.getElementById('extended');
+      const vis = (el) => !!el && el.checkVisibility({ checkVisibilityCSS: true });
       const groups = [...document.querySelectorAll('#panel .lookgroup')];
-      const read = () => ({
-        visible: groups.filter((el) => el.checkVisibility({ checkVisibilityCSS: true })).length,
-        pressed: btn.getAttribute('aria-pressed'),
-        label: btn.textContent.trim(),
-        // Read at every state, because "the recorder has no keyframe controls" is a
-        // claim about the surface rather than about what happens to be on screen -
-        // and the toggle is the one gesture that could plausibly conjure some.
-        kfButtons: document.querySelectorAll('#panel .kf').length,
-      });
+      const controlsIn = (el) => [...el.querySelectorAll('input, select')];
+      // **Per group as well as summed, and the sums are taken from the same array.** A
+      // total is what a row about "controls included" was graded on for a round, and a
+      // total answers "did anything at all appear" - which is one control out of fifty on
+      // one group out of nine. The editor's row next door asks every group the collapse
+      // rule leaves open to show all of its controls, and this is what lets the recorder's
+      // ask the same thing rather than a weaker cousin of it.
+      const each = () => groups.map((el) => ({
+        key: el.id || \`label:\${el.querySelector('label')?.textContent.trim() ?? '(unlabelled)'}\`,
+        visible: vis(el),
+        controls: controlsIn(el).length,
+        controlsOnScreen: controlsIn(el).filter(vis).length,
+        shut: el.classList.contains('shut'),
+      }));
+      const read = () => {
+        // The same distinction \`panel()\` above draws, for the same reason: this button
+        // reveals the group nodes, and whether a revealed group has anything gradeable
+        // under it is the collapse rule's answer rather than this one's. A row asserting
+        // only the first would go on passing on a build where pressing it showed nine
+        // headings and no control.
+        const blocks = each();
+        return {
+          blocks,
+          visible: blocks.filter((b) => b.visible).length,
+          controls: blocks.reduce((n, b) => n + b.controls, 0),
+          controlsOnScreen: blocks.reduce((n, b) => n + b.controlsOnScreen, 0),
+          pressed: btn.getAttribute('aria-pressed'),
+          label: btn.textContent.trim(),
+          // Read at every state, because "the recorder has no keyframe controls" is a
+          // claim about the surface rather than about what happens to be on screen -
+          // and the toggle is the one gesture that could plausibly conjure some.
+          kfButtons: document.querySelectorAll('#panel .kf').length,
+        };
+      };
       const before = read();
       btn.click();
       const after = read();
@@ -1373,14 +1417,55 @@ try {
       'the recorder hides the composition block', `still visible: ${on(rec.blocks, EDITOR_ONLY).join(' ') || 'none'}`);
     check(off(ed.blocks, EDITOR_ONLY).length === 0,
       'and the editor shows it', `visible: ${on(ed.blocks, EDITOR_ONLY).join(' ')}`);
+    // **Counted in controls as well as in headings, and the pair is the point.** A
+    // group's node stays visible when the collapse rule shuts it - `shut` hides the
+    // rows, not the box around them - so "9 look groups, all 9 visible" went on being
+    // true of a panel with four of the nine showing nothing gradeable at all. That is
+    // the `sweep.length > 60` failure this repo already records, arriving in a second
+    // instrument: the sentence stayed still while the population under it grew a way of
+    // satisfying the comparison without satisfying the claim.
+    //
+    // Which groups are shut is `editor-check` section 13's subject and deliberately not
+    // asserted here, because a collapse that derives from the document is a different
+    // feature from a surface that hides the grade. What this row owes is that the two
+    // surfaces differ in the *controls* on screen and not merely in their furniture, so
+    // the non-collapsible look groups carry the assertion and the collapsible ones are
+    // named in the detail where a change in them is visible rather than silent.
+    //
+    // **Partitioned by the collapse rule rather than floored at one group**, and the
+    // difference is what a floor is denominated in. `every non-collapsible group shows
+    // all its controls` was the first repair, and its guard against having nothing left
+    // to say was `edFixed.length > 0` - a count of the groups that happen not to declare
+    // `collapses`, which narrows towards one as more of them do and would reach zero
+    // without a word. It sat beside `sum(edLook, 'controlsOnScreen') > 0`, which the
+    // conjunct before it already implies: a group showing all of its controls, with a
+    // positive control count, is a positive sum. That is the vacuous conjunction this
+    // document opens with, added by the change that cites it.
+    //
+    // So the look groups are split by the `shut` class the panel itself sets, and both
+    // halves are asserted: every group the rule leaves open shows *all* of its controls,
+    // every group it has shut shows none, and at least one is open. The floor is now
+    // about the claim - that the grade is reachable on this surface - rather than about
+    // which groups happen to be collapsible, and the partition is checked from both sides,
+    // so a build that marked everything shut fails the floor and one that marked
+    // everything open fails the controls.
+    const sum = (list, key) => list.reduce((n, b) => n + b[key], 0);
     const recLook = rec.blocks.filter((b) => b.look);
     const edLook = ed.blocks.filter((b) => b.look);
-    check(recLook.length > 0 && recLook.every((b) => !b.visible),
-      'the grade is hidden on the recorder, which is what the extended button is for',
-      `${recLook.length} look groups, ${recLook.filter((b) => b.visible).length} visible`);
-    check(edLook.length > 0 && edLook.every((b) => b.visible),
-      'and open on the editor, where grading is the job',
-      `${edLook.length} look groups, all ${edLook.filter((b) => b.visible).length} visible`);
+    const edOpen = edLook.filter((b) => !b.shut);
+    const edShut = edLook.filter((b) => b.shut);
+    check(recLook.length > 0 && recLook.every((b) => !b.visible) && sum(recLook, 'controlsOnScreen') === 0,
+      'the grade is hidden on the recorder, down to the last control, which is what the extended button is for',
+      `${recLook.length} look groups, ${recLook.filter((b) => b.visible).length} visible, `
+      + `${sum(recLook, 'controlsOnScreen')} of ${sum(recLook, 'controls')} controls on screen`);
+    check(edLook.length > 0 && edLook.every((b) => b.visible)
+      && edOpen.length > 0 && edOpen.every((b) => b.controls > 0 && b.controlsOnScreen === b.controls)
+      && edShut.every((b) => b.controlsOnScreen === 0),
+      'and open on the editor, where grading is the job - measured in controls on screen rather than in headings',
+      `${edLook.length} look groups, all ${edLook.filter((b) => b.visible).length} visible, `
+      + `${sum(edLook, 'controlsOnScreen')} of ${sum(edLook, 'controls')} controls on screen; `
+      + `${edOpen.length} left open by the collapse rule show ${sum(edOpen, 'controlsOnScreen')} of `
+      + `${sum(edOpen, 'controls')}; shut by it: ${edShut.map((b) => b.key).join(' ') || 'none'}`);
     // The closer. Everything the rules above do not name is common furniture and has
     // to be on both surfaces, so a block added later is covered without being listed.
     const commonRec = rec.blocks.filter((b) => !named.has(b.key) && !b.look);
@@ -1395,16 +1480,40 @@ try {
       `recorder ${rec.recRange}, editor ${ed.recRange}`);
 
     // (d) the extended toggle, driven rather than reasoned about
-    check(ext.total > 0 && ext.before.visible === 0,
-      'the look groups start hidden on the recorder', `${ext.before.visible} of ${ext.total} visible`);
-    check(ext.after.visible === ext.total,
-      'and one press of `extended settings` reveals all of them',
-      `${ext.after.visible} of ${ext.total} visible`);
+    check(ext.total > 0 && ext.before.visible === 0 && ext.before.controlsOnScreen === 0,
+      'the look groups start hidden on the recorder, with none of their controls on screen',
+      `${ext.before.visible} of ${ext.total} visible, `
+      + `${ext.before.controlsOnScreen} of ${ext.before.controls} controls on screen`);
+    // The press has to put controls on screen and not only headings, and it is asked the
+    // same way the editor's row above asks it. `after.controlsOnScreen >
+    // before.controlsOnScreen` was what this said for a round, with the row above it
+    // pinning `before` at zero - so "controls included" was graded at *one control
+    // appearing anywhere*, on a surface with nine groups and fifty of them. A recorder has
+    // no clip, so every look parameter sits at its default and every collapsible group
+    // derives shut, which makes the groups the collapse rule leaves open exactly the ones
+    // this claim is about: each of them has to show all of its controls, the shut ones
+    // have to show none, and there has to be at least one of the first.
+    //
+    // This is the surface F6 was found on and the one nothing else in the suite covers -
+    // every screenshot and every `editor-check` row is `/edit` - so a weak floor here is a
+    // weak floor everywhere.
+    const extOpen = ext.after.blocks.filter((b) => !b.shut);
+    const extShut = ext.after.blocks.filter((b) => b.shut);
+    check(ext.after.visible === ext.total
+      && extOpen.length > 0 && extOpen.every((b) => b.controls > 0 && b.controlsOnScreen === b.controls)
+      && extShut.every((b) => b.controlsOnScreen === 0),
+      'and one press of `extended settings` reveals all of them, every group the collapse rule leaves open showing all its controls',
+      `${ext.after.visible} of ${ext.total} visible, `
+      + `${ext.after.controlsOnScreen} of ${ext.after.controls} controls on screen, `
+      + `${extOpen.length} left open showing ${sum(extOpen, 'controlsOnScreen')} of ${sum(extOpen, 'controls')}, `
+      + `shut by the collapse rule: ${extShut.map((b) => b.key).join(' ') || 'none'}`);
     check(ext.before.pressed === 'false' && ext.after.pressed === 'true',
       'and the button says so', `aria-pressed ${ext.before.pressed} then ${ext.after.pressed}, label "${ext.after.label}"`);
-    check(ext.back.visible === 0 && ext.back.pressed === 'false',
+    check(ext.back.visible === 0 && ext.back.controlsOnScreen === 0 && ext.back.pressed === 'false',
       'and a second press puts them away, so the toggle is tested in both directions',
-      `${ext.back.visible} of ${ext.total} visible, aria-pressed ${ext.back.pressed}`);
+      `${ext.back.visible} of ${ext.total} visible, `
+      + `${ext.back.controlsOnScreen} of ${ext.back.controls} controls on screen, `
+      + `aria-pressed ${ext.back.pressed}`);
     // Revealing the grade is not the same act as gaining a clip, and the count has to
     // hold at every state of the toggle or "the recorder has no keyframe control" is
     // a claim about a moment rather than about the surface.

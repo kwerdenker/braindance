@@ -25,7 +25,7 @@
 // fail on it. **Dimensions are the convenient probe and the wrong one**: an upscale
 // is 1920x1080 too.
 //
-// The five claims:
+// The six claims:
 //
 //  1. **It is asked for, not always on.** No type 3 crosses the pipe until something
 //     subscribes, because a 1080p JPEG is another ~50Mbit/s down a pipe whose
@@ -45,14 +45,23 @@
 //     drives a browser, because every other arm in this file watches the server and
 //     `monitor-check`'s case file is that four sections which all did that missed a
 //     renderer drawing the wrong thing entirely.
+//  6. **A subscriber whose frames leave the machine is charged to the take**, and one
+//     on loopback is not. Section 6 is the only arm in this repo that creates the
+//     first kind, which is why the rule deciding it had never been tested by anything:
+//     every other check subscribes over `127.0.0.1`, so the filter ran on an empty set
+//     and deleting it would have changed nothing anybody could see.
 //
 //   node tools/vcam-check.mjs
 //   node tools/vcam-check.mjs --mutate hd-upscales-registered   # must FAIL
+//   node tools/vcam-check.mjs --mutate hd-reencodes-in-flight   # must FAIL
 //   node tools/vcam-check.mjs --mutate hd-reaches-recorder      # must FAIL
+//   node tools/vcam-check.mjs --mutate refusal-ignores-webcam   # must FAIL
 //
 // It spawns its own server and needs none running. The stream is
 // `tools/fake-grabber.mjs`, so no sensor is required; ffmpeg builds and decodes the
 // fixture. Section 5 needs a GPU browser and `--no-browser` drops it and says so.
+// Section 6 needs this machine to have a non-internal IPv4, and exits 2 as UNPROVEN
+// rather than passing quietly on one that has none.
 //
 // **What it does not prove is OBS.** That a browser source renders WebGL at 1080p on
 // macOS, and that OBS samples it at canvas rate rather than honouring arrival timing,
@@ -62,6 +71,7 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { networkInterfaces } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MessageParser, TYPE_HELLO, TYPE_FRAME, TYPE_COLOR } from '../server/protocol.js';
@@ -85,6 +95,14 @@ const MARGIN = Math.round(1920 * 0.12);
 // channel that distinguishes them, so this is loose enough to survive the codec and
 // nowhere near loose enough to admit the room.
 const COLOUR_TOLERANCE = 40;
+
+// This machine's own address on the network, which is the only way to create a webcam
+// subscriber that is not on loopback - and therefore the only way section 6 can ask
+// the refusal anything. Discovered the way `guard-check` discovers it, and null on a
+// machine that has none, which section 6 turns into an UNPROVEN verdict rather than a
+// quiet pass.
+const LAN = Object.values(networkInterfaces()).flat()
+  .find((i) => i && i.family === 'IPv4' && !i.internal)?.address ?? null;
 
 const MUTATIONS = {
   // **The control for claim 2.** The endpoint serves the registered colour scaled up
@@ -118,6 +136,49 @@ const MUTATIONS = {
     ]],
   },
 
+  // **The other control for claim 2, and the one the section was missing.** The
+  // margins say the picture is the colour camera's; nothing said the *bytes* were.
+  // This mutation decodes the colour payload and re-encodes it at the same size and a
+  // comparable quality, so every geometric row above still passes - same scene, same
+  // frustum, same magenta and cyan down the sides - and only the bytes differ. That is
+  // precisely the implementation `server/webcam.js` says it does not have, and until
+  // this arm existed the passthrough row hashed a served part against the set of
+  // served parts and was true whenever a part arrived at all.
+  //
+  // **Memoised, and the memo is not what is under test.** A synchronous 1920x1080
+  // re-encode per message starves the stream until `a frame was served at all` or `and
+  // the subscriber is actually being served parts` reddens instead, and a control that
+  // fails for a neighbouring reason is not a control for the thing it names. The memo
+  // costs nothing in fidelity here because the fixture's colour payload carries one
+  // constant HD frame, so re-encoding the first is re-encoding every one of them - and
+  // it is what keeps `and nothing re-encoded it on the way through` green, which is how
+  // the reddened row is shown to be the row doing the work.
+  //
+  // Placed at the offer, so the grabber, the negotiation and the recorder are all
+  // untouched and sections 1, 3 and 4 keep passing. If ffmpeg is missing the memo
+  // holds the original bytes, the mutation becomes a no-op and the run says NOT
+  // CAUGHT - loud, which is the only acceptable way for a control to fail to run.
+  'hd-reencodes-in-flight': {
+    file: 'server/index.js',
+    edits: [[
+      'webcam.offer(Buffer.from(msg.payload.subarray(8)), Number(msg.payload.readBigUInt64LE(0)));',
+      'webcam.offer(reencodedColour(Buffer.from(msg.payload.subarray(8))), Number(msg.payload.readBigUInt64LE(0)));',
+    ], [
+      "import { Webcam } from './webcam.js';",
+      "import { Webcam } from './webcam.js';\nimport { execFileSync } from 'node:child_process';\n"
+      + 'let reencodedOnce = null;\n'
+      + 'function reencodedColour(jpeg) {\n'
+      + '  if (reencodedOnce) return reencodedOnce;\n'
+      + '  try {\n'
+      + '    reencodedOnce = execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-i", "pipe:0",\n'
+      + '      "-frames:v", "1", "-q:v", "2", "-f", "mjpeg", "pipe:1"],\n'
+      + '      { input: jpeg, maxBuffer: 64 * 1024 * 1024 });\n'
+      + '  } catch { reencodedOnce = jpeg; }\n'
+      + '  return reencodedOnce;\n'
+      + '}',
+    ]],
+  },
+
   // **The control for claim 3, and the one that would destroy footage.** The colour
   // message reaches the recorder, so a take carries a third message type - which
   // moves its content hash, the key the library joins two machines on, and puts a
@@ -131,6 +192,24 @@ const MUTATIONS = {
       'webcam.offer(Buffer.from(msg.payload.subarray(8)), Number(msg.payload.readBigUInt64LE(0)));',
       'webcam.offer(Buffer.from(msg.payload.subarray(8)), Number(msg.payload.readBigUInt64LE(0)));\n'
       + '    recorder.write(msg.raw);',
+    ]],
+  },
+
+  // **The control for claim 6.** The refusal keeps its monitors clause and loses its
+  // webcam one, so a take starts while somebody is pulling ~50Mbit/s of MJPEG over the
+  // same radio the depth packets are competing for - which is the whole cost the
+  // refusal exists to state, going unstated.
+  //
+  // It has to be reddened by section 6 and by nothing else. Sections 2, 3 and 4 never
+  // ask the recorder what a take would cost, and section 1's `a loopback subscriber
+  // does not refuse the take` is a row this mutation makes *more* true rather than
+  // less - which is exactly why that row could never have stood in for this one.
+  'refusal-ignores-webcam': {
+    file: 'server/index.js',
+    edits: [[
+      "\n    ...webcam.subscribersCostingTheTake()\n"
+      + "      .map(() => ({ kind: 'webcam', at: 'the colour camera at full rate' })),",
+      '',
     ]],
   },
 };
@@ -174,7 +253,12 @@ if (MUTATE) {
 
 // --- harness ---------------------------------------------------------------
 let checked = 0, failed = 0;
-let untested = null;
+// Claims this machine could not be asked, each carrying its own remedy. A list rather
+// than one string because two different absences reach here now - no browser and no
+// second address - and the verdict line used to append playwright's advice to
+// whatever it was given, which would have told an operator missing a LAN address to
+// go and install playwright.
+const untested = [];
 let crashed = null;
 const ok = (label, pass, detail = '') => {
   checked++;
@@ -183,26 +267,67 @@ const ok = (label, pass, detail = '') => {
 };
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const waitFor = async (cond, ms, what = 'condition') => {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    if (await cond()) return true;
+    await wait(50);
+  }
+  throw new Error(`timed out after ${ms}ms waiting for ${what}`);
+};
 const servers = [];
 const EMIT_LOG = join(WORK, 'emitted.log');
 
-const start = (extra = []) => new Promise((resolve, reject) => {
-  const grabber = `${join(WORK, 'tools/fake-grabber.mjs')} --source ${SOURCE} --fps 30 --hd `
-    + `--emit-log ${EMIT_LOG}`;
-  const child = spawn(process.execPath, [
-    join(WORK, 'server/index.js'), '--port', String(PORT),
-    '--captures', join(WORK, 'takes'), '--grabber', grabber, ...extra,
-  ], { stdio: ['ignore', 'pipe', 'pipe'] });
-  servers.push(child);
-  const log = [];
-  const onData = (c) => {
-    log.push(c.toString());
-    if (log.join('').includes('viewer on')) setTimeout(() => resolve(() => log.join('')), 400);
-  };
-  child.stdout.on('data', onData);
-  child.stderr.on('data', onData);
-  setTimeout(() => reject(new Error(`server never came up:\n${log.join('')}`)), 15000);
-});
+/**
+ * Bring a server up and wait until there is a sensor behind it.
+ *
+ * **The wait is on the resource rather than on a constant, and that is a fix rather
+ * than a tidy-up.** `viewer on` is printed inside `httpServer.listen`'s callback,
+ * which is *before* `startLive` has spawned the grabber - and this grabber reads a
+ * 138MB capture and runs a 1080p ffmpeg encode before its hello arrives, measured at
+ * 3.8 to 4.7 seconds on a loaded machine and never under a second on an idle one. The
+ * constant this replaced was 400ms, so sections 2, 3 and 4 were all asking their
+ * questions of a server that had no sensor yet: the endpoint answered 503, no take
+ * gathered a frame, and every row read as a finding about the webcam.
+ *
+ * `webcam.available` is the right predicate because of what `server/webcam.js` spends
+ * a paragraph on: `unavailable` asks whether there is a colour camera to serve and
+ * never whether a frame has arrived, so a hello with colour on clears it once and it
+ * stays clear. It is also readable without subscribing, which section 1 needs, since
+ * its first row is about what happens while nothing is subscribed.
+ *
+ * That row is the other thing this closes. It used to pass whenever the emit log was
+ * empty, which is just as true of a grabber that had not started as of one that was
+ * running with colour off - the right answer and the wrong one setting the same flag.
+ * Behind this gate the grabber is provably up, so "no colour message" is provably a
+ * decision rather than an absence.
+ *
+ * A timeout throws, which lands in the catch below and exits 2 as DID NOT RUN. Under
+ * `--mutate` that distinction is the whole point: a harness that never got a sensor
+ * would otherwise be written down as the mutation being caught.
+ */
+const start = async (extra = []) => {
+  const log = await new Promise((resolve, reject) => {
+    const grabber = `${join(WORK, 'tools/fake-grabber.mjs')} --source ${SOURCE} --fps 30 --hd `
+      + `--emit-log ${EMIT_LOG}`;
+    const child = spawn(process.execPath, [
+      join(WORK, 'server/index.js'), '--port', String(PORT),
+      '--captures', join(WORK, 'takes'), '--grabber', grabber, ...extra,
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    servers.push(child);
+    const lines = [];
+    const onData = (c) => {
+      lines.push(c.toString());
+      if (lines.join('').includes('viewer on')) resolve(() => lines.join(''));
+    };
+    child.stdout.on('data', onData);
+    child.stderr.on('data', onData);
+    setTimeout(() => reject(new Error(`server never came up:\n${lines.join('')}`)), 15000);
+  });
+  await waitFor(async () => (await api('/record/state')).body?.webcam?.available === true,
+    25000, 'the grabber to handshake and offer a colour camera');
+  return log;
+};
 const stopAll = async () => {
   for (const c of servers) c.kill('SIGKILL');
   servers.length = 0;
@@ -226,9 +351,9 @@ const post = (path, body = {}) => api(path, {
  * being checked includes the framing: a part whose declared length disagrees with its
  * body is a stream OBS would resynchronise through and this would not notice.
  */
-function subscribe() {
+function subscribe(host = '127.0.0.1') {
   const state = { parts: [], done: false, controller: new AbortController() };
-  state.ready = fetch(`http://127.0.0.1:${PORT}/camera.mjpg`, { signal: state.controller.signal })
+  state.ready = fetch(`http://${host}:${PORT}/camera.mjpg`, { signal: state.controller.signal })
     .then(async (res) => {
       state.status = res.status;
       if (res.status !== 200) { state.done = true; return state; }
@@ -261,16 +386,24 @@ function subscribe() {
   return state;
 }
 
-/** What the writer says it emitted, as `type -> [sha256]`. */
+/**
+ * What the writer says it emitted, as `type -> [{ hash, body }]`.
+ *
+ * `hash` is the whole payload; `body` is the part body a reader downstream receives, or
+ * null where the two are the same thing. The distinction is the reason this returns
+ * records rather than the bare payload hashes it used to: a colour payload is the u64
+ * stamp then the JPEG, the stamp moves per frame, and the JPEG is the only part of it
+ * that ever reaches a subscriber.
+ */
 function emitted() {
   if (!existsSync(EMIT_LOG)) return new Map();
   const out = new Map();
   for (const line of readFileSync(EMIT_LOG, 'utf8').split('\n')) {
     if (!line) continue;
-    const [type, , hash] = line.split(' ');
+    const [type, , hash, body] = line.split(' ');
     const key = Number(type);
     if (!out.has(key)) out.set(key, []);
-    out.get(key).push(hash);
+    out.get(key).push({ hash, body: body && body !== '-' ? body : null });
   }
   return out;
 }
@@ -363,17 +496,21 @@ try {
       // Passthrough: the bytes served are the bytes emitted. Anything that decoded
       // and re-encoded on the way through would fail this while still passing the
       // margin rows above.
-      const served = createHash('sha256').update(Buffer.concat([
-        Buffer.alloc(8), frame,
-      ])).digest('hex');
-      const log = emitted().get(TYPE_COLOR) ?? [];
-      // The writer logs the whole payload, which is the u64 stamp then the JPEG. The
-      // stamp moves per frame, so what is comparable is the JPEG - hashed here the
-      // same way for every candidate rather than assuming which frame this was.
-      const jpegHash = createHash('sha256').update(frame).digest('hex');
-      const anyMatch = log.length > 0 && sub.parts.some((p) => createHash('sha256').update(p).digest('hex') === jpegHash);
-      ok('every served part is the same JPEG the writer emitted', anyMatch && served.length === 64,
-        `${log.length} emitted, ${sub.parts.length} served`);
+      //
+      // **Against the writer's own log rather than against the other served parts.**
+      // The version this replaced hashed a part taken off `sub.parts` and then asked
+      // whether anything in `sub.parts` hashed to it, so it was satisfied by that part
+      // itself and reduced to "a part arrived" - and `--mutate hd-reencodes-in-flight`
+      // sailed through the whole section. The writer now logs each colour message's
+      // JPEG on its own, which is what makes the comparison possible at all: the
+      // payload carries a u64 stamp that moves per frame, so the payload hash can
+      // never equal the hash of anything a subscriber received.
+      const emittedBodies = new Set((emitted().get(TYPE_COLOR) ?? []).map((e) => e.body).filter(Boolean));
+      const strangers = sub.parts.filter((p) => !emittedBodies.has(createHash('sha256').update(p).digest('hex')));
+      ok('every served part is the same JPEG the writer emitted',
+        emittedBodies.size > 0 && strangers.length === 0,
+        `${strangers.length} of ${sub.parts.length} served parts are not in the emit log, `
+        + `which logged ${emittedBodies.size} distinct colour bodies`);
       // Nothing re-encoded: every part is byte-identical to every other, because the
       // fixture emits one frame. On a sensor this row would not hold and is not the
       // claim; here it is what proves no scaling happened between the two ends.
@@ -425,7 +562,10 @@ try {
         `types ${[...types.keys()].join(', ')}`);
 
       // Against the writer's own log rather than against anything a reader produced.
-      const emittedFrames = new Set(emitted().get(TYPE_FRAME) ?? []);
+      // The payload hash here, not the body one: a type 2 frame goes into the file
+      // whole, so the payload is what a reader gets and the log's fourth column is a
+      // `-` for it.
+      const emittedFrames = new Set((emitted().get(TYPE_FRAME) ?? []).map((e) => e.hash));
       const foreign = frameHashes.filter((h) => !emittedFrames.has(h));
       ok('and every frame in it is byte for byte one the writer emitted', foreign.length === 0,
         `${foreign.length} of ${frameHashes.length} frames are not in the emit log`);
@@ -480,7 +620,8 @@ try {
       } catch { /* reported below */ }
     }
     if (!chromium) {
-      untested = 'playwright is not installed, so what the source actually draws was never asked';
+      untested.push('playwright is not installed, so what the source actually draws was never asked'
+        + ' - install playwright, or pass --no-browser and mean it');
     } else {
       await start();
       const browser = await chromium.launch({
@@ -561,6 +702,69 @@ try {
       await stopAll();
     }
   }
+
+  // --- 6. the take is told what the webcam costs ---------------------------
+  // **The refusal's other half, which until now had no arm anywhere in the suite.**
+  // Every tool in this repo subscribes over `127.0.0.1` to a server started with no
+  // `--host`, so `Webcam.isLoopback` was true by construction and the rule that picks
+  // out costing subscribers ran against an empty set in every run of every check.
+  // Deleting the rule outright would have changed nothing any of them observed - which
+  // is the second form of a hole this repo has a name for, an object every observation
+  // happens to skip.
+  //
+  // So this arm makes the object: a server widened with `--host 0.0.0.0` and a
+  // subscriber arriving on this machine's own LAN address, which is a different
+  // `remoteAddress` and therefore a subscriber the exemption does not cover. The
+  // control plane stays on loopback throughout, because whether the origin rule lets a
+  // remote caller press record is section 4's question and not this one's.
+  console.log('\n6. a webcam subscriber that is not on loopback is charged to the take');
+  if (!LAN) {
+    untested.push('this machine has no non-internal IPv4, so there is no second address a webcam '
+      + 'subscriber could arrive on and the refusal had nothing to refuse - run it on a machine '
+      + 'with a LAN address');
+    console.log('  (skipped: no non-internal IPv4 on this machine)');
+  } else {
+    await start(['--host', '0.0.0.0']);
+    const remote = subscribe(LAN);
+    await remote.ready;
+    ok('a subscriber on this machine\'s LAN address is served', remote.status === 200, `status ${remote.status} on ${LAN}`);
+    await waitFor(async () => ((await api('/record/state')).body?.webcam?.subscribers ?? []).length === 1,
+      8000, 'the remote subscriber to appear in the recorder\'s accounting');
+
+    const state = (await api('/record/state')).body;
+    ok('and the recorder sees it as crossing the network rather than as loopback',
+      state?.webcam?.subscribers?.every((s) => s.loopback === false) === true,
+      JSON.stringify(state?.webcam?.subscribers));
+    ok('so the take would be refused, with the webcam named as the reason',
+      state?.monitors?.wouldRefuse === true
+      && (state?.monitors?.costingTheTake ?? []).some((c) => c.kind === 'webcam'),
+      JSON.stringify(state?.monitors?.costingTheTake));
+
+    const refused = await post('/record/start');
+    // Asserted on the consumer the refusal *names*, not on the word "webcam": the
+    // sentence ends with "detach the webcam" whatever it refused for, so a row reading
+    // /webcam/ would pass with the webcam clause deleted from the rule entirely.
+    ok('and pressing record really is refused, saying which consumer it was',
+      refused.status === 409 && String(refused.body?.error ?? '').includes('webcam at the colour camera at full rate'),
+      `status ${refused.status}: ${String(refused.body?.error ?? '').slice(0, 90)}`);
+
+    // Stopped unconditionally, because a run where the refusal did not fire has a take
+    // open and the positive twin below would then be refused for already recording -
+    // a green row turning red for a neighbouring reason, which is the failure this
+    // file's mutation comments keep returning to.
+    await post('/record/stop').catch(() => {});
+
+    // **The positive twin, and it is not optional.** An arm built only out of refusals
+    // passes against a server that refuses everything, which is the order
+    // `monitor-check` section 4 spells out.
+    const forced = await post('/record/start', { acceptMonitorCost: true });
+    ok('while an operator who accepts the cost can still start the take',
+      forced.status === 200, `status ${forced.status}: ${JSON.stringify(forced.body).slice(0, 90)}`);
+    await post('/record/stop').catch(() => {});
+
+    remote.stop();
+    await stopAll();
+  }
 } catch (err) {
   // A run that threw did not finish, and that is a different answer from a claim that
   // failed - the distinction this repo spends exit 2 on. Under `--mutate` a harness
@@ -578,8 +782,8 @@ if (crashed) {
   console.log(`[vcam] DID NOT RUN - ${crashed.message}. Nothing here is a finding: re-run it.`);
   process.exit(2);
 }
-if (untested) {
-  console.log(`[vcam] UNTESTED - ${untested}. Install playwright, or pass --no-browser and mean it.`);
+if (untested.length) {
+  for (const reason of untested) console.log(`[vcam] UNPROVEN - ${reason}.`);
   process.exit(2);
 }
 if (MUTATE) {

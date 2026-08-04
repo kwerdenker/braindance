@@ -36,13 +36,14 @@
 //     at any cant is the same picture it gives at none. That is what forces the free
 //     camera's up onto the sensor's, which is why navigation's controls are rebuilt
 //     rather than written to - see `setNavigationUp` in `web/main.js`.
-//  5. **"Level to centre" reads the geometry.** Three planted surfaces with three
+//  5. **Floor selection reads the chosen geometry.** Three planted surfaces with three
 //     different normals must produce three different and individually correct
 //     answers. One arm would not do: a button that wrote zeros is right about a
 //     level room, and a button that read the pair in the wrong order is right about
 //     every surface that leans only one way. `level-writes-zero` and
 //     `level-order-swapped` are the two controls, and the third arm leans both ways
-//     precisely so the order has a consequence.
+//     precisely so the order has a consequence. A split frame then makes the selected
+//     point consequential, and the reset control proves the neutral way back.
 //
 // **The frames are planted, so this needs no sensor and no capture.** The depth
 // texture is written directly with an analytic plane - `z = c / (u . n)` along each
@@ -59,6 +60,8 @@
 //   node tools/level-check.mjs --mutate sensor-view-ignores-tilt # must FAIL
 //   node tools/level-check.mjs --mutate level-writes-zero        # must FAIL
 //   node tools/level-check.mjs --mutate level-order-swapped      # must FAIL
+//   node tools/level-check.mjs --mutate level-selection-ignores-point # must FAIL
+//   node tools/level-check.mjs --mutate reset-keeps-roll          # must FAIL
 //
 // It spawns its own server and needs none running. `--port` takes one nothing else
 // holds; the default is not in any other tool's range, but two worktrees running this
@@ -132,6 +135,34 @@ const MUTATIONS = {
   'level-writes-zero': { file: 'web/main.js', edits: [[
     '  writeFromControl(\'roll\', roll);\n  writeFromControl(\'tilt\', tilt);',
     '  writeFromControl(\'roll\', 0);\n  writeFromControl(\'tilt\', 0);',
+  ]] },
+  // The mode and cursor work, but the click coordinate is discarded and both sides
+  // of a frame containing different planes level on the same centre patch. The split
+  // plant in section 5 is what gives this a visible consequence.
+  'level-selection-ignores-point': { file: 'web/main.js', edits: [[
+    '      const d = Math.hypot(\n'
+    + '        (levelVec.x * 0.5 + 0.5) * size.w - stageX,\n'
+    + '        (0.5 - levelVec.y * 0.5) * size.h - stageY,\n'
+    + '      );',
+    '      const d = Math.hypot(levelVec.x * 0.5 * size.w, levelVec.y * 0.5 * size.h);',
+  ]] },
+  // The same discarded coordinate one link earlier, in the handler rather than in the
+  // function behind it. `levelAtStagePoint` still reads the point it is handed and
+  // still fits the plane under it correctly; what is lost is the press's own position
+  // on the way in. That distinction is the whole reason this mutation exists beside the
+  // one above: every arm that calls the hook directly passes its own coordinate and so
+  // cannot see the handler at all, and a single-plane frame answers the same whatever
+  // point reaches it. Only an off-centre press on the split plant, driven through
+  // `#camLevel` and `#stage`, has an answer that differs here.
+  'pointer-levels-the-centre': { file: 'web/main.js', edits: [[
+    '  const result = levelAtStagePoint(view.x, view.y);',
+    '  const result = levelAtStagePoint(stageSize().w / 2, stageSize().h / 2);',
+  ]] },
+  // The button takes tilt back to neutral and leaves roll behind. Reading both
+  // parameters and both sliders through the real control catches the half-reset.
+  'reset-keeps-roll': { file: 'web/main.js', edits: [[
+    '  return writeWorldRotation(0, 0);',
+    '  return writeWorldRotation(0, params.get(\'roll\'));',
   ]] },
   // The region is read after the model rotation instead of on the undisplaced
   // sensor-space position, so a region placed on a subject slides off it the moment
@@ -292,14 +323,14 @@ try {
   await page.evaluate(() => { document.getElementById('panel').style.display = 'none'; });
 
   /**
-   * Plants an analytic plane over the whole depth image and settles the picture.
+   * Plants one analytic plane over the depth image, or a different one on each half.
    *
    * The look is flattened first and that is not tidiness. Fade, wake and noise are
    * temporal, so a picture compared against another picture would be comparing two
    * moments of an accumulator rather than two geometries, and the identity in section
    * 2 would be false for a reason that has nothing to do with levelling.
    */
-  const plant = (surface) => page.evaluate(([n0, zc]) => {
+  const plant = (surface, rightSurface = null) => page.evaluate((surfaceSpecs) => {
     const k = globalThis.__kinect;
     for (const [name, value] of Object.entries({
       fade: 0, wake: 0, noise: 0, additive: false, spin: false, denoise: false,
@@ -310,15 +341,18 @@ try {
     const fy = k.uniforms.focal.value.y;
     const cx = k.uniforms.center.value.x;
     const cy = k.uniforms.center.value.y;
-    const len = Math.hypot(n0[0], n0[1], n0[2]);
-    const n = n0.map((v) => v / len);
-    // `c` is fixed by where the centre ray is wanted, so every surface lands at a
-    // sane depth whatever way it leans.
-    const c = zc * -n[2];
+    const planes = surfaceSpecs.filter(Boolean).map(({ n: n0, z: zc }) => {
+      const len = Math.hypot(n0[0], n0[1], n0[2]);
+      const n = n0.map((v) => v / len);
+      // `c` is fixed by where the centre ray is wanted, so every surface lands at a
+      // sane depth whatever way it leans.
+      return { n, c: zc * -n[2] };
+    });
     const data = k.uniforms.depthCurr.value.image.data;
     data.fill(0);
     for (let row = 0; row < DH; row++) {
       for (let col = 0; col < DW; col++) {
+        const { n, c } = planes.length > 1 && col >= DW / 2 ? planes[1] : planes[0];
         const ux = (col + 0.5 - cx) / fx;
         const uy = -(row + 0.5 - cy) / fy;
         const den = ux * n[0] + uy * n[1] - n[2];
@@ -332,8 +366,8 @@ try {
     }
     k.uniforms.depthCurr.value.needsUpdate = true;
     k.resetAccumulators();
-    return n;
-  }, [surface.n, surface.z]);
+    return planes.map(({ n }) => n);
+  }, [surface, rightSurface]).then((normals) => (rightSurface ? normals : normals[0]));
 
   /**
    * Whether the planted frame is still the one the page is drawing.
@@ -372,6 +406,19 @@ try {
     k.params.set('roll', r);
     return { tilt: k.params.get('tilt'), roll: k.params.get('roll'), q: k.worldTilt() };
   }, [tilt, roll]);
+
+  const levelAt = (x, y = 0.5) => page.evaluate(([xFraction, yFraction]) => {
+    const k = globalThis.__kinect;
+    const stage = k.renderer.domElement.getBoundingClientRect();
+    return k.levelAtStagePoint(stage.width * xFraction, stage.height * yFraction);
+  }, [x, y]);
+
+  const landNormal = (normal) => page.evaluate((n) => {
+    const k = globalThis.__kinect;
+    const v = k.freeCamera.position.clone().fromArray(n);
+    const q = k.freeCamera.quaternion.clone().fromArray(k.worldTilt());
+    return v.applyQuaternion(q).toArray();
+  }, normal);
 
   /**
    * The rendered frame, and only the rendered frame.
@@ -554,7 +601,7 @@ try {
   // previous section left the room and the crosshair is looking at nothing.
   await setTilt(0, 0);
   await plant(SURFACES[1]);
-  const level = await page.evaluate(() => globalThis.__kinect.levelToCentre());
+  const level = await levelAt(0.5);
   ok('the planted surface can be levelled on', level.ok === true, level.reason ?? '');
   if (level.ok) {
     const flatPlan = await planExtent();
@@ -617,13 +664,13 @@ try {
     Math.abs(restored.afterLevelling[1] - 1) < 1e-9,
     restored.afterLevelling.map((v) => v.toFixed(3)).join(', '));
 
-  // --- 5. level to centre reads the geometry --------------------------------
-  console.log('\n5. level to centre derives the pair from the surface');
+  // --- 5. selecting a floor reads the chosen geometry ------------------------
+  console.log('\n5. floor selection derives the pair from the chosen surface');
   const answers = [];
   for (const surface of SURFACES) {
     await setTilt(0, 0);
     const planted = await plant(surface);
-    const result = await page.evaluate(() => globalThis.__kinect.levelToCentre());
+    const result = await levelAt(0.5);
     if (!result.ok) {
       ok(`surface ${surface.name} could be levelled on`, false, result.reason);
       continue;
@@ -632,12 +679,7 @@ try {
     // the quaternion the page is carrying rather than recomposed here from the two
     // angles - recomposing would agree with the implementation by construction and
     // could never see the order being read backwards.
-    const landed = await page.evaluate((n) => {
-      const k = globalThis.__kinect;
-      const v = k.freeCamera.position.clone().fromArray(n);
-      const q = k.freeCamera.quaternion.clone().fromArray(k.worldTilt());
-      return v.applyQuaternion(q).toArray();
-    }, planted);
+    const landed = await landNormal(planted);
     answers.push({ surface, result, landed });
     ok(`surface ${surface.name}: the pair it wrote carries that surface's normal onto the vertical`,
       Math.hypot(landed[0], landed[2]) < LEVEL_TOLERANCE,
@@ -652,34 +694,130 @@ try {
     answers.every((a) => Number.isFinite(a.result.rms) && a.result.samples >= 32),
     answers.map((a) => `${a.result.samples} samples at ${(a.result.rms * 1000).toFixed(2)}mm`).join(', '));
 
-  // **Through the button and not through the hook**, and that is the whole reason this
-  // row exists rather than being one more call like the three above. `editor-check`
+  // Two surfaces in one picture make the selected coordinate load-bearing. A full
+  // frame of one plane proves the normal fit but cannot distinguish a selected point
+  // from the old hard-coded centre, however many different full frames are tried.
+  const [leftNormal, rightNormal] = await plant(SURFACES[0], SURFACES[2]);
+  const selected = [];
+  for (const [side, x, normal] of [['left', 0.35, leftNormal], ['right', 0.65, rightNormal]]) {
+    await setTilt(0, 0);
+    await page.evaluate(() => globalThis.__kinect.sensorView());
+    const result = await levelAt(x);
+    const landed = result.ok ? await landNormal(normal) : [Infinity, Infinity, Infinity];
+    selected.push(result);
+    ok(`selecting the ${side} side reads the plane on that side`,
+      result.ok && Math.hypot(landed[0], landed[2]) < LEVEL_TOLERANCE,
+      result.ok
+        ? `lands at ${landed.map((v) => v.toFixed(4)).join(', ')}, wrote ${result.tilt}/${result.roll}`
+        : result.reason);
+  }
+  ok('and the two selected points produce different rotations',
+    selected.every((result) => result.ok)
+      && `${selected[0].tilt}/${selected[0].roll}` !== `${selected[1].tilt}/${selected[1].roll}`,
+    selected.map((result) => (result.ok ? `${result.tilt}/${result.roll}` : result.reason)).join(', '));
+
+  // **Through the two-step control and not through the hook**, and that is the whole
+  // reason these rows exist rather than being one more call like the arms above. `editor-check`
   // names this tool as `camLevel`'s driver, and a driver that reached past the control
   // into the function behind it would be the exact failure that file was written
   // about: the suite testing the model while the control it is named after was never
   // pressed, which is how the in and out markers spent their whole life detached from
   // the document with every proof tool green.
+  // **And the press has to be off the centre, on the split plant.** A frame of one plane
+  // answers the same whatever point reaches the fit, so a gesture on one only ever proves
+  // that pressing did *something* - the handler could drop `view.x`/`view.y` on the floor
+  // and hand the middle of the frame to an otherwise correct hook, and a single-plane
+  // press could not tell. The arms above cannot see it either, because each one passes its
+  // own coordinate straight to `levelAtStagePoint` and so starts one link past the thing
+  // that would be broken. Two planes and a named side is what gives the coordinate a
+  // consequence: `pointer-levels-the-centre` is the control, and it presses the seam
+  // between the two planted planes, where the answer belongs to neither side.
   await setTilt(0, 0);
-  await plant(SURFACES[1]);
+  const [pressLeftNormal, pressRightNormal] = await plant(SURFACES[0], SURFACES[2]);
+  await page.evaluate(() => globalThis.__kinect.sensorView());
   await page.evaluate(() => { document.getElementById('panel').style.display = ''; });
   await page.locator('#camLevel').click();
-  const pressed = await page.evaluate(() => {
-    const k = globalThis.__kinect;
-    const state = {
-      tilt: k.params.get('tilt'),
-      roll: k.params.get('roll'),
-      note: document.getElementById('levelNote').textContent,
-      slider: document.getElementById('tilt').value,
-    };
-    document.getElementById('panel').style.display = 'none';
-    return state;
-  });
-  ok('pressing the control itself levels the room, not only calling what it calls',
-    pressed.tilt !== 0 || pressed.roll !== 0, `tilt ${pressed.tilt} roll ${pressed.roll}`);
+  const armed = await page.evaluate(() => ({
+    active: globalThis.__kinect.levelSelection(),
+    pressed: document.getElementById('camLevel').getAttribute('aria-pressed'),
+    label: document.getElementById('camLevel').textContent,
+    note: document.getElementById('levelNote').textContent,
+    rotation: [globalThis.__kinect.params.get('tilt'), globalThis.__kinect.params.get('roll')],
+  }));
+  ok('pressing select floor visibly arms one selection without changing the room',
+    armed.active && armed.pressed === 'true' && /cancel/.test(armed.label)
+      && armed.rotation[0] === 0 && armed.rotation[1] === 0,
+    `${armed.label}, rotation ${armed.rotation.join('/')}; ${armed.note}`);
+  // Taken from the element rather than written down, because `#stage` is letterboxed to
+  // the export aspect and a hard-coded pixel would silently stop naming a side the day
+  // that aspect changes.
+  const stageBox = await page.locator('#stage').boundingBox();
+  const pressSide = async (xFraction) => {
+    await page.locator('#stage').click({
+      position: { x: stageBox.width * xFraction, y: stageBox.height * 0.5 },
+    });
+    return page.evaluate(() => {
+      const k = globalThis.__kinect;
+      return {
+        tilt: k.params.get('tilt'),
+        roll: k.params.get('roll'),
+        note: document.getElementById('levelNote').textContent,
+        slider: document.getElementById('tilt').value,
+        active: k.levelSelection(),
+        pressed: document.getElementById('camLevel').getAttribute('aria-pressed'),
+      };
+    });
+  };
+  const pressed = await pressSide(0.35);
+  ok('clicking the picture through the armed control levels the room and spends the mode',
+    (pressed.tilt !== 0 || pressed.roll !== 0) && !pressed.active && pressed.pressed === 'false',
+    `tilt ${pressed.tilt} roll ${pressed.roll}, armed ${pressed.active}`);
   ok('and the slider beside it follows, because the panel is a view on the registry',
     Number(pressed.slider) === pressed.tilt, `slider reads ${pressed.slider}`);
-  ok('and the press says what it read rather than only that it worked',
+  ok('and the selection says what it read rather than only that it worked',
     /samples/.test(pressed.note), pressed.note);
+  // Graded against the plane that was actually under the press, and read before the next
+  // `setTilt` moves the rotation this is measured through.
+  const pressedLeftLanded = await landNormal(pressLeftNormal);
+  ok('and the press read the plane under the point pressed, not the middle of the frame',
+    Math.hypot(pressedLeftLanded[0], pressedLeftLanded[2]) < LEVEL_TOLERANCE,
+    `lands at ${pressedLeftLanded.map((v) => v.toFixed(4)).join(', ')}, wrote ${pressed.tilt}/${pressed.roll}`);
+
+  await setTilt(0, 0);
+  await page.locator('#camLevel').click();
+  const pressedRight = await pressSide(0.65);
+  const pressedRightLanded = await landNormal(pressRightNormal);
+  ok('and pressing the other side of the same frame reads the other plane',
+    !pressedRight.active && Math.hypot(pressedRightLanded[0], pressedRightLanded[2]) < LEVEL_TOLERANCE,
+    `lands at ${pressedRightLanded.map((v) => v.toFixed(4)).join(', ')}, wrote ${pressedRight.tilt}/${pressedRight.roll}`);
+  // The two rows above could both pass on a build that levelled correctly on whichever
+  // single plane it always picked, if the two planted normals happened to be close. This
+  // is the row that says the two presses were answered differently at all.
+  ok('so two presses through one control are two rotations, and the coordinate reached the fit',
+    `${pressed.tilt}/${pressed.roll}` !== `${pressedRight.tilt}/${pressedRight.roll}`,
+    `${pressed.tilt}/${pressed.roll} then ${pressedRight.tilt}/${pressedRight.roll}`);
+
+  await page.locator('#camLevel').click();
+  await page.keyboard.press('Escape');
+  const cancelled = await page.evaluate(() => ({
+    active: globalThis.__kinect.levelSelection(),
+    note: document.getElementById('levelNote').textContent,
+  }));
+  ok('Escape leaves a selection mode without spending it',
+    !cancelled.active && /cancelled/.test(cancelled.note), cancelled.note);
+
+  await setTilt(12.5, -6);
+  await page.locator('#camLevelReset').click();
+  const reset = await page.evaluate(() => ({
+    tilt: globalThis.__kinect.params.get('tilt'),
+    roll: globalThis.__kinect.params.get('roll'),
+    sliders: [document.getElementById('tilt').value, document.getElementById('roll').value],
+    note: document.getElementById('levelNote').textContent,
+  }));
+  ok('reset rotation takes both axes and both sliders back to neutral',
+    reset.tilt === 0 && reset.roll === 0 && reset.sliders.every((value) => Number(value) === 0),
+    `rotation ${reset.tilt}/${reset.roll}, sliders ${reset.sliders.join('/')}; ${reset.note}`);
+  await page.evaluate(() => { document.getElementById('panel').style.display = 'none'; });
 
   // --- 6. which side of the document boundary it falls on --------------------
   console.log('\n6. the cant is the take\'s and the pole is the viewer\'s');

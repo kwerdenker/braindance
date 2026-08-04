@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { PROJECT_VERSION, versionRefusal } from './format.js';
+import { DEPTH_H, DEPTH_W, PROJECT_VERSION, versionRefusal, captureFormatRefusal } from './format.js';
+import { pollRecordState } from './record-poll.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -9,9 +10,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 
-const DW = 512;
-const DH = 424;
-const POINTS = DW * DH;
+const POINTS = DEPTH_W * DEPTH_H;
 
 // Which of the two surfaces this page is, decided by the path. One document still
 // serves both, because there is one renderer and one image pipeline and splitting
@@ -211,7 +210,7 @@ const DEFAULT_POSE = poseLookingAt(new THREE.Vector3(0, 0.1, 1.6));
 // which is what makes an 8-15fps stream look fluid on a 120Hz display.
 const makeDepthTexture = () => {
   const tex = new THREE.DataTexture(
-    new Uint16Array(POINTS), DW, DH, THREE.RedIntegerFormat, THREE.UnsignedShortType,
+    new Uint16Array(POINTS), DEPTH_W, DEPTH_H, THREE.RedIntegerFormat, THREE.UnsignedShortType,
   );
   tex.internalFormat = 'R16UI';
   tex.minFilter = THREE.NearestFilter;
@@ -255,7 +254,7 @@ const stateType = renderer.getContext().getExtension('EXT_color_buffer_float')
   ? THREE.FloatType
   : THREE.HalfFloatType;
 
-const makeStateTarget = () => new THREE.WebGLRenderTarget(DW, DH, {
+const makeStateTarget = () => new THREE.WebGLRenderTarget(DEPTH_W, DEPTH_H, {
   type: stateType,
   minFilter: THREE.NearestFilter,
   magFilter: THREE.NearestFilter,
@@ -282,7 +281,7 @@ const MAX_AGE = 6.0;
 const stateUniforms = {
   depthCurr: { value: depthCurr },
   statePrev: { value: statePrev.texture },
-  resolution: { value: new THREE.Vector2(DW, DH) },
+  resolution: { value: new THREE.Vector2(DEPTH_W, DEPTH_H) },
   dt: { value: 1 / 30 },
   snapDelta: { value: 250 },
 };
@@ -353,8 +352,8 @@ const geometry = new THREE.BufferGeometry();
 const pixelCoords = new Float32Array(POINTS * 2 * 3);
 const slotAttr = new Float32Array(POINTS * 2);
 for (let slot = 0; slot < 2; slot++) {
-  for (let row = 0, i = 0; row < DH; row++) {
-    for (let col = 0; col < DW; col++, i++) {
+  for (let row = 0, i = 0; row < DEPTH_H; row++) {
+    for (let col = 0; col < DEPTH_W; col++, i++) {
       const k = slot * POINTS + i;
       pixelCoords[k * 3] = col;
       pixelCoords[k * 3 + 1] = row;
@@ -378,7 +377,7 @@ const uniforms = {
   interpolate: { value: 1 },
   focal: { value: new THREE.Vector2(366, 366) },
   center: { value: new THREE.Vector2(256, 212) },
-  resolution: { value: new THREE.Vector2(DW, DH) },
+  resolution: { value: new THREE.Vector2(DEPTH_W, DEPTH_H) },
   // The drawing buffer's height, which is what makes every screen-space term
   // below a fraction of the frame rather than a count of pixels. Written by
   // `resize` and by nothing else, so the one place the buffer can change is also
@@ -1084,8 +1083,8 @@ function setAdditive(on) {
 // here has to be told which one it is looking at.
 const DEPTH_GRIDS = new Map();
 for (let k = 1; k <= 16; k++) {
-  const w = Math.ceil(DW / k);
-  const h = Math.ceil(DH / k);
+  const w = Math.ceil(DEPTH_W / k);
+  const h = Math.ceil(DEPTH_H / k);
   DEPTH_GRIDS.set(w * h, { k, w, h });
 }
 
@@ -1114,7 +1113,7 @@ function expandDepth(src, dst) {
   const grid = DEPTH_GRIDS.get(src.length);
   if (!grid) {
     throw new Error(
-      `a depth block of ${src.length} samples is not the ${DW}x${DH} grid at any divisor this `
+      `a depth block of ${src.length} samples is not the ${DEPTH_W}x${DEPTH_H} grid at any divisor this `
       + 'build serves: refusing rather than filling the head of the texture with it and '
       + 'unprojecting whatever was already in the rest as though it were the scene',
     );
@@ -1123,10 +1122,10 @@ function expandDepth(src, dst) {
     dst.set(src);
     return;
   }
-  for (let row = 0; row < DH; row++) {
+  for (let row = 0; row < DEPTH_H; row++) {
     const from = ((row / grid.k) | 0) * grid.w;
-    const to = row * DW;
-    for (let col = 0; col < DW; col++) dst[to + col] = src[from + ((col / grid.k) | 0)];
+    const to = row * DEPTH_W;
+    for (let col = 0; col < DEPTH_W; col++) dst[to + col] = src[from + ((col / grid.k) | 0)];
   }
 }
 
@@ -1407,6 +1406,16 @@ function setViewCamera(cam) {
 // in its temporal dead zone on the `resize()` that runs at boot.
 let stageResizes = 0;
 
+// The transport, or null until a take is open. Declared here rather than beside the
+// class it is built from four thousand lines below, and for the same reason the counter
+// above is: `resize()` ends by asking for a repaint, `requestRepaint` reads this binding
+// first, and the `resize()` that runs at boot would be reading a `let` in its temporal
+// dead zone - a ReferenceError before the page has drawn anything, on the one path
+// nothing recovers from. That it is read there is deliberate rather than incidental:
+// null is the honest answer at boot, and it is the answer that makes the repaint stand
+// down until there is something to repaint.
+let timeline = null;
+
 /**
  * Who owns the transport's play state right now.
  *
@@ -1479,6 +1488,10 @@ const pauseTransport = () => {
 
 function resize() {
   stageResizes++;
+  // What the drawing buffer measured on the way in, so the repaint at the bottom can
+  // ask whether this call actually reallocated it. See the comment there for why the
+  // question is worth asking rather than assuming the answer is always yes.
+  const wasBuffer = renderer.getDrawingBufferSize(new THREE.Vector2());
   // The stage is the window less whatever the timeline strip is taking, which is
   // nothing at all while it is hidden. Overlaying it on the image instead would
   // have cost nothing here and hidden the bottom of every frame being graded.
@@ -1571,6 +1584,53 @@ function resize() {
   bloom.setSize(Math.max(1, refWidth / 2), 300);
   grade.uniforms.resolution.value.set(buf.x, buf.y);
   uniforms.bufferHeight.value = buf.y;
+  // And then ask for the picture back, because everything above reallocates the drawing
+  // buffer and nothing above draws into it again. A parked editor has no clock of its
+  // own - `tickNow` returns immediately on `!playing` and `pumpParkedDraft` returns with
+  // nothing armed - so the stage stays black until something unrelated happens to seek,
+  // with the chrome overlay floating over it because that is a separate 2D canvas
+  // `placeChrome` goes on repainting. Every path that resizes a parked stage had it: the
+  // window listener below, the three splitter entries, the render-scale slider, the
+  // export-size menu through `setTargetSize`, and `rebuildLanes` reaching this
+  // indirectly - which is the argument for the repaint being here, at the door, rather
+  // than at a caller list the seventh path would be added outside of.
+  //
+  // **This is not the pump section 9 of `editor-check` forbids.** That rule is about a
+  // redraw asking for the next redraw: `renderProgramFrame` moves the camera, so a
+  // handler that renders on a control's `change` has armed its own successor and a
+  // parked drag runs at whatever rate the machine can rebuild a frame. Nothing of that
+  // shape is here. `requestRepaint` stands down while playing, scrubbing, orbiting or
+  // exporting, and coalesces through `queueMicrotask`, so a splitter drag costs one
+  // accurate seek per settled state rather than one per pointer move.
+  //
+  // What keeps it that way is that nothing in the render path reaches this function, and
+  // that is a property to hold rather than one to assume. A `renderScale` track would
+  // have been exactly that path - `evaluateTracks` has no tag filter and runs per
+  // rendered frame - so the refusal `restoreProject` now makes is what stops this line
+  // becoming a repaint requested once per frame of every pre-roll.
+  //
+  // **Only when the buffer actually moved, and that condition was measured rather than
+  // reasoned about.** Most calls here change nothing: `rebuildLanes` runs this whenever
+  // the lane set is rebuilt, so every rate change reaches it through
+  // `timingChanged` -> `lanesChanged` with the strip the same height it already was.
+  // Asking for a repaint there is asking for a second accurate seek on top of the one
+  // the gesture's own release is about to issue - measured at 2 seeks for one held
+  // arrow key against 1, which is the seek storm the speed control was rewritten to
+  // avoid, coming back through a door that was opened for something else. It cost the
+  // take as well: the release resumes playback behind its seek, and the repaint's seek
+  // landed on top of that and put the playhead back on the frame the resume had just
+  // left, so a held key stopped the take three runs out of three.
+  //
+  // The condition is safe because a `setSize` to the size something already has does
+  // not reallocate anything: `WebGLRenderTarget.setSize` returns early on an unchanged
+  // size, and Chrome's canvas does the same for an unchanged `width`/`height`. Measured
+  // on this build rather than read off a specification - a stage carrying 158,247 lit
+  // pixels carried exactly 158,247 across a same-size `resize()`, and 0 across one that
+  // moved the buffer 1298x730 -> 1084x610. `editor-check` section 13 asserts both
+  // halves, because the premise this guard rests on is a fact about a browser and the
+  // day it stops being true is the day the stage goes black with nothing saying so.
+  const buffer = renderer.getDrawingBufferSize(new THREE.Vector2());
+  if (buffer.x !== wasBuffer.x || buffer.y !== wasBuffer.y) requestRepaint();
 }
 addEventListener('resize', () => {
   // The ceiling is a share of the window, so a window that got shorter can put the
@@ -1655,8 +1715,6 @@ function gradeNeeded() {
  * the take actually open rather than against the ones in this comment.
  */
 const CROP_LIMIT = 7;
-const DEPTH_W = 512;
-const DEPTH_H = 424;
 const cropReach = (maxDepth = 9.5) => {
   const { x: fx, y: fy } = uniforms.focal.value;
   const { x: cx, y: cy } = uniforms.center.value;
@@ -1689,6 +1747,26 @@ const cropReach = (maxDepth = 9.5) => {
 // straight down the panel: `Reading · detail` sits beside the two groups it belongs
 // with here and renders first among the grade's, because it is a look group and they
 // are not.
+//
+// `collapses` is the second such property, and it is declared here for the same reason
+// `lookgroup` is: a group added next year answers the question by existing rather than
+// by somebody remembering to put its key in a list somewhere else, which is the list
+// that would go stale. It says only that the group *may* be shut - whether it is shut
+// right now is derived from the document by `revealsItself` below and overridden only
+// where a person has disagreed, so there is no stored open/closed state to keep in step
+// with the values. Everything without it always renders open, and `framing` is the one
+// where that matters beyond taste: its `after()` emits `#cropReset`, which `editor-check`
+// clicks, and Playwright's click waits for visibility - so a collapsible `framing` would
+// turn that row into a thirty-second timeout, which is a crash carrying no failed
+// assertion rather than a finding.
+//
+// `reveals` is the escape hatch beside it, and exactly one group needs one. A group's
+// default rule is that it is in use when its own parameters are, and `Reading · detail`
+// is *also* governed by another group's values - so the rule lives on the entry with the
+// group it is about rather than as a branch inside the predicate that would have to name
+// it. A closure widens the default rule and must not replace it: which groups are open
+// is the look's diff against its defaults, and a group that dropped its own parameters
+// out of its rule would be carrying values the panel had stopped accounting for.
 const PANEL_GROUPS = [
   // The five readings of the take, which were five buttons and one integer uniform
   // until they became five look parameters. They mix rather than exclude, so this is
@@ -1712,7 +1790,35 @@ const PANEL_GROUPS = [
   // the bottom of a laptop panel to buy nothing anybody needs before a take. Which
   // reading you are shooting against is a shooting decision; how wide its bands are is
   // grading.
-  { key: 'detail', label: 'Reading · detail', lookgroup: true },
+  {
+    key: 'detail',
+    label: 'Reading · detail',
+    lookgroup: true,
+    collapses: true,
+    // The one group the default rule is not enough for, and it *widens* that rule rather
+    // than replacing it. Every one of these seven sits at the shader literal it replaced,
+    // so a fresh project has them all at their defaults - and choosing a reading writes
+    // `source` and `treatment` and never these, so on the default rule alone the group
+    // would stay shut whichever reading is live. Which reading you are shooting is
+    // exactly when these constants become worth reading, so the readings are a second
+    // way in and not a different door.
+    //
+    // **The `revealsItself('detail')` term is the load-bearing half of the widening.**
+    // Without it this group stops answering the question every other group answers -
+    // which groups are open is the look's diff against its defaults, so "what is this
+    // look made of" is a thing you can read off the panel - and a preset naming
+    // `contourBands` and no reading would leave a live value behind a closed heading
+    // while the panel had room to show it. Keeping the term is what holds that invariant
+    // across all four groups instead of three, and it is what lets the in-use mark be
+    // keyed on this rule alone rather than on a wider condition of its own.
+    //
+    // The obvious phrasing is wrong and is worth naming so nobody writes it back: "open
+    // when a reading is non-zero" fires on a page nobody has touched, because `readRgb`
+    // defaults to 1 and a default reading is the absence of a decision. Comparing
+    // against the defaults is the whole of what keeps a fresh project shut, on this
+    // group exactly as on the other three.
+    reveals: () => revealsItself('detail') || revealsItself('source') || revealsItself('treatment'),
+  },
   // Framing: what you can see, and where you are seeing it from. `sensor view` is
   // navigation and writes nothing - distinct from `look through it` in the camera
   // group, which adopts the program camera whose pose is document state.
@@ -1725,14 +1831,13 @@ const PANEL_GROUPS = [
     // to the take, so it rotates the room and not the camera, and the top-down,
     // auto-orbit and the exported frame come level with the picture.
     before: () => [
-      panelButtonRow('camSensor', 'sensor view'),
-      panelButtonRow('camLevel', 'level to centre'),
-      panelNote('levelNote', 'Aim a flat surface into the middle of the frame and press. '
-        + 'A ceiling levels the same way a floor does; if it picks the wrong surface, press '
-        + 'again somewhere flatter or nudge tilt and roll below.'),
+      panelButtonRow(['camSensor', 'sensor view']),
+      panelButtonRow(['camLevel', 'select floor'], ['camLevelReset', 'reset rotation']),
+      panelNote('levelNote', 'Select floor, then click a flat floor or ceiling plane in the picture. '
+        + 'The selection levels the room; tilt and roll below remain available for small corrections.'),
     ],
     after: () => [
-      panelButtonRow('cropReset', 'open the box'),
+      panelButtonRow(['cropReset', 'open the box']),
       panelNote('cropNote', 'The top-down draws this box in x and z. It has no y, so the '
         + 'bottom and top faces do not show there — judge those in the picture.'),
       panelNote('recRange', 'preview only'),
@@ -1744,21 +1849,21 @@ const PANEL_GROUPS = [
   // what colour they take, what persists between frames, and what the optics do to
   // the result.
   { key: 'conditioning', label: 'Depth conditioning', lookgroup: true },
-  { key: 'displacement', label: 'Displacement', lookgroup: true },
+  { key: 'displacement', label: 'Displacement', lookgroup: true, collapses: true },
   // One region in the room, read three ways: it displaces, it scrambles, and it
   // masks. Everything here is metres in the sensor frame, so a look holds at any
   // output size without being referred to 1080p the way the screen-space terms are.
   // Half-extents at zero with a radius is a sphere; raise them and it becomes a
   // rounded box; take two to zero and it is a capsule. No shape selector, because an
   // enum could not keyframe and these sliders can.
-  { key: 'region', label: 'Region (metres)', lookgroup: true },
+  { key: 'region', label: 'Region (metres)', lookgroup: true, collapses: true },
   { key: 'points', label: 'Points', lookgroup: true },
   { key: 'colour', label: 'Colour & tone', lookgroup: true },
   // The three terms that accumulate across frames, together. Fade and wake are the
   // surface memory and trails is the afterimage buffer; they were two groups apart
   // while doing one thing, which is how a look gets tuned twice.
   { key: 'time', label: 'Time (ms)', lookgroup: true },
-  { key: 'optical', label: 'Optical', lookgroup: true },
+  { key: 'optical', label: 'Optical', lookgroup: true, collapses: true },
   // The two parameters that are not part of the clip, in the one group that says so.
   // They are tagged `view` in the registry, they get no keyframe control and no
   // preset carries them - and while they sat inside look groups that read as an
@@ -1799,8 +1904,8 @@ const PARAMS = {
   // The ranges are the whole of what the plane fit can ever produce and not a
   // judgement about how far a bracket can lean: `roll` comes out of an `atan2` over
   // the full turn, and `tilt` out of an `atan2` against a non-negative horizontal
-  // component, so it cannot leave the quarter turn either side. That means "level to
-  // centre" can never write a value its own slider would clamp, which would otherwise
+  // component, so it cannot leave the quarter turn either side. That means selecting
+  // a floor can never write a value its own slider would clamp, which would otherwise
   // be a silent disagreement between the button and the panel.
   tilt: { def: 0, min: -90, max: 90, step: 0.5, kind: 'scalar', tag: 'look',
     group: 'framing', label: 'tilt',
@@ -2080,8 +2185,16 @@ const PARAMS = {
 const READINGS = Object.keys(PARAMS).filter((n) => PARAMS[n].reading);
 
 /**
- * Which of the five readings a document does not name, which is a refusal at both
- * doors a document arrives through rather than at one of them.
+ * Which of the five readings a document does not name, asked at both doors a document
+ * arrives through and answered differently by them.
+ *
+ * A project is refused for missing any of them, because `serialiseProjectBody` writes
+ * the whole look tag every time and a project that is short of one is truncated. A
+ * preset is refused only for missing *some* of them, because a preset may deliberately
+ * be about part of a look - see `refusePresetBody` for why naming none is a scope and
+ * naming two is a blend nobody authored. The count is the same question; what differs
+ * is what each kind of document is allowed to leave out, which is a fact about the two
+ * doors rather than about this list.
  *
  * **The defaults are what make a partial document dangerous rather than incomplete.**
  * Every loader resets to defaults first so that a key a file omits means the default
@@ -2235,6 +2348,42 @@ function writeControl(name, value) {
 // would be machinery for a problem nobody has.
 let paramWritten = () => {};
 
+// The other announcement a write has to make, and it is separate from the one above
+// because it has a second sender: whether a panel group is worth showing is decided by
+// a parameter's value *and* by whether it carries keys, so a track appearing has to
+// reach this too and a track appearing is not a registry write.
+//
+// A no-op that gets replaced, like `paramWritten`, and here that shape is load-bearing
+// rather than stylistic. The predicate reads `tracks`, which is declared several hundred
+// lines below this - so `params.reset()` further down, which writes every parameter
+// while the module is still evaluating, would reach `tracks` in its temporal dead zone
+// and throw. A module that throws while evaluating publishes no `__kinect` at all, so
+// every proof tool in the suite reports DID NOT RUN and the exit code has no assertion
+// behind it, which is the outcome this repo has twice written down as a bug found.
+let groupRevealChanged = () => {};
+
+// Registry writes the transport makes on its own behalf, rather than on a user's: the
+// camera pose every render poses, and the three parameters a draft borrows for one frame
+// and hands back. Neither may ask for a repaint, and neither may re-derive the panel. A
+// render that scheduled another render would never stop, and a draft would be chased by
+// the accurate seek it exists to postpone - so the drag would pay for both.
+//
+// This is a separate flag from `evaluating` rather than a widening of it, and the two
+// mean different things: `evaluating` says a preset is not a track, this says a write
+// came from the renderer rather than from a hand. Nesting is real - a draft's suppression
+// spans a render that suppresses in turn - so `withoutRepaint` saves and restores instead
+// of clearing.
+//
+// **Declared up here rather than beside `withoutRepaint`, which is the same dead zone the
+// no-op above records and the second time this file has been caught by it.** `params.set`
+// consults it now, and `params.reset()` further down writes every parameter while the
+// module is still evaluating - so a `let` sitting beside its function four thousand lines
+// later is read before it exists, and the page throws during module evaluation. That
+// publishes no `__kinect` at all: every tool in the suite reports DID NOT RUN with no
+// assertion behind the exit code, measured exactly once and immediately. A flag the
+// registry reads is declared before the registry.
+let transportWriting = false;
+
 /**
  * The registry's door, and every way in goes through it.
  *
@@ -2290,6 +2439,18 @@ const params = {
     // write path at all: a preset, a slider, a mode and step 5's tracks all end up
     // on this line, so nothing can change the image without saying that it did.
     paramWritten(name, spec.tag);
+    // Beside it rather than folded into it, because the two answer different
+    // questions: `paramWritten` is "the image changed, rebuild it", and this is "the
+    // evidence a group is in use changed, so re-derive which groups are open". A
+    // parameter written back to the value it already held moves the first and not
+    // the second, which is why the refresh compares before it touches the panel.
+    //
+    // Skipped under the same flag `paramWritten` skips under, and for the same reason
+    // rather than by analogy: the transport's own writes arrive one per keyed parameter
+    // per rendered frame, and every one of them would walk every group's evidence to
+    // re-derive a panel the bulk write has not finished changing yet. `withoutRepaint`
+    // asks once on the way out, which is the answer for the whole write.
+    if (!transportWriting) groupRevealChanged();
     return v;
   },
   /**
@@ -2391,12 +2552,14 @@ const panelNode = (tag, className, text) => {
   return el;
 };
 
-const panelButtonRow = (id, text) => {
+const panelButtonRow = (...buttons) => {
   const row = panelNode('div', 'btnrow');
-  const button = panelNode('button', null, text);
-  button.type = 'button';
-  button.id = id;
-  row.append(button);
+  for (const [id, text] of buttons) {
+    const button = panelNode('button', null, text);
+    button.type = 'button';
+    button.id = id;
+    row.append(button);
+  }
   return row;
 };
 
@@ -2470,11 +2633,67 @@ function panelPlace(group, groupNode) {
   panelTail.set(anchor, groupNode);
 }
 
+// What the collapse rule below needs to find again after this pass has run: the group's
+// node, the parameters it emitted rows for, and the two elements in its head that say
+// what state it is in. Taken from the pass that *built* the rows rather than from a
+// second walk of the registry, because a group revealing itself over a parameter it
+// does not show would be a header answering for a control somewhere else - and two walks
+// of one table is exactly the drift this generator exists to remove.
+const panelGroupNodes = new Map();
+const panelGroupParams = new Map();
+
+// One head per group, whether or not the group can be shut, because two shapes of
+// header is two sets of CSS and the one that gets forgotten is the one nobody is
+// looking at. Only a collapsible group gets a button and a mark inside it.
+//
+// The heading stays the first element in the head and the only `<label>` there:
+// `sensor-view-check` names a group by the text of the first label it can find inside
+// it, so a head that put anything labelled ahead of the heading would rename thirteen
+// groups at once in a tool that has nothing to do with this feature.
+function panelHead(group) {
+  const head = panelNode('div', 'grouphead');
+  head.append(panelNode('label', null, group.label));
+  if (!group.collapses) return { head, button: null, mark: null };
+
+  // A count of the parameters in this group that are carrying something, shown only
+  // while the group is shut. Without it a collapsed group in use is the panel lying
+  // about what is shaping the frame, which is the exact fear this feature answers,
+  // inverted - the values would still be applied to every pixel with nothing on
+  // screen saying so.
+  const mark = panelNode('span', 'groupmark');
+  const button = panelNode('button', 'grouptoggle');
+  button.type = 'button';
+  // The key rather than a position, and on the button rather than only on the group,
+  // so `editor-check`'s sweep can credit *any* group toggle by the attribute instead
+  // of naming the four that exist today - a rule listing four ids stops covering the
+  // fifth the moment somebody declares `collapses` on another entry.
+  button.dataset.groupToggle = group.key;
+  button.id = `${group.key}Toggle`;
+  button.append(panelNode('i', 'groupchevron'));
+  button.addEventListener('click', () => toggleGroup(group.key));
+  head.append(mark, button);
+  return { head, button, mark };
+}
+
 let panelRowsEmitted = 0;
 for (const group of PANEL_GROUPS) {
   const groupNode = panelNode('div', group.lookgroup ? 'group lookgroup' : 'group');
-  groupNode.append(panelNode('label', null, group.label));
+  // A data attribute and not an id, because the six hand-written groups in the markup
+  // are already `#cameraGroup`, `#sensorGroup`, `#monitorGroup`, `#programOutGroup`,
+  // `#recordGroup` and `#recLookGroup`, and a generated group minting ids in the same
+  // shape is one registry key away from colliding with one of them silently.
+  groupNode.dataset.group = group.key;
+  // Named apart from the keyframe button the row loop below declares, which is a
+  // different button in a narrower scope: one `button` meaning two things in one loop
+  // is how the wrong element ends up registered.
+  const { head, button: headButton, mark: headMark } = panelHead(group);
+  groupNode.append(head);
   if (group.before) groupNode.append(...group.before());
+  const names = [];
+  panelGroupParams.set(group.key, names);
+  if (group.collapses) {
+    panelGroupNodes.set(group.key, { group, node: groupNode, button: headButton, mark: headMark });
+  }
 
   let rows = 0;
   for (const [name, spec] of Object.entries(PARAMS)) {
@@ -2519,6 +2738,11 @@ for (const group of PANEL_GROUPS) {
     }
     rows++;
     panelRowsEmitted++;
+    // The evidence set for this group, recorded here because here is where the row was
+    // emitted. A group asks whether anybody has touched it by walking exactly the
+    // parameters it put on screen, so the header and the rows under it cannot come to
+    // disagree about which parameters the group is.
+    names.push(name);
   }
   // A heading with nothing under it is a group key that got misspelled on one side,
   // which is the only way a group can end up empty and is worth a sentence rather
@@ -2581,19 +2805,9 @@ params.reset();
 // does not exist yet.
 let evaluating = false;
 
-// Registry writes the transport makes on its own behalf, rather than on a user's:
-// the camera pose every render poses, and the three parameters a draft borrows for
-// one frame and hands back. Neither may ask for a repaint. A render that scheduled
-// another render would never stop, and a draft would be chased by the accurate
-// seek it exists to postpone - so the drag would pay for both.
-//
-// This is a separate flag from `evaluating` rather than a widening of it, and the
-// two mean different things: `evaluating` says a preset is not a track, this says
-// a write came from the renderer rather than from a hand. Nesting is real - a
-// draft's suppression spans a render that suppresses in turn - so it saves and
-// restores instead of clearing.
-let transportWriting = false;
-
+// `transportWriting` is declared above the registry rather than here, where it would
+// otherwise belong: `params.set` reads it and the boot writes run long before this line.
+// The note on the declaration carries the rest.
 function withoutRepaint(write) {
   const outer = transportWriting;
   transportWriting = true;
@@ -2601,6 +2815,14 @@ function withoutRepaint(write) {
     return write();
   } finally {
     transportWriting = outer;
+    // The panel asked once for the whole write rather than once per value in it, and
+    // only at the outermost of a nest - a draft's suppression spans a render that
+    // suppresses in turn, so an inner `finally` firing here would be the per-write
+    // recompute again wearing a different name. This is not the repaint's twin: a
+    // repaint is deliberately *not* requested on the way out, because these writes are
+    // the renderer's own and asking for another render is the loop the flag exists to
+    // stop. Re-deriving which groups are open renders nothing.
+    if (!outer) groupRevealChanged();
   }
 }
 
@@ -2643,7 +2865,34 @@ function setActiveDeliverable(deliverable) {
   activeDeliverable = deliverable;
 }
 
+// What a clip bound is allowed to be, asked in one place because two callers need the
+// same answer and a second copy of it is the drift this design keeps refusing.
+//
+// `null` is a statement rather than a time, and it is only ever legal at the out point:
+// there it means "to the end", which has to survive a retime that lengthens the program
+// and so cannot be written down as a number. At the in point, and for anything else that
+// is not a finite number, there is no reading to recover - so it is refused.
+function clipBoundOrThrow(value, which) {
+  if (value === null && which === 'out') return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  throw new Error(
+    `the clip's ${which} point is ${JSON.stringify(value) ?? String(value)}, which is not a program `
+    + 'time: a trim carries finite seconds, and holding a value that is not one inside the program '
+    + 'spreads it through both bounds and leaves the transport no range at all',
+  );
+}
+
 function applyDeliverable(deliverable) {
+  // **Asked before anything is touched, so a document this program cannot read is refused
+  // whole rather than half-adopted.** `setClipInOut` below is the door that refuses a
+  // bound, and refusing there is what covers the marker drags and the rate rescale too -
+  // but by the time it runs, `setActiveDeliverable` has already made this document the
+  // active one, so a throw from inside it would leave a refused document's output size
+  // and codec sitting on a clip whose cuts it never got to write. Asking the same
+  // predicate here first is a second call site rather than a second rule, which is the
+  // distinction that matters: there is still one answer to what a clip bound is.
+  clipBoundOrThrow(deliverable.in, 'in');
+  clipBoundOrThrow(deliverable.out, 'out');
   // Before anything is written, because what follows replaces the cuts and the output
   // rate wholesale - see `dropRateGesture` for why this is not `takeTransport`.
   dropRateGesture();
@@ -2660,8 +2909,57 @@ function applyDeliverable(deliverable) {
 
 function setClipInOut(values) {
   const { in: inn, out } = values;
-  if (inn !== undefined) clipIn = inn;
-  if (out !== undefined) clipOut = out;
+  // **Refused before either binding is written, because the clamp below is arithmetic and
+  // arithmetic on something that is not a number does not fail - it spreads.** An `in` of
+  // `"start"` makes `Math.min(clipIn, dur)` NaN, and the `Math.max(clipIn, ...)` that holds
+  // the out point up then carries that NaN into a bound which was perfectly good: both ends
+  // are gone, `clipOutSec` answers NaN, and `frameAt` resolves every position to NaN. The
+  // getter this clamp was put in front of coerced instead - `Number(clipIn) || 0` read a
+  // malformed `in` as zero and left a valid `out` alone - so clamping without refusing first
+  // is strictly worse than what it replaced, on exactly the documents it exists to survive.
+  //
+  // `undefined` is not that case and must not be refused: it is how the two marker drags say
+  // which end they mean, and a drag writes one bound while the other keeps whatever it held.
+  // A document has no such reading, which is why `applyDeliverable` asks the same question
+  // about both of its fields and gets a refusal where this gets a pass.
+  const nextIn = inn === undefined ? undefined : clipBoundOrThrow(inn, 'in');
+  const nextOut = out === undefined ? undefined : clipBoundOrThrow(out, 'out');
+  if (nextIn !== undefined) clipIn = nextIn;
+  if (nextOut !== undefined) clipOut = nextOut;
+  // **Held inside the program that is open, because the two getters the transport reads
+  // this through are not symmetric.** `clipOutSec` is bounded above by the take's
+  // duration and `clipInSec` is bounded below by zero and above by nothing, so an `in`
+  // past the program's end makes `clipInSec` the larger of the two and `frameAt`
+  // composes to a constant: its inner `Math.min` can never exceed the out point, so its
+  // outer `Math.max` always answers the in point. Every position the editor can ask for
+  // then comes back as the same frame - seek, draft, redraw, `goTo`, Home, End, the
+  // arrow steps and the scrubber's release alike - while the readout goes on naming a
+  // range that has nothing in it.
+  //
+  // A deliverable is how that arrives. `applyDeliverable` writes a saved document's
+  // program times as they stand rather than into the rate the clip happens to be in, so
+  // a trim authored at 1x lands past the end of the same take played at 2x, and nothing
+  // upstream of here compares it against the take that is open.
+  //
+  // **Here rather than in the getters, and here rather than at `applyDeliverable`.**
+  // This is the one door every writer already passes - the two marker drags, the rate
+  // rescale in `reparameteriseProgramTime` and the deliverable - so there is no second
+  // clamp to keep in step with this one, and the writer added next year is held by
+  // existing. The markers already clamp themselves this way at their own ends; this is
+  // that same rule said once, where it covers the door a document comes through.
+  //
+  // What it deliberately does not do is make an empty range usable. A trim that lands
+  // wholly past the end has nothing in it, so it collapses to a point at the end - which
+  // is the state the two markers dragged together already reach, and it is explained by
+  // the same picture rather than by a frozen transport nothing on screen accounts for.
+  if (timeline) {
+    const dur = timeline.duration;
+    clipIn = Math.max(0, Math.min(clipIn, dur));
+    // `null` still means "to the end", which is a different statement from a number that
+    // happens to equal the duration: "whole clip" has to survive a retime that lengthens
+    // the program, and a duration written in here would freeze it at today's length.
+    if (clipOut !== null) clipOut = Math.max(clipIn, Math.min(clipOut, dur));
+  }
   ensureActiveDeliverable();
   activeDeliverable.in = clipIn;
   activeDeliverable.out = clipOut;
@@ -3002,6 +3300,290 @@ function dropTrackIfEmpty(name) {
   if (track && track.keys.length === 0) tracks.delete(name);
 }
 
+// ------------------------------------------------- which panel groups are open
+//
+// Whether a group is open is *derived from the document*, and only a disagreement is
+// stored. The alternative - a stored open/closed flag per group - is a second copy of
+// something the values already say, and a second copy drifts: a look applied from the
+// library would put values into three groups and leave all three shut, because nothing
+// in a preset knows about panel furniture. Deriving means the panel opens at whatever
+// the clip is actually using without anybody teaching every writer about it.
+//
+// This lives here rather than beside the generator because the predicate reads both of
+// the stores a parameter's evidence can be in, and `tracks` is the one declared just
+// above. See `groupRevealChanged`, which is the no-op the generator's pass calls and
+// which the last line of this block replaces.
+
+// Which groups you have overruled, and nothing else - the group key against the state
+// you asked for. It is client state and not document state, for the reason the `viewer`
+// group's own note gives about the two parameters in it: this changes what you are
+// looking at, not what the frame is. So it is out of the project, out of undo, out of
+// every export, and stored per browser like `kinect.lastOpened` and `kinect.lanesHeight`.
+const PANEL_GROUPS_OPEN = 'kinect.panelGroupsOpen';
+
+const groupOverride = new Map();
+try {
+  // The string is checked before the parse, which is the same lesson `kinect.lanesHeight`
+  // records one line at a time: `getItem` answers null when nothing was ever stored, and
+  // `JSON.parse(null)` answers null rather than throwing, so a missing entry and a stored
+  // `null` would arrive as one reading. `JSON.parse('')` does throw, and landing in the
+  // catch would be right by accident rather than by having asked.
+  const saved = localStorage.getItem(PANEL_GROUPS_OPEN);
+  if (saved !== null && saved.trim() !== '') {
+    const parsed = JSON.parse(saved);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      // Each entry checked rather than the object adopted, because this is a file a
+      // person can edit and a `null` or a string here would make `override ?? derived`
+      // answer with a truthy non-boolean and pin a group open forever. A `Map` is what
+      // holds them, so the `__proto__` key that `JSON.parse` creates as an own property
+      // is an ordinary entry here rather than a prototype write.
+      for (const [key, want] of Object.entries(parsed)) {
+        if (typeof want === 'boolean') groupOverride.set(key, want);
+      }
+    }
+  }
+} catch {
+  // Private browsing, storage disabled by policy, or an entry somebody has damaged.
+  // Every group answering for itself is a good state to arrive in.
+}
+
+function storeGroupOverride() {
+  try {
+    localStorage.setItem(PANEL_GROUPS_OPEN, JSON.stringify(Object.fromEntries(groupOverride)));
+  } catch {
+    // Private browsing or policy again. The panel still collapses and still opens; it
+    // just will not remember which way across a reload.
+  }
+}
+
+// What each parameter is worth in a project nobody has touched, computed once.
+//
+// **Through `normalise`, not against `PARAMS[n].def` raw**, and the difference is a
+// class rather than a case. `normalise` clamps, snaps to a grid anchored at `min` and
+// rounds to the decimals `min` and `step` imply, and every scalar default this build
+// declares happens to land on its own grid - so raw equality is correct today and
+// would go on being correct right up until somebody adds a parameter whose default is
+// not on its step. That group would then read as touched from boot, on a fresh page,
+// with nothing anywhere saying why. Doing it once at module scope is what keeps the
+// arithmetic off the evaluator's path, where this is asked several times a frame.
+const groupDefaults = new Map();
+for (const names of panelGroupParams.values()) {
+  for (const name of names) groupDefaults.set(name, params.normalise(name, PARAMS[name].def));
+}
+
+/**
+ * Whether one parameter carries evidence that somebody has been here: a keyframe track
+ * with keys on it, or a value sitting off the default a fresh project would hold. The
+ * whole rule is this line and a half, and both the group's open state and the count on
+ * a shut header are asked of it rather than of a copy.
+ *
+ * **The keyframe term is not decoration.** During playback the evaluator writes every
+ * keyed parameter through `params.set`, so `params.get` answers the *evaluated* value -
+ * and a curve that happens to cross its own default at the parked frame would make the
+ * value test say "untouched" for that one frame. Without this term the groups would
+ * breathe open and shut as the playhead moved, which is a panel that cannot be read
+ * while anything is playing. `valueAtProgram` answers the un-evaluated question, and it
+ * is deliberately not what this asks: a parameter with keys is in use at every position,
+ * including the ones its curve passes through on the way somewhere else.
+ *
+ * **`keys.length > 0`, never `tracks.has(name)`.** `restoreProject` does
+ * `trackFor('camera').keys = restoredCamera` with no `dropTrackIfEmpty` after it and
+ * `trackFor` inserts on a miss, so a zero-key entry survives in the map for the rest of
+ * the session after any project open or undo. No panel group holds `camera`, so
+ * membership would answer correctly here today and be wrong the first time an empty
+ * track outlives a name a group does show - and the length is what every other has-keys
+ * test in this file already asks.
+ *
+ * **And `tracks.get`, never `trackFor`.** `trackFor` is a creating accessor. A
+ * predicate built on it would author a keyframe track as a side effect of drawing a
+ * panel header, which is a document that changed because somebody looked at it.
+ */
+function paramTouched(name) {
+  if ((tracks.get(name)?.keys.length ?? 0) > 0) return true;
+  return params.get(name) !== groupDefaults.get(name);
+}
+
+/**
+ * The default rule: a group is in use when any parameter it shows is. Named rather than
+ * inlined because a `reveals` closure on a `PANEL_GROUPS` entry is written in terms of
+ * it - `Reading · detail` asks it about two other groups - so this is the vocabulary
+ * those closures are written in and not an internal step of the one below.
+ */
+function revealsItself(key) {
+  return (panelGroupParams.get(key) ?? []).some(paramTouched);
+}
+
+/**
+ * What the document says about a group, which is the derived half of "is it open" and
+ * the thing a toggle is measured against.
+ *
+ * Kept apart from `revealsItself` rather than folded into it, and the store rule below
+ * is why the two cannot be one function. A group carrying a `reveals` closure answers a
+ * wider question than its own parameters do, so a store rule comparing a collapse
+ * against `revealsItself` would find the two agreeing on a `Reading · detail` that a
+ * live reading had opened, drop the override, and re-derive the group open - a collapse
+ * that does not survive the repaint it caused. `detail`'s closure also calls
+ * `revealsItself` on two other groups, which is the second reason the names have to stay
+ * distinguishable at a call site.
+ */
+function groupRevealed(group) {
+  return group.reveals ? group.reveals() : revealsItself(group.key);
+}
+
+/** The predicate: what the document derives, unless a person has said otherwise. */
+function groupIsOpen(group) {
+  return groupOverride.get(group.key) ?? groupRevealed(group);
+}
+
+/**
+ * How many of a group's own parameters are carrying something, for the shut header.
+ *
+ * Over the same `paramTouched` the predicate walks rather than a second copy of the
+ * test, because two spellings of "has anybody been here" is two things to keep in step
+ * and the header would be the one that quietly stopped agreeing with the rule that
+ * opened the group above it.
+ */
+function groupTouchedCount(key) {
+  return (panelGroupParams.get(key) ?? []).filter(paramTouched).length;
+}
+
+/**
+ * What the panel shows, re-derived. Called after every registry write and after every
+ * change to the set of tracks, which between them are both terms of the predicate.
+ *
+ * Each group is painted only where the answer moved. The evaluator writes one value per
+ * keyed parameter per frame and every one of them arrives here, so an unconditional
+ * write would put a `textContent` assignment and an attribute write per group into the
+ * render path to say what the panel already said.
+ */
+const groupPainted = new Map();
+// How often the panel has been re-derived, for the one question a tool cannot answer
+// from outside: whether a bulk write costs one pass or one per value in it. A count the
+// page keeps rather than a duration a driver times, because a rate taken around a
+// gesture Playwright is pacing is a measurement of Playwright.
+let groupRefreshes = 0;
+// Whether the map has moved since it was last written down. It is a flag rather than a
+// second `storeGroupOverride()` call at the toggle because there is exactly one rule
+// about what may be in that store, and a rule with two enforcement sites is the shape
+// `docs/instruments.md` records the rename refusal having: no mutation can reach one of
+// them without the other covering, so one of the two is doing all the work and nothing
+// can say which.
+let groupOverrideDirty = false;
+// Where the two terms of the store rule last stood, keyed by group and read as
+// `override/derived`. It exists so a pass can tell an agreement that was just *arrived
+// at* from one that has been true since the page opened, which is the whole of what the
+// prune below turns on. Empty at boot on purpose.
+const groupSeen = new Map();
+function refreshGroups() {
+  groupRefreshes++;
+  for (const [key, { group, node, button, mark }] of panelGroupNodes) {
+    // The same rule that decides whether the group opens, and not a wider one of its
+    // own. That is a property of every `reveals` closure including its own parameters
+    // rather than a coincidence: a group with something touched inside it always
+    // derives open, so a shut group that is in use is always one a person shut, and the
+    // mark is telling them what they hid. A closure that *replaced* the default rule
+    // would break that - the group could be quietly carrying a value with nothing on
+    // screen saying so - and the fix belongs in the closure rather than here, because a
+    // mark widened to cover it would be a second rule drifting from the first.
+    const inUse = groupRevealed(group);
+    const want = groupOverride.get(key);
+    // **The decay the store rule claims, and for a while it was only a claim.**
+    // `toggleGroup` drops an entry that agrees with the derivation *at the moment the
+    // toggle is pressed*, which closes nothing on its own, because the term that moves
+    // afterwards is the other one. A group pinned open while it was quiet stores `true`
+    // against a derived `false`, and then a value set, a look applied or a project
+    // opened moves the derivation onto it with nothing looking - so reset the look and
+    // the group is still open with nothing inside it, which is the stored panel layout
+    // this whole design exists to refuse. The derivation is read here, on every write
+    // and every change to the tracks, so this is where an override that has been
+    // overtaken can be seen to have been.
+    //
+    // **What it may not do is prune on agreement alone, and the state that says so is
+    // the one this page boots into.** Before the take is open and before a project has
+    // been restored every look parameter sits at its default and `tracks` is empty, so
+    // the derivation answers `false` for every group - which is not a statement about
+    // the document, it is a statement about there not being one yet. A build comparing
+    // the two terms for equality deleted every stored collapse on its way past that
+    // reading, wrote the pruned map straight back, and then let the take load and derive
+    // the group open again. Collapsing a group that was in use never survived a reload
+    // while pinning one open always did, and the direction that failed is the one people
+    // reach for, because a quiet group is already shut. The same window is open for as
+    // long as the load takes rather than only at module evaluation, so a flag raised
+    // until boot finishes would close half of it: `openTake` derives against a default
+    // look before the project that fills it has arrived.
+    //
+    // So the pair is remembered and the prune fires where it has *changed* into
+    // agreement - the derivation arriving on the opinion, or a toggle putting the
+    // opinion on the derivation. Both terms are covered by one comparison rather than
+    // two rules, which is the same reason `toggleGroup` does not prune on its own way
+    // past. At boot nothing has changed into anything and the map is empty, so the page
+    // reads the store and leaves it alone. An entry that agreed from the first frame and
+    // never moved is kept, which costs a group rendering exactly as it would have
+    // anyway, and it decays the first time the document uses that group and stops.
+    //
+    // `get` answers `undefined` for a group nobody has overruled and no comparison
+    // against a boolean can match that, so the untouched case costs two Map lookups.
+    const pair = `${want}/${inUse}`;
+    const settled = groupSeen.get(key);
+    if (settled !== undefined && settled !== pair && want === inUse) {
+      groupOverride.delete(key);
+      groupOverrideDirty = true;
+    }
+    groupSeen.set(key, `${groupOverride.get(key)}/${inUse}`);
+    const open = groupIsOpen(group);
+    const touched = groupTouchedCount(key);
+    const state = `${open}/${inUse}/${touched}`;
+    if (groupPainted.get(key) === state) continue;
+    groupPainted.set(key, state);
+
+    node.classList.toggle('shut', !open);
+    button.setAttribute('aria-expanded', String(open));
+    // What the button says it will do, which is not the same sentence as the heading.
+    button.setAttribute('aria-label', `${open ? 'collapse' : 'expand'} ${group.label}`);
+    // The count only where it is the only thing that can say so. An open group has its
+    // rows on screen and a number over them would be a second, worse copy of them; a
+    // shut group that is genuinely at its defaults has nothing to announce. The one
+    // case with nothing to count is `detail` revealed by a reading, which shows the
+    // mark without a number rather than a misleading zero.
+    mark.hidden = open || !inUse;
+    mark.textContent = touched > 0 ? String(touched) : '';
+    mark.title = touched > 0
+      ? `${touched} of these are set to something` : 'this group is in use';
+  }
+  // Once at the end, and only where the map actually moved. `setItem` serialises the
+  // whole thing synchronously, so writing it on every pass would put a `JSON.stringify`
+  // and a storage write into the render path to store the bytes that were already
+  // there - which is the cost the painting rule above exists to keep out, arriving
+  // through the door beside it.
+  if (groupOverrideDirty) {
+    groupOverrideDirty = false;
+    storeGroupOverride();
+  }
+}
+
+/**
+ * A person disagreeing with the derivation, which is the only thing that is stored.
+ *
+ * It writes what was asked for and nothing else. Whether that survives is the prune's
+ * question and is asked in `refreshGroups` above, where the derivation is read - a
+ * toggle that dropped an agreeing entry on its own way past would be the same rule
+ * spelled a second time, and the second spelling would be the one covering for the
+ * first every time anything tried to measure either.
+ */
+function toggleGroup(key) {
+  const entry = panelGroupNodes.get(key);
+  if (!entry) return;
+  groupOverride.set(key, !groupIsOpen(entry.group));
+  groupOverrideDirty = true;
+  refreshGroups();
+}
+
+// The no-op declared beside `paramWritten` becomes the real thing here, where both of
+// the stores the predicate reads exist, and the panel is painted once for the state the
+// page booted into.
+groupRevealChanged = refreshGroups;
+refreshGroups();
+
 // Every track written through the one door, at one program position. This is the
 // evaluator the note on `evaluating` asked for: it runs inside
 // `renderProgramFrame`, so the flag now spans exactly what its name claims, and a
@@ -3270,11 +3852,47 @@ function restoreProject(project) {
   const restoredLook = [];
   for (const [name, keys] of Object.entries(project.look.tracks)) {
     if (!Array.isArray(keys)) throw new Error(`look track ${name} is not an array of keys`);
-    if (keys.length === 0) continue;
     // Names the registry does not know are refused rather than dropped. A track
     // silently discarded is an edit silently lost, and the file is more likely to
     // be from a build this one cannot read than to be harmlessly extra.
-    params.spec(name);
+    const spec = params.spec(name);
+    // And a name it does know but does not tag `look` is refused for a harder reason
+    // than tidiness. `serialiseProjectBody` filters the track set down to look
+    // parameters, so this is a shape no build of this program has ever written - the
+    // reader was simply not making the demand the writer already meets, and the tag was
+    // sitting here unread while the throw above was taken for the whole check.
+    //
+    // What accepting one cost is the part worth naming. `evaluateTracks` has no tag
+    // filter and runs inside `renderProgramFrame`, so a track on `renderScale` is
+    // `resize()` called once per rendered frame - and where the value genuinely moves
+    // across a ramp, `composer.setSize` disposes and recreates the render targets and,
+    // through `AfterimagePass`, the trails accumulator. That is the accumulator
+    // destroyed between two consecutive frames of a pre-roll whose entire purpose is to
+    // build it up, so an accurate seek stops reproducing the playback it is defined to
+    // reproduce. The document stops round-tripping at the same time and just as quietly,
+    // because the serialiser filters the track back out on the next commit.
+    //
+    // Read off the spec rather than checked against a list of view parameter names, so
+    // a parameter retagged later is refused by existing rather than by being remembered.
+    if (spec.tag !== 'look') {
+      throw new Error(
+        `the track on ${JSON.stringify(name)} is on a ${spec.tag} parameter: a project carries `
+        + 'look tracks only, which is what this build writes and the only kind it can evaluate '
+        + 'without resizing the drawing buffer from inside the render loop',
+      );
+    }
+    // **Skipped only after it has been asked about, and the order is the whole of it.**
+    // This shortcut used to stand above both refusals, so `{"renderScale": []}` and a
+    // track under a name the registry has never heard of both walked straight past a
+    // reader that had just promised to refuse them. Nothing threw and nothing was kept:
+    // `serialiseProjectBody` filters the entry back out on the next commit, so the
+    // document quietly stopped saying what it said when it was opened - which is the
+    // "an edit silently lost" the comment above is about, arriving through the one shape
+    // that has no edit in it to notice missing.
+    //
+    // An empty track is still nothing to restore, so it is still skipped. The change is
+    // that it is skipped for being empty rather than for being cheap to skip.
+    if (keys.length === 0) continue;
     restoredLook.push([name, keys.map((k) => {
       const key = restoreKey(`track ${name}`, k);
       key.value = params.normalise(name, key.value);
@@ -3394,6 +4012,43 @@ function restoreProject(project) {
 // hundred.
 const UNDO_LIMIT = 100;
 
+/**
+ * Every write to the working document, in the order they were asked for.
+ *
+ * **The server does not order them and it is right not to.** `DocumentStore.write` gives
+ * each write its own numbered scratch file precisely so two overlapping puts to one
+ * document cannot share it, and then renames - so concurrent writes all succeed and the
+ * last `rename` to complete is the one on disk. Which that is has nothing to do with
+ * which was asked for first: they are separate connections doing separate disk work.
+ *
+ * That is fine for the auto-save on its own, where every write is a later state of the
+ * same document and losing a race costs one interaction's worth. It is not fine next to
+ * the recovery: the auto-save is fire-and-forget, so an edit made just before the
+ * operator presses Restore can still be in flight, land after the restore's write, and
+ * put the overwriting edit back - after the page has said "restored the autosaved edit"
+ * and dropped the only other copy. A reload then loses the work a second time, having
+ * twice reported it recovered.
+ *
+ * Chained rather than cancelled, because a write already on the wire cannot be recalled
+ * and the ordering is the whole requirement - the restore has to be last, not alone.
+ *
+ * **The chain carries no failure forward**, which is the difference between serialising
+ * and stopping: `.catch` on the link rather than on the returned promise means one
+ * auto-save that failed - a dropped connection, a 500 - leaves the next write to go out
+ * normally instead of silently ending persistence for the rest of the session. Callers
+ * still see their own rejection on what they were handed back.
+ */
+let workingWrites = Promise.resolve();
+function writeWorking(body) {
+  const wrote = workingWrites.then(() => fetch(`/projects/${WORKING_PROJECT}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }));
+  workingWrites = wrote.catch(() => {});
+  return wrote;
+}
+
 const history = {
   stack: [],
   // What the document looked like at the end of the last interaction. Comparing
@@ -3437,17 +4092,13 @@ const history = {
     // Auto-save the project after every change. Fire-and-forget: a failed save is
     // logged in the UI but it must not block the interaction that caused it.
     const workingBody = { ...serialiseProject(), take: { id: openTakeId, hash: openTakeHash } };
-    fetch(`/projects/${WORKING_PROJECT}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(workingBody),
-    }).then(async (res) => {
+    writeWorking(workingBody).then(async (res) => {
       if (!res.ok) {
         const text = await res.text().catch(() => '');
-        ui.note.textContent = `auto-save failed: ${text.slice(0, 80)}`;
+        say(`auto-save failed: ${text.slice(0, 80)}`);
       }
     }).catch((err) => {
-      ui.note.textContent = `auto-save failed: ${err.message}`;
+      say(`auto-save failed: ${err.message}`);
     });
     return true;
   },
@@ -3672,8 +4323,9 @@ function showMonitor(state) {
   // A frame is 486KB at full rate; the depth block scales with the divisor squared
   // and the colour block does not move at all, which is why the saving flattens.
   // Stated from the grid rather than from a table, so the number cannot drift from
-  // what the sender is actually building.
-  const depthKB = Math.ceil(512 / state.divisor) * Math.ceil(424 / state.divisor) * 2 / 1000;
+  // what the sender is actually building - which this line promised for a while
+  // before it was true, having spelled the two numbers out inline as a third copy.
+  const depthKB = Math.ceil(DEPTH_W / state.divisor) * Math.ceil(DEPTH_H / state.divisor) * 2 / 1000;
   const perFrame = depthKB + 52;
   const rate = perFrame * (30 / state.stride) / 1000;
   const parts = [];
@@ -4045,6 +4697,7 @@ const noop = () => {};
 // that it did, or it is asserting the claim rather than enforcing it.
 const counters = {
   renders: 0, stateAdvances: 0, resets: 0, drafts: 0, seeks: 0, requests: 0, framesFetched: 0,
+  navigationRedraws: 0, navigationHistoryClears: 0,
   // The lane rebuild is the expensive one - it resizes the drawing buffer - and the
   // reposition is the cheap one. Counted separately because "a drag no longer rebuilds"
   // is a claim about which of the two ran, and a check that timed the drag instead
@@ -4419,31 +5072,74 @@ function advanceSurfaceState(dtSec) {
 
 let lastProgramTime = 0;
 
+// Screen-space history belongs to the camera pose that produced it. Carrying it
+// across a different pose overlays the old view on the new one: Three's afterimage
+// pass takes the component-wise maximum of the current pixel and the damped old
+// pixel, so a pan raises the frame's luminance until the camera stops. The camera
+// used by the render is compared here rather than inferred from OrbitControls
+// events. That covers the program camera, auto-orbit and camera-view switches too,
+// and it leaves one policy at the seam every surface and export already shares.
+let renderedCamera = null;
+const renderedCameraPosition = new THREE.Vector3();
+const renderedCameraQuaternion = new THREE.Quaternion();
+const renderedProjection = new THREE.Matrix4();
+
+function renderedCameraChanged() {
+  const changed = renderedCamera !== null && (
+    renderedCamera !== viewCamera
+    || !renderedCameraPosition.equals(viewCamera.position)
+    || !renderedCameraQuaternion.equals(viewCamera.quaternion)
+    || !renderedProjection.equals(viewCamera.projectionMatrix)
+  );
+  renderedCamera = viewCamera;
+  renderedCameraPosition.copy(viewCamera.position);
+  renderedCameraQuaternion.copy(viewCamera.quaternion);
+  renderedProjection.copy(viewCamera.projectionMatrix);
+  return changed;
+}
+
+function clearFeedback(targets, refusal) {
+  if (!targets.every((target) => target?.isWebGLRenderTarget)) throw new Error(refusal);
+  const color = new THREE.Color();
+  renderer.getClearColor(color);
+  const alpha = renderer.getClearAlpha();
+  renderer.setClearColor(0x000000, 0);
+  try {
+    for (const target of targets) {
+      renderer.setRenderTarget(target);
+      renderer.clear(true, true, true);
+    }
+  } finally {
+    renderer.setRenderTarget(null);
+    renderer.setClearColor(color, alpha);
+  }
+}
+
+function clearAfterimage() {
+  // Three exposes no reset on the afterimage pass, so its two buffers are reached
+  // for directly. They are the whole of its state at 0.185.1, and the check makes an
+  // upstream rename loud instead of clearing the canvas while stale history survives.
+  clearFeedback(
+    [afterimage._textureComp, afterimage._textureOld],
+    'afterimage internals moved: camera history can no longer be cleared safely',
+  );
+}
+
 // Clears both feedback paths. Neither can be walked backwards, so an accurate
 // seek clears them and pre-rolls forward from a known state - and all zeroes is
 // that state, since a zero last-depth reads as invalid and the first frame after
 // it comes through as births rather than as swaps.
 function resetAccumulators() {
   counters.resets++;
-  const color = new THREE.Color();
-  renderer.getClearColor(color);
-  const alpha = renderer.getClearAlpha();
-  renderer.setClearColor(0x000000, 0);
   // Three exposes no reset on the afterimage pass, so its two buffers are reached
   // for directly. They are the whole of its state at 0.185.1, and the check is
   // there because a rename on upgrade would fail silently: setRenderTarget of
   // undefined binds the canvas instead, the clear lands nowhere, and the seek
   // would quietly carry the previous image's trails into its pre-roll.
-  const feedback = [statePrev, stateNext, afterimage._textureComp, afterimage._textureOld];
-  if (!feedback.every((target) => target?.isWebGLRenderTarget)) {
-    throw new Error('afterimage internals moved: the accumulator reset is no longer complete');
-  }
-  for (const target of feedback) {
-    renderer.setRenderTarget(target);
-    renderer.clear(true, true, true);
-  }
-  renderer.setRenderTarget(null);
-  renderer.setClearColor(color, alpha);
+  clearFeedback(
+    [statePrev, stateNext, afterimage._textureComp, afterimage._textureOld],
+    'afterimage internals moved: the accumulator reset is no longer complete',
+  );
   lastProgramTime = 0;
 }
 
@@ -4491,6 +5187,16 @@ function renderProgramFrame(t) {
     // operation. A clip with no keys writes nothing and the registry's own values
     // stand, which is a locked-off camera and a static look.
     evaluateTracks(t);
+
+    // Temporal source history remains valid while the camera is still. A changed
+    // camera is a different projection, so only the screen-space feedback is
+    // discarded; the surface-state texture still describes the same room and must
+    // survive the navigation. This happens after track evaluation because that is
+    // where the program camera moves.
+    if (renderedCameraChanged()) {
+      clearAfterimage();
+      counters.navigationHistoryClears++;
+    }
 
     const dt = Math.max(0, t - lastProgramTime);
     lastProgramTime = t;
@@ -5298,6 +6004,38 @@ class TimelineTransport {
   }
 
   /**
+   * Rebuilds the parked viewport after navigation without borrowing the scrub
+   * draft's look. With trails active, the accurate image requires a pre-roll at
+   * the new camera pose because screen-space history cannot be reprojected. With
+   * trails off, the already-bound source pair and surface state are sufficient,
+   * so the same frame can be drawn directly unless another draft left incomplete
+   * state behind it.
+   */
+  redraw(programSec) {
+    return this.exclusive(() => this.redrawNow(programSec));
+  }
+
+  async redrawNow(programSec) {
+    counters.navigationRedraws++;
+    const target = this.frameAt(programSec);
+    const t = target / this.outputFps;
+    const source = this.sourceFrameAt(t);
+    if (this.drafted || valueAtProgram('trails', t) > 0
+        || target !== this.frame || this.source.applied !== source + 1) {
+      return this.seekNow(t);
+    }
+
+    const began = performance.now();
+    advanceNavigation(t);
+    renderProgramFrame(t);
+    this.lastCostMs = performance.now() - began;
+    this.frame = target;
+    this.drafted = false;
+    this.paint();
+    return this.lastCostMs;
+  }
+
+  /**
    * One output frame forward, or false if there is nothing to advance to. The
    * playback loop and the proof tool drive the same call - the loop adds pacing
    * and prefetch around it and nothing else.
@@ -5780,6 +6518,7 @@ const ui = {
   camView: document.getElementById('camView'),
   camSensor: document.getElementById('camSensor'),
   camLevel: document.getElementById('camLevel'),
+  camLevelReset: document.getElementById('camLevelReset'),
   levelNote: document.getElementById('levelNote'),
   cropReset: document.getElementById('cropReset'),
   exportSize: buildExportMenu(document.getElementById('tExportSize')),
@@ -5808,9 +6547,19 @@ const ui = {
   presetExport: document.getElementById('tPresetExport'),
   presetImport: document.getElementById('tPresetImport'),
   presetFile: document.getElementById('tPresetFile'),
+  pickDialog: document.getElementById('presetPick'),
+  pickTitle: document.getElementById('ppTitle'),
+  pickName: document.getElementById('ppName'),
+  pickGroups: document.getElementById('ppGroups'),
+  pickCount: document.getElementById('ppCount'),
+  pickCancel: document.getElementById('ppCancel'),
+  pickGo: document.getElementById('ppGo'),
   project: document.getElementById('tProject'),
   projectOpen: document.getElementById('tProjectOpen'),
   projectSave: document.getElementById('tProjectSave'),
+  resume: document.getElementById('tResume'),
+  resumeWhen: document.getElementById('tResumeWhen'),
+  resumeOpen: document.getElementById('tResumeOpen'),
   recGo: document.getElementById('recGo'),
   recMark: document.getElementById('recMark'),
   recNote: document.getElementById('recNote'),
@@ -5847,7 +6596,38 @@ const sayExport = (text) => {
   ui.exportNote.title = text;
 };
 
-let timeline = null;
+/**
+ * The editor's one line of prose, and the only way anything writes it.
+ *
+ * `#tNote` is a chip in `.tchips`, which scrolls horizontally with its scrollbar
+ * hidden so the bar keeps its 51px - so a sentence wider than the strip has nothing
+ * to drag, and the fade `.tchips.more` paints says that something is off the right
+ * edge without ever saying what. The whole of the editor's error channel wrote into
+ * that element and nothing else, which left a long refusal unreadable by any means
+ * available to the person it was written for, and a refusal is exactly the message
+ * that runs long. `title` is the same sentence somewhere it cannot be cut off, which
+ * is the repair `sayExport` above already made for the export note beside it.
+ *
+ * **The scroll is why every note comes through here and not only the errors.** A
+ * message that has just arrived should be the part of the strip on screen, and the
+ * strip is wherever the last one left it. Taken after the text lands, because
+ * `scrollWidth` read before the write is the previous message's width and would park
+ * the strip at the end of a sentence that is no longer there.
+ *
+ * A declaration rather than a `const` arrow like its neighbour, and that is about the
+ * auto-save fifteen hundred lines above this line: it reports a failed save through
+ * here, and a binding still in its temporal dead zone would turn that report into a
+ * throw out of the fetch handler - a save failure eating its own message.
+ */
+function say(text) {
+  ui.note.textContent = text;
+  ui.note.title = text;
+  // An empty note is the strip being cleared, and scrolling a cleared strip to its
+  // end moves it for no reason anybody watching could account for.
+  if (!text) return;
+  const chips = ui.note.closest('.tchips');
+  if (chips) chips.scrollLeft = chips.scrollWidth;
+}
 
 const timecode = (sec) => {
   const s = Math.max(0, sec);
@@ -5856,7 +6636,7 @@ const timecode = (sec) => {
 };
 
 function showTimelineError(err) {
-  ui.note.textContent = String(err?.message ?? err);
+  say(String(err?.message ?? err));
   console.error('[timeline]', err);
 }
 
@@ -6336,9 +7116,15 @@ paramWritten = (name, tag) => {
   // business on their window, but a source has its own buffer and its own reason to
   // be told what scale to draw at.
   sendProgramOut({ params: { [name]: params.get(name) } });
-  // View state changes what you are looking at rather than what the clip is, and
-  // both of today's view parameters already do their own work: render scale
-  // resizes the buffers, and auto-orbit only means anything with a clock running.
+  // View state changes what you are looking at rather than what the clip is, and both
+  // of today's view parameters already do their own work: auto-orbit only means
+  // anything with a clock running, and render scale resizes the buffers - which is
+  // `resize()`, and `resize()` asks for its own repaint on its last line because
+  // reallocating a buffer clears it. The premise this comment used to carry was that
+  // resizing the buffers was the work, so a repaint here would be a second one. It is
+  // not: resizing a buffer is not drawing into it, and withholding the repaint here
+  // while nothing else asked for one is what left the stage black behind the chrome
+  // after every move of the render-scale slider.
   if (tag === 'view' || transportWriting) return;
   requestRepaint();
 };
@@ -6801,7 +7587,8 @@ const isTyping = (el) => el instanceof HTMLElement && (TYPING_TAGS.has(el.tagNam
 
 const SHORTCUTS = 'space play/pause · arrows step a frame, with shift a second · '
   + 'home/end · i/o set in/out, with shift jump to them · del removes the selected key · '
-  + 'm marks · +/- zoom the ruler, ,/. pan it, f fits the clip, z frames in..out · '
+  + 'm marks, [/] jump to the previous and next mark · '
+  + '+/- zoom the ruler, ,/. pan it, f fits the clip, z frames in..out · '
   + 'cmd-z undoes · h hides the panel';
 
 /**
@@ -6854,7 +7641,18 @@ addEventListener('keydown', (e) => {
   if (!EDITING || !timeline) return;
   // A modifier other than shift means the key belongs to the browser or the OS.
   // Shift is ours: it is the difference between a frame and a second.
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  //
+  // **AltGr is not one of those modifiers - it is how a character gets typed.** On a
+  // German, Nordic or Polish layout `[` and `]` are AltGr presses, and Windows delivers
+  // AltGr as ctrl+alt, so a guard reading those two bits returned before the mark keys
+  // below could run and this program advertised two shortcuts nobody on those layouts
+  // could press. The test is whether the press produced a character or a command:
+  // `e.key` is already the composed one, so a single character under AltGr means the
+  // modifier did its composing job and the key that came out is ours, while
+  // `ArrowRight` under the same two bits is the right-hand Alt being used as a command
+  // modifier and is still not.
+  const composed = e.key.length === 1 && e.getModifierState('AltGraph');
+  if ((e.metaKey || e.ctrlKey || e.altKey) && !composed) return;
 
   const step = (frames) => {
     pauseTransport();
@@ -6889,6 +7687,36 @@ addEventListener('keydown', (e) => {
       return;
     case 'Delete': case 'Backspace': e.preventDefault(); deleteSelectedKey(); return;
     case 'm': case 'M': e.preventDefault(); markHere().catch(showTimelineError); return;
+    // The other half of item three, and the half that is actually usable: a tick is
+    // five pixels of diamond, so pressing one is a gesture and stepping through them
+    // is a key. Through `goTo` like Home and End, so a jump pauses and clamps the
+    // same way every other seek on this keyboard does.
+    //
+    // The epsilon is what stops a playhead parked exactly on a mark finding itself
+    // and going nowhere, which reads as the key not being bound at all. It is a
+    // microsecond of program time - smaller than any frame this program can show, so
+    // it can never skip a mark that is genuinely a step away.
+    // **Only the marks the playhead can actually get to.** `markSecondsInOrder` clamps
+    // to the take, not to the trim, and `Transport.frameAt` clamps every seek into
+    // in..out - so on a clip trimmed to start at five seconds, pressing `[` at the in
+    // point found a mark at two, asked to go there, and arrived back at five. The key
+    // read as unbound at exactly the edge where somebody is most likely to press it.
+    //
+    // Filtered here rather than in `markSecondsInOrder`, because the ticks must go on
+    // being drawn where they are: a mark outside the trim is drawn inside `.tshade`,
+    // which is the shading that exists to say "the export will not reach this". Moving
+    // those ticks to the boundary would put them where the export *does* reach and
+    // report a moment that is not there. What is unreachable is the seek, not the mark.
+    case '[': case ']': {
+      e.preventDefault();
+      const here = timeline.programSec;
+      const seconds = markSecondsInOrder().filter(reachableInClip);
+      const to = e.key === '['
+        ? seconds.filter((s) => s < here - 1e-6).pop()
+        : seconds.find((s) => s > here + 1e-6);
+      if (to !== undefined) goTo(to);
+      return;
+    }
     // Zoom about the playhead rather than about the centre of the window, for the same
     // reason the wheel zooms about the pointer: the playhead is what the keyboard is
     // pointing at, and zooming away from it is zooming away from the edit.
@@ -6921,7 +7749,7 @@ addEventListener('keydown', (e) => {
       e.preventDefault();
       if (view.frame(clipIn, clipOut ?? view.duration)) viewChanged();
       return;
-    case '?': e.preventDefault(); ui.note.textContent = SHORTCUTS; return;
+    case '?': e.preventDefault(); say(SHORTCUTS); return;
     default:
   }
 });
@@ -7299,10 +8127,11 @@ ui.fps.addEventListener('change', () => {
   history.commit();
 });
 
-// Orbiting while the playhead is parked has the same shape as scrubbing: a drag
-// wants a cheap frame per pointer move and a true one on release. It differs from
-// scrubbing in the one way that matters, and the difference is why this arms rather
-// than pumps: **the render answers this event**. `renderProgramFrame` runs
+// Orbiting while the playhead is parked differs from scrubbing in two ways that
+// matter. The first is temporal: a scrub draft deliberately zeros fade, wake and
+// trails, while an orbit must keep the grade stable as the camera moves. The second
+// is scheduling, and it is why this arms rather than pumps: **the render answers this
+// event**. `renderProgramFrame` runs
 // `advanceNavigation`, `advanceNavigation` calls `controls.update()`, and a damped
 // control that moved fires `change` - so a handler that rendered here would be a
 // render asking for the next render, with the damping settle running at rebuild rate
@@ -7414,15 +8243,18 @@ function pumpParkedDraft() {
   // never paint over one that is already queued.
   if (orbitRedrawWanted && !draftBusy) {
     orbitRedrawWanted = false;
-    draftWanted = timeline.programSec;
-    pumpDraft();
+    draftBusy = true;
+    timeline.redraw(timeline.programSec)
+      .catch(showTimelineError)
+      .finally(() => { draftBusy = false; });
     return;
   }
   // Nothing armed and nothing in flight, so the controls have stopped moving.
   if (orbitSettling && !draftBusy) {
     orbitSettling = false;
-    // Releasing is what asks for the true image, the same rule the scrubber follows
-    // and for the same reason: a draft is not the picture playback would produce.
+    // The redraws above are already accurate. This last seek closes the race between
+    // the final redraw and the last damping step and makes release an explicit
+    // accuracy boundary, the same rule the scrubber follows.
     timeline.seek(timeline.programSec).catch(showTimelineError);
   }
 }
@@ -7766,6 +8598,14 @@ function paintLanes() {
 function lanesChanged() {
   rebuildLanes();
   paintLanes();
+  // The keyframe half of the panel's collapse rule, and this is the one announcement
+  // that carries it: a track appearing is not a registry write, so `params.set` never
+  // hears about it. Every path that changes the set of tracks arrives here - keying
+  // from a panel button, a tool writing a whole set at once, undo, and a project being
+  // opened, which reaches it through `timingChanged`. A group whose only evidence is a
+  // keyed parameter sitting on its default would otherwise stay shut until the next
+  // time anything wrote a value.
+  groupRevealChanged();
 }
 
 /**
@@ -7850,6 +8690,44 @@ function timingChanged({ moved = false } = {}) {
 let takeMarks = [];
 let openTakeId = null;
 
+// Where a mark is allowed to be on the ruler. A mark past the end of the edit stacks
+// at the edge rather than being dropped, and the tick and the key that jumps to it
+// have to agree about where the edge is - so the clamp is one expression both call
+// rather than the same arithmetic written twice, which is how a press could land the
+// playhead somewhere its own tick is not.
+const clampToClip = (sec, total) => Math.max(0, Math.min(total, sec));
+
+/**
+ * Every mark's position on the ruler, in program seconds and in order.
+ *
+ * Recomputed on each press rather than cached beside the ticks: the curve moves under
+ * these whenever a retime key is dragged, and a cached list is a second copy of the
+ * marks that is right until the moment somebody edits the timing - which is exactly
+ * the moment a jump-to-mark key gets pressed.
+ */
+/**
+ * Whether a seek to this program second would land where it was asked to.
+ *
+ * `Transport.frameAt` clamps every seek into in..out, so a mark the trim excludes is a
+ * destination that silently becomes the boundary instead - and the two surfaces that
+ * offer marks both had to know it. The keys learned first and the ruler's ticks did
+ * not, which is the instance being fixed rather than the class: one expression, called
+ * by both, so the surface added next is asked by existing rather than by somebody
+ * remembering this paragraph.
+ *
+ * The epsilons are the same slack the key stepping uses. A mark sitting exactly on a
+ * boundary is reachable, because the boundary is inside the range.
+ */
+const reachableInClip = (programSec) => !timeline
+  || (programSec >= timeline.clipInSec - 1e-6 && programSec <= timeline.clipOutSec + 1e-6);
+
+const markSecondsInOrder = () => {
+  const total = view.duration;
+  return takeMarks
+    .map((m) => clampToClip(retime.programSecAt(m.sourceMs / 1000), total))
+    .sort((a, b) => a - b);
+};
+
 function paintMarks() {
   const host = ui.marks;
   if (!host) return;
@@ -7866,7 +8744,13 @@ function paintMarks() {
     // look right - so this is drawn through `programSecAt` even when it is the
     // identity.
     const program = retime.programSecAt(mark.sourceMs / 1000);
-    const el = document.createElement('span');
+    // A button rather than a span, which is the whole of item three: the surface the
+    // marks were pressed *for* drew them as decoration while the gallery's viewer -
+    // which only reviews footage - made its own ticks pressable. The seek this needs
+    // was already computed here at draw time, so the tick was one element name away
+    // from being the control it looks like.
+    const el = document.createElement('button');
+    el.type = 'button';
     // A mark the edit never reaches is drawn at the edge in the dim colour rather
     // than dropped. `programSecAt` returns where the curve ends for a source
     // position it never gets to, so this is the honest reading of that answer: the
@@ -7874,10 +8758,39 @@ function paintMarks() {
     // somebody shortened the clip would be worse than one that needs explaining.
     const beyond = program >= total - 1e-9 && mark.sourceMs / 1000 > retime.sourceSecAt(total) + 1e-9;
     el.className = beyond ? 'tmk beyond' : 'tmk';
-    const at = Math.max(0, Math.min(total, program));
+    const at = clampToClip(program, total);
     el.style.left = `${view.pct(at)}%`;
     el.hidden = !view.holds(at);
     el.title = `${mark.label ?? mark.id} · source ${(mark.sourceMs / 1000).toFixed(2)}s`;
+    // **The clamped second, never the mark's own source second.** The two coincide
+    // only at rate 1 with no keys, which is exactly the case that would let a wrong
+    // implementation look right - and a tick drawn against the edge because the edit
+    // never reaches it has to seek to the edge it is drawn at, or pressing it lands
+    // the playhead somewhere the tick is not.
+    //
+    // Both events are stopped, and the pointerdown is the one that matters. The bed
+    // scrubs on `pointerdown` rather than on `click`, so a click-only guard leaves
+    // the press starting a scrub to wherever the pointer was, and the tick's own seek
+    // arriving afterwards reads as a drag that happened to end on a mark.
+    el.addEventListener('pointerdown', (e) => e.stopPropagation());
+    // **A tick outside the trim declines and says so, rather than seeking somewhere it
+    // is not.** The seek would be clamped to the boundary, so pressing a diamond drawn
+    // inside the shading moved the playhead to the edge of the edit - a control that
+    // answers, in the one way that is worse than not answering, by doing something
+    // other than what it shows. The keys already refuse these; a class closed on one
+    // surface and left open on the other is the same defect with a second address.
+    //
+    // Said out loud rather than declined in silence, because a press is a person
+    // pointing at a specific thing: a key that steps past nothing has nothing to report,
+    // and a diamond that was aimed at does.
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!reachableInClip(at)) {
+        say('that mark is outside the clip range, so the edit cannot reach it');
+        return;
+      }
+      goTo(at);
+    });
     host.appendChild(el);
   }
   // The same marks on the overview, in whole-clip coordinates. Built here rather than
@@ -7964,6 +8877,210 @@ function presetFromCurrentLook(names) {
 }
 
 /**
+ * Whether a document says what the whole look is, rather than adjusting part of one.
+ *
+ * The distinction did not exist while the only thing that could write a preset wrote
+ * the entire look tag, and it decides two separate things now - whether a file may
+ * stamp a clip with its provenance, and whether saving one moves the stamp - so it is
+ * one predicate both of them ask rather than the same `every` written twice.
+ */
+const wholeLookTag = (values) => params.names('look').every((n) => Object.hasOwn(values, n));
+
+// ------------------------------------------- which look values a preset carries
+
+/**
+ * The subset picker, built once at boot and shown by both doors a look leaves by.
+ *
+ * `presetFromCurrentLook` has taken a subset of names since it was written and both
+ * of its callers passed nothing, so every preset this program could author was the
+ * whole look tag - the capability sat one layer down with no way to reach it. What
+ * that cost was not expressiveness: "just my grain and bloom" had to be a hand-edited
+ * file, and a hand-edited file is the one door into this program that nothing
+ * upstream validates.
+ *
+ * **The groups come from `PANEL_GROUPS` and `PARAMS[n].group`, never from a list
+ * here.** A second statement of which parameter belongs under which heading is a
+ * statement that drifts, and it would drift silently, because a parameter missing
+ * from this dialog is not an error anywhere - it is a value you can no longer choose
+ * to leave out. Derived, a parameter added next year appears by existing, under the
+ * heading the panel already gives it.
+ *
+ * **Built at boot rather than on the first press**, which is the same call
+ * `library.js` makes for the gallery's menus and for the same reason: `editor-check`
+ * enumerates what the document contains and demands a driver for every control in it,
+ * so a dialog that populated itself on open would show the sweep an empty box and the
+ * user fifty-odd checkboxes. A control no sweep can see is a control nothing proves.
+ */
+const presetPickBoxes = new Map();
+const presetPickGroups = [];
+
+/**
+ * One box written, and the four that may have to move with it.
+ *
+ * The five reading weights tick and untick as a unit because a document naming two of
+ * them is not a look at all - `refusePresetBody` refuses exactly that file, and the
+ * reason is that the three left out do not arrive as anything. They stay at whatever
+ * the clip was already wearing, so half a blend renders as a mixture nobody authored.
+ * The rule belongs to the format; this is the control declining to assemble the file
+ * the format will refuse, which is better than meeting that refusal at the end of the
+ * gesture with the boxes already ticked.
+ */
+function presetPickSet(name, on) {
+  for (const n of (PARAMS[name].reading ? READINGS : [name])) presetPickBoxes.get(n).checked = on;
+}
+
+/**
+ * The group headings and the count, read back off the boxes rather than tracked
+ * beside them.
+ *
+ * A heading is a third state and not two: ticked when the whole group is in,
+ * indeterminate when part of it is, which is what makes one control both the
+ * check-all and the honest readout of what the group currently holds. Recomputed from
+ * the boxes after every write because the reading rule crosses two groups - unticking
+ * `depth` under Reading · source takes the three under Reading · treatment with it,
+ * and a heading that only heard about its own members would go on claiming they were
+ * in.
+ */
+function presetPickSync() {
+  for (const group of presetPickGroups) {
+    const on = group.members.filter((n) => presetPickBoxes.get(n).checked).length;
+    group.box.checked = on === group.members.length;
+    group.box.indeterminate = on > 0 && on < group.members.length;
+  }
+  const picked = presetPickNames();
+  ui.pickCount.textContent = `${picked.length} of ${presetPickBoxes.size} look values`;
+  // A preset carrying nothing is refused on the way back in, so the confirm is what
+  // refuses to write one: meeting that at the end of the gesture would be a dialog
+  // that lets you spend a minute assembling a document it already knows it cannot use.
+  ui.pickGo.disabled = picked.length === 0;
+}
+
+const presetPickNames = () => [...presetPickBoxes.keys()].filter((n) => presetPickBoxes.get(n).checked);
+
+for (const group of PANEL_GROUPS) {
+  const members = params.names('look').filter((n) => PARAMS[n].group === group.key);
+  // Skipped where the panel generator refuses, and the opposite call is right for the
+  // opposite reason: an empty panel group is a group key misspelled on one side, where
+  // an empty group here is the Viewer heading, which holds render scale and auto-orbit
+  // and both of them are `view`. View state is not in any preset, so a heading with
+  // nothing under it would be the panel's shape leaking into a question about the
+  // document.
+  if (!members.length) continue;
+  const groupNode = document.createElement('div');
+  groupNode.className = 'ppgroup';
+  const head = document.createElement('label');
+  head.className = 'check pphead';
+  const all = document.createElement('input');
+  all.type = 'checkbox';
+  all.id = `ppg-${group.key}`;
+  head.append(all, ` ${group.label}`);
+  groupNode.append(head);
+  all.addEventListener('change', () => {
+    for (const name of members) presetPickSet(name, all.checked);
+    presetPickSync();
+  });
+
+  for (const name of members) {
+    const row = document.createElement('label');
+    row.className = 'check';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    // Prefixed, because the panel's own control for this parameter is already `id`
+    // = the parameter's name. Two nodes under one id is a document where
+    // `getElementById` answers whichever came first, and `editor-check` builds the
+    // set it diffs against the registry out of exactly these ids - so a bare name
+    // here would let a panel that had dropped a row pass the row that exists to
+    // catch it, on the strength of a checkbox in a dialog.
+    input.id = `pp-${name}`;
+    input.checked = true;
+    row.append(input, ` ${PARAMS[name].label}`);
+    groupNode.append(row);
+    presetPickBoxes.set(name, input);
+    input.addEventListener('change', () => { presetPickSet(name, input.checked); presetPickSync(); });
+  }
+  ui.pickGroups.append(groupNode);
+  presetPickGroups.push({ box: all, members });
+}
+
+// Every reading needs a box, on the same reasoning as the uniform assertion beside
+// `READINGS` itself: `presetPickSet` reaches for all five whenever one of them is
+// ticked, so a reading the loop above did not build - one tagged something other than
+// `look`, which is the only way it could be skipped - would not be a missing checkbox.
+// It would be a dialog that throws on the first tick of any reading, which is a control
+// that appears to work until somebody uses it.
+for (const name of READINGS) {
+  if (!presetPickBoxes.has(name)) {
+    throw new Error(`the reading ${name} has no box in the preset subset dialog: ticking any of the five would throw`);
+  }
+}
+
+// Wired once rather than per opening: cancel means the same thing every time, and a
+// listener added on each open is a listener added again on the next one.
+ui.pickCancel.addEventListener('click', () => ui.pickDialog.close());
+
+/**
+ * Opens the picker and answers with a name and a subset, or with null.
+ *
+ * **Every box starts ticked**, so the gesture somebody already knows - press save,
+ * type a name, confirm - writes the whole look tag exactly as it did before, and a
+ * sparse preset is something you go out of your way to author. The state is rebuilt
+ * on each opening rather than remembered, because a selection carried over from the
+ * last save is a document shape decided by something off screen.
+ *
+ * **Cancelling writes nothing**, which is the whole of what `null` means here, and
+ * closing is one path rather than three: the confirm closes the dialog, so the
+ * `close` event is where the promise is settled whether it arrived from the button,
+ * from Escape, or from anything added later. Focus goes back to the control that
+ * opened the dialog on that same path, for the reason `library.js` states beside
+ * `closeMenus` - a surface dismissed while focus sat inside it leaves the caret
+ * nowhere, and the fix that is a rule survives the next caller where the fix that is
+ * a case does not.
+ */
+function pickPresetSubset({ title, verb, name }) {
+  return new Promise((resolve) => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    for (const input of presetPickBoxes.values()) input.checked = true;
+    presetPickSync();
+    ui.pickTitle.textContent = title;
+    ui.pickGo.textContent = verb;
+    ui.pickName.value = name;
+
+    let picked = null;
+    const confirm = () => {
+      // A document is named before it is written, and an unnamed one is neither a
+      // library entry nor a filename. The refusal is the field taking the focus back
+      // rather than a sentence, because there is only one field to be wrong about.
+      const chosen = ui.pickName.value.trim();
+      if (!chosen) { ui.pickName.focus(); return; }
+      picked = { name: chosen, names: presetPickNames() };
+      ui.pickDialog.close();
+    };
+    // Enter in the name field confirms, because it did when this was a `prompt()` and
+    // a dialog that quietly stopped answering the return key would be the gesture
+    // getting longer for everybody who already knew it. Guarded on the confirm being
+    // live so the key cannot write a document the button is refusing to write.
+    const typed = (e) => {
+      if (e.key !== 'Enter' || ui.pickGo.disabled) return;
+      e.preventDefault();
+      confirm();
+    };
+    const settle = () => {
+      ui.pickGo.removeEventListener('click', confirm);
+      ui.pickName.removeEventListener('keydown', typed);
+      ui.pickDialog.removeEventListener('close', settle);
+      if (opener?.isConnected && !opener.disabled) opener.focus();
+      resolve(picked);
+    };
+    ui.pickGo.addEventListener('click', confirm);
+    ui.pickName.addEventListener('keydown', typed);
+    ui.pickDialog.addEventListener('close', settle);
+    ui.pickDialog.showModal();
+    ui.pickName.focus();
+    ui.pickName.select();
+  });
+}
+
+/**
  * Everything about a preset that can be refused without writing anything.
  *
  * Split out of `applyStoredPreset` so the import path can ask the question before it
@@ -7979,11 +9096,62 @@ function refusePresetBody(name, body) {
   if (body?.version !== PROJECT_VERSION) {
     throw new Error(versionRefusal(`preset ${name}`, body?.version));
   }
+  // **The envelope, checked with the same suspicion as what is inside it.** Every key
+  // in `values` is put to the registry below, and for a while nothing looked at the
+  // document's own keys at all - so `{"version": 4, "mode": 4, "values": {...}}` walked
+  // straight through. `mode` is the exact field version 4 dissolved into the five
+  // reading weights, it means something specific in a version 3 document, and a file
+  // carrying it is a file whose author believes this build reads it. Answering that
+  // file with silence is the failure the version check one line above exists to
+  // prevent, arriving through the one part of the document nobody was reading.
+  //
+  // Named rather than counted, because the point is to tell somebody editing by hand
+  // which word to delete. `Object.keys` on a parsed document reports `__proto__` as an
+  // own key, so a file smuggling one is refused here as well - earlier than the values
+  // walk that already refuses it, and for the more accurate reason.
+  //
+  // `presetFromCurrentLook` emits these two and the five shipped looks carry these two,
+  // so this is the shape the program authors rather than a shape asserted about it.
+  const PRESET_KEYS = ['version', 'values'];
+  const stray = Object.keys(body).filter((k) => !PRESET_KEYS.includes(k));
+  if (stray.length) {
+    throw new Error(
+      `preset ${name} carries ${stray.join(', ')}, which a version ${PROJECT_VERSION} preset has no `
+      + `place for: a preset is ${PRESET_KEYS.join(' and ')} and nothing else, so a key beside them is `
+      + 'either a field an older version had or a typo, and both would be read as neither',
+    );
+  }
   // A document with no values is not a look that happens to change nothing. `?? {}`
   // used to make it one: the apply wrote nothing, the stamp went on anyway, and what
   // came back was a clip claiming provenance from a file that had said nothing at all.
-  if (!body.values || typeof body.values !== 'object' || Array.isArray(body.values)) {
+  //
+  // **An empty `values` object is that same document spelled differently**, and it
+  // needed saying out loud only once the reading rule below became a rule about
+  // scope. While all five readings were demanded of every file, `{}` was refused for
+  // naming none of them; a file whose scope is "nothing" now walks through that gate
+  // truthfully, so the sentence the shape deserves has to be stated where it was
+  // always meant - here, about the values.
+  //
+  // Three shapes and three sentences, because they are three different mistakes and
+  // one sentence fitted one of them. The person reading it is editing the file by
+  // hand, and telling somebody who has just deleted the last entry out of `values`
+  // that their document "carries no values object" sends them looking for a key that
+  // is in front of them.
+  if (!body.values || typeof body.values !== 'object') {
     throw new Error(`preset ${name} carries no values object, so there is no look in it to apply`);
+  }
+  if (Array.isArray(body.values)) {
+    throw new Error(
+      `preset ${name} carries a list where its values should be: a look is an object of `
+      + 'parameter names against values, so a list has nothing in it this program can name',
+    );
+  }
+  if (Object.keys(body.values).length === 0) {
+    throw new Error(
+      `preset ${name} has a values object with nothing in it, so its scope is nothing: `
+      + 'applying it would write no value and move no pixel. Name the values this look is '
+      + 'made of, or delete the document rather than keep one that describes no look',
+    );
   }
 
   // The values, checked against the registry without reaching it. `params.apply` does
@@ -8014,34 +9182,94 @@ function refusePresetBody(name, body) {
     params.normalise(key, value);
   }
 
-  // **And all five readings have to be there**, which is the whole reason there is a
-  // version 4. `format.js` puts it plainly about a version 3 file: every value it names
-  // is still a parameter, so the apply writes all of them without complaint and only
-  // the reading is missing, leaving whatever the previous document happened to select.
-  // A version 4 file that simply omits the five keys reaches that identical state while
-  // passing the version gate - the same look rendering as somebody else's shading,
-  // silently, only now with a stamp on it saying which file it came from. Everything
-  // that writes a preset writes all five: the converter emits them, and an export is
-  // `params.values` over the whole look tag. So a file missing them is hand-made, and
-  // this is the sentence it should get.
+  // **And the readings are all or none**, which is the version 4 rule stated as a
+  // scope rather than as a census, because the file's own keys are what it claims to
+  // be about.
+  //
+  // The danger the rule exists for has not moved. `format.js` puts it plainly about a
+  // version 3 file: every value it names is still a parameter, so the apply writes all
+  // of them without complaint and only the reading is missing, leaving whatever the
+  // previous document happened to select. A file naming `readRgb` and `readDepth` and
+  // stopping reaches that identical state for the other three - a blend of the two it
+  // set against whatever the clip was already wearing, which is a mixture nobody
+  // authored and which nothing on screen says is a mixture. That file still gets the
+  // sentence below.
+  //
+  // What changed is the file that names **none** of them, which used to be caught by
+  // the same test and is a different document. It is not a look with a hole in it, it
+  // is a look that is not about the reading: `applyStoredPreset` writes the keys the
+  // document names and no others, so the blend on screen afterwards is the one the
+  // clip already had, chosen by whoever was grading rather than left over from a file.
+  // The half that made the old refusal necessary - a stamp on the clip claiming
+  // provenance from a document that had not said what the look is - is closed at the
+  // stamp instead, where it belongs, and a partial file cannot claim it at all.
   const missing = missingReadings(body.values);
-  if (missing.length) {
+  if (missing.length && missing.length !== READINGS.length) {
+    // **Both ways out, because the file in front of this person has two.** The old
+    // sentence said the look "carries all five reading weights", which stopped being
+    // true the moment naming none of them became legal, and it named the one exit that
+    // adds keys - so somebody who had deliberately cut the blend down to two was told
+    // to put three back rather than told that taking two out is the other answer and
+    // the one they probably meant. The reason for refusing the middle has not moved and
+    // is still the whole of it: a document naming some of the weights leaves the rest
+    // wherever the clip had them, which is a blend nobody authored.
+    //
+    // Off `missingReadings` for both halves rather than a second census of the same
+    // thing, since two spellings of one count is how one of them comes to be wrong.
+    const named = READINGS.filter((n) => !missing.includes(n));
     throw new Error(
-      `preset ${name} names no ${missing.join(', ')}: a version ${PROJECT_VERSION} look carries all `
-      + 'five reading weights, and one that leaves them out would render as whatever was on '
-      + 'screen before it',
+      `preset ${name} names ${named.join(', ')} but not ${missing.join(', ')}: the reading `
+      + 'weights are all or none, because a file naming some of them blends what it says with '
+      + `whatever the clip was already wearing. Name the other ${missing.length}, or take `
+      + `${named.length === 1 ? 'the one it has' : `all ${named.length} it has`} out and leave `
+      + 'the reading to whoever is grading',
     );
   }
 }
 
-/** Applies a saved preset and stamps where it came from. */
+/**
+ * Applies a saved preset, and stamps where it came from only if the document said
+ * what the whole look is.
+ *
+ * The stamp answers one question - what look is this clip wearing - and a document
+ * that set three of the fifty-four look values did not answer it. Naming it as the
+ * clip's origin is the same silent lie the reading rule above exists to stop, one
+ * level up: a gallery comparing revisions would show three clips agreeing on a look
+ * they only agree about in the three values that file happened to carry.
+ *
+ * So a partial apply leaves the stamp exactly where it was, which is the same thing
+ * moving a slider does, and is the honest answer for the same reason - the clip's
+ * provenance is the last document that described the whole of it. The two surfaces
+ * that report an apply read the result rather than the stamp, because a note that
+ * printed `appliedPreset.rev` after a partial apply would either name a revision the
+ * user did not just apply or, once the clip has no stamp at all, throw inside the
+ * handler and report a successful apply as a failure.
+ */
 function applyStoredPreset(doc) {
   refuseDuringEvaluation('a stored preset applied');
   refusePresetBody(doc.name, doc.body);
-  params.apply(doc.body.values ?? {});
-  appliedPreset = { name: doc.name, rev: doc.rev };
+  const values = doc.body.values ?? {};
+  const stamped = wholeLookTag(values);
+  params.apply(values);
+  if (stamped) appliedPreset = { name: doc.name, rev: doc.rev };
   requestRepaint();
   history.commit();
+  return { stamped, written: Object.keys(values).length, look: params.names('look').length };
+}
+
+/**
+ * What a surface says after an apply, in one place because there are two surfaces and
+ * they were already saying it twice.
+ *
+ * A partial apply has no revision to print - there is no stamp, and printing the one
+ * the clip is still carrying would attribute this gesture to a document that had
+ * nothing to do with it - so what it reports is what it did: how much of the look came
+ * out of the file, and that the clip's provenance was left alone.
+ */
+function presetAppliedNote(name, applied) {
+  return applied.stamped
+    ? `applied ${name} · ${appliedPreset.rev.slice(7, 15)}`
+    : `applied ${applied.written} of ${applied.look} values from ${name} · part of a look, so the clip keeps its provenance`;
 }
 
 /**
@@ -8146,6 +9374,70 @@ async function importPresetFile(file) {
   return saved;
 }
 
+/**
+ * Offers the auto-save back, when it belongs to the take that has just opened.
+ *
+ * The undo stack writes the whole document to `__working__` after every change, and
+ * `refreshProjects` deliberately keeps that name out of the picker - it is not a
+ * document anybody chose, and listing it beside real projects offers "the thing you
+ * were just doing" under a name that reads like a mistake. That reasoning is right
+ * and it left the working document unreachable: opening the same take again gave a
+ * fresh clip with no sign that a session's work was sitting on disk beside it.
+ *
+ * **A control rather than a sentence, and that is a repair.** This first offered the
+ * document as text naming `?project=__working__`, which is not a path anybody can
+ * follow: the editor boots on `?take=`, so replacing the query with that one leaves it
+ * with no take in it and the boot path sends the browser to the gallery. An
+ * instruction that reads as a recovery and is a way out of the page is worse than no
+ * offer, because the work is still there and the operator now believes they tried.
+ * So the offer is a button and it presses `loadProjectNamed`, which is the same door
+ * the resume URL opens - the same hash refusal on the way in, and no navigation at all.
+ *
+ * **No extra request.** The list arrives with every document's body already on it, so
+ * the stamp this needs is in hand at the moment the take opens - and a fetch here
+ * would put a round trip in the path of every take opening for the sake of an offer
+ * that usually has nothing to make.
+ */
+// The document the resume chip is currently offering, held from the moment it is
+// offered because the name it came from does not stay still. Null whenever no offer
+// is on screen.
+let offeredWorkingBody = null;
+
+function offerWorkingDocument(projects) {
+  ui.resume.hidden = true;
+  offeredWorkingBody = null;
+  const working = projects?.find((doc) => doc.name === WORKING_PROJECT);
+  if (!working) return;
+  // **Matched on hash rather than on id.** A rename frees the old id and a later take
+  // can be renamed into it (#13), so an id match is a claim about a name where a hash
+  // match is a claim about footage - and offering somebody their edit back on top of
+  // different footage is a wrong answer that looks exactly like a right one.
+  if (!openTakeHash || working.body?.take?.hash !== openTakeHash) return;
+  // And it has to differ from the clip on screen, or the offer is to restore what is
+  // already there. `history.begin` has just serialised the on-screen document into
+  // `baseline`, so this compares like with like rather than serialising it a second
+  // time - and the two fields the auto-save adds come off first, since neither of
+  // them is part of what the clip is.
+  const body = { ...working.body };
+  delete body.history;
+  delete body.take;
+  if (JSON.stringify(body) === history.baseline) return;
+  // When, because "there is autosaved work" is not enough to decide with: an operator
+  // who stopped an hour ago and one who lost the tab a minute ago want opposite things
+  // from this button, and the stamp is the only thing that tells them apart.
+  // **Held, not merely pointed at.** The next edit autosaves over `__working__`, so a
+  // chip that fetched the name when pressed would restore the edit made *since* the
+  // offer and report it as a recovery, with the work it was actually offering already
+  // overwritten. What the operator was shown is what the button now restores.
+  //
+  // The store still has one slot, so a reload before the offer is taken still loses the
+  // older document - that is a property of autosaving to a single name and is not what
+  // this is fixing. What is fixed is a button that advertised one thing and did another.
+  offeredWorkingBody = JSON.parse(JSON.stringify(working.body));
+  ui.resumeWhen.textContent = `autosaved ${new Date(working.savedAt).toLocaleString()}`;
+  ui.resume.hidden = false;
+}
+
 async function refreshProjects() {
   const list = await documentsIn('projects');
   ui.project.replaceChildren(new Option('—', ''));
@@ -8167,6 +9459,24 @@ async function refreshDeliverables() {
   for (const doc of list) ui.deliverable.appendChild(new Option(doc.name, doc.name));
   if (list.some((d) => d.name === current)) ui.deliverable.value = current;
   return list;
+}
+
+/**
+ * Moves the picker and the record of what it is naming together.
+ *
+ * **Because a refusal has to be able to put the picker back, and there is nothing else
+ * that knows where back is.** A `change` event arrives with `value` already moved, so the
+ * previous selection is gone by the time anything can object to the new one - and
+ * `activeDeliverable` cannot stand in for it, since `saveDeliverable` PUTs the document as
+ * it is and stamps no name into it. Kept on the element rather than in a module binding so
+ * there is one object holding both halves and no second copy to fall out of step.
+ *
+ * Every adoption goes through here, which is what makes the revert below mean "the one the
+ * clip is actually on" rather than "the one somebody remembered to record".
+ */
+function showAdoptedDeliverable(name) {
+  ui.deliverable.value = name;
+  ui.deliverable.dataset.adopted = name;
 }
 
 async function saveDeliverable(name, deliverable) {
@@ -8333,8 +9643,8 @@ function removeRetimeKey(key) {
   const i = retime.keys.indexOf(key);
   if (i < 0) return false;
   if (i === 0 && retime.keys.length > 1) {
-    ui.note.textContent = 'the first retime key anchors the start of the clip - '
-      + 'remove the ones after it first';
+    say('the first retime key anchors the start of the clip - '
+      + 'remove the ones after it first');
     return false;
   }
   retime.keys.splice(i, 1);
@@ -8441,7 +9751,7 @@ function applyEasePreset(name) {
 for (const btn of ui.ease.querySelectorAll('button[data-ease]')) {
   btn.addEventListener('click', () => {
     const owner = selection?.owner ?? '';
-    if (applyEasePreset(btn.dataset.ease)) ui.note.textContent = `${btn.dataset.ease} ease on ${owner}`;
+    if (applyEasePreset(btn.dataset.ease)) say(`${btn.dataset.ease} ease on ${owner}`);
   });
 }
 
@@ -8711,9 +10021,9 @@ function drawPlanCloud(rect) {
   const far = uniforms.farClip.value;
   const s = planScale(rect);
   chromeCtx.fillStyle = 'rgba(232, 236, 241, 0.55)';
-  for (let row = 0; row < DH; row += PLAN_STRIDE) {
-    for (let col = 0; col < DW; col += PLAN_STRIDE) {
-      const mm = depth[row * DW + col];
+  for (let row = 0; row < DEPTH_H; row += PLAN_STRIDE) {
+    for (let col = 0; col < DEPTH_W; col += PLAN_STRIDE) {
+      const mm = depth[row * DEPTH_W + col];
       if (mm === 0) continue;
       const z = mm * 0.001;
       if (z < near || z > far) continue;
@@ -8896,6 +10206,46 @@ function viewUnder(clientX, clientY) {
   return { plan, x, y };
 }
 
+// Floor selection is a one-shot mode because its first press is in the panel and the
+// point it names is in the picture. The state is visible on both ends of that gap: the
+// button changes face and the frame gets a crosshair cursor. `Escape` and pressing the
+// button again are explicit ways out, so hiding the panel or deciding not to select a
+// surface cannot strand the next orbit inside a mode the user forgot was armed.
+let levelSelectionArmed = false;
+
+function setLevelSelection(on, note) {
+  levelSelectionArmed = on;
+  ui.camLevel.setAttribute('aria-pressed', String(on));
+  ui.camLevel.textContent = on ? 'cancel selection' : 'select floor';
+  document.body.classList.toggle('selecting-level', on);
+  if (note) ui.levelNote.textContent = note;
+}
+
+// On the window and in capture phase for the same reason the node drag below lives
+// there: OrbitControls owns pointerdown on the canvas. The selecting press must reach
+// exactly one owner or the room levels while the camera begins orbiting underneath it.
+// Registered before the node handler, with stopImmediatePropagation, because the
+// editor's camera nodes are drawn over the same picture and floor selection wins while
+// it is visibly armed.
+addEventListener('pointerdown', (e) => {
+  if (!levelSelectionArmed || e.target !== renderer.domElement || e.button !== 0) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  const view = viewUnder(e.clientX, e.clientY);
+  if (!view) return;
+  if (chromeOn && view.plan) {
+    ui.levelNote.textContent = 'Select the floor in the main picture, outside the top-down inset.';
+    return;
+  }
+  const result = levelAtStagePoint(view.x, view.y);
+  if (!result.ok) {
+    ui.levelNote.textContent = `${result.reason}. Choose another point or press Escape to cancel.`;
+    return;
+  }
+  setLevelSelection(false,
+    `levelled on ${result.samples} samples, ${(result.rms * 1000).toFixed(1)}mm from flat`);
+}, true);
+
 function nodeUnder(view) {
   let best = null;
   cameraKeys().forEach((key, i) => {
@@ -9039,8 +10389,8 @@ function sensorView() {
   const fx = uniforms.focal.value.x;
   const fy = uniforms.focal.value.y;
   // Half-angles as tangents, which is the form the containment test needs anyway.
-  const tanH = (DW / 2) / fx;
-  const tanV = (DH / 2) / fy;
+  const tanH = (DEPTH_W / 2) / fx;
+  const tanV = (DEPTH_H / 2) / fy;
   // Fit rather than fill. three's `fov` is the vertical angle and the horizontal one
   // follows from the aspect, so matching vertical on a stage narrower than the sensor
   // would crop the sides off the very thing the button exists to show. Whichever axis
@@ -9095,16 +10445,16 @@ ui.camSensor.addEventListener('click', () => { sensorView(); });
 // wide enough that the fit is reading a surface rather than the depth quantisation,
 // narrow enough that a headliner does not take the windscreen in with it.
 const LEVEL_PATCH = 12;
-// How close to the middle of the frame a sample has to land to be a candidate, in
-// stage pixels. Generous, because the gesture is "the surface I have framed" and
-// asking for sub-pixel aim on a cloud full of holes would make the button feel broken.
+// How close to the selected point a sample has to land to be a candidate, in stage
+// pixels. Generous, because asking for sub-pixel aim on a cloud full of holes would
+// make a visible surface answer as though there were nothing under the pointer.
 const LEVEL_PICK_PX = 60;
-// The grid is walked at this stride hunting for the centre sample - two rather than
+// The grid is walked at this stride hunting for the selected sample - two rather than
 // the plan view's four, because this decides which surface gets levelled and a miss
 // here is a wrong answer rather than a coarse drawing.
 const LEVEL_PICK_STRIDE = 2;
 // Below this many valid samples in the patch there is no plane to speak of. This is
-// the only thing that refuses: see `levelToCentre` on why the flatness is reported
+// the only thing that refuses: see `levelAtStagePoint` on why the flatness is reported
 // rather than judged.
 const LEVEL_MIN_SAMPLES = 32;
 
@@ -9132,9 +10482,9 @@ function fitPatchNormal(col0, row0, depth, fx, fy, cx, cy, near, far) {
   const xs = [];
   const ys = [];
   const zs = [];
-  for (let row = Math.max(0, row0 - LEVEL_PATCH); row <= Math.min(DH - 1, row0 + LEVEL_PATCH); row++) {
-    for (let col = Math.max(0, col0 - LEVEL_PATCH); col <= Math.min(DW - 1, col0 + LEVEL_PATCH); col++) {
-      const mm = depth[row * DW + col];
+  for (let row = Math.max(0, row0 - LEVEL_PATCH); row <= Math.min(DEPTH_H - 1, row0 + LEVEL_PATCH); row++) {
+    for (let col = Math.max(0, col0 - LEVEL_PATCH); col <= Math.min(DEPTH_W - 1, col0 + LEVEL_PATCH); col++) {
+      const mm = depth[row * DEPTH_W + col];
       if (mm === 0) continue;
       const z = mm * 0.001;
       if (z < near || z > far) continue;
@@ -9168,7 +10518,7 @@ function fitPatchNormal(col0, row0, depth, fx, fy, cx, cy, near, far) {
   if (levelNormal.lengthSq() === 0) return null;
   levelNormal.normalize();
   // How far the patch actually is from the plane it was given, in metres. Reported
-  // rather than used, for the reason `levelToCentre` gives.
+  // rather than used, for the reason `levelAtStagePoint` gives.
   let sq = 0;
   for (let i = 0; i < n; i++) {
     const d = (xs[i] - mx) * levelNormal.x + (ys[i] - my) * levelNormal.y + (zs[i] - mz) * levelNormal.z;
@@ -9178,21 +10528,35 @@ function fitPatchNormal(col0, row0, depth, fx, fy, cx, cy, near, far) {
 }
 
 /**
- * Levels the room on whatever surface is in the middle of the frame.
+ * Writes both world-rotation controls as one interaction.
+ *
+ * This is the door used by both the plane selection and reset. Keeping them on the
+ * same `writeFromControl` path matters when either angle is keyed: a direct registry
+ * reset would be overwritten on the next evaluated frame while its button and sliders
+ * briefly claimed it had succeeded.
+ */
+function writeWorldRotation(tilt, roll) {
+  writeFromControl('roll', roll);
+  writeFromControl('tilt', tilt);
+  history.commit();
+  requestRepaint();
+  return { tilt: params.get('tilt'), roll: params.get('roll') };
+}
+
+function resetWorldRotation() {
+  return writeWorldRotation(0, 0);
+}
+
+/**
+ * Levels the room on the surface selected at one point in the rendered picture.
  *
  * The button exists because the two sliders are two numbers nobody can guess: the
  * angle a bracket ended up at is not a thing anybody knows to half a degree, and
  * hunting for it by eye on a cloud is slow enough that people would rather work
- * canted. Aiming a flat surface into the middle and pressing once is the gesture, and
- * it writes the same two parameters the sliders do - so it is a way of *saying* the
- * value rather than a second place the value lives, which is what keeps this one
- * implementation and lets you nudge afterwards.
- *
- * **The middle of the frame rather than under the pointer**, and that is a design
- * decision rather than a shortcut. At the moment a button is pressed the pointer is on
- * the button, so "under the pointer" needs the press to arm a mode and a second click
- * to spend it - a mode with a cursor state, an escape path and a way to be left in.
- * A crosshair costs an orbit and no mode at all.
+ * canted. Selecting the floor names the surface directly, and it writes the same two
+ * parameters the sliders do - so it is a way of *saying* the value rather than a
+ * second place the value lives, which is what keeps this one implementation and lets
+ * the user nudge afterwards.
  *
  * **A surface has two normals and both of them make it level.** Picking the one that
  * disagrees least with the vertical already in force is what stops levelling on a
@@ -9205,7 +10569,7 @@ function fitPatchNormal(col0, row0, depth, fx, fy, cx, cy, near, far) {
  * taken across the gap between two seats and press again somewhere better. The one
  * refusal is an empty patch, which is an impossibility rather than an opinion.
  */
-function levelToCentre() {
+function levelAtStagePoint(stageX, stageY) {
   const depth = depthCurr.image.data;
   const fx = uniforms.focal.value.x;
   const fy = uniforms.focal.value.y;
@@ -9214,15 +10578,19 @@ function levelToCentre() {
   const near = uniforms.nearClip.value;
   const far = uniforms.farClip.value;
   const size = stageSize();
+  if (!Number.isFinite(stageX) || !Number.isFinite(stageY)
+      || stageX < 0 || stageY < 0 || stageX > size.w || stageY > size.h) {
+    return { ok: false, reason: 'the selected point is outside the picture' };
+  }
   viewCamera.updateMatrixWorld(true);
 
   // Candidates are projected through the camera that is actually drawing rather than
   // through the one in front of the sensor, because the gesture names a surface by
   // where it sits in the picture and the picture is whatever the view happens to be.
   let best = null;
-  for (let row = 0; row < DH; row += LEVEL_PICK_STRIDE) {
-    for (let col = 0; col < DW; col += LEVEL_PICK_STRIDE) {
-      const mm = depth[row * DW + col];
+  for (let row = 0; row < DEPTH_H; row += LEVEL_PICK_STRIDE) {
+    for (let col = 0; col < DEPTH_W; col += LEVEL_PICK_STRIDE) {
+      const mm = depth[row * DEPTH_W + col];
       if (mm === 0) continue;
       const z = mm * 0.001;
       if (z < near || z > far) continue;
@@ -9234,7 +10602,10 @@ function levelToCentre() {
       if (levelVec.y < uniforms.cropB.value || levelVec.y > uniforms.cropT.value) continue;
       levelVec.applyQuaternion(worldTilt).project(viewCamera);
       if (levelVec.z < -1 || levelVec.z > 1) continue;
-      const d = Math.hypot(levelVec.x * 0.5 * size.w, levelVec.y * 0.5 * size.h);
+      const d = Math.hypot(
+        (levelVec.x * 0.5 + 0.5) * size.w - stageX,
+        (0.5 - levelVec.y * 0.5) * size.h - stageY,
+      );
       if (d > LEVEL_PICK_PX) continue;
       // Nearest to the camera among the candidates rather than nearest to the
       // crosshair: this footage is full of holes, and a hole in the surface being
@@ -9243,10 +10614,10 @@ function levelToCentre() {
       if (!best || levelVec.z < best.ndcZ) best = { col, row, ndcZ: levelVec.z };
     }
   }
-  if (!best) return { ok: false, reason: 'nothing in the middle of the frame to level on' };
+  if (!best) return { ok: false, reason: 'nothing near the selected point to level on' };
 
   const fit = fitPatchNormal(best.col, best.row, depth, fx, fy, cx, cy, near, far);
-  if (!fit) return { ok: false, reason: 'too few samples around the middle of the frame to fit a surface' };
+  if (!fit) return { ok: false, reason: 'too few samples around the selected point to fit a surface' };
 
   levelUp.set(0, 1, 0).applyQuaternion(levelInverse.copy(worldTilt).invert());
   if (fit.normal.dot(levelUp) < 0) fit.normal.negate();
@@ -9259,23 +10630,12 @@ function levelToCentre() {
   const horizontal = Math.hypot(fit.normal.x, fit.normal.y);
   const roll = THREE.MathUtils.radToDeg(Math.atan2(fit.normal.x, fit.normal.y));
   const tilt = THREE.MathUtils.radToDeg(Math.atan2(-fit.normal.z, horizontal));
-  // Through the control door rather than `params.set`, because these two are keyable
-  // and a bare write to a keyed parameter is the one thing the evaluator undoes: it
-  // rewrites every keyed parameter on the very next render, so the button would report
-  // an angle it had computed correctly while the image and the sliders sprang back to
-  // the old track, and the committed project would still hold the old keys. This is
-  // the same rule a dragged slider keeps, and it is kept here for the same reason -
-  // there is one write path for a parameter that might be keyed, not two.
-  writeFromControl('roll', roll);
-  writeFromControl('tilt', tilt);
-  history.commit();
-  requestRepaint();
+  const written = writeWorldRotation(tilt, roll);
   return {
     ok: true,
     // Read back rather than returned as computed, so the answer is the value the
     // registry holds after snapping to the slider's step and not the one before it.
-    tilt: params.get('tilt'),
-    roll: params.get('roll'),
+    ...written,
     normal: fit.normal.toArray(),
     samples: fit.samples,
     rms: fit.rms,
@@ -9284,11 +10644,29 @@ function levelToCentre() {
 }
 
 ui.camLevel.addEventListener('click', () => {
-  const result = levelToCentre();
-  ui.levelNote.textContent = result.ok
-    ? `levelled on ${result.samples} samples, ${(result.rms * 1000).toFixed(1)}mm from flat`
-    : result.reason;
+  if (levelSelectionArmed) {
+    setLevelSelection(false, 'Floor selection cancelled.');
+    return;
+  }
+  // The second press names a pixel in the picture, so the camera cannot keep coasting
+  // between arming and selection. Finish the orbit here, while there is still a frame
+  // before the user can click the surface, rather than moving it underneath that click.
+  finishOrbitDrift();
+  setLevelSelection(true, 'Click a flat floor or ceiling plane in the picture. Press Escape to cancel.');
 });
+
+ui.camLevelReset.addEventListener('click', () => {
+  setLevelSelection(false);
+  resetWorldRotation();
+  ui.levelNote.textContent = 'World rotation reset to 0° tilt and 0° roll.';
+});
+
+addEventListener('keydown', (e) => {
+  if (!levelSelectionArmed || e.key !== 'Escape') return;
+  e.preventDefault();
+  setLevelSelection(false, 'Floor selection cancelled.');
+});
+setLevelSelection(false);
 
 // Four planes back to their defaults, which are their bounds. Cropping is easy to do
 // by accident and hard to undo by hand once all four have moved - and a box closed
@@ -9439,88 +10817,216 @@ function paintPreviewRange(minDepth, maxDepth) {
   ui.recRange.textContent = `preview only · ${kept}`;
 }
 
-ui.recPresetApply.addEventListener('click', async () => {
+// Every control that starts a preset gesture, named once so a fifth is covered by being
+// added to this list rather than by being remembered.
+//
+// **The apply and the import are in it, and leaving them out is the hole this list was
+// drawn up to close arriving through the other side.** What the guard protects is
+// `appliedPreset`, and four doors write it: a save that describes the whole look, an
+// apply of one, an import, and the apply on the recorder. Scoping the flag to the two
+// controls that share the subset dialog left the other two live with a PUT in flight -
+// press save, confirm, and apply a whole-look preset while the write is unanswered, and
+// the apply's stamp lands first with the save's overwriting it, so the clip ends up
+// wearing the older revision. That is the same corruption the dialog introduced, through
+// a door the guard did not cover.
+//
+// It is one gate rather than a second rule sequencing writes to `appliedPreset`, because
+// two gates that agree cannot be tested apart and one of them would be doing all the
+// work - `docs/instruments.md` records the rename refusal costing exactly that. And it
+// sits on the handlers rather than inside `applyStoredPreset`, because that function and
+// `restoreProject` beside it are exposed raw for the proof tools to drive: a guard
+// pushed down there would start silently dropping calls that are not gestures at all.
+const PRESET_WRITERS = [ui.presetSave, ui.presetExport, ui.presetApply, ui.presetImport, ui.recPresetApply];
+
+// Whether one of those gestures is running. It is a flag on the program rather than a
+// state of a control, because what has to be true is that there is one gesture, not that
+// a particular button is unpressable - a second door added later would otherwise be a
+// second way in with no guard on it.
+let presetGesture = false;
+
+/**
+ * One preset gesture at a time, whichever control started it.
+ *
+ * **This is a regression the dialog introduced and the `prompt()` it replaced did not
+ * have.** A `prompt` blocks the whole page, so two saves could not overlap and nothing
+ * had to say so; a `<dialog>` closes before the PUT it authorised has been answered,
+ * and from that moment every preset control is live again with a write in flight behind
+ * them. Two gestures whose responses come back out of order then run the stale handler
+ * last, and `appliedPreset` ends up naming the older revision - which corrupts the one
+ * thing the stamp is for, quietly, in the direction that looks like it worked.
+ *
+ * **A refused gesture is answered rather than dropped**, and the surface is the caller's
+ * because the recorder has no timeline strip to write into. A second press of save is a
+ * repeat of the gesture already running and silence there reads as the press not having
+ * registered; an apply or an import is a *different* gesture, chosen from a picker or an
+ * operating system file dialog, and swallowing one without a word is a document answered
+ * with silence.
+ *
+ * The export half of this closes no race of its own: `exportPresetFile` builds a blob
+ * and clicks a link, with no request whose answer could arrive late. It is here because
+ * a gesture is a gesture, and because the controls share the dialog - a save left in
+ * flight underneath a fresh export sheet is a name field over a document that is still
+ * being written.
+ */
+async function withPresetGesture(note, run) {
+  if (presetGesture) {
+    note.textContent = 'a preset gesture is still running, so this one did not start';
+    return false;
+  }
+  presetGesture = true;
+  try {
+    await run();
+  } finally {
+    presetGesture = false;
+  }
+  return true;
+}
+
+/**
+ * The write itself: the controls held down for as long as a request is unanswered, and
+ * the caret given back to whichever of them was carrying it.
+ *
+ * The two spans differ on purpose. The **flag** covers the whole gesture including the
+ * dialog, because that is the honest statement of the rule. The **disabled** state
+ * covers only the write, because while the dialog is up it is modal and nothing outside
+ * it can be pressed anyway.
+ *
+ * **And the caret is put back, because disabling is what took it.** `pickPresetSubset`
+ * hands focus to the control that opened the dialog on the `close` event and resolves in
+ * the same breath, so the button is holding the caret exactly when this runs a microtask
+ * later - `el.disabled = true` on a focused element blurs it, the browser falls back to
+ * the body, and re-enabling does not undo that. The guard's own comment used to argue
+ * that the narrow span avoided this and the order made it false. `library.js` states the
+ * rule beside `closeMenus` and `library-check` carries two mutations for it, so a
+ * surface that strands the caret is a defect here rather than a detail. Only where the
+ * caret has fallen to the body, so a gesture the user has moved on from does not have
+ * focus dragged back out from under them.
+ */
+async function whileWriting(run) {
+  const held = document.activeElement;
+  for (const el of PRESET_WRITERS) el.disabled = true;
+  try {
+    return await run();
+  } finally {
+    for (const el of PRESET_WRITERS) el.disabled = false;
+    const stranded = document.activeElement === null || document.activeElement === document.body;
+    if (stranded && PRESET_WRITERS.includes(held) && held.isConnected) held.focus();
+  }
+}
+
+ui.recPresetApply.addEventListener('click', () => withPresetGesture(ui.recLookNote, () => whileWriting(async () => {
   const name = ui.recPreset.value;
   if (!name) return;
   try {
-    applyStoredPreset(await (await fetch(`/presets/${encodeURIComponent(name)}`)).json());
-    ui.recLookNote.textContent = `applied ${name} · ${appliedPreset.rev.slice(7, 15)}`;
+    const applied = applyStoredPreset(await (await fetch(`/presets/${encodeURIComponent(name)}`)).json());
+    ui.recLookNote.textContent = presetAppliedNote(name, applied);
   } catch (err) {
     // The recorder has no timeline bar, so `showTimelineError` would write into a
-    // strip nobody on this surface can see.
+    // strip nobody on this surface can see. Kept at the call site rather than folded
+    // into the guard for that reason: one shared `catch` would move this sentence to a
+    // surface the person pressing the button cannot see.
     ui.recLookNote.textContent = `could not apply ${name}: ${err.message}`;
     console.error(err);
   }
-});
+})));
 
-ui.presetApply.addEventListener('click', async () => {
+ui.presetApply.addEventListener('click', () => withPresetGesture(ui.note, () => whileWriting(async () => {
   const name = ui.preset.value;
   if (!name) return;
   try {
-    applyStoredPreset(await (await fetch(`/presets/${encodeURIComponent(name)}`)).json());
-    ui.note.textContent = `applied ${name} · ${appliedPreset.rev.slice(7, 15)}`;
+    const applied = applyStoredPreset(await (await fetch(`/presets/${encodeURIComponent(name)}`)).json());
+    say(presetAppliedNote(name, applied));
   } catch (err) {
     showTimelineError(err);
   }
-});
+})));
 
-ui.presetSave.addEventListener('click', async () => {
-  // Named by the user, because a preset library whose entries are called
-  // "preset 3" is a library nobody uses twice.
-  const name = prompt('save this look as', appliedPreset?.name ?? 'look-1');
-  if (!name) return;
-  try {
-    const res = await fetch(`/presets/${encodeURIComponent(name)}`, {
+/** Pick a subset, then do one thing with it, inside the one gesture the program allows. */
+async function withPresetSubset(ask, run) {
+  await withPresetGesture(ui.note, async () => {
+    try {
+      const picked = await pickPresetSubset(ask);
+      if (!picked) return;
+      await whileWriting(() => run(picked));
+    } catch (err) {
+      showTimelineError(err);
+    }
+  });
+}
+
+// Named by the user, because a preset library whose entries are called "preset 3" is a
+// library nobody uses twice - and the name is asked for in the same gesture as the
+// subset, because they are two halves of one decision about the document being written
+// and asking them one after the other would put a `prompt` in front of a dialog.
+ui.presetSave.addEventListener('click', () => withPresetSubset(
+  { title: 'Save this look', verb: 'save', name: appliedPreset?.name ?? 'look-1' },
+  async (picked) => {
+    const body = presetFromCurrentLook(picked.names);
+    const res = await fetch(`/presets/${encodeURIComponent(picked.name)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(presetFromCurrentLook()),
+      body: JSON.stringify(body),
     });
     const saved = await res.json();
     if (saved.error) throw new Error(saved.error);
-    // Saving stamps the clip too. The look on screen genuinely is that revision of
-    // that preset, and leaving the stamp on whatever was applied before would have
-    // the provenance say a look this clip no longer has.
-    appliedPreset = { name: saved.name, rev: saved.rev };
+    // Saving stamps the clip too, on the same condition an apply does. The look on
+    // screen genuinely is that revision of that preset when the file describes the
+    // whole of it, and leaving the stamp on whatever was applied before would have the
+    // provenance say a look this clip no longer has. A saved *subset* is the other
+    // case, and the same sentence rules it out from the other end: the file does not
+    // say what this clip is wearing, so the clip's origin is still whatever last did.
+    if (wholeLookTag(body.values)) appliedPreset = { name: saved.name, rev: saved.rev };
     await refreshPresets();
-    ui.note.textContent = `saved ${saved.name} · ${saved.rev.slice(7, 15)}`;
+    say(`saved ${saved.name} · ${saved.rev.slice(7, 15)}`
+      + (wholeLookTag(body.values) ? '' : ` · ${picked.names.length} of ${params.names('look').length} values`));
     history.commit();
-  } catch (err) {
-    showTimelineError(err);
-  }
-});
+  },
+));
 
 // The look on screen, not the document the picker happens to be pointing at. Those are
 // the same thing only until you move a slider, and exporting what you can see is the
-// answer that is right in both cases - the picker's name is used for the filename
-// because it is the best guess at what to call it, which is a different question.
-ui.presetExport.addEventListener('click', () => {
-  try {
-    const name = ui.preset.value || appliedPreset?.name || 'look';
-    exportPresetFile(name, presetFromCurrentLook());
-    ui.note.textContent = `exported ${name}.braindance-preset.json`;
-  } catch (err) {
-    showTimelineError(err);
-  }
-});
+// answer that is right in both cases - the picker's name is the filename it is offered
+// under, because it is the best guess at what to call it, which is a different question.
+//
+// Through the same dialog the save goes through, and that is the point rather than a
+// saving of code: a file is what a look leaves this program as, so a subset you could
+// put in a library and not in a file would be a document shape that exists on one side
+// of the export and not the other.
+ui.presetExport.addEventListener('click', () => withPresetSubset(
+  {
+    title: 'Export this look',
+    verb: 'export',
+    name: ui.preset.value || appliedPreset?.name || 'look',
+  },
+  async (picked) => {
+    exportPresetFile(picked.name, presetFromCurrentLook(picked.names));
+    say(`exported ${picked.name}.braindance-preset.json`);
+  },
+));
 
 // The button and the input are two halves of one control: a file input cannot be
 // styled into the strip, and one that opens on its own is a control nobody can find.
 ui.presetImport.addEventListener('click', () => ui.presetFile.click());
-ui.presetFile.addEventListener('change', async () => {
+ui.presetFile.addEventListener('change', () => {
   const file = ui.presetFile.files?.[0];
   // Cleared before the await rather than after, so choosing the same file twice in a
   // row fires `change` the second time. An input that keeps its value is an import
   // button that works once per file per session.
   ui.presetFile.value = '';
   if (!file) return;
-  try {
-    const saved = await importPresetFile(file);
-    await refreshPresets();
-    ui.preset.value = saved.name;
-    ui.note.textContent = `imported ${saved.name} · ${saved.rev.slice(7, 15)}`;
-  } catch (err) {
-    showTimelineError(err);
-  }
+  // The input itself is never disabled and does not need to be: the button in front of
+  // it is, and this is the only thing that opens it. The gesture is what the guard is
+  // about anyway, so a file arriving here by any other route is still refused.
+  return withPresetGesture(ui.note, () => whileWriting(async () => {
+    try {
+      const saved = await importPresetFile(file);
+      await refreshPresets();
+      ui.preset.value = saved.name;
+      say(`imported ${saved.name} · ${saved.rev.slice(7, 15)}`);
+    } catch (err) {
+      showTimelineError(err);
+    }
+  }));
 });
 
 ui.projectSave.addEventListener('click', async () => {
@@ -9541,7 +11047,7 @@ ui.projectSave.addEventListener('click', async () => {
     if (saved.error) throw new Error(saved.error);
     await refreshProjects();
     ui.project.value = saved.name;
-    ui.note.textContent = `saved ${saved.name} · ${saved.bytes} bytes`;
+    say(`saved ${saved.name} · ${saved.bytes} bytes`);
     rememberOpened();
   } catch (err) {
     showTimelineError(err);
@@ -9558,6 +11064,44 @@ ui.projectOpen.addEventListener('click', async () => {
   }
 });
 
+// The auto-save, through the same door a named project goes through rather than
+// through one of its own - so the hash refusal, the paused playhead and the restored
+// undo stack are the behaviour that is already proved rather than a second copy of it.
+// The offer withdraws itself on success because the document on screen is now the one
+// it was offering, and an offer to restore what is already there is a button that
+// looks like it does something.
+ui.resumeOpen.addEventListener('click', async () => {
+  try {
+    const accepted = offeredWorkingBody;
+    await loadProjectNamed(WORKING_PROJECT, accepted);
+    // **Written back before the snapshot is dropped, or the recovery lasts only as long
+    // as the tab.** Holding the offered body fixed which document the press restores;
+    // it did not make the restore survive anything. `__working__` still held the edit
+    // that overwrote the offer, this was the only remaining copy, and nothing writes the
+    // slot again until the next `history.commit()` - so closing the page after being
+    // told "restored the autosaved edit" loaded the overwriting edit back and lost the
+    // work a second time, having just reported it recovered.
+    //
+    // Awaited and reported rather than fired and forgotten, unlike the auto-save on
+    // every edit: that one is one of thousands and must not block a drag, while this is
+    // the single moment the operator asked for their work back. A failure here has to
+    // reach them, and the snapshot is kept if it does - dropping it would throw away the
+    // last copy on the way out of a failed save.
+    //
+    // Through `writeWorking` and not straight to `fetch`, which is what makes it the last
+    // write rather than merely a later one: an auto-save from the edit that overwrote the
+    // offer can still be on the wire, and the server orders writes by whichever `rename`
+    // finishes first.
+    const kept = await writeWorking(accepted);
+    if (!kept.ok) throw new Error(`restored on screen, but the auto-save could not be rewritten: ${(await kept.text().catch(() => '')).slice(0, 80)}`);
+    ui.resume.hidden = true;
+    offeredWorkingBody = null;
+    say('restored the autosaved edit');
+  } catch (err) {
+    showTimelineError(err);
+  }
+});
+
 ui.deliverable.addEventListener('change', async () => {
   const name = ui.deliverable.value;
   if (!name) return;
@@ -9566,8 +11110,20 @@ ui.deliverable.addEventListener('change', async () => {
     if (doc.error) throw new Error(doc.error);
     applyDeliverable(doc.body);
     history.commit();
-    ui.note.textContent = `deliverable ${name}`;
+    showAdoptedDeliverable(name);
+    say(`deliverable ${name}`);
   } catch (err) {
+    // **Put the picker back on what the clip is actually on.** `applyDeliverable` refuses a
+    // document whose cuts are not program times, and it refuses it before it has replaced
+    // anything - so the clip, the export size and the readout beside the picker all still
+    // describe the deliverable that was there before. The picker was the one surface left
+    // naming the refused one, and the two disagreeing is worse than either: the readout says
+    // one thing, the control says another, and the file that comes out of a render afterwards
+    // matches the readout while carrying the name the operator can see in the menu.
+    //
+    // The message stays on `#tNote` either way, so this is not a refusal being swallowed - it
+    // is the refusal being told in one place instead of contradicted in a second.
+    ui.deliverable.value = ui.deliverable.dataset.adopted ?? '';
     showTimelineError(err);
   }
 });
@@ -9579,8 +11135,10 @@ ui.deliverableNew.addEventListener('click', async () => {
   try {
     await saveDeliverable(name, activeDeliverable);
     await refreshDeliverables();
-    ui.deliverable.value = name;
-    ui.note.textContent = `saved deliverable ${name}`;
+    // Through the same door as the menu's own adoption: what was just saved *is* what the
+    // clip is on, so this is the selection a later refusal has to be able to come back to.
+    showAdoptedDeliverable(name);
+    say(`saved deliverable ${name}`);
   } catch (err) {
     showTimelineError(err);
   }
@@ -9601,8 +11159,24 @@ ui.deliverableNew.addEventListener('click', async () => {
  * so a retime curve swapped underneath a running playhead asks the source to go
  * backwards on the very next step, from inside the animation loop.
  */
-async function loadProjectNamed(name) {
-  const doc = await (await fetch(`/projects/${encodeURIComponent(name)}`)).json();
+/**
+ * Loads a project by name, or applies a document the caller is already holding.
+ *
+ * **`offered` exists because one name in this store moves under its own reader.**
+ * `__working__` is rewritten by `history.commit()` on every edit, so a document the
+ * resume chip offered can be gone by the time somebody presses the chip - fetching the
+ * name then restores whatever was typed in between and calls it a recovery. The offer
+ * captures what it is offering and hands it back here, so the button restores the
+ * document it advertised rather than the current contents of a slot.
+ *
+ * One implementation and not two: everything below this line - the footage check, the
+ * transport, the history stack - runs identically either way. What the parameter
+ * decides is only whether this function still has to go and get the document.
+ */
+async function loadProjectNamed(name, offered = null) {
+  const doc = offered === null
+    ? await (await fetch(`/projects/${encodeURIComponent(name)}`)).json()
+    : { body: offered };
   if (doc.error) throw new Error(doc.error);
   const take = doc.body.take;
   if (take && openTakeHash && take.hash && take.hash !== openTakeHash) {
@@ -9633,7 +11207,7 @@ async function loadProjectNamed(name) {
   await timeline.seek(timeline.programSec);
   if (resume && gen === transportGen) timeline.play();
   ui.project.value = name;
-  ui.note.textContent = `opened ${name}`;
+  say(`opened ${name}`);
   rememberOpened();
   return doc;
 }
@@ -9695,13 +11269,12 @@ function paintRecord(storage) {
   }
 }
 
-async function pollRecord() {
-  try {
-    const state = await (await fetch('/record/state')).json();
-    recordState = state;
-    paintRecord(state.storage);
-  } catch { /* a server that went away is the status line's problem, not this one's */ }
-}
+// This page's tick of the shared poll, held so the record button can ask again the
+// instant it has changed something rather than waiting out the cadence. Assigned by
+// the boot block below, and only on the live surface: an editor has no recorder to
+// ask about, and a second poll started for the sake of a button is the copy this
+// module exists to avoid.
+let askRecordState = async () => {};
 
 if (ui.recGo) {
   ui.recGo.addEventListener('click', async () => {
@@ -9717,7 +11290,7 @@ if (ui.recGo) {
       if (body.error) ui.recNote.textContent = body.error;
     } finally {
       ui.recGo.disabled = false;
-      await pollRecord();
+      await askRecordState();
     }
   });
   ui.recMark.addEventListener('click', async () => {
@@ -9780,6 +11353,14 @@ ui.camView.addEventListener('click', () => {
 // gigabytes on every project save is exactly what step 2's design refuses.
 let openTakeHash = null;
 
+// Whether `openTake` has run to the end. Exposed on the check hook, and it is there
+// because a transport that exists is not a take that has opened: `timeline` is
+// assigned less than halfway through, before the library is listed and before the
+// resume offer has been decided, so a check waiting on the transport can read the note
+// a whole fetch before anything has written it. That is a race a passing run cannot be
+// told apart from a broken feature, and it cost a reproduction here.
+let takeOpened = false;
+
 async function openTake(id) {
   const source = await IndexedPairSource.open(id);
   const res = await fetch(`/capture/${encodeURIComponent(id)}/hello`);
@@ -9791,6 +11372,19 @@ async function openTake(id) {
     );
   }
   const hello = await res.json();
+  // **Which generation wrote this, before anything reads a field out of it.** Ahead of
+  // the bounds check below rather than beside it, because the two questions nest: that
+  // check asks whether these numbers are usable *as this build understands the record*,
+  // and a take from a format this build has never seen is one whose fields could be
+  // perfectly in range and mean something else. A gallery listing the same take has
+  // already greyed its Open button off this same sentence, and the two agreeing is the
+  // whole reason it is one function rather than two comparisons.
+  //
+  // Here rather than on the live socket, for the reason the paragraph above gives about
+  // the intrinsics: a live preview bakes nothing, and the file is where a record that
+  // cannot be trusted has already become permanent.
+  const wrongFormat = captureFormatRefusal(`take ${id}`, hello.format ?? null);
+  if (wrongFormat) throw new Error(wrongFormat);
   // Positive rather than finite, and inside the frame rather than merely a number.
   // `Number.isFinite(0)` is true, so a hello carrying `fx: 0` - the shape a writer
   // that recorded a field it never filled produces - passed a refusal written to
@@ -9808,12 +11402,12 @@ async function openTake(id) {
   // correct one, and pretending otherwise would be a threshold with no method
   // behind it.
   const usable = hello.fx > 0 && hello.fy > 0
-    && hello.cx > 0 && hello.cx < DW
-    && hello.cy > 0 && hello.cy < DH;
+    && hello.cx > 0 && hello.cx < DEPTH_W
+    && hello.cy > 0 && hello.cy < DEPTH_H;
   if (!usable) {
     throw new Error(
       `take ${id} has an unusable hello: ${JSON.stringify(hello)} - focal lengths must be `
-      + `positive and the centre must lie inside the ${DW}x${DH} depth frame`,
+      + `positive and the centre must lie inside the ${DEPTH_W}x${DEPTH_H} depth frame`,
     );
   }
   uniforms.focal.value.set(hello.fx, hello.fy);
@@ -9864,23 +11458,38 @@ async function openTake(id) {
   // sequence leave only the last one on screen - and the recorder's own note, which
   // already reported this, is on a surface the editor does not show.
   const unavailable = [];
+  const listed = {};
   for (const [what, refresh] of [['presets', refreshPresets], ['projects', refreshProjects],
     ['deliverables', refreshDeliverables]]) {
-    await refresh().catch((err) => unavailable.push(`${what} (${err.message})`));
+    listed[what] = await refresh().catch((err) => { unavailable.push(`${what} (${err.message})`); return null; });
   }
-  if (unavailable.length) ui.note.textContent = `library unavailable: ${unavailable.join('; ')}`;
+  if (unavailable.length) say(`library unavailable: ${unavailable.join('; ')}`);
   ensureActiveDeliverable();
   applyDeliverable(activeDeliverable);
   timingChanged();
   // The stack starts from whatever the clip already is, so the first undo has
   // somewhere honest to land rather than an empty document.
   history.begin();
+  // After `begin`, because the offer is about whether the auto-save differs from the
+  // clip on screen and `baseline` is that clip serialised.
+  //
+  // **Gated on the projects list alone, and deliberately not on the other two.** The
+  // offer used to be withheld whenever any part of the library failed to list, back
+  // when it was a sentence written through `say` that would have painted over the note
+  // naming what was broken. It is a button now - `offerWorkingDocument` writes
+  // `#tResume` and nothing else - so there is nothing left for it to overwrite, and
+  // what the old gate actually did was throw away the one control that can reach
+  // `__working__` because an unrelated `--builtin-presets` pointed at the wrong
+  // directory. That document is deliberately absent from the project picker, so
+  // withholding this button is withholding the only road back to the operator's work.
+  if (listed.projects) offerWorkingDocument(listed.projects);
   await timeline.seek(0);
   // Two things per frame, and the second is not an afterthought: with the playhead
   // parked `tick` returns immediately, so this is the only clock a paused editor has.
   // A drag that continued itself off its own renders instead is what this loop was
   // added to replace - see `pumpDraft`.
   renderer.setAnimationLoop(() => { timeline.tick(); pumpParkedDraft(); });
+  takeOpened = true;
   return timeline;
 }
 
@@ -9999,8 +11608,16 @@ if (EDITING && !REQUESTED_TAKE) {
   // Polled rather than pushed because free space changes on its own - another
   // process writing, a card filling - and a number that only moved when the
   // recorder did would be stale in the one direction that matters.
-  pollRecord();
-  setInterval(pollRecord, 5000);
+  //
+  // **Which is why this caller ignores the change flag entirely.** The gallery gates
+  // on it because a repaint there throws away what the operator is pointing at; here
+  // there is nothing to throw away and a gated readout would simply stop being true.
+  // The flag is offered to both and read by one, which is the shape that lets the
+  // module have no opinion about either surface.
+  askRecordState = pollRecordState((state) => {
+    recordState = state;
+    paintRecord(state.storage);
+  });
 }
 
 // Handles for profiling and for poking at the scene from the console.
@@ -10014,7 +11631,8 @@ globalThis.__kinect = {
   // would work on screen while every assertion read the corpse.
   get controls() { return controls; },
 
-  // Levelling: the rotation the room is carrying, and the button that derives it.
+  // Levelling: the rotation the room is carrying, the selected-plane fit that derives
+  // it, and the neutral-state action that uses the same control write path.
   //
   // Read off **the cloud** rather than off the quaternion the parameters compose into,
   // and the difference is the whole value of the row. `registry-check` calls this the
@@ -10023,7 +11641,9 @@ globalThis.__kinect = {
   // been computed correctly and never applied, which is one edit away at all times and
   // is exactly what `level-check --mutate tilt-ignored` does.
   worldTilt: () => cloud.quaternion.toArray(),
-  levelToCentre,
+  levelAtStagePoint,
+  levelSelection: () => levelSelectionArmed,
+  resetWorldRotation,
 
   // The sensor's own view, and the numbers it derived. Returned rather than left to
   // be read off the camera because the containment rule is the claim worth checking
@@ -10065,6 +11685,13 @@ globalThis.__kinect = {
   // here for.
   params, applyPreset,
   readings: () => READINGS.slice(),
+
+  // How often the panel has re-derived which groups are open, since boot. Published
+  // because the claim it carries is about *how many times* a bulk write asks that
+  // question, and nothing outside the page can count that - a driver timing the gesture
+  // measures the driver, which is the rule `docs/measurement.md` states about the paused
+  // orbit. It is also the only way to see a gate whose whole effect is an absence.
+  groupRefreshes: () => groupRefreshes,
 
   /**
    * Keys, the curve and the undo stack. Every number a check reads comes from
@@ -10292,10 +11919,32 @@ globalThis.__kinect = {
     setActiveDeliverable,
     activeDeliverable: () => activeDeliverable,
     appliedPreset: () => appliedPreset,
+    /**
+     * Whether a preset gesture is running, which is the guard's own state and is
+     * published because a driver cannot see it any other way.
+     *
+     * The `disabled` attribute is only half the span - it goes on after the dialog
+     * closes and comes off when the write is answered - and the flag covers the dialog
+     * too. So a tool pressing one of these controls has to know when the last gesture
+     * finished, and the observable it would otherwise reach for is wrong in a way that
+     * costs a whole run: `dialog.close()` clears `open` synchronously and fires its
+     * `close` event in a later task, so a driver that waited for `open === false` can
+     * press again while the promise is still unresolved and the flag still up. That
+     * press is correctly ignored, the dialog does not open, and the check dies on a
+     * ten-second timeout with no failed assertion - a crash wearing the shape of a
+     * finding. Measured exactly once, on `editor-check` at 238 of 274.
+     */
+    presetGestureRunning: () => presetGesture,
     marks: () => takeMarks.map((m) => ({ ...m })),
     markHere,
     takeId: () => openTakeId,
     takeHash: () => openTakeHash,
+    /**
+     * Whether `openTake` finished, which is the only moment its last decision - the
+     * resume offer - has been made. A check that waits for the transport instead is
+     * waiting on something assigned two fetches earlier.
+     */
+    opened: () => takeOpened,
     /** Where each mark ticks on the ruler, as the page actually drew it. */
     markTicks: () => [...document.querySelectorAll('#tMarks .tmk')].map((el) => ({
       left: Number.parseFloat(el.style.left),
@@ -10382,6 +12031,8 @@ globalThis.__kinect = {
      * in here ties a picture to a frame number instead.
      */
     injectDepth(depth) { bindDepth(depth); },
+    /** Clears only screen-space history, for a proof arm that keeps surface memory. */
+    clearAfterimage() { clearAfterimage(); },
     reset() {
       pinnedPairs?.rewind();
       resetAccumulators();
@@ -10412,7 +12063,7 @@ globalThis.__kinect = {
   // noise rather than on motion.
   stateStats() {
     const buf = new Float32Array(POINTS * 4);
-    renderer.readRenderTargetPixels(statePrev, 0, 0, DW, DH, buf);
+    renderer.readRenderTargetPixels(statePrev, 0, 0, DEPTH_W, DEPTH_H, buf);
     let ghosts = 0, hard = 0, soft = 0, fresh = 0;
     const life = uniforms.fadeTime.value + uniforms.wakeTime.value;
     for (let i = 0; i < POINTS; i++) {

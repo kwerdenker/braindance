@@ -244,11 +244,12 @@ sets of camera intrinsics and no accelerometer, so there is no gravity vector an
 straighten it by. `tilt` and `roll` under Framing rotate the *room* rather than the camera,
 which is what makes it one setting instead of four: the turntable's pole, the top-down inset,
 auto-orbit's axis and the exported frame all come level together, where a camera that merely
-rolled itself would leave the other three canted. Aim a flat surface into the middle of the
-frame and press **level to centre** to have the pair derived from it — a ceiling works as well
-as a floor, since the fit takes whichever of the surface's two normals disagrees less with the
-vertical already in force. Two angles and not three: the third would be yaw about the room's
-vertical, which is what dragging on the picture already does.
+rolled itself would leave the other three canted. Press **select floor**, then click a flat
+floor or ceiling plane in the picture to derive the pair from that surface. The button and
+`Escape` both cancel an armed selection. **Reset rotation** takes both axes back to zero.
+A ceiling levels the same way as a floor, since the fit takes whichever of the surface's two
+normals disagrees less with the vertical already in force. Two angles and not three: the third
+would be yaw about the room's vertical, which is what dragging on the picture already does.
 
 The crop faces and the region stay in sensor metres through all of it. They are tested before
 the model matrix, so a box shrunk onto a subject stays on that subject when the room is levelled
@@ -315,27 +316,65 @@ else, so applying one never moves your camera.
 
 ### Presets
 
-A preset is a document: `{ version, values }`, one number per look parameter. The five
-that ship are served read-only from `presets-builtin/` beside your own library in
-`presets/`, and they are marked with a `·` in the picker.
+A preset is a document: `{ version, values }`, and the keys it names are its scope. The
+five that ship are served read-only from `presets-builtin/` beside your own library in
+`presets/`, and they are marked with a `·` in the picker. Each of them names the whole
+look tag, which is one shape a preset can take rather than the only one — "just my grain
+and bloom" is a document naming two values, and applying it leaves everything it does not
+name where the grade left it.
+
+Saving and exporting both ask which values go in, with every box ticked, so the gesture
+that existed before that dialog writes what it always wrote and a sparse preset is
+something you go out of your way to author. The boxes carry the same headings the panel
+uses and are derived from the registry rather than listed beside it, so a parameter added
+later appears under its own heading by existing. A second statement of which parameter
+sits under which heading is the copy that drifts, and it would drift silently, because a
+parameter missing from that dialog is not an error anywhere — it is a value you can no
+longer choose to leave out.
+
+**The five reading weights tick and untick together, and the format refuses the document
+that would otherwise be assembled.** A file naming any reading has to name all five,
+because the ones it leaves out do not arrive as anything: they stay at whatever the clip
+was already wearing, so two fifths of a blend renders as a mixture nobody authored and
+nothing on screen says it is a mixture. A file naming none of them is the other case and
+is not a hole in a look — it is a look that is not about the reading, so what is on screen
+afterwards is the blend whoever was grading had already chosen. That is `format.js`'s
+argument for refusing a version 3 document, asked again of a document that passes the
+version gate.
+
+**A preset that describes part of a look does not stamp the clip.** Applying one writes
+its values and leaves the provenance where it was, and saving one does the same, because
+the stamp answers "what look is this clip wearing" and a document that set three of the
+fifty-four look values did not answer it. Recording it as the clip's origin would put a
+set of clips on one revision of a look they agree about only in the three values that file
+happened to carry — the drift the stamp exists to make visible, arriving as something the
+stamp says itself. A whole look stamps exactly as it always did, and the two surfaces that
+report an apply say which of the two happened instead of printing a revision either way.
 
 **Saving over a shipped name forks it rather than overwriting it.** The write lands in
 your library and shadows the built-in; delete the fork and the shipped look comes back.
 So the five are starting points you cannot damage, and re-grading one in a later release
 reaches everybody rather than only people who had not run the program yet.
 
-`export` writes the look on screen — not the document the picker happens to name, which
-are the same thing only until you move a slider — as `<name>.braindance-preset.json`.
-`import` reads one back. The bytes are the document, so a look is something you can keep
-in a repository, mail to somebody, or edit in a text editor.
+`export` goes through that same dialog and writes the look on screen — not the document
+the picker happens to name, which are the same thing only until you move a slider — as
+`<name>.braindance-preset.json`. `import` reads one back. The bytes are the document, so a
+look is something you can keep in a repository, mail to somebody, or edit in a text
+editor — and it is one dialog rather than two because a subset you could put in your
+library and not into a file would be a document shape that exists on one side of the
+export and not the other.
 
 An imported file is checked against the registry before it is saved and applied only
 after, which is what makes that safe: a scalar carrying a string fails at the key that is
 wrong instead of writing a plausible-looking look, and a file carrying `__proto__` is
 refused as an unknown parameter — and neither ever reaches the library, because the
 refusal happens before the write rather than after it. A file is the one door into the program that nothing upstream validates, so
-nothing about it is taken on trust — `editor-check` section 9 drives the whole round trip
-in a browser, and `import-skips-normalise` is the mutation that must break it.
+nothing about it is taken on trust — `editor-check` section 12 drives the whole round trip
+in a browser, and `import-skips-normalise` is the mutation that must break it. The subset
+half of that round trip is driven there too, through the rendered controls rather than
+through the function behind them: `picker-ignores-the-boxes` writes the whole look tag
+whatever was ticked, and `readings-tick-alone` gives each reading weight a box of its own,
+which authors a file this program then refuses to read.
 
 Documents from before the readings landed are version 3 and will not open. The
 conversion is total and lossless, so it is a one-shot over files rather than a second
@@ -603,13 +642,37 @@ is byte-identical to what the grabber emits:
 [u32 magic 'KNCT'][u32 type][u32 payloadLen][payload]
 
 type 1  hello  UTF-8 JSON, once, before any frame:
-               { serial, firmware, width, height, fx, fy, cx, cy, color }
+               { format, serial, firmware, width, height, fx, fy, cx, cy,
+                 color, minDepth, maxDepth, lowLight, startedAt }
 type 2  frame  [u32 depthBytes][u32 colorBytes][u64 timestampMs]
                [u16 depth[512*424] millimetres, 0 = no reading]
                [JPEG of the registered 512x424 colour image]
 type 3  colour [u64 timestampMs][JPEG of the native 1920x1080 colour image]
                Live only, and only while something is subscribed.
 ```
+
+**`format` is the generation of the capture format, and a take that carries no `format`
+key at all is generation zero.** Everything shot before the field existed is one, and
+nothing migrates them, because rewriting a capture to add a key is the one operation this
+design will not perform on the artifact that cannot be shot again — so a take declaring
+nothing opens, a take declaring the generation this build reads opens, and a take
+declaring anything else is refused rather than unprojected on assumptions that may not be
+its own. `web/format.js` owns the number and the three bands; `native/grabber.cpp` carries
+the only other spelling of it, and `tools/syntax-check.mjs` requires the two equal and
+requires this key list to be exactly what the grabber emits, in both directions.
+
+**Four of the other keys are load-bearing and were undocumented for a long time**, which
+is worth stating rather than quietly fixing, because the shape of that failure is a second
+producer written against this block. `startedAt` is the only durable capture date a take
+has — the frame stamps are `steady_clock`, monotonic since boot, so two takes recorded a
+day apart on a node that never rebooted are indistinguishable by them — and a writer that
+omits it lands every take in the gallery dated by file modification time, which changes the
+first time the take is copied off the node. The library's ordering silently becomes "when
+it was last copied", and it degrades quietly, because `describeTake` has a legitimate
+fallback for exactly that case and reports `dateSource: 'mtime'` rather than an error.
+`minDepth` and `maxDepth` say how much of the world the file was allowed to contain, and
+the editor paints its preview range from them; `lowLight` says whether the colour camera
+was run long-exposure.
 
 **Type 3 is live-only, so "byte-identical" now means identical to the type 1 and 2
 subsequence.** A capture file is still exactly what the grabber emitted of the stream

@@ -152,6 +152,16 @@ export class Recorder {
     // so the next hello has to open take four without anyone pressing anything.
     this.armed = false;
     this.take = null;
+    // **The take that has stopped but is not finished yet.** `close` nulls `this.take`
+    // before it awaits the flush and builds the index, which it has to - the marks and
+    // the mid-write handler both depend on the open take being gone the moment it stops
+    // - and the effect was that every question about "is the recorder still holding
+    // this file" answered no while the recorder was still holding it. On a slow disk
+    // the index build is seconds, and a gallery that refreshed inside that window drew
+    // Download, Rename and Remove over a take whose sidecar and hash did not exist yet.
+    // The take is kept here for exactly as long as the close is running, so `openPath`
+    // can go on telling the truth about a file this process still owns.
+    this.finalizing = null;
   }
 
   get state() {
@@ -171,12 +181,38 @@ export class Recorder {
       dropped: take?.dropped ?? 0,
       buffered: take ? take.stream.writableLength : 0,
       cannotRecord: this.cannotRecord(),
+      // **The take this process still owns, which is a longer window than `recording`
+      // and a different question from it.** `recording` is what the recorder panel
+      // shows and it goes false the instant a take stops, which is right for a panel.
+      // A gallery tile asks something else - may I offer Open, Download, Rename and
+      // Remove on this file yet - and the honest answer stays no until the index and
+      // the hash exist. Reported as the id rather than as a flag so the reading is
+      // absolute: a surface can compare it against the take it drew and know whether
+      // it is looking at the same world, where two flags only ever say that something
+      // moved between two observations it happened to make.
+      writingId: take?.id ?? this.finalizing?.id ?? null,
     };
   }
 
-  /** The file a take is being written into right now, or null. */
+  /**
+   * The file a take is being written into right now, or null - and "right now" runs
+   * to the end of the close rather than to the end of the writing. See `finalizing`.
+   *
+   * **A known remaining hole, written down rather than left to be rediscovered: this is
+   * one path and a grabber restart can own two.** `split()` closes the old take without
+   * being awaited and the replacement's hello opens the next one about 250ms later,
+   * while `armed` is still true on purpose - so for the rest of that index build
+   * `this.take` is the new take, wins here, and the old one stops being covered exactly
+   * while it is still being read. sha256 over a 138MB capture is well past 250ms, so the
+   * window is real on the restart path even though the stop path is now closed.
+   *
+   * Closing it means every caller asking `owns(path)` rather than comparing against one
+   * value - `beingRecorded`, `scanTakes` and `renameTake` are the three - which is a
+   * wider change than the one this note sits inside, and it is deliberately not being
+   * made silently in passing.
+   */
   get openPath() {
-    return this.take?.path ?? null;
+    return this.take?.path ?? this.finalizing?.path ?? null;
   }
 
   /**
@@ -377,6 +413,10 @@ export class Recorder {
     const take = this.take;
     if (!take) return null;
     this.take = null;
+    // Handed straight over, in the same statement that gives it up: between these two
+    // lines is the only moment this object could be asked about the take and answer
+    // that nobody owns it, and there is no await in it.
+    this.finalizing = take;
     take.stream.end();
     let closeError = null;
     try {
@@ -403,10 +443,22 @@ export class Recorder {
     // a flush skipped here is the orphaning the mid-write handler had - the marks
     // travel forward into whichever take closes next, stamped in source milliseconds
     // from a start that take never had.
-    settle(take);
-    await flushMarks(take);
-    forgetCapture(take.path);
-    const index = await buildIndex(take.path);
+    let index;
+    try {
+      settle(take);
+      await flushMarks(take);
+      forgetCapture(take.path);
+      index = await buildIndex(take.path);
+    } finally {
+      // **Given up in a `finally` rather than on the line after, because the failing
+      // case is the one that matters.** An index build that threw - the disk that ate
+      // the flush above is the likeliest reason - would otherwise leave this process
+      // claiming a file it had stopped working on for as long as it lived, and every
+      // gallery tile for that take refusing Open, Download, Rename and Remove forever
+      // with no way back but a restart. A close that failed still ends the recorder's
+      // ownership: whatever landed is on disk and nothing here will touch it again.
+      this.finalizing = null;
+    }
     console.log(
       `[recorder] take ${take.id} closed (${reason}): ${index.frames.offset.length} frames, ${index.hash}`
       + (take.dropped ? `, ${take.dropped} frames dropped to a slow disk` : ''),

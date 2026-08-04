@@ -91,8 +91,9 @@ change, with a clean control taken on an idle machine.
 
 ## Proof tools
 
-Each takes a running server and exits non-zero on failure. `docs/proof-tools.md` says what
-each one needs.
+Each exits non-zero on failure. What a tool needs before it will run varies — a server already
+listening, one it spawns for itself, or nothing at all — and the notes under the list say which
+is which. `docs/proof-tools.md` says what else each one needs.
 
 ```
 node tools/determinism-check.mjs                    # step 1: same program time, same image
@@ -111,6 +112,22 @@ node tools/export-check.mjs --url http://localhost:8080   # step 6: resolution, 
 node tools/export-check.mjs --mutate pointsize-absolute   # ... and must FAIL mutated
 node tools/library-check.mjs                              # step 7: library, recorder, routes
 node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL
+node tools/library-check.mjs --mutate open-decides-its-own-reason  # ... one take, one refusal, whichever surface asks
+node tools/library-check.mjs --mutate menu-decides-its-own-reason  # ... and the menu is a surface too
+node tools/library-check.mjs --mutate refusal-without-a-badge      # ... a reason the server declares and no page can badge
+node tools/library-check.mjs --mutate refusal-declared-but-never-pushed # ... and one nothing can ever earn
+node tools/library-check.mjs --mutate openable-recomputes-the-band # ... and a band that decides for itself beside the table
+node tools/library-check.mjs --mutate recording-decides-openable-itself # ... and the take being written, which answered twice
+node tools/library-check.mjs --mutate node-admits-an-old-manifest  # ... a node one build behind, refused at the link
+node tools/library-check.mjs --mutate node-admits-an-old-record-state # ... and behind on the other route, whose absent field is not an idle recorder
+node tools/library-check.mjs --mutate badges-inherit-from-object   # ... and one build ahead, whose reason still badges
+node tools/library-check.mjs --mutate refusals-must-be-nonempty    # ... and a healthy node not refused for being healthy
+                                                                   #     (wide: takes the link off, so it stops at 125 of 392 -
+                                                                   #      read the rows, not the total. docs/instruments.md says why)
+node tools/library-check.mjs --mutate grid-declared-twice          # ... and the sensor grid stated once
+node tools/library-check.mjs --mutate grid-declared-in-another-spelling # ... whatever notation the second one is in
+node tools/library-check.mjs --mutate grid-declared-with-a-leading-dot # ... including the one with no leading digit
+node tools/library-check.mjs --mutate grid-loses-a-dimension       # ... both halves of it, each asked for on its own
 node tools/library-check.mjs --mutate tile-height-follows-content  # ... the gallery's geometry
 node tools/library-check.mjs --mutate poster-height-in-js          # ... and its poster's box
 node tools/library-check.mjs --mutate viewer-splat-one             # ... and the viewer's density
@@ -126,18 +143,46 @@ node tools/library-check.mjs --mutate menu-close-strands-focus     # ... and a m
 node tools/library-check.mjs --mutate run-strands-focus            # ... and an action that held the surface down
 node tools/library-check.mjs --mutate reveal-drops-the-path        # ... what the file manager was told
 node tools/library-check.mjs --mutate reveal-answers-any-caller    # ... and who may start a process
+node tools/library-check.mjs --mutate poll-refreshes-every-tick     # ... the gallery follows the recorder rather than the page load
+node tools/library-check.mjs --mutate pulse-ignores-the-node        # ... and the recorder it follows is the one holding the sensor
+node tools/library-check.mjs --mutate health-answers-beside-the-table # ... a route answering outside the table is one no sweep can see
+node tools/library-check.mjs --mutate empty-window-keeps-its-start  # ... a window with no frames in it still closes
+node tools/library-check.mjs --mutate respawns-count-a-colour-toggle # ... and a restart somebody asked for is not the sensor flapping
+node tools/library-check.mjs --mutate respawns-dip-before-the-spawn  # ... and the count does not read low while that restart is in flight
+node tools/library-check.mjs --mutate openpath-drops-at-the-stop     # ... a take is the recorder's until its index exists, not until it stops
+node tools/library-check.mjs --mutate poll-first-tick-is-blind       # ... and the first tick answers against the grid already painted
+node tools/library-check.mjs --mutate poll-forgets-a-failed-refresh  # ... and a refresh that failed leaves its transition unseen
+node tools/library-check.mjs --mutate poll-ticks-overlap             # ... while one that has not come back is not asked again
+node tools/library-check.mjs --mutate post-action-poll-discarded     # ... and a press asks again rather than taking the answer in flight
+node tools/library-check.mjs --mutate listing-never-times-out        # ... and a listing nothing will answer frees itself
+node tools/library-check.mjs --mutate delete-guesses-past-an-unreachable-node # ... a node that did not answer is not a node with nothing on it
+node tools/library-check.mjs --mutate first-load-bounded       # ... a cold library is slow for a reason, and the load is not the poll
+node tools/library-check.mjs --mutate first-load-strands-the-page  # ... and a first listing that fails leaves a page that still works
+node tools/library-check.mjs --mutate listing-ignores-client-abort # ... a caller that gave up takes the node fetch with it
+node tools/library-check.mjs --mutate cancel-watches-the-consumed-request # ... including on a route that read its body before asking
+node tools/library-check.mjs --mutate listing-takes-a-refusal-as-a-library # ... and a refusal that parses is not a library
+node tools/library-check.mjs --mutate faint-fixed-in-one-page       # ... one token, and the page that drifts is named
 node tools/library-check.mjs --mutate write-overwrites-builtin # ... and must FAIL
 node tools/library-check.mjs --mutate list-swallows-unreadable # ... and must FAIL
 node tools/library-check.mjs --mutate open-take-swallows-library # ... and must FAIL
 node tools/library-check.mjs --mutate one-refusal-for-older-versions # ... and must FAIL
+node tools/library-check.mjs --mutate open-ignores-format          # ... the capture's generation, at all four doors at once
 node tools/editor-check.mjs --url http://localhost:8080   # the editor's controls: that they exist, that pressing them changes something
 node tools/editor-check.mjs --mutate lanes-clear-siblings --no-render  # ... and must FAIL
 node tools/editor-check.mjs --mutate plant-unswept-control --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate import-skips-normalise --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate import-saves-before-validating --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate picker-ignores-the-boxes --no-render # ... the subset a preset is written with
+node tools/editor-check.mjs --mutate readings-tick-alone --no-render   # ... and the five weights that move as one
+node tools/editor-check.mjs --mutate group-never-reveals --no-render      # ... a panel group is open because the clip says so
+node tools/editor-check.mjs --mutate reveal-ignores-tracks --no-render    # ... and a keyframe counts where the value does not
+node tools/editor-check.mjs --mutate detail-ignores-the-reading --no-render # ... the group that answers for another group's values
+node tools/editor-check.mjs --mutate override-prunes-only-on-toggle --no-render # ... and the override the document, not the toggle, has caught up with
 node tools/editor-check.mjs --mutate panel-row-skips-parameter --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate nav-at-the-foot --no-render       # ... and must FAIL
 node tools/editor-check.mjs --mutate orbit-pumps-on-change --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate camera-motion-keeps-history --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate orbit-uses-scrub-draft --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate orbit-arms-into-playback --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate orbit-arms-stale-position --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate release-seeks-past-target --no-render # ... and must FAIL
@@ -170,10 +215,30 @@ node tools/editor-check.mjs --mutate pause-keeps-resume --no-render   # ... and 
 node tools/editor-check.mjs --mutate bounds-compare-off-grid --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate detent-in-rate-units --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate zoom-pans-at-the-clamp --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate note-skips-title --no-render      # ... the whole of a long refusal stays reachable
+node tools/editor-check.mjs --mutate tick-seeks-source-seconds --no-render # ... a mark tick seeks where it is drawn
+node tools/editor-check.mjs --mutate offer-ignores-take-hash --no-render # ... the resume offer joins on footage, not on a name
+node tools/editor-check.mjs --mutate resume-waits-for-every-list --no-render # ... and a broken neighbouring library does not strand it
+node tools/editor-check.mjs --mutate resume-fetches-the-moving-name --no-render # ... and restores the document it offered, not what the name holds by then
+node tools/editor-check.mjs --mutate resume-restores-without-keeping --no-render # ... and keeps it, so the recovery outlives the tab
+node tools/editor-check.mjs --mutate shortcuts-reject-altgr --no-render # ... the mark keys work on the layouts that need AltGr to type them
+node tools/editor-check.mjs --mutate marks-ignore-the-clip-range --no-render # ... and offer only the marks a trimmed clip can reach
+node tools/editor-check.mjs --mutate tick-seeks-outside-the-trim --no-render # ... the ruler's ticks obey the same rule the keys do
+node tools/editor-check.mjs --mutate beyond-mark-loses-focus --no-render # ... a mark past the end still answers a keyboard
+node tools/editor-check.mjs --mutate clip-range-unclamped --no-render # ... a trim the program cannot hold
+node tools/editor-check.mjs --mutate clip-bound-coerces-nonnumeric --no-render # ... and a trim that is not a time at all
+node tools/editor-check.mjs --mutate refusal-strands-the-picker --no-render # ... and the menu that named what was refused
+node tools/editor-check.mjs --mutate resize-skips-repaint --no-render # ... and the picture a resize clears
+node tools/editor-check.mjs --mutate resume-races-the-autosave --no-render # ... the recovery is written after the edits already on the wire
+node tools/editor-check.mjs --mutate restore-accepts-view-track --no-render # ... and a track the writer never writes
+node tools/editor-check.mjs --mutate prune-ignores-movement --no-render # ... a stored collapse, against the boot it has to survive
+node tools/editor-check.mjs --mutate panel-rederives-per-write --no-render # ... and what the panel costs the render path
+node tools/editor-check.mjs --mutate envelope-unchecked --no-render     # ... the half of a preset document nothing used to read
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate expand-shifts-by-a-block   # ... and must FAIL mutated
+node tools/monitor-check.mjs --mutate colour-off-keeps-the-texture # ... the cloud stops wearing the last JPEG
 node tools/sensor-view-check.mjs                          # the intrinsics a take was shot with, against a build that assumes them
 node tools/sensor-view-check.mjs --mutate fov-hardcoded   # ... and must FAIL mutated
 node tools/sensor-view-check.mjs --mutate no-repaint      # ... and must FAIL mutated
@@ -186,9 +251,14 @@ node tools/level-check.mjs --mutate region-follows-tilt   # ... and must FAIL mu
 node tools/level-check.mjs --mutate sensor-view-ignores-tilt # ... and must FAIL mutated
 node tools/level-check.mjs --mutate level-writes-zero     # ... and must FAIL mutated
 node tools/level-check.mjs --mutate level-order-swapped   # ... and must FAIL mutated
+node tools/level-check.mjs --mutate level-selection-ignores-point # ... and must FAIL mutated
+node tools/level-check.mjs --mutate pointer-levels-the-centre # ... the press's own position, one link earlier
+node tools/level-check.mjs --mutate reset-keeps-roll      # ... and must FAIL mutated
 node tools/vcam-check.mjs                                 # the output to OBS: the colour camera, the take it must not touch, and the source's picture
 node tools/vcam-check.mjs --mutate hd-upscales-registered # ... and must FAIL mutated
+node tools/vcam-check.mjs --mutate hd-reencodes-in-flight # ... the bytes, where the picture is right
 node tools/vcam-check.mjs --mutate hd-reaches-recorder    # ... and must FAIL mutated
+node tools/vcam-check.mjs --mutate refusal-ignores-webcam # ... what the take is told the stream costs
 node tools/guard-check.mjs                                # the socket's origin rule, the bind, and the rebinding rule
 node tools/guard-check.mjs --mutate upgrade-skips-origin  # ... and must FAIL mutated
 node tools/guard-check.mjs --mutate host-accepts-a-name   # ... and must FAIL mutated
@@ -197,8 +267,17 @@ node tools/jobs-check.mjs --mutate claim-ignores-renderer # ... and must FAIL mu
 ```
 
 `jobs-check` needs a GPU browser and ffprobe and renders one real job through
-`tools/render-worker.mjs`; `--no-render` drops that row. `guard-check`, `library-check`,
-`level-check` and `vcam-check` spawn their own servers. `export-check` needs ffmpeg and ffprobe.
+`tools/render-worker.mjs`; `--no-render` drops that row. **Six spawn their own servers and need
+none running** — `guard-check` on 8321, `jobs-check` on 8231, `level-check` on 8377,
+`monitor-check` on 8341, `vcam-check` on 8361, and `library-check` across the span described
+below — so what each of those needs is a free port rather than a server, and the distinction is
+not bookkeeping: a tool that finds a stranger already listening on its port is answered by the
+stranger, and asserts against whatever fixture that process staged rather than the one this run
+staged, which is a green run proving nothing. `sensor-view-check` does both — it takes `--url`
+against a running server for most of its run and spawns a private one on 8131 for the section
+that needs its own capture. `library-check` is the only one of any of them that asks the kernel
+first and refuses, so everywhere else the `pgrep` below is the check. `export-check` needs
+ffmpeg and ffprobe.
 `level-check` needs neither a sensor nor a capture — it plants analytic planes straight into
 the depth texture, which is what lets it grade the plane fit against a normal it chose.
 
@@ -225,7 +304,9 @@ registry and exits 2 when it cannot reach it, because it proves the gate by npm'
 rather than by reading a config key:
 
 ```
-node tools/syntax-check.mjs                          # every JS file this repo ships parses
+node tools/syntax-check.mjs                          # every JS file this repo ships parses, and the two
+                                                     #   constants the two languages cannot share agree
+node tools/syntax-check.mjs --mutate spec-drifts     # ... and the .knct decoder specification must FAIL when a constant moves under it
 node tools/release-gate-check.mjs                    # the .npmrc supply-chain gate is actually armed
 node tools/release-gate-check.mjs --mutate wrong-unit # ... and must FAIL (also: no-gate, absent)
 ```
@@ -260,8 +341,8 @@ than by duration. See `docs/proof-tools.md`.
 `change` on a damped control that moved — so a handler that renders on `change` has asked for
 the next render, and with the playhead parked there is no frame clock to pace it. That shipped:
 one pointer move on a paused orbit cost 34 rebuilds and the drag ran at 12fps while rendering
-190. Arm `draftWanted` and let the animation loop pump it; **nothing may start a redraw except
-the loop**. `editor-check` section 9 counts drafts against animation frames, with
+190. Arm a redraw request and let the animation loop pump it; **nothing may start a redraw except
+the loop**. `editor-check` section 9 counts navigation redraws against animation frames, with
 `--mutate orbit-pumps-on-change` as its control.
 
 

@@ -49,10 +49,19 @@ export { VALID_ID };
 // function asserts.
 export const VALID_HASH = /^sha256:[0-9a-f]{64}$/;
 
-// Two constants, shared with the page rather than restated here. See web/format.js
-// for what version 1 means and why it is a version rather than an authored buffer
-// height; re-exported so callers on this side have one import to reach for.
-import { PROJECT_VERSION, VALID_ID } from '../web/format.js';
+// Two constants and one predicate, shared with the page rather than restated here. See
+// web/format.js for what version 1 means and why it is a version rather than an authored
+// buffer height; re-exported so callers on this side have one import to reach for.
+//
+// `captureFormatRefusal` is imported rather than the number it compares against, and
+// that is the whole point of it: what travels between the doors that decide whether a
+// take may be opened is the decision, rather than a constant each is free to compare its
+// own way. **There are two such doors now and there were four**, which is this branch's
+// subject - the gallery's badge and its dead Open button used to compare for themselves
+// and now quote `openRefusals`, leaving `OPEN_REFUSALS.format` below and the editor's
+// `openTake`, which is handed a hello and never a manifest.
+import { PROJECT_VERSION, VALID_ID, captureFormatRefusal } from '../web/format.js';
+import { POLLED_NODE_FIELDS } from '../web/record-poll.js';
 
 export { PROJECT_VERSION };
 
@@ -156,6 +165,68 @@ export async function appendMarks(capturePath, records) {
 // ------------------------------------------------------------------- manifest
 
 /**
+ * Every reason this build can refuse to open a take, keyed, with the sentence each one
+ * carries - and this is the only place any of them is written.
+ *
+ * A list on the take rather than one string, because a take can carry two blocking
+ * facts at once and a single string cannot serve a tile that badges both. `openable` is
+ * then "the list is empty" rather than a second expression of the same predicate, which
+ * is what stops the two drifting.
+ *
+ * It is here rather than in the pages because it was in the pages, twice, twelve lines
+ * apart, and they disagreed. A take with a hello and no whole frame was badged "the
+ * scan found no whole frame in this take" and, on the button beside it, told it "needs
+ * two frames to bracket a position" - a sentence about a take that has one, shown over
+ * a take that has none. Measured on the shipped build before this moved, with the
+ * `hello-no-frames` fixture `library-check` now plants: nothing had ever reached that
+ * shape, because the take with zero frames carried no hello and answered on the
+ * recording branch, and the take with a hello had a frame.
+ *
+ * Zero frames and one frame are different facts and the sentence says which, which is
+ * the distinction the gallery's badge already drew and the button did not.
+ *
+ * **A table rather than three pushes with their sentences inline, because the keys have
+ * a second reader.** `web/library.js` keeps its own table of what each key is badged as
+ * over a 228px poster, and the two have to cover the same keys or a refusal arrives
+ * with no badge. A check comparing the page's table against the refusals that happen to
+ * be in a fixture library cannot see a key no fixture take produces; comparing it
+ * against this object can, which is why the enumeration is a value here and not a shape
+ * to be recovered from the branches below.
+ */
+export const OPEN_REFUSALS = {
+  recording: () => 'this take is still being written, so it has no settled hash and nothing may open it until the recorder closes it',
+  'no-hello': () => 'this take carries no sensor hello, so its intrinsics are unknown and it cannot be unprojected',
+  // **The one entry that does not write its own sentence, and the delegation is the
+  // point.** `captureFormatRefusal` is read by a door this table cannot reach - the
+  // editor's `openTake` is handed a hello and never a take manifest - so the band has a
+  // reader outside the library and the sentence has to live where both can see it.
+  // Spelling it again here would be the two-copies failure this table exists to end,
+  // one file further out. What this table owns is that the format band is *a refusal
+  // like the others*: keyed, badged, and counted by `openable`.
+  format: (format) => captureFormatRefusal('this take', format),
+  short: (frames) => (frames === 0
+    ? 'the scan found no whole frame in this take, so there is nothing here to draw or to open'
+    : 'a take needs two frames to bracket a position, so there is nothing here to play'),
+};
+
+/** One refusal, so a key that is not in the table above is a throw rather than a tile. */
+const refusal = (key, ...args) => ({ key, why: OPEN_REFUSALS[key](...args) });
+
+/**
+ * Whether a take from somewhere else carries refusals this build can render.
+ *
+ * The shape and not the vocabulary. A *newer* node may send a key this build has never
+ * heard of, and the gallery is built for that - an unmapped key is badged as itself,
+ * because visibly unmapped beats confidently wrong - so rejecting on an unknown key
+ * would refuse a node whose takes are perfectly listable. What cannot be rendered is a
+ * take with no refusals at all, which is what an *older* node sends: it carried
+ * `openable`, `hasHello` and `frames` and left every surface to derive the sentence,
+ * which is the derivation this design removed.
+ */
+const carriesRefusals = (take) => Array.isArray(take.openRefusals)
+  && take.openRefusals.every((r) => r && typeof r.key === 'string' && typeof r.why === 'string' && r.why !== '');
+
+/**
  * One take as the gallery sees it. Read through `cachedIndex`, which holds no
  * descriptor, so a directory of two hundred takes costs two hundred sidecar reads
  * and nothing that stays open.
@@ -178,6 +249,16 @@ async function describeTake(dir, file, recording) {
   // than a figure that reads like a fact, and says the take is recording, which is
   // what the tile actually has to draw.
   if (recording) {
+    // **Hoisted so `openable` is derived here too, and it was not.** This branch used to
+    // carry the list and a hardcoded `openable: false` beside it, which is precisely the
+    // second expression of one predicate that the table above exists to remove - written
+    // into the branch by the commit that wrote the argument against it. Nothing caught it:
+    // both said the take cannot be opened, so they agreed until the day one moved, and the
+    // failure they would have produced is the quiet one - a disabled Open button whose
+    // reason is the empty string, because `cannotOpen` quotes the list and the list is
+    // what would have gone. The two-table rows cannot see this either, since they skip
+    // `recording` on purpose.
+    const openRefusals = [refusal('recording')];
     return {
       id,
       file,
@@ -189,8 +270,19 @@ async function describeTake(dir, file, recording) {
       dateSource: 'mtime',
       truncated: false,
       hasHello: null,
+      // Null with the rest of them, and for the same reason: the hello is at the head
+      // of a file this is deliberately not reading, so a take mid-write has no answer
+      // here rather than an answer that happens to be the current generation.
+      format: null,
       hello: null,
-      openable: false,
+      // The same authority answering a case it already knows, rather than a second
+      // derivation: a take still being written has no settled hash, so nothing may
+      // open it whatever its frames turn out to be. The gallery's *warning* about a
+      // recording take is a wider statement - it names stopping before opening,
+      // downloading, renaming or removing - and stays a page concern for that reason,
+      // because an action list does not belong in a library scanner.
+      openRefusals,
+      openable: openRefusals.length === 0,
       recording: true,
       // Cheap and it is the one thing that is true mid-take: marks pressed in the
       // room land in the sidecar, and the sidecar is beside the take rather than in
@@ -212,6 +304,31 @@ async function describeTake(dir, file, recording) {
   // own modification time, and says which it used rather than presenting a guess
   // as a record.
   const fromHello = Number.isFinite(hello?.startedAt) && hello.startedAt > 0;
+  // What generation of the format wrote this take, carried up to the gallery as it was
+  // found rather than coerced into a number. A hello saying `"format": "banana"` is a
+  // writer this build has no idea about, and reporting that as null would file it with
+  // the takes that honestly declare nothing - which is the one band that opens.
+  const format = hello?.format ?? null;
+
+  // Why this take cannot be opened, drawn from the one table above. **The push order
+  // is the badge order**, since the gallery renders these in the order they arrive and
+  // `cannotOpen` quotes the first. Decided here rather than sorted there, because two
+  // files agreeing about an order is the same shape as two files agreeing about a
+  // sentence.
+  //
+  // **The format band is asked whether before it is asked what, and both questions go to
+  // the same function**, so they cannot answer differently. It has to be a gate rather
+  // than an unconditional push because `captureFormatRefusal` returns the empty string
+  // for a take that opens - and an entry whose `why` is empty is not a refusal, it is a
+  // refusal-shaped hole. Every ordinary take would carry one, `openable` would go false
+  // across the whole library, and a node serving them fails `carriesRefusals` at the
+  // link, so the far end lists nothing at all. That cascade is not hypothetical: it is
+  // what `--mutate refusals-must-be-nonempty` plants on purpose.
+  const openRefusals = [];
+  if (!index.hello) openRefusals.push(refusal('no-hello'));
+  if (captureFormatRefusal('this take', format) !== '') openRefusals.push(refusal('format', format));
+  if (stamps.length < 2) openRefusals.push(refusal('short', stamps.length));
+
   return {
     id,
     file,
@@ -232,14 +349,22 @@ async function describeTake(dir, file, recording) {
     // screen can show. The tile has to say that rather than offering an Open
     // button that throws.
     hasHello: Boolean(index.hello),
+    // Beside `hasHello` and `dateSource` rather than inside the four-value `hello`
+    // subset below, because it is a fact about the file and not one of the intrinsics -
+    // and because that subset carries its own argument for shipping four values and no
+    // more, which this would quietly widen.
+    format,
     // The intrinsics, so a poster can unproject the take rather than draw a picture
     // of the sensor's grid. Only these four: a gallery has no use for the serial or
     // the firmware, and shipping a node's whole hello to every browser that lists a
     // directory is more of that node's record than the listing needs.
     hello: hello ? { fx: hello.fx, fy: hello.fy, cx: hello.cx, cy: hello.cy } : null,
-    // Two frames is the floor for a pair source, so a shorter take lists and
-    // refuses to open. Named here rather than discovered in the editor.
-    openable: Boolean(index.hello) && stamps.length >= 2,
+    // Two frames is the floor for a pair source, so a shorter take lists and refuses to
+    // open. Named here rather than discovered in the editor - and the format band is one
+    // of the names rather than a term in a second expression, so a gallery that offers
+    // Open and an editor that throws on it cannot come apart.
+    openRefusals,
+    openable: openRefusals.length === 0,
     recording: false,
     marks,
   };
@@ -295,6 +420,10 @@ export class NodeLink {
     this.url = url.replace(/\/$/, '');
     this.name = name;
     this.lastError = null;
+    // Null until the poll has spoken to the node once. A link that has answered
+    // nothing yet is not a link that has failed, so the first listing goes out and is
+    // refused by its own gate if the manifest is the half that is old.
+    this.buildRefusal = null;
   }
 
   async fetchJson(path, init) {
@@ -303,20 +432,155 @@ export class NodeLink {
     return res.json();
   }
 
-  /** The node's own takes, or null if it cannot be reached. Never throws upward. */
-  async takes() {
+  /**
+   * The node's own takes, or null if it cannot be read. Never throws upward.
+   *
+   * **Two machines on one network are two builds**, and the one that gets upgraded
+   * first is whichever the operator was standing at. A node still running the build
+   * before the refusals moved off the pages answers `/library/takes` with `openable`,
+   * `hasHello` and `frames` and no `openRefusals` at all - a manifest that parses,
+   * passes the id and hash filters below, and reconciles into the listing looking like
+   * any other take. The gallery then iterates a field that is not there while painting
+   * the first remote tile, and the whole shelf goes blank on a `TypeError` with nothing
+   * on screen saying why.
+   *
+   * Refused here, at the boundary, rather than guarded at each of the surfaces that
+   * read a take. A `?? []` on the page would draw a tile claiming a take is fine, which
+   * is a second implementation wearing a fallback and the fallback is the half that
+   * would be believed; and there are three surfaces, so the guard would be three
+   * guesses about one wire format. This is the one place a manifest from another build
+   * arrives, so it is the one place that can say the build is the problem.
+   *
+   * The whole manifest and never take by take. Admitting the readable ones would hide
+   * the rest behind a shelf that looks complete, and "some of that node's takes are
+   * missing" is the failure a link is supposed to make impossible to have silently.
+   *
+   * **`signal` is the caller's request going away, and it is a signal rather than a
+   * timeout on purpose.** This crosses the network to have a directory walked and an
+   * index built per take, and a cold node measured 7m30s over 200 unindexed takes - so
+   * any bound short enough to catch a dead link is short enough to refuse the case the
+   * link exists for. What the caller does know is whether anybody is still waiting: a
+   * route hands in its own request's abort, and a node that accepts the connection and
+   * then says nothing is dropped the moment the browser gives up rather than held until
+   * it eventually settles. Without it the gallery's fifteen-second retry left one more
+   * handler and one more outbound socket parked on this machine every five seconds, for
+   * as long as the page stayed open.
+   */
+  async takes(signal = null) {
+    // The poll's refusal, read here because this is the request that draws something.
+    // `recordState` is the only caller that learns the node's build is too old to be
+    // followed and it paints nothing itself, so a refusal left where it was found is
+    // one the operator never sees - the gallery would go on listing that node's takes
+    // beside a recorder state frozen at the first tick. Refused before the fetch rather
+    // than after it, because there is nothing to ask a node whose answers cannot be
+    // followed, and the reason lands in `lastError` where the shelf already prints it.
+    if (this.buildRefusal) {
+      this.lastError = this.buildRefusal;
+      return null;
+    }
     try {
-      const body = await this.fetchJson('/library/takes');
-      this.lastError = null;
+      const body = await this.fetchJson('/library/takes', signal ? { signal } : undefined);
       // The hash is filtered beside the id because it is the other field of a node's
       // that reaches a path here. **A take still being shot advertises no hash at
       // all** - `describeTake` reports null on purpose, and `reconcile` keys those by
       // side and name - so null is a take the gallery has to be able to list and
       // refuse to download. What must not pass is a string that is not a hash.
-      return body.takes.filter((t) => VALID_ID.test(t.id) && (t.hash === null || VALID_HASH.test(t.hash)));
+      const takes = body.takes.filter((t) => VALID_ID.test(t.id) && (t.hash === null || VALID_HASH.test(t.hash)));
+      const older = takes.find((t) => !carriesRefusals(t));
+      if (older) {
+        this.lastError = 'it is running an older build whose take manifest carries no open-refusal reasons, '
+          + `so nothing it holds can be listed here - ${older.id} arrived with none. Upgrade the node to this build.`;
+        return null;
+      }
+      this.lastError = null;
+      return takes;
     } catch (err) {
       this.lastError = err.message;
       return null;
+    }
+  }
+
+  /**
+   * Whether the node is shooting, and which take. Null when it cannot be reached.
+   *
+   * **The gallery on this machine is a view of both libraries and was following only
+   * one recorder.** `/library/all` reconciles the node's takes into the grid, so a
+   * take being written over there draws a tile here that says so and disables Open,
+   * Download, Rename and Remove behind it - but the only thing this machine polled to
+   * decide whether any of that had changed was its own `/record/state`, which on an
+   * editing station with no sensor never moves. The remote tile then went on refusing
+   * a take that finished minutes ago for as long as the page stayed open, which is the
+   * exact staleness the poll was added to end, surviving on the one machine the
+   * gallery is actually used from.
+   *
+   * **Two fields and not the node's whole state**, because this is a fingerprint
+   * rather than a readout: what is drawn about the node's takes comes from
+   * `/library/all`, and all this has to do is say when that answer is worth asking for
+   * again. Shipping the node's monitors and free space here would be a second copy of
+   * a record only that machine's own panel has a use for.
+   *
+   * **Bounded where `takes()` is not, and the cadence is the reason.** This one sits
+   * on a five-second poll, so a node that accepts a connection and then says nothing -
+   * a machine mid-reboot, a link that dropped without a reset - would stall every tick
+   * behind it and the gallery would stop following the recorder it can still reach.
+   * The others are one-shots an operator asked for and can see waiting. Three seconds
+   * is well past a LAN request that is going to answer and well under one tick.
+   */
+  async recordState() {
+    try {
+      const body = await this.fetchJson('/record/state', { signal: AbortSignal.timeout(3000) });
+      // **The same "two machines are two builds" refusal `takes()` makes, arriving at
+      // the second route.** The manifest gate up there is passed by the build
+      // immediately before this one, whose `/record/state` predates `writingId` and
+      // omits the key entirely - and `?? null` below would read that as a node that
+      // owns no take. It is a legal value for a recorder sitting idle, so nothing
+      // would look wrong: the fingerprint the poll computes is constant from the first
+      // tick, no remote start or stop can ever change it, and the gallery quietly
+      // stops rereading the library for the machine it is drawing half its grid from.
+      // Absent and "not writing" are two different facts and only one of them may be
+      // spelled `null`.
+      //
+      // Asked of `POLLED_NODE_FIELDS` rather than of `writingId` by name, because the
+      // poll is what decides which fields matter: a field added to that fingerprint
+      // tightens this by existing, where a name written out here is a second list to
+      // keep in step and the copy that goes stale is this one - the far side is the
+      // half nobody tests on a single machine.
+      const missing = POLLED_NODE_FIELDS.filter((f) => body[f] === undefined);
+      // **Its own field rather than `lastError`, and the reason is which way each one
+      // has to move.** `lastError` is written per listing and cleared by the next one
+      // that succeeds, so a refusal parked in it would either be wiped by the very next
+      // `/library/all` - which is what it has to survive to be read - or, if `takes()`
+      // returned early on it, would latch: nothing would fetch again, so nothing would
+      // clear it, and a node upgraded ten minutes later would stay refused until this
+      // process restarted. Set and cleared on every tick of the poll instead, so the
+      // refusal lasts exactly as long as the build that earns it and an upgrade heals
+      // the link within one cadence with nobody doing anything.
+      this.buildRefusal = missing.length === 0 ? null
+        : 'it is running an older build whose recorder state carries no '
+          + `${missing.join(', ')} - the gallery cannot follow a recorder it cannot ask, `
+          + 'so its takes are not listed here. Upgrade the node to this build.';
+      if (this.buildRefusal) {
+        return { name: this.name, reachable: false, recording: false, takeId: null, writingId: null };
+      }
+      return {
+        name: this.name,
+        reachable: true,
+        recording: Boolean(body.recording),
+        takeId: body.takeId ?? null,
+        // The node's own answer to "which take do you still own", carried across
+        // unchanged. The gallery on this machine draws that node's takes, so the
+        // window in which a tile may not offer Open is the node's window and not
+        // this one's - reading it off `recording` here would end the remote tile's
+        // refusal the moment the node's writing stopped, several seconds before its
+        // index existed.
+        writingId: body.writingId ?? null,
+      };
+    } catch {
+      // Deliberately not written to `lastError`. That field is what the gallery prints
+      // beside "unreachable", and it is set by the listing this side actually draws
+      // from - overwriting it here would let a poll's timeout replace the reason the
+      // library failed with a reason nothing on screen is about.
+      return { name: this.name, reachable: false, recording: false, takeId: null, writingId: null };
     }
   }
 }

@@ -61,11 +61,48 @@ export const VALID_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
  * that went in, so a round trip is a byte comparison rather than an argument
  * about how much codec loss is acceptable - which makes orientation, channel
  * order, frame order and frame count one assertion instead of four proxies.
+ *
+ * `evenDimensions` is a property of the entry rather than a comparison against its
+ * name, because yuv420p subsamples chroma by two in each direction and an odd
+ * dimension has no half-pixel to carry - which is a fact about the pixel format an
+ * entry names, not about the string `h264`. Stated on **both** entries rather than
+ * only on the one that needs it: an entry that may simply omit the field is an entry
+ * that opts out of the rule by saying nothing, and a codec added later would then
+ * inherit the exemption silently, which is the whole failure this move exists to
+ * remove.
+ *
+ * Which is why the loop below exists rather than the convention being left to the
+ * example. `spec.evenDimensions && ...` reads a missing field as false, so writing the
+ * field on both entries is a habit and not a rule - a third codec added without it
+ * would inherit exactly the silent exemption the paragraph above says has been removed,
+ * and the sentence would be an assertion about the table rather than a property of it.
+ * At module load and throwing, because a malformed entry here is a typo in a constant
+ * and not a condition to be handled: the alternative is discovering it at the first
+ * odd-dimensioned export, which is the class of late discovery this whole change is
+ * about. It has no falsification control for the same reason the dimension rule itself
+ * has none - both entries are well formed, so a mutation removing this loop changes
+ * nothing observable, and an assertion that cannot fire buys confidence with a number.
  */
 const CODECS = {
-  h264: { ext: 'mp4', args: ['-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p'] },
-  lossless: { ext: 'mkv', args: ['-c:v', 'ffv1', '-level', '3', '-pix_fmt', 'rgb24'] },
+  h264: {
+    ext: 'mp4',
+    evenDimensions: true,
+    args: ['-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p'],
+  },
+  lossless: {
+    ext: 'mkv',
+    evenDimensions: false,
+    args: ['-c:v', 'ffv1', '-level', '3', '-pix_fmt', 'rgb24'],
+  },
 };
+for (const [name, spec] of Object.entries(CODECS)) {
+  if (typeof spec.evenDimensions !== 'boolean') {
+    throw new Error(`codec ${name} does not say whether it needs even dimensions, and a codec that says nothing about a rule is exempt from it by accident`);
+  }
+  if (typeof spec.ext !== 'string' || !Array.isArray(spec.args)) {
+    throw new Error(`codec ${name} is missing the extension or the arguments every export path dereferences`);
+  }
+}
 
 // Exported so the queue can validate a job before it is claimed. One rule with two
 // callers, the same shape `originAllowed` took: a second copy of this code in
@@ -79,8 +116,22 @@ export function validateExport({ name, width, height, fps, frames = null, codec 
   const f = Number(fps);
   if (!Number.isInteger(w) || w <= 0) throw new Error(`bad output size ${width}x${height}`);
   if (!Number.isInteger(h) || h <= 0) throw new Error(`bad output size ${width}x${height}`);
-  if (codec === 'h264' && (w % 2 || h % 2)) {
-    throw new Error(`h264 needs even dimensions, got ${w}x${h}`);
+  // **`Object.hasOwn` rather than truthiness, because a plain object answers for its
+  // prototype.** `CODECS['toString']` is a function and therefore truthy, so
+  // `"codec": "toString"` - and `constructor`, `valueOf`, `__proto__` - walked past
+  // this validator, took the enqueue, reserved an output name, and then died a minute
+  // later inside `begin` with `CODECS[codec].args is not iterable`, which is the exact
+  // place `server/jobs.js` calls out as where an unknown codec must never first be
+  // discovered. Nothing an attacker chose ever reached ffmpeg's argv - `.args` is
+  // undefined for every inherited key - so what this costs is a job admitted and a
+  // worker's minute, not an injection.
+  //
+  // Resolved here rather than at the bottom because the dimension rule below reads the
+  // entry: the lookup has to happen before anything can ask the entry a question.
+  const spec = Object.hasOwn(CODECS, codec) ? CODECS[codec] : null;
+  if (!spec) throw new Error(`unknown codec ${codec}`);
+  if (spec.evenDimensions && (w % 2 || h % 2)) {
+    throw new Error(`${codec} needs even dimensions, got ${w}x${h}`);
   }
   if (!Number.isFinite(f) || f <= 0) throw new Error(`bad output rate ${fps}`);
   if (frames !== null) {
@@ -91,7 +142,6 @@ export function validateExport({ name, width, height, fps, frames = null, codec 
   if (frameBytes > MAX_FRAME_BYTES) {
     throw new Error(`a ${w}x${h} frame is ${frameBytes} bytes, past the ${MAX_FRAME_BYTES} ceiling`);
   }
-  if (!CODECS[codec]) throw new Error(`unknown codec ${codec}`);
   return { width: w, height: h, fps: f, frames: frames !== null ? Math.trunc(frames) : null, codec };
 }
 

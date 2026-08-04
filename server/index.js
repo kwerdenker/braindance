@@ -613,9 +613,56 @@ function revealAvailability(req) {
   return { available: true, label, why: null };
 }
 
+/**
+ * A signal that fires when the caller hangs up, for handing to the node.
+ *
+ * **Every route that awaits the node passes one, and that is the class rather than the
+ * one route where it was noticed.** `node.takes` crosses the network to a machine that
+ * may accept a connection and then say nothing, and a handler awaiting it holds this
+ * process's socket and the outbound one for as long as that lasts - which, once the
+ * gallery's listing is bounded and retries, is another pair every five seconds for as
+ * long as the page is open. The gallery is only the route that made it accumulate; a
+ * download, a removal and a mark sync all await the same unbounded fetch, so a rule that
+ * covered the one would leave the next one added outside it. `library-check` walks the
+ * source for `node.takes(` and requires a signal at every call, so a route written later
+ * is asked by existing.
+ *
+ * `close` rather than `aborted`, because it fires for a connection that ended either way
+ * and an abort after the answer has gone out costs nothing - the fetch it would cancel
+ * has already settled.
+ *
+ * **Watched on the response and not on the request, because half these routes read a
+ * body first.** An `IncomingMessage` is a stream, and it emits `close` when it *ends* -
+ * so by the time `serveRemoval` and `serveMarkSync` have awaited `readBody(req)` the
+ * request is already `destroyed` and a listener attached after it can never fire again.
+ * Both of them built a signal that was structurally incapable of aborting anything, and
+ * the source sweep could not see it: the call carried a signal, the argument was
+ * spelled correctly, and only the two routes that read no body actually worked. Measured
+ * directly rather than reasoned about - a listener on the consumed request does not fire
+ * when the client aborts, one on the response does.
+ *
+ * The response is the object whose lifetime is the handler's, which is what this wanted
+ * to name all along, so taking it here closes the class instead of reordering two call
+ * sites and leaving the third route somebody writes next year to be found the same way.
+ *
+ * What that rests on, checked rather than assumed, because it is the way this trade goes
+ * wrong: `close` on a response also fires when the answer finishes normally, so a route
+ * that had already written one before awaiting the node would abort a fetch still in
+ * flight - a signal that fires too early, which fails some of the time and is worse than
+ * one that never fires at all. Every write ahead of a `node.takes` call on all four
+ * routes is an early refusal that returns, so no path reaching the node has touched the
+ * response. A route that wants to stream before it asks the node needs a different
+ * answer, and this sentence is where it will find out.
+ */
+const untilCallerLeaves = (res) => {
+  const ctl = new AbortController();
+  res.on('close', () => ctl.abort());
+  return ctl.signal;
+};
+
 async function serveLibrary(req, res) {
   const here = await localTakes();
-  const there = node ? await node.takes() : null;
+  const there = node ? await node.takes(untilCallerLeaves(res)) : null;
   const takes = reconcile(here.takes, there);
   sendJson(res, {
     here: HERE_NAME,
@@ -736,7 +783,7 @@ async function serveRemoval(req, res, [id], kind) {
     sendJson(res, { error: `${id} is being recorded right now: stop the take before removing it` }, 409);
     return;
   }
-  const there = node ? await node.takes() : null;
+  const there = node ? await node.takes(untilCallerLeaves(res)) : null;
   const theirs = (there ?? []).find((t) => t.hash === (mine?.hash ?? body.hash));
 
   if (kind === 'reclaim') {
@@ -834,7 +881,7 @@ async function serveDownload(req, res, [id]) {
     sendJson(res, { error: 'no capture node is linked, so there is nothing to download from' }, 409);
     return;
   }
-  const there = await node.takes();
+  const there = await node.takes(untilCallerLeaves(res));
   if (there === null) {
     sendJson(res, { error: `${node.name} is unreachable: ${node.lastError}` }, 502);
     return;
@@ -925,7 +972,7 @@ async function serveMarkSync(req, res, [id]) {
     // library is built to handle, so the one place that reached for a filename
     // would be the one place the design does not hold.
     const here = (await localTakes()).takes.find((t) => t.id === id);
-    const theirTakes = await node.takes();
+    const theirTakes = await node.takes(untilCallerLeaves(res));
     const match = here && (theirTakes ?? []).find((t) => t.hash === here.hash);
     if (!match) {
       sendJson(res, { merged: 0, marks: await readMarks(path), note: `${node.name} does not hold this take` });
@@ -1001,12 +1048,18 @@ const shooting = (run) => async (req, res, args, query) => {
  * rather than by somebody remembering this function exists. A cost the refusal cannot
  * see is a cost it silently under-reports, and the only thing the refusal has going
  * for it is that its number is true.
+ *
+ * **Each kind is asked its own rule where that rule is written**, rather than having
+ * it restated here. The webcam's used to be a `!s.loopback` filter on this line, which
+ * left the copy in `server/webcam.js` carrying all of the reasoning and none of the
+ * behaviour - so the interleaved A/B that paragraph is waiting on would have been
+ * acted on in the dead one.
  */
 function consumersCostingTheTake() {
   return [
     ...attachedMonitors().filter(costsTheTake)
       .map((m) => ({ kind: 'monitor', at: `÷${m.divisor} ×${m.stride}` })),
-    ...webcam.describe().filter((s) => !s.loopback)
+    ...webcam.subscribersCostingTheTake()
       .map(() => ({ kind: 'webcam', at: 'the colour camera at full rate' })),
   ];
 }
@@ -1249,6 +1302,60 @@ const serveDownloads = (req, res) => sendJson(res, {
   }),
 });
 const serveDescriptors = (req, res) => sendJson(res, { open: openCaptureCount(), real: realDescriptorCount() });
+
+/**
+ * Whether the sensor is delivering, answered without anything attaching to it.
+ *
+ * **The point is what it does not cost.** These numbers existed already - the health
+ * interval computes them every five seconds and prints one line to a console nobody
+ * is reading during a shoot - and the only way to find out whether the sensor was
+ * healthy was to open a monitor over the socket. `consumersCostingTheTake` exists
+ * because an attached monitor can cost the take frames, so the one instrument for
+ * "is this sensor well" made it less well, which is an instrument that changes what
+ * it measures. Reading it off HTTP removes the trade entirely.
+ *
+ * Neither `write` nor `live` in the table, and both absences are decisions. Nothing
+ * here changes, so there is no mutation to guard. And this reports numbers *about*
+ * the sensor rather than what the sensor is seeing - a frame count is not a picture
+ * of the room - so the origin rule that covers `/camera.mjpg` has nothing to bite on.
+ *
+ * The window is served as its own length and its own frame count rather than only as
+ * a rate, because those are the two readings that tell a gap from a slow link: five
+ * seconds carrying zero frames and five seconds carrying a hundred and fifty are
+ * different facts, and a rate alone reports the first as silence.
+ */
+const serveSensorHealth = (req, res) => sendJson(res, {
+  state: sensorState,
+  // The last window that carried frames, which is deliberately older than the window
+  // below whenever the sensor has stopped - see the health interval.
+  fps: observedFps,
+  bytesPerSec: observedBytesPerSec,
+  // And the last window that closed, whether or not anything arrived in it.
+  window: lastWindow,
+  // **Named for what it counts, which is not what a reader of a sensor-health route
+  // would assume.** `stats.dropped` is incremented inside `broadcastFrame`, per socket
+  // whose send buffer is over the ceiling - so it is monitors failing to keep up with
+  // the output, not the sensor failing to deliver. Called `dropped` on this route it
+  // reads as sensor loss and is wrong in both directions at once: a node whose sensor is
+  // struggling with nobody watching reports zero, because the function returns before
+  // this can move when `wss.clients.size` is zero, and one frame that two lagging
+  // monitors both missed counts twice. There is no sensor-loss number here to rename it
+  // to - the frames that never arrived are absent from `window.frames`, which is the
+  // reading that already says so - so the honest move is to stop this one claiming to be
+  // one. `dropped` is beside the recorder's own, which counts what the disk refused.
+  monitorDropped: droppedTotal,
+  // The first spawn is a start rather than a respawn, which is the number somebody
+  // reading this is after: on a healthy node it is zero for the life of the process.
+  // The restarts somebody asked for come off it for the same reason - a colour toggle
+  // stops a healthy grabber, and a flapping count an operator can raise by ticking a
+  // checkbox is not a health reading.
+  respawns: Math.max(0, grabberSpawns - 1 - grabberRestarts),
+  // Beside it rather than folded into it, because the subtraction above would otherwise
+  // be lossy in the direction that hides work: a node that has restarted forty times
+  // for forty colour toggles and never once for a fault reads zero respawns, and the
+  // reading that says why is gone. Two numbers, two questions.
+  restarts: grabberRestarts,
+});
 /**
  * What the recorder is doing, and what the monitors attached to it would cost.
  *
@@ -1263,6 +1370,14 @@ const serveRecordState = async (req, res) => {
   const costly = consumersCostingTheTake();
   sendJson(res, {
     ...recorder.state,
+    // **The linked node's recorder, beside this machine's own.** The gallery polls this
+    // route to decide whether the library is worth rereading, and the library it draws
+    // spans both machines - so on an editing station with a `--node`, which is the
+    // machine the gallery is actually used from, every fact this route reported was
+    // about a recorder that station does not have. A take started and finished on the
+    // node changed nothing here, and its tile went on refusing Open for as long as the
+    // page stayed up. Null on the node itself, which has no `--node` of its own.
+    node: node ? await node.recordState() : null,
     storage: await remaining(CAPTURES_DIR, recordingRate()),
     monitors: {
       cap: RECORDING_CAP,
@@ -1399,6 +1514,16 @@ const ROUTES = [
   // declaring itself rather than by somebody remembering - the same move the table
   // already made for mutations.
   { path: '/camera.mjpg', pattern: /^\/camera\.mjpg$/, live: true, read: (req, res) => webcam.attach(req, res) },
+
+  // ---- the sensor
+  //
+  // A namespace of its own rather than a corner of `/library`, because the table's
+  // existing first segments each name the subsystem the route reads from - a capture,
+  // the library, the recorder, the queue - and this one reads the sensor. An entry
+  // and not a branch beside the dispatcher, which is the part that matters: `/library
+  // /routes` publishes this table and `library-check` sweeps what it publishes, so a
+  // route answering from anywhere else is a route no sweep can see.
+  { path: '/sensor/health', pattern: /^\/sensor\/health$/, read: serveSensorHealth },
 
   // ---- recording
   { path: '/record/state', pattern: /^\/record\/state$/, read: serveRecordState },
@@ -1711,6 +1836,44 @@ const stats = { frames: 0, dropped: 0, bytes: 0, since: Date.now() };
 // library on a cold server still needs a number.
 let observedBytesPerSec = 0;
 const recordingRate = () => (observedBytesPerSec > 0 ? observedBytesPerSec : undefined);
+// The frame rate over the same window, kept beside the byte rate rather than derived
+// from it. A frame rate recovered by dividing bytes by a nominal frame size would be
+// an estimate wearing a measurement's clothes, and the two quantities move apart for
+// real reasons - a link delivering half the frames at full size and one delivering
+// every frame at half size are the same MB/s and different faults.
+let observedFps = 0;
+
+// The window that closed last, empty ones included, and it is deliberately not the
+// same age as the two rates above. A window with no frames in it has no rate to
+// report, so the rates keep the last honest measurement across a gap - but the
+// window's own length and frame count are exactly what says the sensor stopped
+// delivering, and they would say nothing if they were held back with the rates.
+let lastWindow = null;
+
+// Every frame the broadcast has dropped since this process started. Accumulated as
+// each window closes rather than counted in `broadcastFrame`, so the hot path is
+// untouched, and monotonic because the per-window count is zeroed every five seconds
+// - a number that resets cannot answer "has this link been dropping frames".
+let droppedTotal = 0;
+
+// How many grabbers this process has started. Kept at module scope because the
+// supervisor's own `attempt` cannot answer the question this one is for: `attempt` is
+// an index into the backoff's delay table and is deliberately zeroed on a clean
+// handshake and on a colour toggle, so it says how long until the next try and
+// nothing at all about how many times the sensor has already dropped. Two numbers
+// because they are two questions, not one number written down twice.
+let grabberSpawns = 0;
+
+// And how many of those starts somebody asked for. A colour toggle stops a perfectly
+// healthy grabber and spawns another, which is a configuration change rather than a
+// sensor fault - so counting it with the rest turns "this node is flapping" into a
+// number an operator produces by ticking a checkbox, and the endpoint's own claim that
+// a healthy node reads zero stops being true. Counted where the exit is *consumed*
+// rather than where the restart is armed: `restarting` can be set and never read - the
+// exit handler's comment carries the window that does it - and an arm that never
+// becomes a spawn would subtract a respawn that did happen, which is the wrong
+// direction to be wrong in.
+let grabberRestarts = 0;
 
 let sensorState = 'starting';
 
@@ -2062,13 +2225,35 @@ function handleMessage(msg) {
 }
 
 setInterval(() => {
-  const dt = (Date.now() - stats.since) / 1000;
-  if (stats.frames === 0) return;
-  const fps = (stats.frames / dt).toFixed(1);
-  const mbs = (stats.bytes / dt / 1e6).toFixed(1);
-  observedBytesPerSec = stats.bytes / dt;
-  console.log(`[server] ${fps} fps  ${mbs} MB/s  dropped=${stats.dropped}  clients=${wss.clients.size}`);
+  // **The window closes before anything decides whether it was interesting**, and
+  // that ordering is the whole of this. The reset used to sit past the early return,
+  // so a five-second window in which no frame arrived was never closed at all and
+  // `stats.since` carried its old value across the gap. After a sixty-second USB drop
+  // the next window's frames were divided by sixty-five seconds - about a thirteenth
+  // of the true rate, into the log and into `observedBytesPerSec`, which the
+  // remaining-time readout divides free space by. An operator was then promised card
+  // space that does not exist at the rate the sensor is actually writing.
+  //
+  // **Resetting `dropped` alongside the other three is safe by construction.**
+  // `stats.dropped++` only ever runs inside `broadcastFrame`, on a path that has
+  // already run `stats.frames++` for the same frame, so a window that ends with
+  // `frames` at zero cannot have a drop in it to lose.
+  const closed = { ms: Date.now() - stats.since, frames: stats.frames, dropped: stats.dropped, bytes: stats.bytes };
   Object.assign(stats, { frames: 0, dropped: 0, bytes: 0, since: Date.now() });
+  lastWindow = { ms: closed.ms, frames: closed.frames };
+  droppedTotal += closed.dropped;
+  // **And what stays behind the return is the derived rate, deliberately left stale.**
+  // A window that carried no frames has no rate in it, and computing one anyway would
+  // replace the last honest measurement with a number over a window that never
+  // happened. The length and the frame count above are what say the gap occurred; the
+  // rates say what delivery looked like when there last was any.
+  if (closed.frames === 0) return;
+  const dt = closed.ms / 1000;
+  const fps = (closed.frames / dt).toFixed(1);
+  const mbs = (closed.bytes / dt / 1e6).toFixed(1);
+  observedBytesPerSec = closed.bytes / dt;
+  observedFps = closed.frames / dt;
+  console.log(`[server] ${fps} fps  ${mbs} MB/s  dropped=${closed.dropped}  clients=${wss.clients.size}`);
 }, 5000);
 
 // The Kinect v2 drops off the bus under sustained load on a marginal USB link,
@@ -2184,6 +2369,11 @@ function startLive() {
   };
 
   const spawnGrabber = () => {
+    // Counted here rather than in the backoff, because every road to a running
+    // grabber ends at this function - the exit handler's retry, the colour toggle's
+    // restart, and the boot - so a path added later is counted by going through it
+    // rather than by somebody remembering to add a line to it.
+    grabberSpawns++;
     const grabberArgs = buildArgs();
     console.log(`[server] starting grabber: ${bin} ${grabberArgs.join(' ')}`);
     setSensorState('starting');
@@ -2268,6 +2458,28 @@ function startLive() {
 
     child.on('exit', (code, signal) => {
       console.error(`[server] grabber exited (code=${code} signal=${signal})`);
+      // **The reference goes with the process, the same identity test and for the same
+      // reason the `error` handler above uses.** Nothing here used to clear it, so for
+      // the whole respawn backoff - `RESTART_DELAYS[attempt]`, a full second on the
+      // first failure, and 250ms after an ordinary colour restart - `child` was a
+      // truthy `ChildProcess` that had already exited. A colour toggle landing in that
+      // window passed `applyCamera`'s guard against the corpse, armed `restarting`, and
+      // called `stopGrabber` on something that can neither be signalled nor exit again,
+      // so nothing ever consumed the flag. What eventually read it was the *next*
+      // grabber's genuine failure: it took the requested-restart branch below, returned
+      // before `scheduleRetry`, and so the sensor was never reported lost and the
+      // backoff table started over. An ordinary double-click on the colour checkbox is
+      // enough to reach it.
+      //
+      // `child === proc` rather than an unconditional null, because a later spawn may
+      // already own the reference by the time a slow exit arrives, and clearing it then
+      // would hide the grabber that is actually running from the toggle and from
+      // `stopGrabber`. With every process-specific callback clearing only its own,
+      // `child` means the grabber running now - which is what makes `applyCamera`'s
+      // decision correct by construction rather than by when it happens to be read.
+      // At the top with the two nullings below, because every exit path matters and the
+      // restart branch returns before the rest of the handler runs.
+      if (child === proc) child = null;
       // **The hello goes with the grabber that sent it.** `/record/start` stamps the
       // take it opens with whatever is in here, and between a grabber exiting and the
       // next one handshaking that is the *previous* grabber's - so a take started
@@ -2295,11 +2507,24 @@ function startLive() {
       recorder.split().catch((err) => console.error(`[recorder] ${err.message}`));
       if (shuttingDown) return;
       if (restarting) {
-        // Asked for, not a failure - so it does not count toward the backoff.
+        // Asked for, not a failure - so it does not count toward the backoff, and for
+        // the same reason it does not count toward the respawns `/sensor/health`
+        // reports. This is the one place that knows the difference: `spawnGrabber`
+        // sees every road to a running grabber and none of them carry why.
         restarting = false;
         const delay = killedHard ? RESPAWN_AFTER_KILL_MS : RESPAWN_AFTER_CLEAN_MS;
         killedHard = false;
-        setTimeout(spawnGrabber, delay);
+        // **Counted beside the spawn it excuses rather than here, where it is learned.**
+        // `respawns` is `grabberSpawns - 1 - grabberRestarts`, so incrementing on the
+        // exit and leaving the matching spawn a quarter of a second to a second and a
+        // half away makes that subtraction run one ahead of itself for the whole gap -
+        // a node that had genuinely lost its sensor once read one respawn, then zero
+        // while an operator's colour toggle was in flight, then one again. A health
+        // number that dips to zero over a real earlier failure is worse than one that
+        // never noticed it, because somebody looking in that second is told the node is
+        // well. Both halves move in the same tick now, so the reading has no gap to
+        // pass through.
+        setTimeout(() => { grabberRestarts++; spawnGrabber(); }, delay);
         return;
       }
       scheduleRetry();
@@ -2327,13 +2552,19 @@ function startLive() {
       // **`restarting` is a claim about an exit that is coming, so it is only armed when
       // there is a child whose exit it describes.** With none - the window between a
       // failed spawn nulling `child` and the backoff's timer firing, which on a machine
-      // where the binary is missing is most of the time - `stopGrabber` returns on the
-      // spot, no exit is ever emitted, and the flag stays set for the life of the
+      // where the binary is missing is most of the time, and the same window after an
+      // ordinary exit, which the handler above now nulls through - `stopGrabber` returns
+      // on the spot, no exit is ever emitted, and the flag stays set for the life of the
       // process. What eventually reads it is the *next* grabber's exit, after a clean
       // handshake and however many minutes of good footage: that exit is a real failure,
       // and the restart branch takes it, returns before `scheduleRetry`, and so leaves
       // the sensor status reading `live` with nothing running while the backoff skips a
       // step. One toggle at the wrong moment, one silently mishandled failure later.
+      //
+      // Which is why this reads `child` at all rather than a flag of its own: every
+      // callback that owns a process clears the reference when that process is gone, so
+      // the question "is there a grabber running to restart" is the identity of what is
+      // in there, and a corpse cannot answer it yes.
       //
       // Nothing is lost by not arming it. The setting itself reaches the grabber through
       // `buildArgs` on the spawn the backoff has already scheduled, which is the same
