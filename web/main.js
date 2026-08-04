@@ -9117,7 +9117,10 @@ function paintMarks() {
       // Select this mark, clear keyframe selection
       selectedMark = mark;
       if (selection) { selection = null; lanesChanged(); }
-      paintMarks();
+      // Add selection styling directly instead of rebuilding - paintMarks() would
+      // destroy this element and break the drag.
+      for (const sib of host.querySelectorAll('.tmk.sel')) sib.classList.remove('sel');
+      el.classList.add('sel');
       // Prepare for potential drag
       dragging = false;
       dragStartX = e.clientX;
@@ -9131,19 +9134,16 @@ function paintMarks() {
       }
       if (dragging) {
         // Update the mark position visually during drag
-        const rect = host.getBoundingClientRect();
-        const pct = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
-        el.style.left = `${pct}%`;
+        const programSec = Math.max(0, Math.min(view.duration, view.timeAt(e.clientX)));
+        el.style.left = `${view.pct(programSec)}%`;
       }
     });
     el.addEventListener('pointerup', (e) => {
       if (!el.hasPointerCapture(e.pointerId)) return;
       el.releasePointerCapture(e.pointerId);
       if (dragging) {
-        // Compute new source position from drop location
-        const rect = host.getBoundingClientRect();
-        const pct = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
-        const programSec = view.lo + (pct / 100) * (view.hi - view.lo);
+        // Compute new source position from drop location using view.timeAt
+        const programSec = Math.max(0, Math.min(view.duration, view.timeAt(e.clientX)));
         const sourceSec = retime.sourceSecAt(programSec);
         const newSourceMs = Math.round(sourceSec * 1000);
         moveMark(mark, newSourceMs).catch(showTimelineError);
@@ -9225,12 +9225,15 @@ async function deleteMark(mark) {
 /** Moves a mark to a new source position. */
 async function moveMark(mark, newSourceMs) {
   if (!openTakeId || !mark) return;
+  // Don't move if position hasn't changed
+  if (mark.sourceMs === newSourceMs) { paintMarks(); return; }
   const rec = { ...mark, sourceMs: newSourceMs, at: Date.now() };
   const res = await fetch(`/capture/${encodeURIComponent(openTakeId)}/marks`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ marks: [rec] }),
   });
+  if (!res.ok) { paintMarks(); return; }
   takeMarks = (await res.json()).marks;
   // Keep the mark selected after moving
   if (selectedMark?.id === mark.id) {
