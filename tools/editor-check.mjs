@@ -1878,7 +1878,7 @@ const DRIVER_RULES = [
     key: 'recorder',
     what: 'a recorder-surface control',
     by: 'sensor-view-check section 6 and library-check',
-    match: (row) => inGroup(row, '#recordGroup', '#recLookGroup', '#sensorGroup', '#monitorGroup', '#extendedRow'),
+    match: (row) => inGroup(row, '#recordGroup', '#recLookGroup', '#sensorGroup', '#monitorGroup'),
   },
   {
     key: 'subset',
@@ -2266,7 +2266,7 @@ try {
       reset: el.dataset ? el.dataset.reset || null : null,
       inTbar: Boolean(el.closest('.tbar')),
       groups: ['#appBar', '#panel', '#panelTabs', '#lookPresetGroup', '#cameraGroup', '#navRow',
-        '#recordGroup', '#recLookGroup', '#sensorGroup', '#monitorGroup', '#extendedRow',
+        '#recordGroup', '#recLookGroup', '#sensorGroup', '#monitorGroup',
         '#programOutGroup', '#presetPick', '#exportDialog', '#obsDialog']
         .filter((g) => el.closest(g)),
       kf: el.classList.contains('kf'),
