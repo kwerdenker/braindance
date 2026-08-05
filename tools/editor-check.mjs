@@ -367,9 +367,9 @@ const MUTATIONS = {
   'tick-seeks-outside-the-trim': {
     file: 'web/main.js',
     edits: [[
-      "      if (!reachableInClip(at)) {\n"
-      + "        say('that mark is outside the clip range, so the edit cannot reach it');\n"
-      + '        return;\n      }\n',
+      "        if (!reachableInClip(at)) {\n"
+      + "          say('that mark is outside the clip range, so the edit cannot reach it');\n"
+      + '          return;\n        }\n',
       '',
     ]],
   },
@@ -389,11 +389,11 @@ const MUTATIONS = {
   'beyond-mark-loses-focus': {
     file: 'web/index.html',
     edits: [
-      ['  .tmk.beyond { background: var(--faint); }\n  .tmk:hover', '  .tmk:hover'],
+      ['  .tmk.beyond { color: var(--faint); }\n  .tmk:hover', '  .tmk:hover'],
       [
-        '  .tmk:focus-visible { outline: 0; background: var(--ink); }',
-        '  .tmk:focus-visible { outline: 0; background: var(--ink); }\n'
-        + '  .tmk.beyond { background: var(--faint); }',
+        '  .tmk:focus-visible { outline: 0; color: var(--ink); }',
+        '  .tmk:focus-visible { outline: 0; color: var(--ink); }\n'
+        + '  .tmk.beyond { color: var(--faint); }',
       ],
     ],
   },
@@ -571,12 +571,16 @@ const MUTATIONS = {
       [
         '    const pair = `${want}/${inUse}`;\n'
         + '    const settled = groupSeen.get(key);\n'
+        + '    // Track what the prune deleted: if user explicitly closed (want === false) and\n'
+        + '    // prune removes it, auto-keep-open must not undo that decision.\n'
+        + '    let prunedClose = false;\n'
         + '    if (settled !== undefined && settled !== pair && want === inUse) {\n'
+        + '      prunedClose = want === false;\n'
         + '      groupOverride.delete(key);\n'
         + '      groupOverrideDirty = true;\n'
         + '    }\n'
         + '    groupSeen.set(key, `${groupOverride.get(key)}/${inUse}`);\n',
-        '',
+        '    let prunedClose = false;\n',
       ],
       [
         '  groupOverride.set(key, !groupIsOpen(entry.group));\n',
@@ -659,9 +663,9 @@ const MUTATIONS = {
   'plant-unswept-control': {
     file: 'web/index.html',
     edits: [[
-      '        <span class="tchip" id="tNote"></span>',
-      '        <span class="tchip" id="tNote"></span>\n'
-      + '        <button id="tPlantedControl" type="button">planted</button>',
+      '      <span class="tchip" id="tNote"></span>',
+      '      <span class="tchip" id="tNote"></span>\n'
+      + '      <button id="tPlantedControl" type="button">planted</button>',
     ]],
   },
 
@@ -1725,9 +1729,10 @@ const MUTATIONS = {
   'scroller-cannot-shrink': {
     file: 'web/index.html',
     edits: [[
-      '  .tchips { margin-left: auto; display: flex; gap: 8px; flex-wrap: nowrap; align-items: center;\n'
-      + '    min-width: 0; overflow-x: auto; scrollbar-width: none; }',
-      '  .tchips { margin-left: auto; display: flex; gap: 8px; flex-wrap: nowrap; align-items: center; }',
+      '  .tchips { flex: 1; display: flex; gap: 8px; flex-wrap: nowrap; align-items: center;\n'
+      + '    justify-content: center; min-width: 0; overflow-x: auto; scrollbar-width: none; }',
+      '  .tchips { flex: 1; display: flex; gap: 8px; flex-wrap: nowrap; align-items: center;\n'
+      + '    justify-content: center; }',
     ]],
   },
 
@@ -1899,7 +1904,7 @@ const DRIVER_RULES = [
     what: 'a control in the Export, OBS, or state dialog',
     by: 'section 1 opens each application dialog, drives every enabled control, and '
       + 'asserts every format the export dialog offers is one the server encodes',
-    match: (row) => inGroup(row, '#exportDialog', '#obsDialog', '#stateDialog'),
+    match: (row) => inGroup(row, '#exportDialog', '#obsDialog'),
   },
   {
     key: 'paneltabs',
@@ -2007,6 +2012,7 @@ function inGroup(row, ...groups) {
 const DRIVER_IDS = {
   tPlay: 'section 2 - toggles playback and the state is read back',
   tRate: 'section 4 - the anchor rows and the seek-storm row',
+  tCamView: 'section 1 - looks through the program camera and reads the orbit back',
   tRateKey: 'section 5 - plants and removes a retime key',
   tFps: 'timeline-check and export-check change the output rate and count frames',
   tSetIn: 'section 3 - sets the range from the playhead',
@@ -2017,14 +2023,28 @@ const DRIVER_IDS = {
   tPrevKey: 'section 18 - walks the selected track and reads which key the playhead landed on',
   tNextKey: 'section 18 - walks the selected track and reads which key the playhead landed on',
   tPreset: 'library-check applies a preset and compares the look',
-  tPresetApply: 'library-check',
+  // `tPresetApply` was named here, credited to `library-check`, and both halves were
+  // false at once in the way the three project entries below used to be: the picker
+  // applies on choice now, so no such button is rendered, and `library-check` has never
+  // referenced it. Applying is the `preset` rule's, which section 19 drives through the
+  // list the way a hand does.
+  //
+  // **Six sites in this file still press it**, in sections 12 and 19, and they are what
+  // stops this run reaching section 13 - the crash is `getElementById('tPresetApply')`
+  // answering null. Reworking them is choosing how the auto-applying picker should be
+  // driven rather than reconnecting a driver, so it is left named here rather than done
+  // badly in passing.
   tPresetSave: 'library-check',
   tPresetExport: 'section 9 - exports the look and reads the file the browser wrote',
   tPresetImport: 'section 9 - opens the picker the file input is the other half of',
   tPresetFile: 'section 9 - a file is set on it and the look it names arrives',
-  tProject: 'library-check opens a project and compares the document',
-  tProjectOpen: 'library-check',
-  tProjectSave: 'library-check',
+  // The project picker and its two buttons used to be named here, credited to
+  // `library-check`. Both halves of that stopped being true at once: the rework routes
+  // opening through the gallery and Save as through the application bar, so none of the
+  // three elements exists - and `library-check` never pressed them anyway, it reads
+  // `#tNote` and drives the take. An id crediting a driver that does not drive it is the
+  // shape this table exists to refuse, so they are gone rather than left as three lines
+  // that would silently cover a control if one came back under the same name.
   tResumeOpen: 'section 13 - plants an autosave, presses it, and reads the restored document back',
   tDeliverable: 'library-check, and section 6 here plants a long name in it',
   tDeliverableNew: 'library-check',
@@ -2247,7 +2267,7 @@ try {
       inTbar: Boolean(el.closest('.tbar')),
       groups: ['#appBar', '#panel', '#panelTabs', '#lookPresetGroup', '#cameraGroup', '#navRow',
         '#recordGroup', '#recLookGroup', '#sensorGroup', '#monitorGroup', '#extendedRow',
-        '#programOutGroup', '#presetPick', '#exportDialog', '#obsDialog', '#stateDialog']
+        '#programOutGroup', '#presetPick', '#exportDialog', '#obsDialog']
         .filter((g) => el.closest(g)),
       kf: el.classList.contains('kf'),
       mark: el.classList.contains('tmk'),
@@ -2280,7 +2300,7 @@ try {
   // went on saying "in the panel" about sixty-odd controls in a modal - a diagnostic
   // that names the wrong surface is how a reader stops being able to tell a sweep that
   // grew from one that moved.
-  const DIALOG_GROUPS = ['#presetPick', '#exportDialog', '#obsDialog', '#stateDialog'];
+  const DIALOG_GROUPS = ['#presetPick', '#exportDialog', '#obsDialog'];
   const inDialog = sweep.filter((r) => DIALOG_GROUPS.some((group) => r.groups.includes(group))).length;
   const inTbar = sweep.filter((r) => r.inTbar).length;
   note(`${sweep.length} interactive controls on the editor`,
@@ -2650,6 +2670,31 @@ try {
   check(cameraReset.every((value, i) => Math.abs(value - cameraBefore[i]) < 1e-6),
     'Default camera position reaches OrbitControls reset', `${cameraBefore.join(',')} -> ${cameraReset.join(',')}`);
 
+  // The strip's look-through-the-program-camera toggle. It arrived with the rework as a
+  // second control for an action the panel already had - both call `toggleCameraView` -
+  // and it was the one control on the whole editor with nothing driving it, which is
+  // what section 1's sweep is for.
+  //
+  // **Read back through `controls.enabled` rather than through the attribute that was
+  // just written.** `setViewCamera` switches the orbit off while the program camera is
+  // on screen, because a drag would otherwise move the free camera somewhere nobody can
+  // see; that is a consequence of being on the program camera, where `aria-pressed` is
+  // the press describing itself. A build that moved the attribute and left the view
+  // where it was would satisfy the second reading and fail this one.
+  const orbitBefore = await page.evaluate('__kinect.controls.enabled');
+  await page.locator('#tCamView').click();
+  const looking = await page.evaluate(`(() => ({
+    orbit: __kinect.controls.enabled,
+    strip: document.getElementById('tCamView').getAttribute('aria-pressed'),
+    panel: document.getElementById('camView').getAttribute('aria-pressed'),
+  }))()`);
+  check(orbitBefore && looking.orbit === false && looking.strip === 'true' && looking.panel === 'true',
+    'the strip looks through the program camera, and the panel copy of the toggle agrees',
+    `orbit ${orbitBefore} -> ${looking.orbit}, strip ${looking.strip}, panel ${looking.panel}`);
+  await page.locator('#tCamView').click();
+  const handedBack = await page.evaluate('__kinect.controls.enabled');
+  check(handedBack === true, 'and pressing it again hands the orbit back', `orbit ${handedBack}`);
+
   await page.locator('#viewMenuButton').click();
   await page.locator('#menuTopView').click();
   check(await page.evaluate('__kinect.keyframes.chrome.topView()') === false,
@@ -2670,16 +2715,57 @@ try {
     'Export Look reaches the existing subset dialog');
   await page.locator('#ppCancel').click();
 
+  // **Read off the chrome canvas, because that is where the numbers are.** This asked a
+  // `#stateDialog` for a JSON dump until the overlay replaced it, and the dialog stayed
+  // in the markup with nothing opening it - so the row went on passing against a second
+  // representation while the one that ships was never looked at, and then crashed on an
+  // empty `<pre>` the moment the dump stopped being written. Pixels rather than a
+  // serialised object is the cost of measuring the thing itself: the overlay is drawn,
+  // so what it puts on screen is the only evidence it works.
+  //
+  // The two samples are the whole assertion. `before` is taken where the panel lands and
+  // has to be the empty stage; a single sample after the press could be satisfied by
+  // anything already painted there, including the top-down view the overlay sits under.
+  // The box the overlay fills, sampled for opaque pixels. `dpr` comes off the canvas
+  // itself - `drawChrome` writes both the backing size and the CSS size, so their ratio
+  // is the scale it drew at rather than a `devicePixelRatio` this process would be
+  // guessing on the browser's behalf. The region sits below the top-down inset, which
+  // the two rows above this leave switched on.
+  const nerdSample = `(() => {
+    const c = document.getElementById('chrome');
+    if (!c || !c.width) return null;
+    const ctx = c.getContext('2d');
+    const dpr = c.width / parseFloat(c.style.width || c.width);
+    const px = (n) => Math.round(n * dpr);
+    const cssW = c.width / dpr;
+    const d = ctx.getImageData(px(cssW - 178), px(140), px(164), px(140)).data;
+    let lit = 0;
+    for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 200) lit++;
+    return lit;
+  })()`;
+  await page.locator('#viewMenuButton').click();
+  const nerdBefore = await page.evaluate(nerdSample);
+  await page.locator('#menuState').click();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const nerdAfter = await page.evaluate(nerdSample);
+  const nerdChecked = await page.getAttribute('#menuState', 'aria-checked');
+  // **Both samples, because one of them is what makes the other mean anything.** A row
+  // that only read `after` would be satisfied by whatever was already painted there, and
+  // the top-down view is eight pixels above this box. `before` being empty is the half
+  // that says the pixels counted afterwards are the ones this press put down.
+  check(nerdBefore === 0 && nerdAfter > 0 && nerdChecked === 'true',
+    'Stats for nerds paints the running editor onto the chrome overlay and marks itself on',
+    `${nerdBefore} opaque pixels before, ${nerdAfter} after, aria-checked ${nerdChecked}`);
+  // Off again, because every section below this measures a stage the overlay would be
+  // sitting on top of - and section 8 compares two pictures of one clip for equality,
+  // which a live fps counter in the corner would decide for it.
   await page.locator('#viewMenuButton').click();
   await page.locator('#menuState').click();
-  const nerdState = await page.evaluate(`(() => ({
-    open: document.getElementById('stateDialog').open,
-    state: JSON.parse(document.getElementById('stateDump').textContent),
-  }))()`);
-  check(nerdState.open && nerdState.state.surface === 'edit' && nerdState.state.parameters,
-    'State for nerds opens a real snapshot of the running editor',
-    `${nerdState.state.surface}, ${Object.keys(nerdState.state.parameters || {}).length} parameters`);
-  await page.locator('#stateClose').click();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const nerdOff = await page.evaluate(nerdSample);
+  check(nerdOff === 0 && await page.getAttribute('#menuState', 'aria-checked') === 'false',
+    'and the same command takes it off again, so every section below inherits a clean stage',
+    `${nerdOff} opaque pixels left`);
 
   await page.evaluate(`(() => {
     globalThis.__obsCopied = [];

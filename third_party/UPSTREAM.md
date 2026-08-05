@@ -2,7 +2,7 @@
 
 `libfreenect2/` is upstream's source at **v0.2.1**
 (`fd64c5d9b214df6f6a55b4419357e51083f15d93`), committed here rather than cloned,
-plus the two local edits described below. `node tools/vendor-check.mjs` proves
+plus the three local edits described below. `node tools/vendor-check.mjs` proves
 that sentence mechanically and offline.
 
 ## Why the tree and not a clone or a submodule
@@ -37,7 +37,7 @@ scarce, and every file removed is a file the manifest can no longer vouch for.
 
 ## What we changed
 
-Two files. Both carry a notice of modification in their header, because
+Three files. All three carry a notice of modification in their header, because
 Apache-2.0 section 4(b) requires a modified file we redistribute to say so, and
 because a reader who lands in one of these files by grepping should not have to
 find this document to learn it is not upstream. The notice is part of the
@@ -142,11 +142,37 @@ measurement sessions accounted for most of that difference. Sequential
 before-and-after is not trustworthy on this rig, and this is the measurement that
 established it.
 
+### `src/libfreenect2.cpp` — do not fail the open on a USB power state
+
+`Freenect2DeviceImpl::open` treats `enablePowerStates()` and
+`setVideoTransferFunctionState(Disabled)` as must-succeed: either one returning
+anything but `Success` returns `false` from `open`, and the sensor never comes up.
+On Apple Silicon the first of them answers `LIBUSB_ERROR_PIPE`, because that USB
+controller does not implement the U1/U2 link power states the call is asking the
+device to negotiate. The result is a Kinect that enumerates, opens and then refuses
+at the last step, on the machine this program is developed on.
+
+Both calls are still made and their results are still ignored only under
+`#if defined(__APPLE__)`, which is the shape this edit is careful about: a Linux
+capture node compiles upstream's code exactly, so the strictness that catches a
+genuinely broken device on the hardware that ships is untouched. What the Mac gives
+up is a diagnostic it was never getting anything from — the states do not come on
+either way, and depth, colour and registration are unaffected, because the link
+power states govern when the controller may idle a bus rather than what is carried
+over it.
+
+Nothing is measured here and nothing should be. This is not a performance edit and
+it makes no claim about throughput: it is the difference between the sensor opening
+and not opening on one platform. `vendor-check` pins its content the same way it
+pins the other two, so reverting it — which is what a careless re-vendor looks
+like — fails the check rather than quietly restoring a Mac that cannot open a
+camera.
+
 ## How the proof works
 
 `third_party/libfreenect2.manifest` records the git blob hash of all 140 files as
 upstream published them at v0.2.1. `tools/vendor-check.mjs` hashes our tree and
-asserts five things: every upstream file is present and unchanged except the two
+asserts five things: every upstream file is present and unchanged except the three
 declared above, the set that actually differs is exactly the declared set in both
 directions, each declared file matches the exact content we reviewed, no file
 exists that upstream didn't ship, and the harness oracle beside the tree is still
