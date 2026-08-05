@@ -488,9 +488,10 @@
   .dialog-secondary:disabled { opacity: 0.38; cursor: default; }
   #exportDialog { width: min(480px, calc(100vw - 32px)); }
   #obsDialog { width: min(480px, calc(100vw - 32px)); }
-  #stateDialog { width: min(620px, calc(100vw - 32px)); }
+  #stateDialog { width: min(280px, calc(100vw - 32px)); }
   #stateDump { max-height: 60vh; overflow: auto; margin: 0; padding: 12px;
-    border: 1px solid var(--line); background: var(--paper-2); color: var(--dim); font: inherit; font-size: 11px; }
+    border: 1px solid var(--line); background: var(--paper-1); color: var(--ink);
+    font: 11px ui-monospace, Menlo, monospace; line-height: 1.5; white-space: pre; }
 
   /* The camera path, its nodes and the top-down orthographic, on a canvas of their
      own over the stage. Deliberately not in the rendered frame: that buffer is

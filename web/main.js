@@ -12220,12 +12220,66 @@ function stateSnapshot() {
   };
 }
 
+// Stats display: overlay on editor, dialog on record surface.
+let statsInterval = null;
+
+function formatStats() {
+  const lines = [];
+  lines.push(`fps           ${fps.toFixed(1)}`);
+  lines.push(`renders       ${counters.renders}`);
+  lines.push(`frames in     ${framesSeen}`);
+  lines.push(`output        ${targetSize.w}x${targetSize.h}`);
+  lines.push(`buffer        ${Math.round(uniforms.bufferHeight.value)}p`);
+  const drawCount = geometry.drawRange.count;
+  const shedding = drawCount > POINTS;
+  lines.push(`points        ${(drawCount / 1000).toFixed(0)}k${shedding ? ' +shed' : ''}`);
+  const posts = [afterimage.enabled && 'trail', bloom.enabled && 'bloom', grade.enabled && 'grade'].filter(Boolean);
+  lines.push(`post          ${posts.length ? posts.join(' ') : 'none'}`);
+  if (timeline) {
+    lines.push(`time          ${timeline.programSec.toFixed(2)}s${timeline.playing ? ' \u25B6' : ''}`);
+    lines.push(`tracks        ${tracks.size}`);
+  }
+  lines.push(`undo          ${history.depth}`);
+  const cp = viewCamera.position;
+  lines.push(`cam xyz       ${cp.x.toFixed(1)} ${cp.y.toFixed(1)} ${cp.z.toFixed(1)}`);
+  if (!EDITING && monitorState) {
+    lines.push('');
+    lines.push(`depth ÷       ${monitorState.divisor}`);
+    lines.push(`stride        ${monitorState.stride}`);
+  }
+  return lines.join('\n');
+}
+
+function updateStatsDialog() {
+  shell.stateDump.textContent = formatStats();
+}
+
 shell.state.addEventListener('click', () => {
-  statsVisible = !statsVisible;
-  shell.state.setAttribute('aria-checked', String(statsVisible));
-  chromeStale = true;
-  drawChrome();
   closeApplicationMenus();
+  if (EDITING) {
+    // Editor: toggle the chrome overlay
+    statsVisible = !statsVisible;
+    shell.state.setAttribute('aria-checked', String(statsVisible));
+    chromeStale = true;
+    drawChrome();
+  } else {
+    // Record: open the dialog
+    if (shell.stateDialog.open) {
+      shell.stateDialog.close();
+    } else {
+      updateStatsDialog();
+      openDialog(shell.stateDialog);
+      statsInterval = setInterval(updateStatsDialog, 500);
+    }
+  }
+});
+
+shell.stateDialog.addEventListener('close', () => {
+  if (statsInterval) {
+    clearInterval(statsInterval);
+    statsInterval = null;
+  }
+  shell.state.setAttribute('aria-checked', 'false');
 });
 
 shell.exportClose.addEventListener('click', () => ui.exportDialog.close());
