@@ -76,7 +76,6 @@
 //   node tools/sensor-view-check.mjs --mutate tanv-uses-fx             # must FAIL
 //   node tools/sensor-view-check.mjs --mutate sensor-view-keys-camera  # must FAIL
 //   node tools/sensor-view-check.mjs --mutate keyframes-on-every-surface # must FAIL
-//   node tools/sensor-view-check.mjs --mutate extended-always-open     # must FAIL
 //   node tools/sensor-view-check.mjs --mutate no-repaint               # must FAIL
 //
 // Exit 1 means a claim failed. Exit **2** means the harness did not run - a mutation
@@ -122,11 +121,14 @@
 // worth having rather than one row saying something broke. That count was 36 when the
 // buttons were patched on by a loop of their own and is 52 now that the generator emits
 // one per look parameter, which is the same claim over a registry seven parameters
-// larger. `extended-always-open`: 3
-// fired, the grade visible on the recorder before any press and still visible after
-// the toggle is closed again, with the row that says one press reveals them all left
-// green - a rule that has stopped hiding cannot be told from a button that works by
-// looking only at the state after the click.
+// larger.
+//
+// A third mutation stood here, `extended-always-open`, with 3 rows fired against a
+// recorder showing the grade before any press. Its number is left written down and its
+// entry is not, because the recorder no longer hides the grade at all - the surface
+// grew inspector tabs and the Look tab holds it. A measurement of a property the
+// program has stopped having is history rather than a baseline, and the distinction is
+// worth one paragraph here so the next reader does not go looking for the mutation.
 //
 // `no-repaint` was measured on a different rig from the numbers above and the method is
 // worth stating rather than folding in: a depth-only synthetic take, one take in the
@@ -299,17 +301,17 @@ const MUTATIONS = {
       "    if (spec.tag === 'look') {",
     ]],
   },
-  // The grade stops being one button away and is simply there. Same specificity and
-  // the same selector so the cascade is unchanged - only the declaration flips -
-  // which is what keeps it a test of the hiding rule rather than of the source order
-  // the comment beside it in the markup says is load-bearing.
-  'extended-always-open': {
-    file: 'web/index.html',
-    edits: [[
-      'body:not(.editing) .lookgroup { display: none; }',
-      'body:not(.editing) .lookgroup { display: block; }',
-    ]],
-  },
+  // `extended-always-open` was here, and it is gone with the claim it falsified rather
+  // than repointed at something nearby. It flipped `body:not(.editing) .lookgroup` from
+  // `none` to `block` to prove this file could tell a recorder hiding the grade from one
+  // showing it - and the recorder does not hide the grade any more. The record surface
+  // grew inspector tabs and reaches every look parameter through the Look tab, so both
+  // the rule and the `#extendedRow` button that used to reveal it are out of the markup.
+  //
+  // A control whose claim has been retired is worse than no control: it reads as coverage
+  // of a property nothing has, and the honest failure mode is the one that happened -
+  // `syntax-check` went red because the anchor matched nothing, which is that tool asking
+  // this question on this file's behalf.
   // The button stops asking for an image. Everything above it in `sensorView` still
   // runs, so the camera lands on the sensor exactly as before and every pose, angle
   // and fit row in this file stays green - which is the entire reason this mutation
@@ -809,10 +811,13 @@ async function openPage({ path = EDITOR_PATH, take = TAKE, intrinsics = null, ba
   // treats as external, so its WebSocket back to localhost is refused with
   // `ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS` - the recorder then never sees a
   // sensor hello and the run ends UNTESTED while the rows the mutation targets have
-  // already gone correctly red. Measured: `extended-always-open` failed its three
-  // intended rows and still reported DID NOT RUN, twice. The flag is passed on every
-  // launch rather than only the mutated ones, because two browsers configured
-  // differently is two things being measured.
+  // already gone correctly red. Measured on `extended-always-open`, a mutation this file
+  // no longer carries: it failed its three intended rows and still reported DID NOT RUN,
+  // twice. The measurement outlives the mutation because it is about how a markup
+  // mutation reaches the page rather than about which one, and every remaining markup
+  // mutation arrives the same way. The flag is passed on every launch rather than only
+  // the mutated ones, because two browsers configured differently is two things being
+  // measured.
   const browser = await chromium.launch({
     channel: 'chromium',
     headless: !HEADED,
@@ -1427,7 +1432,12 @@ try {
       `${ed.lookNames}/${rec.lookNames} parameters, ${ed.blocks.length}/${rec.blocks.length} blocks`);
 
     // (c) which blocks are on screen, as four rules over the whole panel
-    const RECORDER_ONLY = ['recordGroup', 'recLookGroup', 'sensorGroup', 'monitorGroup', 'programOutGroup', 'extendedRow'];
+    // `extendedRow` is not in this list and the row below is why it cannot be: the check
+    // above asserts the panel holds every block these rules name, precisely so a rule is
+    // never asserted about nothing. The button that revealed the grade on the recorder
+    // went with the rule that hid it, so naming it here would fail that check with a
+    // sentence about a block rather than about the surfaces.
+    const RECORDER_ONLY = ['recordGroup', 'recLookGroup', 'sensorGroup', 'monitorGroup', 'programOutGroup'];
     const EDITOR_ONLY = ['cameraGroup', 'lookPresetGroup'];
     const named = new Set([...RECORDER_ONLY, ...EDITOR_ONLY]);
     const on = (blocks, keys) => keys.filter((key) => blocks.find((b) => b.key === key)?.visible);

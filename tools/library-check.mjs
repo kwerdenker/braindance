@@ -4090,7 +4090,12 @@ async function runChecks() {
         active: active?.dataset.filter ?? null,
       };
     })()`);
-    check(galleryShell?.top === 0 && galleryShell.height === 32
+    // 38 and not 32, which is the number this row carried until the shared bar grew.
+    // `nav.css` owns the height - one `.appbar` rule for the editor, the recorder and
+    // this page - and `editor-check`'s own bar row already reads 38 off the editor. Two
+    // instruments naming one constant and disagreeing about it means one of them is
+    // asserting a page nobody ships, and the sheet that draws the bar is the tiebreak.
+    check(galleryShell?.top === 0 && galleryShell.height === 38
       && galleryShell.arrow === '<' && galleryShell.label === 'Gallery',
       'the gallery names itself in a fixed application bar at the top edge', JSON.stringify(galleryShell));
     const wasAt = page.url();

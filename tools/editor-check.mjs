@@ -1878,7 +1878,7 @@ const DRIVER_RULES = [
     key: 'recorder',
     what: 'a recorder-surface control',
     by: 'sensor-view-check section 6 and library-check',
-    match: (row) => inGroup(row, '#recordGroup', '#recLookGroup', '#sensorGroup', '#monitorGroup', '#extendedRow'),
+    match: (row) => inGroup(row, '#recordGroup', '#recLookGroup', '#sensorGroup', '#monitorGroup'),
   },
   {
     key: 'subset',
@@ -2026,14 +2026,9 @@ const DRIVER_IDS = {
   // `tPresetApply` was named here, credited to `library-check`, and both halves were
   // false at once in the way the three project entries below used to be: the picker
   // applies on choice now, so no such button is rendered, and `library-check` has never
-  // referenced it. Applying is the `preset` rule's, which section 19 drives through the
-  // list the way a hand does.
-  //
-  // **Six sites in this file still press it**, in sections 12 and 19, and they are what
-  // stops this run reaching section 13 - the crash is `getElementById('tPresetApply')`
-  // answering null. Reworking them is choosing how the auto-applying picker should be
-  // driven rather than reconnecting a driver, so it is left named here rather than done
-  // badly in passing.
+  // referenced it. Applying belongs to the `preset` rule, which sections 12 and 19 drive
+  // through the list the way a hand does - `applyByChoosing` in the first and the two
+  // clicks before the reset sweep in the second.
   tPresetSave: 'library-check',
   tPresetExport: 'section 9 - exports the look and reads the file the browser wrote',
   tPresetImport: 'section 9 - opens the picker the file input is the other half of',
@@ -2266,7 +2261,7 @@ try {
       reset: el.dataset ? el.dataset.reset || null : null,
       inTbar: Boolean(el.closest('.tbar')),
       groups: ['#appBar', '#panel', '#panelTabs', '#lookPresetGroup', '#cameraGroup', '#navRow',
-        '#recordGroup', '#recLookGroup', '#sensorGroup', '#monitorGroup', '#extendedRow',
+        '#recordGroup', '#recLookGroup', '#sensorGroup', '#monitorGroup',
         '#programOutGroup', '#presetPick', '#exportDialog', '#obsDialog']
         .filter((g) => el.closest(g)),
       kf: el.classList.contains('kf'),
@@ -5873,6 +5868,25 @@ try {
       await page.evaluate(`document.getElementById(${JSON.stringify(id)}).click()`);
       await page.waitForFunction("document.getElementById('presetPick').open === true", null, { timeout: 10000 });
     };
+    // **Applying is choosing now, and this drives the entry rather than a button.** The
+    // look control stopped being a `<select>` with an `apply` beside it and became a
+    // picker that applies what is chosen, so `#tPresetApply` is not a control that is
+    // disabled or hidden - it is one the design retired, and every row below that used to
+    // press it comes through here instead.
+    //
+    // Through the option the way a hand reaches it, and not by calling `choosePicker`.
+    // The gesture guard sits on the path from the press: a probe that called the function
+    // would be exercising the applying and reporting on the gesture, which is the shape
+    // `docs/instruments.md` records as a check testing its own helper. `#tPresetList` is
+    // the listbox and `.pickeroption[data-name]` is how every reader of it finds an entry,
+    // including `main.js`.
+    const applyByChoosing = async (name) => {
+      await presetIdle();
+      await page.click('#tPreset');
+      await page.waitForFunction("document.getElementById('tPresetList').hidden === false",
+        null, { timeout: 10000 });
+      await page.click(`#tPresetList .pickeroption[data-name=${JSON.stringify(name)}]`);
+    };
     // Every import in this section goes through here for the same reason.
     const importFile = async (path) => {
       await presetIdle();
@@ -6052,8 +6066,7 @@ try {
     })()`);
     check(wroteName === NAME_PART, 'the picker holds the preset name that was written to it',
       `wrote ${JSON.stringify(NAME_PART)}, the control reads ${JSON.stringify(wroteName)}`);
-    await presetIdle();
-    await page.evaluate("document.getElementById('tPresetApply').click()");
+    await applyByChoosing(NAME_PART);
     await page.waitForFunction("document.getElementById('tNote').textContent.startsWith('applied')", null, { timeout: 15000 })
       .catch(() => {});
     await settle();
@@ -6177,16 +6190,23 @@ try {
       await page.waitForFunction("document.getElementById('presetPick').open === false", null, { timeout: 10000 });
       await until(() => putsSeen === 1, 'the save never reached the network, so nothing below is about a write in flight');
 
+      // Three writers and not four, and the missing fourth is the point rather than an
+      // omission: the apply door is the picker now, and a picker cannot be disabled the
+      // way a button can - its trigger and its entries stay live and the refusal happens
+      // on the way in. That is the shape `withPresetGesture`'s own comment argues for, in
+      // its words: the guard "is a flag on the program rather than a state of a control,
+      // because what has to be true is that there is one gesture, not that a particular
+      // button is unpressable". So this row asks the three that carry a disable, and the
+      // row below asks the fourth by choosing an entry and finding nothing happens.
       const busy = await page.evaluate(`(() => ({
         save: document.getElementById('tPresetSave').disabled,
         exported: document.getElementById('tPresetExport').disabled,
-        applied: document.getElementById('tPresetApply').disabled,
         imported: document.getElementById('tPresetImport').disabled,
         dialog: document.getElementById('presetPick').open,
       }))()`);
-      check(busy.save && busy.exported && busy.applied && busy.imported && !busy.dialog,
+      check(busy.save && busy.exported && busy.imported && !busy.dialog,
         'a preset write in flight disables every control that could start a second one, with the dialog already gone',
-        `save disabled=${busy.save}, export disabled=${busy.exported}, apply disabled=${busy.applied}, `
+        `save disabled=${busy.save}, export disabled=${busy.exported}, `
         + `import disabled=${busy.imported}, dialog open=${busy.dialog}`);
 
       // The disabled attribute taken off by hand, which is the row that is about the
@@ -6209,23 +6229,36 @@ try {
       // the request rather than on the stamp, because both builds end this block with the
       // save's name on the clip and only one of them fetched a second document to get
       // there - the corruption is transient and the gesture is what the rule is about.
+      // **And there is no disable to take off here, which makes this the stronger half.**
+      // The row above had to remove an attribute to reach the rule underneath it; the
+      // picker never had one, so choosing an entry mid-write is the gesture arriving at
+      // the guard exactly as a hand delivers it. Nothing is staged and nothing is
+      // un-disabled - the entry is clicked in the list and the question is whether the
+      // program went and fetched it.
       const stampMidRace = await page.evaluate('globalThis.__kinect.library.appliedPreset()');
       const getsBefore = getsSeen;
-      const applyPressed = await page.evaluate(`(() => {
-        const select = document.getElementById('tPreset');
-        select.value = ${JSON.stringify(NAME_EDITED)};
-        const button = document.getElementById('tPresetApply');
-        button.disabled = false;
-        button.click();
-        return { named: select.value };
-      })()`);
+      await page.click('#tPreset');
+      await page.waitForFunction("document.getElementById('tPresetList').hidden === false",
+        null, { timeout: 10000 });
+      await page.click(`#tPresetList .pickeroption[data-name=${JSON.stringify(NAME_EDITED)}]`);
       await settle();
       const stampAfterApply = await page.evaluate('globalThis.__kinect.library.appliedPreset()');
-      check(applyPressed.named === NAME_EDITED && getsSeen === getsBefore
+      const offered = await page.evaluate("document.getElementById('tPreset').value");
+      check(offered === NAME_EDITED && getsSeen === getsBefore
         && stampAfterApply?.rev === stampMidRace?.rev,
-        'and an apply pressed with the disable removed fetches no document and moves no stamp, so the write in flight cannot be overtaken',
+        'and an entry chosen with a write in flight fetches no document and moves no stamp, so the write cannot be overtaken',
         `${getsSeen - getsBefore} GET on the wire, stamp ${JSON.stringify(stampMidRace?.name)} before `
-        + `and ${JSON.stringify(stampAfterApply?.name)} after, offering ${applyPressed.named}`);
+        + `and ${JSON.stringify(stampAfterApply?.name)} after, offering ${offered}`);
+      // **The caret put back where the disable left it, because this probe moved it.**
+      // Pressing an entry is a real click and it takes the focus, which the button this
+      // door replaced never did - the old probe called `click()` from `page.evaluate` and
+      // left the caret on the body. That difference decides the focus row at the end of
+      // this block: `whileWriting` restores only from a *stranded* caret, so a picker
+      // still holding it means the restore correctly does not fire and the row goes red
+      // over the probe rather than over the build. Restoring the precondition, not the
+      // answer - the caret goes back to the body the disable dropped it to, and getting
+      // it from there onto `#tPresetSave` is still entirely `whileWriting`'s to do.
+      await page.evaluate('document.activeElement?.blur?.()');
 
       // And the import door, on the same reasoning. Its observable is a second PUT: an
       // import writes the file into the library before it applies it, so a build that let
@@ -6246,17 +6279,22 @@ try {
         note: document.getElementById('tNote').textContent,
         save: document.getElementById('tPresetSave').disabled,
         exported: document.getElementById('tPresetExport').disabled,
-        applied: document.getElementById('tPresetApply').disabled,
         imported: document.getElementById('tPresetImport').disabled,
+        gesture: globalThis.__kinect.library.presetGestureRunning(),
         focus: document.activeElement ? document.activeElement.id || document.activeElement.tagName : null,
         stamp: globalThis.__kinect.library.appliedPreset(),
       }))()`);
       check(done.note.startsWith(`saved ${NAME_RACE}`) && done.stamp?.name === NAME_RACE,
         'the write the guard let through finishes and stamps the clip, so the guard refuses a second gesture rather than the first',
         `"${done.note}" with the stamp naming ${JSON.stringify(done.stamp?.name)}`);
-      check(!done.save && !done.exported && !done.applied && !done.imported,
+      // The flag as well as the three disables, because the picker is the door that has
+      // no disable to come back: a build that re-enabled the buttons and left the gesture
+      // flag set would satisfy a row reading only attributes, and every later choice in
+      // the list would be refused for a write answered minutes ago.
+      check(!done.save && !done.exported && !done.imported && done.gesture === false,
         'and every control comes back the moment the write is answered, so the guard is a span rather than a state to get stuck in',
-        `save disabled=${done.save}, export disabled=${done.exported}, apply disabled=${done.applied}, import disabled=${done.imported}`);
+        `save disabled=${done.save}, export disabled=${done.exported}, import disabled=${done.imported}, `
+        + `gesture running=${done.gesture}`);
       // The caret, which the guard's own comment claimed it never took and did.
       // `pickPresetSubset` hands focus back to the control that opened the dialog on the
       // `close` event and resolves in the same breath, so the button is holding it when
@@ -6699,29 +6737,41 @@ try {
     await page.click('#tProjectOpen');
     await page.waitForFunction("document.getElementById('tNote').textContent.includes('different footage')",
       null, { timeout: 15000 }).catch(() => {});
+    // **Measured on the note's own box, because the note moved out of the strip.** It
+    // was a chip in `.tchips` when these rows were written - a scroller, which is why
+    // one of them asked whether the strip had scrolled to the arriving message. It is
+    // in the application bar's status slot now, which holds one message and ellipsises,
+    // so the question "did the strip scroll" has no answer on this build rather than a
+    // false one, and the row that asked it is gone with the surface it was about.
+    //
+    // What survives is the claim that actually mattered: a refusal runs longer than the
+    // space it is given, and the whole of it has to stay reachable. `scrollWidth` on the
+    // element against its own `clientWidth` is that measurement wherever the element
+    // lives, and it is the ellipsis rather than a hidden scrollbar doing the cutting now.
     const noteBox = await page.evaluate(`(() => {
       const note = document.getElementById('tNote');
-      const chips = note.closest('.tchips');
       return {
         text: note.textContent,
         title: note.title,
-        overflows: chips.scrollWidth > chips.clientWidth + 1,
-        scrollLeft: chips.scrollLeft,
-        scrollWidth: chips.scrollWidth,
-        clientWidth: chips.clientWidth,
+        overflows: note.scrollWidth > note.clientWidth + 1,
+        scrollWidth: note.scrollWidth,
+        clientWidth: note.clientWidth,
+        clipped: getComputedStyle(note).textOverflow,
       };
     })()`);
     // The row that makes the next one mean something: a message that fitted would be
     // readable whatever the title said.
     check(noteBox.overflows && noteBox.text.length > 120,
-      'the refusal is genuinely wider than the strip it is written into, which is what the title is for',
+      'the refusal is genuinely wider than the space it is written into, which is what the title is for',
       `${noteBox.text.length} characters, ${noteBox.scrollWidth}px of content in ${noteBox.clientWidth}px`);
     check(noteBox.title === noteBox.text && /different footage/.test(noteBox.title),
       'and the whole of it is reachable off the note\'s title, which is the only surface it fits on',
       `title "${noteBox.title.slice(0, 60)}..." against text "${noteBox.text.slice(0, 60)}..."`);
-    check(noteBox.scrollLeft > 0,
-      'and the strip scrolled to the message that just arrived rather than leaving it off the right edge',
-      `scrollLeft ${noteBox.scrollLeft} of ${noteBox.scrollWidth - noteBox.clientWidth} available`);
+    // And that the cutting is the ellipsis rather than the sentence simply running off
+    // the end of the bar, which would take the sensor readout beside it with it.
+    check(noteBox.clipped === 'ellipsis',
+      'and it is cut with an ellipsis rather than allowed to push the rest of the bar off the edge',
+      `text-overflow ${noteBox.clipped}`);
     // The refusal above is this section's own doing and `showTimelineError` logs every
     // note it writes, so the mark moves past it. Left where it was, the page-error row
     // at the foot of the section would be reporting the fixture it was handed.
@@ -8017,9 +8067,11 @@ try {
     // Through the control rather than by assignment, because a picker whose entries had
     // stopped being pressable would still take a written `value` and this row would go on
     // measuring the apply behind a menu nobody could operate.
+    // And the choice is the whole gesture - there is no `apply` to press after it. The
+    // picker applies what is chosen, which is why the two lines above are the driver and
+    // a third pressing a button would be pressing one the design retired.
     await page.click('#tPreset');
     await page.click(`#tPresetList .pickeroption[data-name="${presetName}"]`);
-    await page.click('#tPresetApply');
     await presetIdle();
     await settle();
     const applied = await resetState();
