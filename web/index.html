@@ -638,7 +638,24 @@
      will not shrink below its content without it, so a long refusal would win the row
      from everything to its right. */
   #appStatusSlot { display: flex; align-items: center; gap: 10px; }
-  #appStatusSlot #tNote { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* **`block` and not the `inline-flex` every other chip is, and the difference is the
+     ellipsis.** `text-overflow` cuts the text of a *block* box; inside a flex container
+     the text becomes an anonymous flex item and the property has nothing to apply to, so
+     the chip simply grew to its content and reported `scrollWidth === clientWidth` - no
+     overflow, no ellipsis, and a refusal running the width of the bar. This chip holds
+     one string and no children, so it has nothing the flex layout was doing for it.
+     `:not(:empty)` keeps the `#tNote:empty` rule above winning when there is no message,
+     since two ids beat one id and a pseudo-class and a bare `display: block` here would
+     paint an empty bordered box on a quiet bar.
+
+     And `flex: 0 1 auto`, because `.tchip` sets `flex: none` - which is `flex-shrink: 0`,
+     so the note claimed its full content width and pushed straight through the slot no
+     matter what `min-width` said. A box that never shrinks never overflows itself, which
+     is why the ellipsis had nothing to do even once it was a block: the clipping was the
+     slot's `overflow: hidden` cutting the sentence off mid-word with no mark to say so. */
+  #appStatusSlot #tNote:not(:empty) {
+    display: block; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  }
   #appStatusSlot #appStatus { flex: 0 0 auto; }
   /* Speed control and mark button next to clocks. */
   .tspeed { display: flex; align-items: center; gap: 8px; flex: none; }

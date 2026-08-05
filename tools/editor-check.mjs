@@ -2023,8 +2023,13 @@ const DRIVER_IDS = {
   tPrevKey: 'section 18 - walks the selected track and reads which key the playhead landed on',
   tNextKey: 'section 18 - walks the selected track and reads which key the playhead landed on',
   tPreset: 'library-check applies a preset and compares the look',
+  // Both credited to `library-check` and neither pressed by it, which is how they came
+  // to be deleted when the rework took the controls away - and they are back because
+  // section 13 presses them, which is a driver naming what actually drives.
+  tProject: 'section 13 - selects the project built on other footage and opens it, which is what makes the refusal',
+  tProjectOpen: 'section 13 - the press that produces the longest refusal this program writes',
   // `tPresetApply` was named here, credited to `library-check`, and both halves were
-  // false at once in the way the three project entries below used to be: the picker
+  // false at once in the way the two project entries above used to be: the picker
   // applies on choice now, so no such button is rendered, and `library-check` has never
   // referenced it. Applying belongs to the `preset` rule, which sections 12 and 19 drive
   // through the list the way a hand does - `applyByChoosing` in the first and the two
