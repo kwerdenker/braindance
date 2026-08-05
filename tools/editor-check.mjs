@@ -2023,8 +2023,13 @@ const DRIVER_IDS = {
   tPrevKey: 'section 18 - walks the selected track and reads which key the playhead landed on',
   tNextKey: 'section 18 - walks the selected track and reads which key the playhead landed on',
   tPreset: 'library-check applies a preset and compares the look',
+  // Both credited to `library-check` and neither pressed by it, which is how they came
+  // to be deleted when the rework took the controls away - and they are back because
+  // section 13 presses them, which is a driver naming what actually drives.
+  tProject: 'section 13 - selects the project built on other footage and opens it, which is what makes the refusal',
+  tProjectOpen: 'section 13 - the press that produces the longest refusal this program writes',
   // `tPresetApply` was named here, credited to `library-check`, and both halves were
-  // false at once in the way the three project entries below used to be: the picker
+  // false at once in the way the two project entries above used to be: the picker
   // applies on choice now, so no such button is rendered, and `library-check` has never
   // referenced it. Applying belongs to the `preset` rule, which sections 12 and 19 drive
   // through the list the way a hand does - `applyByChoosing` in the first and the two
@@ -7056,9 +7061,18 @@ try {
     // claim about how focus got there - a programmatic focus does not match it in
     // Chromium, so a row built that way would read the resting colour on both builds
     // and agree with the defect.
+    // **`color` and not `backgroundColor`, because that is what the tick is drawn with.**
+    // The mark became an inline SVG stroked with `currentColor`, so `.tmk.beyond` and
+    // `.tmk:focus-visible` set `color` where they used to set a background - and a row
+    // reading the background read `rgba(0, 0, 0, 0)` at rest and `rgba(0, 0, 0, 0)`
+    // focused, which is two readings of a property nothing writes agreeing with each
+    // other. It could not pass on any build, and it could not have failed for the reason
+    // it is named for either. `beyond-mark-loses-focus` moves the `color` declaration, so
+    // the control and the assertion have to be reading the same property or the
+    // falsification proves nothing.
     const focusColours = async (selector) => page.evaluate(`(async () => {
       const el = document.querySelector(${JSON.stringify(selector)});
-      const rest = getComputedStyle(el).backgroundColor;
+      const rest = getComputedStyle(el).color;
       return { rest, el: Boolean(el) };
     })()`);
     const beforeFocus = await focusColours('#tMarks .tmk.beyond');
@@ -7069,16 +7083,16 @@ try {
       return {
         isBeyond: el?.classList?.contains('beyond') ?? false,
         visible: el?.matches(':focus-visible') ?? false,
-        background: el ? getComputedStyle(el).backgroundColor : null,
+        colour: el ? getComputedStyle(el).color : null,
         outline: el ? getComputedStyle(el).outlineStyle : null,
       };
     })()`);
     check(focused.isBeyond && focused.visible,
       'tabbing off the ordinary tick lands keyboard focus on the beyond one, which is what makes the row below about the colour rather than about where focus went',
       `beyond ${focused.isBeyond}, :focus-visible ${focused.visible}`);
-    check(focused.background !== beforeFocus.rest,
+    check(focused.colour !== beforeFocus.rest,
       'and a focused beyond mark looks different from a resting one - the outline is off on the grounds that the colour says it instead, so the colour has to say it',
-      `resting ${beforeFocus.rest}, focused ${focused.background}, outline ${focused.outline}`);
+      `resting ${beforeFocus.rest}, focused ${focused.colour}, outline ${focused.outline}`);
 
     const legend = await page.evaluate('__kinect.editor.shortcuts()');
     check(/\[\/\]/.test(legend),
