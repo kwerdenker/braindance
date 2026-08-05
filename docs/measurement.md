@@ -133,9 +133,10 @@ unit, entirely by accident, which is not a method.
 ## The Mac's USB topology reads worse than it measures
 
 `ioreg -p IOUSB -w0` shows the sensor as controller -> `USB3.0 Hub` -> `NuiSensor Adaptor` ->
-`Xbox NUI Sensor`, with a gigabit ethernet adapter on that same hub. Against the README's
-"1 hub, own controller" that looks like the degraded topology which measures 12.82fps, and it
-is not - **this rig sustains 30.02fps with 2 subsequence warnings in 1921 frames.** The
+`Xbox NUI Sensor`, with a gigabit ethernet adapter on that same hub. Against
+`docs/performance.md`'s "1 hub, own controller" that looks like the degraded topology which
+measures 12.82fps, and it is not - **this rig sustains 30.02fps with 2 subsequence warnings
+in 1921 frames.** The
 `USB3.0 Hub` is a good high-speed one and the count is not the thing that matters.
 
 Note also that `system_profiler SPUSBDataType` returns *nothing at all* on this machine, so a

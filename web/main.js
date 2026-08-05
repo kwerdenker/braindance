@@ -9169,8 +9169,8 @@ function refusePresetBody(name, body) {
   // look values nor the camera track, so the commit that follows cannot undo it: the
   // pose is simply somewhere else now. `presetFromCurrentLook` writes the look tag and
   // only the look tag, so this is the reading side of a rule the writing side already
-  // keeps, and the note in the README that applying a preset never moves your camera
-  // is only true with it here.
+  // keeps, and the note in `docs/reference.md` that applying a preset never moves your
+  // camera is only true with it here.
   for (const [key, value] of Object.entries(body.values)) {
     const { tag } = params.spec(key);
     if (tag !== 'look') {

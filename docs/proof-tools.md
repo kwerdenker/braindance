@@ -414,31 +414,39 @@ product rather than a half-broken build. That is what put the tool briefly on tw
 mechanisms and is why it is now on one — see the Mutations section above for the collapse and for
 what `requireMutationDelivered` asserts.
 
-**`syntax-check` also holds the hello to the README and the format constant to the grabber**, in
-both directions and without importing either. The prose block documented nine keys against the
-thirteen emitted for long enough that the four it omitted became the argument for the check:
-`startedAt` is the only durable capture date a take has, so a second producer written against the
-documented nine writes takes the library dates by file modification time, which changes the first
-time a take is copied off the node and degrades quietly, because that fallback is legitimate and
-reports `dateSource: 'mtime'` rather than failing. The README side is cut to the `type 1 hello`
-stanza and stops at `type 2`, the grabber side to the one `snprintf` that builds the hello, and an
-empty extraction from either fails — zero keys means the anchor moved and the comparison ran on
-nothing. `CAPTURE_FORMAT` is read textually out of `web/format.js` and `native/grabber.cpp` and
+**`syntax-check` also holds the hello to `docs/architecture.md` and the format constant to the
+grabber**, in both directions and without importing either. The prose block documented nine keys
+against the thirteen emitted for long enough that the four it omitted became the argument for the
+check: `startedAt` is the only durable capture date a take has, so a second producer written
+against the documented nine writes takes the library dates by file modification time, which
+changes the first time a take is copied off the node and degrades quietly, because that fallback
+is legitimate and reports `dateSource: 'mtime'` rather than failing. The document side is cut to
+the `type 1  hello` stanza — two spaces, which is what the tool matches on — and stops at
+`type 2`, the grabber side to the one `snprintf` that builds the hello, and an empty extraction
+from either fails — zero keys means the anchor moved and the comparison ran on nothing.
+`CAPTURE_FORMAT` is read textually out of `web/format.js` and `native/grabber.cpp` and
 required equal, because this tool takes `--root` and an import would bind the assertion to this
 checkout while claiming to have checked another tree.
+
+**That stanza lived in `README.md` until the README was cut back to the usage path**, which is
+why this paragraph and the controls below name their file in every sentence. A runbook still
+saying README would have had an operator add a key there, watch the check stay green, and read
+that as the check having no opinion — a falsification control that falsifies nothing is worse
+than not having one, because the whole of what it buys is a reader's trust in the assertion.
 
 Its three controls are run by hand, in the idiom the `tools/` and `docs/` blocks already use.
 This tool does carry a `--mutate` harness, but its table holds one entry and that entry belongs
 to the specification row below, so nothing here has a named mutation — which is worth stating
 rather than leaving to be inferred, since a reader who saw the flag would otherwise read a green
-`--mutate spec-drifts` as a control over these assertions too. Add a key to the grabber literal and not to the
-README; add one to the README the grabber does not emit; bump the constant in one language. Each
-must fail naming what it found — measured, in that order: `the grabber's hello emits exposure and
-README.md's type 1 hello does not document it`, `README.md's type 1 hello documents exposure and
-the grabber does not emit it`, and `CAPTURE_FORMAT is 2 in web/format.js and 1 in
-native/grabber.cpp`. The first of those three is worth doing carefully: the obvious `perl -pi`
-one-liner silently matches nothing against a C++ string literal full of escaped quotes, and a
-mutation that did not apply reads exactly like a check that missed one.
+`--mutate spec-drifts` as a control over these assertions too. Add a key to the grabber literal
+and not to the stanza; add one to the stanza the grabber does not emit; bump the constant in one
+language. Each must fail naming what it found — measured, in that order: `the grabber's hello
+emits exposure and docs/architecture.md's type 1 hello does not document it`,
+`docs/architecture.md's type 1 hello documents exposure and the grabber does not emit it`, and
+`CAPTURE_FORMAT is 2 in web/format.js and 1 in native/grabber.cpp`. Each is one failed assertion
+against a baseline of zero. The first of those three is worth doing carefully: the obvious
+`perl -pi` one-liner silently matches nothing against a C++ string literal full of escaped
+quotes, and a mutation that did not apply reads exactly like a check that missed one.
 
 **`editor-check` enumerates rather than lists, and it exists because the suite tested the model
 and never the control.** The clip in/out markers were detached from the document during boot

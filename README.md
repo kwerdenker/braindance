@@ -141,21 +141,34 @@ ffmpeg over a socket. Each render gets its own directory under `exports/` with a
 carrying the whole project document, so nothing overwrites and every render is reproducible.
 **save a copy…** puts the file anywhere through the browser's file picker.
 
-**The batch path has no button anywhere in the browser**: `POST /jobs` with a project
-document, a capture hash and an output size, then
+**The batch path has no button anywhere in the browser.** `POST /jobs` takes the project
+document, the capture's content hash and the output's name, size and rate, all of them
+required and all validated at enqueue so the queue refuses work it already knows cannot run.
+A render you have already done carries them all in its sidecar, so the shortest correct
+request is that file with a new name over it:
 
 ```bash
+jq -s 'max_by(.created) |
+       {project, capture, output: "take2-again", width: 960, height: 540, fps: 30}' \
+   exports/*/take2.mp4.job.json |
+  curl -sX POST http://localhost:8080/jobs -H 'content-type: application/json' -d @-
 node tools/render-worker.mjs --url http://localhost:8080 --drain
 ```
+
+`max_by` is doing real work there: exporting `take2` twice leaves two directories the glob
+matches, and two JSON objects concatenated into one request body is not JSON at all.
 
 A worker claims only jobs matching the renderer class of the browser it will draw in, so it
 cannot be handed work that would come back looking different. `--drain` exits when the queue
 has nothing *for this worker*, and exits non-zero if what is left is pinned elsewhere. The
 queue is records on disk, so it survives a restart.
 
-**The trim lives on the job's `deliverable`, not in its project document.** In/out, fps, size
-and codec go there together, so one edit can spawn several deliverables; a job posted without
-one renders the whole clip.
+**The trim is the one thing that travels on a `deliverable`.** Adding
+`"deliverable": {"in": 0, "out": 1.967}` cuts the render to those seconds, and a job posted
+without one renders the whole clip. Size, rate and codec stay at the top level, which is
+where the queue validates them and where the worker reads them back. The sidecar does not
+record the trim, so the recipe above reproduces a trimmed render at full length unless you
+add the deliverable back yourself.
 
 ## Streaming to OBS
 
