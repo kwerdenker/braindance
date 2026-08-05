@@ -2725,23 +2725,32 @@ function panelRow(name, spec) {
     edit.type = 'text';
     edit.value = currentValue;
     edit.style.cssText = 'width: 42px; text-align: right; font: inherit; background: transparent; color: var(--accent); border: 0; outline: 0; padding: 0; margin: 0;';
-    const commit = () => {
+    // **One way out, and whether it writes is an argument to it.** Escape used to put the
+    // output back on its own, which detaches the focused input - and detaching a focused
+    // element blurs it, so the blur listener committed the value the press had just
+    // cancelled. It left nothing on screen to show for it either: the commit's own
+    // `replaceWith` was a no-op against an orphan, so the readout kept the old number
+    // while the slider had already been dispatched the new one. Routing both exits
+    // through here means the blur a cancel *causes* arrives to find the editor closed.
+    let editing = true;
+    const close = (write) => {
+      if (!editing) return;
+      editing = false;
       const parsed = parseFloat(edit.value);
       // Put the output back first so writeControl can find it.
       edit.replaceWith(out);
-      if (!isNaN(parsed)) {
-        // Clamp to the slider's range.
-        const clamped = Math.max(spec.min, Math.min(spec.max, parsed));
-        input.value = String(clamped);
-        out.textContent = input.value;
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-      }
+      if (!write || isNaN(parsed)) return;
+      // Clamp to the slider's range.
+      const clamped = Math.max(spec.min, Math.min(spec.max, parsed));
+      input.value = String(clamped);
+      out.textContent = input.value;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
     };
-    edit.addEventListener('blur', commit);
+    edit.addEventListener('blur', () => close(true));
     edit.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); commit(); }
-      if (e.key === 'Escape') { e.preventDefault(); edit.replaceWith(out); }
+      if (e.key === 'Enter') { e.preventDefault(); close(true); }
+      if (e.key === 'Escape') { e.preventDefault(); close(false); }
     });
     out.replaceWith(edit);
     edit.focus();
@@ -6778,7 +6787,6 @@ const ui = {
   pickGo: document.getElementById('ppGo'),
   project: document.getElementById('tProject'),
   projectOpen: document.getElementById('tProjectOpen'),
-  projectSave: document.getElementById('tProjectSave'),
   resume: document.getElementById('tResume'),
   resumeWhen: document.getElementById('tResumeWhen'),
   resumeOpen: document.getElementById('tResumeOpen'),
@@ -9775,12 +9783,27 @@ function pickerKey(picker, event) {
   }
 }
 
-/** Write the chosen name onto the trigger, which is where every reader looks for it. */
-function choosePicker(picker, name, { close = false } = {}) {
+/**
+ * Write a name onto the trigger, which is where every reader looks for it, and repaint
+ * the list so the mark moves with it. This is the *display* half and nothing else.
+ *
+ * It is a function of its own because "the operator picked this" and "the library was
+ * rebuilt and the selection has to be put back" are two different sentences that used
+ * to be one call. `refreshPresets` rebuilds after every save, import and delete and then
+ * restores the visible selection - so with the apply folded into the write, a look that
+ * had been applied and then tweaked by hand was fetched and re-applied by the refresh,
+ * silently discarding the tweaks in the middle of the gesture that saved them. Repainting
+ * a control is not choosing what it shows.
+ */
+function showPickerChoice(picker, name) {
   picker.trigger.value = name ?? '';
   paintPicker(picker);
+}
+
+/** The operator chose this entry: show it, and on a picker that applies, apply it. */
+function choosePicker(picker, name, { close = false } = {}) {
+  showPickerChoice(picker, name);
   if (close) closePicker(picker, { restoreFocus: true });
-  // Auto-apply the preset when selected, if this picker has that behavior enabled.
   if (picker.autoApply) {
     if (name) {
       withPresetGesture(picker.note ?? ui.note, () => whileWriting(async () => {
@@ -9936,7 +9959,7 @@ async function refreshPresets() {
     // leave `apply` aimed at a document the server answers 404 for, which is the state
     // the delete above is careful to leave the trigger out of.
     if (appliedPreset && list.some((doc) => doc.name === appliedPreset.name)) {
-      choosePicker(picker, appliedPreset.name);
+      showPickerChoice(picker, appliedPreset.name);
     } else {
       paintPicker(picker);
     }
@@ -10427,8 +10450,12 @@ function paintEase() {
  */
 function neighbourKeyTime(direction) {
   if (!timeline) return null;
-  const owner = selection?.owner ?? null;
-  if (owner === null) return null;
+  // The fallback is the whole of what makes these buttons a way to *reach* a key. With
+  // `null` here they were dead until a key had already been selected, which is a control
+  // for finding something that first has to be found - and it left the retime keys of an
+  // opened project unreachable by anything but a click in the lane, on the one track that
+  // is always there whether or not the panel has a parameter chosen.
+  const owner = selection?.owner ?? 'retime';
   const now = playheadSec();
   const tol = keyTolerance();
   const times = keysOf(owner)
@@ -11510,6 +11537,15 @@ ui.exportName.addEventListener('input', paintExportName);
 // the static handler serves.
 let lastExport = null;
 
+// **When a copy can be handed over, stated once.** The button's disabled state and the
+// Output > Export command both need this answer, and for a while they each carried their
+// own version of it: the command tested `lastExport && CAN_SAVE_AS`, which is this rule
+// minus the directory clause below, so after a PNG sequence it synthesised a click on a
+// button `paintExportSave` had already disabled - and a disabled button dispatches
+// nothing, so the menu entry that produces the deliverable silently did nothing at all.
+// One predicate, read by both, is what makes the two answers the same answer.
+const canSaveExportCopy = () => Boolean(lastExport) && CAN_SAVE_AS && lastExport.frameExt == null;
+
 function paintExportSave() {
   // **A sequence is a directory, and this button hands over one file.** `done.href` for
   // the image-sequence codec names the directory the numbered frames were written into,
@@ -11524,7 +11560,7 @@ function paintExportSave() {
   // one that says beforehand why it cannot: the frames are already on the server, and
   // saying where they are is more use than a sheet that leads nowhere.
   const sequence = lastExport?.frameExt != null;
-  ui.exportSave.disabled = !lastExport || !CAN_SAVE_AS || sequence;
+  ui.exportSave.disabled = !canSaveExportCopy();
   ui.exportSave.title = !CAN_SAVE_AS
     ? 'This browser has no file picker - the render is in the exports directory on the server'
     : sequence
@@ -11565,7 +11601,11 @@ ui.exportGo.addEventListener('click', async () => {
   }
 });
 
-ui.exportSave.addEventListener('click', async () => {
+// Called rather than clicked, by the button beside the render and by Output > Export.
+// A driver that synthesises a click on another control inherits that control's disabled
+// state and its continued existence, and neither of those is anything the caller can see
+// going wrong - which is exactly how the menu command above lost its effect.
+async function saveExportCopy() {
   if (!lastExport) return;
   try {
     // **The picker opens before anything is awaited, and that ordering is the whole
@@ -11586,7 +11626,9 @@ ui.exportSave.addEventListener('click', async () => {
     if (err?.name === 'AbortError') return;
     sayExport(`save failed: ${err.message}`);
   }
-});
+}
+
+ui.exportSave.addEventListener('click', saveExportCopy);
 
 paintExportSave();
 
@@ -11804,7 +11846,10 @@ ui.presetFile.addEventListener('change', () => {
       // Through the picker rather than by assigning `value`, so the name on the trigger
       // and the mark in the list are written by one call. Assigning the property alone
       // would leave the control reading its old name over a library that has the new one.
-      choosePicker(pickers.find((p) => p.trigger === ui.preset), saved.name);
+      // The display half and not `choosePicker`, because `importPresetFile` has already
+      // applied what it read - going through the choosing path would fetch the document
+      // back off the server and apply it a second time.
+      showPickerChoice(pickers.find((p) => p.trigger === ui.preset), saved.name);
       say(`imported ${saved.name} · ${saved.rev.slice(7, 15)}`);
     } catch (err) {
       showTimelineError(err);
@@ -11812,7 +11857,19 @@ ui.presetFile.addEventListener('change', () => {
   }));
 });
 
-ui.projectSave?.addEventListener('click', async () => {
+/**
+ * Save the open edit under a name the operator gives, which is what File > Save as and
+ * Shift+Cmd+S both do.
+ *
+ * A function and not a button with two things clicking it. The timeline's project chip
+ * carried a `save` button and the menu command and the shortcut both reached the flow by
+ * synthesising a click on it; when the app bar replaced that chip the button went with
+ * it, `ui.projectSave` became null, and the optional chaining turned both drivers into
+ * no-ops that reported nothing. The lesson is which way the arrow points - a driver that
+ * presses another control depends on that control still existing, and nothing says so
+ * when it stops. Calling the flow is a dependency the parser can see.
+ */
+async function saveProjectAs() {
   const name = prompt('save this edit as', ui.project?.value || `${openTakeId ?? 'clip'}-edit`);
   if (!name) return;
   try {
@@ -11835,7 +11892,7 @@ ui.projectSave?.addEventListener('click', async () => {
   } catch (err) {
     showTimelineError(err);
   }
-});
+}
 
 ui.projectOpen?.addEventListener('click', async () => {
   const name = ui.project?.value;
@@ -11906,7 +11963,7 @@ ui.deliverable?.addEventListener('change', async () => {
     //
     // The message stays on `#tNote` either way, so this is not a refusal being swallowed - it
     // is the refusal being told in one place instead of contradicted in a second.
-    if (ui.deliverable) ui.deliverable.value = ui.deliverable.dataset.adopted ?? '';
+    ui.deliverable.value = ui.deliverable.dataset.adopted ?? '';
     showTimelineError(err);
   }
 });
@@ -11956,9 +12013,6 @@ const shell = {
   obsOpen: document.getElementById('obsOpen'),
   obsStatus: document.getElementById('obsStatus'),
   obsStatusText: document.getElementById('obsStatusText'),
-  stateDialog: document.getElementById('stateDialog'),
-  stateClose: document.getElementById('stateClose'),
-  stateDump: document.getElementById('stateDump'),
 };
 
 shell.surfaceName.textContent = EDITING ? 'Editor' : 'Record';
@@ -12022,12 +12076,16 @@ function openExportDialog() {
 shell.render.addEventListener('click', openExportDialog);
 shell.export.addEventListener('click', () => {
   closeApplicationMenus();
-  if (lastExport && CAN_SAVE_AS) ui.exportSave.click();
+  // Straight into the save, and only when the same predicate the button reads says a
+  // copy can be handed over. A sequence render cannot, so this falls through to the
+  // dialog - which is the useful answer anyway: the frames are already on the server
+  // and what is left to do with them is render something else.
+  if (canSaveExportCopy()) saveExportCopy();
   else openExportDialog();
 });
 shell.saveProject.addEventListener('click', () => {
   closeApplicationMenus();
-  ui.projectSave?.click();
+  saveProjectAs();
 });
 shell.lookImport.addEventListener('click', () => {
   closeApplicationMenus();
@@ -12188,14 +12246,26 @@ shell.obsCustomSize.addEventListener('change', () => {
   paintObsDialog();
 });
 
+// **Into the span, never onto the node that holds it.** `#obsStatus` is a container -
+// the live dot and `#obsStatusText` are its children, and the two-second poll writes
+// the second of them. Assigning `textContent` on the container replaces both with a
+// text node, so the dot goes and the poll spends the rest of the session writing a
+// span no document contains: the status freezes on whatever the last press said and
+// reads as a stuck OBS connection rather than as a copy that happened once. The span
+// is where every other writer of this message already writes, which is what makes one
+// writer rather than two.
+function sayObs(message) {
+  shell.obsStatusText.textContent = message;
+}
+
 async function copyObsValue(input) {
   try {
     await navigator.clipboard.writeText(input.value);
-    shell.obsStatus.textContent = 'copied';
+    sayObs('copied');
   } catch {
     input.select();
     const copied = document.execCommand('copy');
-    shell.obsStatus.textContent = copied ? 'copied' : 'copy unavailable';
+    sayObs(copied ? 'copied' : 'copy unavailable');
   }
 }
 
@@ -12203,23 +12273,15 @@ shell.obsCopyBrowser.addEventListener('click', () => copyObsValue(shell.obsBrows
 shell.obsCopyWebcam.addEventListener('click', () => copyObsValue(shell.obsWebcamUrl));
 shell.obsOpen.addEventListener('click', () => {
   globalThis.open(shell.obsBrowserUrl.value, '_blank', 'noopener');
-  shell.obsStatus.textContent = 'source opened';
+  sayObs('source opened');
 });
 
-function stateSnapshot() {
-  return {
-    surface: EDITING ? 'edit' : 'record',
-    sensor: sensorLabel,
-    fps: Number(fps.toFixed(1)),
-    output: { mode: progModeEl.value, size: progSizeEl.value },
-    targetSize: { ...targetSize },
-    take: openTakeId,
-    timeline: timeline ? { frame: timeline.frame, programSec: timeline.programSec, playing: timeline.playing } : null,
-    record: EDITING ? null : recordState,
-    parameters: Object.fromEntries(params.names().map((name) => [name, params.get(name)])),
-  };
-}
-
+// Stats for nerds is the overlay `drawChrome` paints under the top-down view, and it is
+// the only one. A `stateSnapshot()` used to build the same numbers as a JSON dump for a
+// `#stateDialog`, and when the overlay arrived that pair stayed behind with nothing
+// opening the dialog and nothing writing the dump - two representations of one state,
+// the dead one silently unable to disagree with the live one. Both are gone, which is
+// why this listener only flips a flag and asks for a repaint.
 shell.state.addEventListener('click', () => {
   statsVisible = !statsVisible;
   shell.state.setAttribute('aria-checked', String(statsVisible));
@@ -12231,7 +12293,6 @@ shell.state.addEventListener('click', () => {
 shell.exportClose.addEventListener('click', () => ui.exportDialog.close());
 shell.obsClose.addEventListener('click', () => shell.obsDialog.close());
 shell.obsDone.addEventListener('click', () => shell.obsDialog.close());
-shell.stateClose.addEventListener('click', () => shell.stateDialog.close());
 
 addEventListener('keydown', (event) => {
   // **Asked before anything below it, Escape included.** A key another control has already
@@ -12258,7 +12319,7 @@ addEventListener('keydown', (event) => {
     location.assign('/gallery');
   } else if (key === 's' && event.shiftKey && EDITING) {
     event.preventDefault();
-    ui.projectSave?.click();
+    saveProjectAs();
   } else if (key === 'r' && EDITING) {
     event.preventDefault();
     openExportDialog();
