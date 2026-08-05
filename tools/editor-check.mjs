@@ -7061,9 +7061,18 @@ try {
     // claim about how focus got there - a programmatic focus does not match it in
     // Chromium, so a row built that way would read the resting colour on both builds
     // and agree with the defect.
+    // **`color` and not `backgroundColor`, because that is what the tick is drawn with.**
+    // The mark became an inline SVG stroked with `currentColor`, so `.tmk.beyond` and
+    // `.tmk:focus-visible` set `color` where they used to set a background - and a row
+    // reading the background read `rgba(0, 0, 0, 0)` at rest and `rgba(0, 0, 0, 0)`
+    // focused, which is two readings of a property nothing writes agreeing with each
+    // other. It could not pass on any build, and it could not have failed for the reason
+    // it is named for either. `beyond-mark-loses-focus` moves the `color` declaration, so
+    // the control and the assertion have to be reading the same property or the
+    // falsification proves nothing.
     const focusColours = async (selector) => page.evaluate(`(async () => {
       const el = document.querySelector(${JSON.stringify(selector)});
-      const rest = getComputedStyle(el).backgroundColor;
+      const rest = getComputedStyle(el).color;
       return { rest, el: Boolean(el) };
     })()`);
     const beforeFocus = await focusColours('#tMarks .tmk.beyond');
@@ -7074,16 +7083,16 @@ try {
       return {
         isBeyond: el?.classList?.contains('beyond') ?? false,
         visible: el?.matches(':focus-visible') ?? false,
-        background: el ? getComputedStyle(el).backgroundColor : null,
+        colour: el ? getComputedStyle(el).color : null,
         outline: el ? getComputedStyle(el).outlineStyle : null,
       };
     })()`);
     check(focused.isBeyond && focused.visible,
       'tabbing off the ordinary tick lands keyboard focus on the beyond one, which is what makes the row below about the colour rather than about where focus went',
       `beyond ${focused.isBeyond}, :focus-visible ${focused.visible}`);
-    check(focused.background !== beforeFocus.rest,
+    check(focused.colour !== beforeFocus.rest,
       'and a focused beyond mark looks different from a resting one - the outline is off on the grounds that the colour says it instead, so the colour has to say it',
-      `resting ${beforeFocus.rest}, focused ${focused.background}, outline ${focused.outline}`);
+      `resting ${beforeFocus.rest}, focused ${focused.colour}, outline ${focused.outline}`);
 
     const legend = await page.evaluate('__kinect.editor.shortcuts()');
     check(/\[\/\]/.test(legend),
