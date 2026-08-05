@@ -1871,3 +1871,48 @@ transition the linked station gets out of following the node is disabled Open to
 Download, and a row copied from the local gallery asserts `find('Open').disabled === false`
 against an `undefined` and fails on a build that works perfectly. **`?.field === false` on a
 `find` that returned nothing is a missing element reported as a wrong value.**
+
+## A refusal nobody can read is measured as a fault somewhere else entirely
+
+`web/main.js` built its application shell as an object literal of bare
+`document.getElementById` calls and then dereferenced every entry unguarded a few hundred
+lines below. `getElementById` answers `null`, so an id that stopped existing did not fail
+where it was looked up — it failed at whichever consumer touched it first, as
+`Uncaught TypeError: Cannot read properties of undefined (reading 'addEventListener')`
+against a line number and nothing else.
+
+What that costs is the whole surface, and it costs it in a shape that points away from
+itself. `connect()` is called *below* the shell wiring, so the socket is never opened: the
+header sits on "connecting…" indefinitely, the viewport stays black, and the server — which
+takes `/record/start` over HTTP and has no opinion about whether a browser is attached —
+records a take perfectly happily with `clients=0` beside it in the log. An operator reading
+that sees a sensor or a network problem. The session this came from spent its first hour on
+libfreenect2 packet-loss warnings, which were `[Debug]`-level noise from a link running at
+30.0fps with `dropped=0`, because those were the only lines that looked like a complaint.
+
+Two things generalise, and the second is the one worth carrying:
+
+**A component whose absence is fatal must say which component it was.** The repair is to
+build the shell through a lookup that collects every id that did not resolve and refuses
+once, by name, at construction — and to put the refusal on the status line as well as the
+console, because the console is not where the operator is looking. Refusing stays right; a
+page that boots with half its wiring gone is worse than one that will not boot. Only the
+legibility of the refusal changed.
+
+**`editor-check` could not have caught this, and its own notes said so.** A missing control
+makes the module refuse, `openEditor` never sees `globalThis.__kinect`, and the run reports
+DID NOT RUN with zero assertions — which is the exit-code-without-a-failed-assertion that
+this repo has now written down three times as a bug found. The comment beside
+`panel-row-skips-parameter` already recorded that "a plain omission is caught by `main.js`
+refusing to boot, which is the right behaviour for a user and useless as evidence here",
+and then nothing was placed anywhere else to catch it. **A defect a tool has documented
+itself as unable to see needs a home, not a note.** It went to `syntax-check`, which needs
+no browser and therefore cannot be defeated by the page failing to start, as
+`--mutate shell-id-renamed`.
+
+The row reads the ids out of the module's own `shellElements({...})` literal rather than
+from a list kept beside the check, because a hand-copied set drifts and drifts silently: an
+id added next year would simply not be checked, and the row would go on printing a clean
+line about the ones it still knew. Parsing the literal is what makes a shell entry added
+later asked by existing. It carries its own floor for the same reason — an extraction that
+matched nothing would print `all 0 ids` and read as a pass.
