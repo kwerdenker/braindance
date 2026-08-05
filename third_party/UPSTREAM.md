@@ -142,7 +142,7 @@ measurement sessions accounted for most of that difference. Sequential
 before-and-after is not trustworthy on this rig, and this is the measurement that
 established it.
 
-### `src/libfreenect2.cpp` — do not fail the open on a USB power state
+### `src/libfreenect2.cpp` — do not fail the open on the two USB link setup calls
 
 `Freenect2DeviceImpl::open` treats `enablePowerStates()` and
 `setVideoTransferFunctionState(Disabled)` as must-succeed: either one returning
@@ -155,18 +155,46 @@ at the last step, on the machine this program is developed on.
 Both calls are still made and their results are still ignored only under
 `#if defined(__APPLE__)`, which is the shape this edit is careful about: a Linux
 capture node compiles upstream's code exactly, so the strictness that catches a
-genuinely broken device on the hardware that ships is untouched. What the Mac gives
-up is a diagnostic it was never getting anything from — the states do not come on
-either way, and depth, colour and registration are unaffected, because the link
-power states govern when the controller may idle a bus rather than what is carried
-over it.
+genuinely broken device on the hardware that ships is untouched.
+
+**The second call is not a power state, which is why neither the heading nor the
+file's notice of modification calls it one any more.**
+`setVideoTransferFunctionState` sends FUNCTION_SUSPEND — USB 3.1 r1 section 9.4.9 —
+which suspends the colour function rather than governing when the link may idle, so
+the "link power states decide when a bus idles rather than what crosses it" argument
+covers `enablePowerStates` and only `enablePowerStates`. It is dropped here anyway,
+deliberately: `startStreams` hard-requires the `Enabled` form of the same call, but
+`Enabled` sends `suspend_options = 0` where `Disabled` sends `3`, so a streaming
+sensor is not proof the `Disabled` form is accepted, and narrowing the `#if` on that
+reasoning would bet the open against a controller nobody here owns.
+
+**Dropping a result is not dropping the diagnostic, and no one should add one.**
+Both calls report failure through `CHECK_LIBUSB_RESULT`, which is a `LOG_ERROR`, and
+`Error` is below the grabber's default `--log warning` — so a refusal names itself
+and its libusb error in an ordinary run's log without this edit doing anything. The
+first version of this section described the edit as warning rather than failing while
+adding no warning at all, which reads as an invitation to write the second one.
+
+**The one case where letting `enablePowerStates` fail quietly is the wrong answer.**
+It sets `U1_ENABLE`, and only on success goes on to `U2_ENABLE`, so a device that
+takes the first and refuses the second leaves U1 enabled alone — the asymmetric state
+upstream's `return false` exists to refuse. U1 entry and exit on a live isochronous
+link is the one mechanism in this edit that can cost service intervals, which is to
+say lost RGB and depth packets. U1 failing is inert, because then neither comes on;
+both succeeding is upstream's own behaviour. **So before reading packet loss on a Mac
+as a topology problem, grep the startup log for which of the two lines it is** —
+`failed to enable power states U1!` is the harmless one and `... U2!` is not.
 
 Nothing is measured here and nothing should be. This is not a performance edit and
 it makes no claim about throughput: it is the difference between the sensor opening
 and not opening on one platform. `vendor-check` pins its content the same way it
 pins the other two, so reverting it — which is what a careless re-vendor looks
 like — fails the check rather than quietly restoring a Mac that cannot open a
-camera.
+camera. What it cannot pin is the *binary*: `marker` is `null` for this edit,
+because an `#if defined(__APPLE__)` block leaves no string or symbol for section 5
+to read out of a Linux build, so on the one platform where the edit is live there is
+nothing that proves the loaded library contains it. A Mac that has not run
+`npm run build:native` since this landed is running a grabber without it.
 
 ## How the proof works
 
