@@ -411,7 +411,21 @@ OBS from the panel's *Output to OBS* group, which prints both URLs.
 | What | How | What it is |
 | --- | --- | --- |
 | the viewport | browser source on `/program` | this renderer, at a fixed size, no chrome |
-| the webcam | media source on `/camera.mjpg` | the colour camera's own 1920x1080 frame |
+| the webcam | browser source on `/camera.mjpg` | the colour camera's own 1920x1080 frame |
+
+#### To use the webcam source in OBS:
+1. Add a new _Browser Source_ to a scene
+2. Copy the URL of the view from the _Output to OBS_ section in the UI
+3. Use that as the source URL in the OBS Browser Source
+4. Set the _Width_ to 1920 and _Height_ to 1080
+5. Hit Ok and that should be it.
+
+#### To use the viewport source in OBS:
+1. Add a new _Browser Source_ to a scene
+2. Copy the URL of the view from the _Output to OBS_ section in the UI
+3. Use that as the source URL in the OBS Browser Source
+4. Set the _Width_ and _Height_ to the sizes you configured in the UI
+5. Hit Ok and that should be it.
 
 OBS's own virtual camera then publishes either one to Zoom, Meet or anything else, so
 nothing here installs a system camera extension.
