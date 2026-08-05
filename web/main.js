@@ -12330,30 +12330,14 @@ shell.obsOpen.addEventListener('click', () => {
 // why this listener only flips a flag and asks for a repaint.
 shell.state.addEventListener('click', () => {
   closeApplicationMenus();
-  if (EDITING) {
-    // Editor: toggle the chrome overlay
-    statsVisible = !statsVisible;
-    shell.state.setAttribute('aria-checked', String(statsVisible));
-    chromeStale = true;
-    drawChrome();
-  } else {
-    // Record: open the dialog
-    if (shell.stateDialog.open) {
-      shell.stateDialog.close();
-    } else {
-      updateStatsDialog();
-      openDialog(shell.stateDialog);
-      statsInterval = setInterval(updateStatsDialog, 500);
-    }
-  }
-});
-
-shell.stateDialog.addEventListener('close', () => {
-  if (statsInterval) {
-    clearInterval(statsInterval);
-    statsInterval = null;
-  }
-  shell.state.setAttribute('aria-checked', 'false');
+  // Toggle the chrome overlay. The record view used to open a dialog here, and the
+  // dialog was removed when the overlay arrived — but this branch kept referencing
+  // the element, which threw before `connect()` ran and left the status on
+  // "connecting…" with a working sensor behind it.
+  statsVisible = !statsVisible;
+  shell.state.setAttribute('aria-checked', String(statsVisible));
+  chromeStale = true;
+  drawChrome();
 });
 
 shell.exportClose.addEventListener('click', () => ui.exportDialog.close());
