@@ -282,7 +282,7 @@ process.stdin.resume();
 // this loops its depth out of predates both fields, so a hello copied through unedited
 // would make every take the suite records generation zero - which is a real shape and
 // the wrong one to write here, because a *writer* that declares nothing is exactly the
-// second producer this repo's own README nearly taught somebody to build.
+// second producer this repo's own wire-format page nearly taught somebody to build.
 //
 // The colour flags are stamped on the same principle and are the half of this that is
 // easy to get backwards. **`lowLight` is the conjunction, not the negation of its own

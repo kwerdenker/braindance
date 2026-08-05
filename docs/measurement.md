@@ -4,8 +4,9 @@ Read this before reporting a measurement. It is the case file behind the short r
 `CLAUDE.md`: how a number gets taken here, which runs get thrown away, and the two pieces
 of hardware whose behaviour reads differently from how it measures.
 
-The seam against its neighbour: **this file is about a number you would report.**
-`docs/instruments.md` is about a check that must fail when the thing under test is broken.
+The seam against its two neighbours: **this file is about a number you would report.**
+`docs/instruments.md` is about a check that must fail when the thing under test is broken,
+and `docs/performance.md` is the numbers already taken, which this file says how to take.
 
 ## Read a health number the measurement itself reports, and throw the run away when it is wrong
 
