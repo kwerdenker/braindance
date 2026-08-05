@@ -7911,6 +7911,26 @@ addEventListener('keydown', (e) => {
     history.undo();
     return;
   }
+  // Start or stop recording - the same action the sidebar button takes. The button's
+  // disabled state is the authority on whether the action is available.
+  if ((e.key === 'r' || e.key === 'R') && !EDITING && ui.recGo && !ui.recGo.disabled) {
+    e.preventDefault();
+    ui.recGo.click();
+    return;
+  }
+  // Mark during recording - the same action the sidebar button takes, before the editing
+  // surface claims the key for its own marks. The button's disabled state is the authority
+  // on whether there is a recording to mark.
+  if ((e.key === 'm' || e.key === 'M') && !EDITING && ui.recMark && !ui.recMark.disabled) {
+    e.preventDefault();
+    (async () => {
+      const body = await (await fetch('/record/mark', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      })).json();
+      ui.recNote.textContent = body.error ?? `${body.label} at ${(body.sourceMs / 1000).toFixed(1)}s`;
+    })();
+    return;
+  }
   // Everything below is about a clip, and the recorder has none.
   if (!EDITING || !timeline) return;
   // A modifier other than shift means the key belongs to the browser or the OS.
