@@ -72,7 +72,7 @@
      panel is translucent over the live cloud, so a sticky child would have had the
      grade sliders visibly travelling underneath it. */
   #panel {
-    position: fixed; top: 38px; left: 0; width: 302px; max-height: calc(100vh - 38px);
+    position: fixed; top: 38px; left: 0; width: 302px; height: calc(100vh - 38px);
     display: flex; flex-direction: column; overflow: hidden;
     border: 0; border-right: 1px solid var(--line); border-radius: 0;
     background: rgba(8, 11, 16, 0.82); backdrop-filter: blur(12px); z-index: 10;
@@ -95,7 +95,7 @@
   #status b { color: var(--accent); font-weight: 500; }
 
   .group { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; }
-  #cameraGroup, [data-group="framing"] { border-top: 0; }
+  #recordGroup, #cameraGroup, [data-group="framing"] { border-top: 0; }
   /* OBS is an editor command and dialog in the Pencil shell. The recorder keeps this
      inline block because its output is part of the live shooting setup. */
   body.editing #programOutGroup { display: none; }
@@ -266,7 +266,7 @@
      underneath the last control on any window tall enough to fill it. */
   #hint { position: fixed; bottom: 10px; left: 318px; color: var(--dim); z-index: 10; font-size: 11px; }
 
-  #camNote, #recNote, #recSpace, #monNote, #sensorNote, #recLookNote, #recRange, #viewNote {
+  #camNote, #recNote, #recSpace, #monNote, #recRange, #viewNote, #progNote {
     color: var(--dim); font-size: 12px; line-height: 1.45; opacity: 0.75; margin-top: 2px;
   }
   #monNote.warn { color: var(--warn); opacity: 1; }
@@ -288,28 +288,26 @@
      an editing page has no socket, so on the editor those five controls sat at their
      markup defaults presenting them as the sensor's state. A control that reads as
      fact and is not is worse than one that is missing. */
-  body.editing #recordGroup,
-  body.editing #recLookGroup,
-  body.editing #sensorGroup,
-  body.editing #monitorGroup,
-  body.editing #extendedRow { display: none; }
   /* The preview-range warning is about a confusion that only exists while shooting -
      that these two might be clipping the capture. On the editor the take is already
      on disk and nothing near this control could reach a grabber, so the same line
      there would be a warning about an impossibility. */
   body.editing #recRange { display: none; }
-
-  /* The shooting surface is record, mark, remaining time, a preset and the preview
-     range; everything below that is the grade, and the grade is the editor's job.
-     But a big screen before a take is a good place to find out where a look wants to
-     go, so the rest is one button away rather than absent. Hidden with a class and
-     not by leaving the controls out of the document: the generator emits a row for
-     every parameter the registry declares and refuses to boot when the count comes
-     out short, so a surface that built a subset would stop being checkable against
-     the registry at all. Source order matters here - both selectors have the same
-     specificity, and the second is what lets the button win. */
-  body:not(.editing) .lookgroup { display: none; }
-  body.extended .lookgroup { display: block; }
+  /* Menu items that only apply to the editor: opening a clip, rendering, exporting,
+     the top-down inset, and look import/export. The record surface has no clip to
+     render or export, no composition to frame in the top-down, and look management
+     happens through the preset library visible in the Look tab. */
+  body:not(.editing) #toLibrary,
+  body:not(.editing) #menuRender,
+  body:not(.editing) #menuExport,
+  body:not(.editing) #menuTopView,
+  body:not(.editing) #menuLookImport,
+  body:not(.editing) #menuLookExport { display: none; }
+  /* Hide separators that end up orphaned after the items above are hidden. The Output
+     menu keeps only OBS, so its separator goes; the View menu loses its middle section
+     entirely, leaving Default camera position and Stats for nerds with no separator. */
+  body:not(.editing) #outputMenu .menu-separator,
+  body:not(.editing) #viewMenu .menu-separator { display: none; }
   .check input:disabled { opacity: 0.4; }
   .check.disabled { opacity: 0.45; cursor: default; }
 
@@ -382,6 +380,13 @@
     background: var(--paper-1);
   }
   #panelTabs[hidden] { display: none; }
+  /* Record tab only on record surface, Camera tab only on editor. */
+  body.editing #panelTabRecord { display: none; }
+  body:not(.editing) #panelTabCamera { display: none; }
+  /* On the editor, tabs start hidden until a clip is opened. On the record
+     surface they are always visible - the hidden attribute is not set. */
+  body.editing #panelTabs { display: none; }
+  body.editing #panelTabs:not([hidden]) { display: grid; }
   .paneltab {
     min-width: 0;
     border: 0;
@@ -934,10 +939,11 @@
       <div id="status">connecting…</div>
     </div>
 
-    <div id="panelTabs" role="tablist" aria-label="Inspector" hidden>
+    <div id="panelTabs" role="tablist" aria-label="Inspector">
+      <button class="paneltab" id="panelTabRecord" type="button" role="tab" data-panel-tab="record" aria-selected="true">Record</button>
       <button class="paneltab" id="panelTabCamera" type="button" role="tab" data-panel-tab="camera" aria-selected="false">Camera</button>
       <button class="paneltab" id="panelTabFraming" type="button" role="tab" data-panel-tab="framing" aria-selected="false">Framing</button>
-      <button class="paneltab" id="panelTabLook" type="button" role="tab" data-panel-tab="look" aria-selected="true">Look</button>
+      <button class="paneltab" id="panelTabLook" type="button" role="tab" data-panel-tab="look" aria-selected="false">Look</button>
       <button class="paneltab" id="panelTabRegion" type="button" role="tab" data-panel-tab="region" aria-selected="false">Region</button>
     </div>
 
@@ -971,37 +977,14 @@
       </div>
     </div>
 
-    <!-- The shooting controls, and the four-fifths of them that are load-bearing:
-         record, mark and how much time is left. Nothing here is a look. -->
-    <div class="group" id="recordGroup">
-      <label>Record</label>
+    <!-- The shooting controls: record, mark and how much time is left. -->
+    <div class="group" id="recordGroup" data-panel-tab="record">
       <div class="btnrow">
         <button id="recGo" type="button">record</button>
         <button id="recMark" type="button" disabled>mark</button>
       </div>
       <div id="recNote">not recording</div>
       <div id="recSpace">&nbsp;</div>
-    </div>
-
-    <!-- Shooting against the look you intend to grade towards is the whole reason
-         presets are a user-authored library rather than two hardcoded modes, so the
-         recorder draws on the same library the editor does. The editor's copy of this
-         selector is in the timeline bar, where the rest of the document controls are. -->
-    <div class="group" id="recLookGroup">
-      <label>Look</label>
-      <div class="btnrow">
-        <!-- The same control, because it is the same library. Pencil draws a preset row on
-             the Record surface too, so this is not the editor's picker leaking onto a
-             surface that wanted a plainer one. -->
-        <div class="picker" id="recPresetPicker">
-          <button class="pickertrigger" id="recPreset" type="button" role="combobox"
-            aria-haspopup="listbox" aria-expanded="false" aria-controls="recPresetList"
-            aria-label="Preset"><span class="pickervalue">&mdash;</span><span class="pickerarrow" aria-hidden="true">&#9662;</span></button>
-          <div class="pickerlist" id="recPresetList" role="listbox" aria-label="Presets" tabindex="-1" hidden></div>
-        </div>
-        <button id="recPresetApply" type="button">apply</button>
-      </div>
-      <div id="recLookNote">&nbsp;</div>
     </div>
 
     <div class="group" id="cameraGroup" data-panel-tab="camera" hidden>
@@ -1020,32 +1003,24 @@
          a view on. They are inserted before `#sensorGroup`, which is what puts them
          where they used to be written. -->
 
-    <div class="group" id="sensorGroup">
-      <label>Sensor</label>
-      <label class="check"><input id="colorCam" type="checkbox" checked> colour camera on</label>
-      <label class="check"><input id="lowLight" type="checkbox" checked> low light mode</label>
-      <div id="sensorNote">low light lets the colour camera drop to 15fps for a brighter image. Depth stays at 30 either way.</div>
+    <div class="group" id="sensorGroup" data-panel-tab="record">
+      <label class="check"><input id="colorCam" type="checkbox" checked> colour camera</label>
+      <label class="check"><input id="lowLight" type="checkbox" checked> low light</label>
     </div>
 
-    <!-- What this monitor pulls off the link, and never what the take records. The
-         setting is the operator's and stays on screen: nothing here moves on its
-         own, because coarse depth reads as a badly placed subject and a dropped
-         stride reads as a sensor losing frames. -->
-    <div class="group" id="monitorGroup">
-      <label>Monitor stream</label>
+    <!-- What this monitor pulls off the link, and never what the take records. -->
+    <div class="group" id="monitorGroup" data-panel-tab="record">
+      <label>Monitor</label>
       <div class="row"><span>depth ÷</span><input id="monDivisor" type="range" min="1" max="16" step="1" value="1"><output>1</output></div>
       <div class="row"><span>every Nth</span><input id="monStride" type="range" min="1" max="30" step="1" value="1"><output>1</output></div>
       <div class="row"><span>allow cost</span><input id="monAcceptCost" type="checkbox"></div>
-      <div id="monNote">full rate. the recording is always full fidelity whatever this says.</div>
+      <div id="monNote" hidden></div>
     </div>
 
-    <!-- What OBS gets. Two sources, and they are different pictures rather than two
-         views of one: the program-out page renders this scene at a fixed size, and
-         the webcam is the colour camera's own 1920x1080 frame served straight off
-         the server without a renderer in the way. Neither is a setting on the other,
-         which is why they are two URLs. -->
-    <div class="group" id="programOutGroup">
-      <label>Output to OBS</label>
+    <!-- What OBS gets. Two sources: a program-out page that renders this scene at a
+         fixed size, and the webcam which is the colour camera's own 1920x1080 frame. -->
+    <div class="group" id="programOutGroup" data-panel-tab="record">
+      <label>Output</label>
       <div class="row"><span>camera</span>
         <select id="progMode">
           <option value="camera">program camera</option>
@@ -1053,23 +1028,14 @@
         </select>
       </div>
       <div class="row"><span>size</span><input id="progSize" type="text" value="1920x1080" spellcheck="false"></div>
-      <div id="progNote">add a browser source in OBS for the viewport, or a media source for the webcam.</div>
+      <div id="progNote"></div>
     </div>
 
-    <div class="btnrow" id="extendedRow">
-      <button id="extended" type="button" aria-pressed="false">extended settings</button>
-    </div>
-
-    <!-- The grade is generated too, and it lands here: every `lookgroup` is inserted
-         after `#extendedRow`, the button that reveals them, which is the last static
-         node in the scrolling body. The anchor used to be `#navRow` and could not stay
-         one - the nav was pinned into `#panelHead` on the way in, so it now sits above
-         the status line, and a group inserted before it would be built into the head
-         rather than into the column it belongs to.
-         The order down the panel is the order `PANEL_GROUPS` declares, and it is still
-         the order the image is built in: what the depth signal is conditioned into,
-         where the points are moved to, how they are drawn, what colour they take, what
-         persists between frames, and what the optics do to the result. -->
+    <!-- The grade groups are generated from PANEL_GROUPS and inserted here. The order
+         down the panel is the order the image is built in: what the depth signal is
+         conditioned into, where the points are moved to, how they are drawn, what
+         colour they take, what persists between frames, and what the optics do. -->
+    <div id="gradeAnchor" hidden></div>
   </div><!-- #panelBody -->
   </div><!-- #panel -->
 

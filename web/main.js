@@ -1767,19 +1767,10 @@ const cropReach = (maxDepth = 9.5) => {
 // belong to. A group's design argument belongs beside the group, and the group is
 // now this entry.
 //
-// `lookgroup` is the class the CSS hides on the shooting surface until `extended
-// settings` is pressed, and it also decides where the group lands: everything
-// without it goes above that button, everything with it below. That is one property
+// `lookgroup` decides where the group lands: everything without it goes before
+// `#sensorGroup`, everything with it after `#gradeAnchor`. That is one property
 // rather than two, because it is one question - is this group part of the grade, or
-// is it something you need while shooting - and the two Reading groups answer it the
-// way the five mode buttons they replaced did. Which reading you are shooting
-// against is the whole reason the preset library is reachable from the recorder at
-// all, so those two stay on both surfaces.
-//
-// Which means the order below is read within each of those two runs rather than
-// straight down the panel: `Reading · detail` sits beside the two groups it belongs
-// with here and renders first among the grade's, because it is a look group and they
-// are not.
+// is it something you need while shooting.
 //
 // `collapses` is the second such property, and it is declared here for the same reason
 // `lookgroup` is: a group added next year answers the question by existing rather than
@@ -2760,20 +2751,12 @@ function panelRow(name, spec) {
   return { input, node: row };
 }
 
-// Where a generated group lands: the grade below the extended-settings button, and
+// Where a generated group lands: the grade at the end of the panel body, and
 // everything a shooting surface needs above it. Asserted rather than assumed because
 // `insertBefore` with a missing anchor appends instead of throwing, so a renamed
 // anchor would quietly move every generated group to the bottom of the panel.
-//
-// The lookgroup anchor was `#navRow` until the nav was pinned into `#panelHead`, and
-// that move took it out of the scrolling column entirely - a group inserted before it
-// now lands in the head, above the status line, which is a placement no assertion here
-// would have objected to because the anchor still existed. `#extendedRow` is the last
-// static node in `#panelBody` and is the boundary the sentence above always meant, so
-// the grade is stated against it rather than appended to the column: an append says
-// only "at the end", and would go on saying it if a static group were ever added below.
 function panelAnchor(group) {
-  const id = group.lookgroup ? 'extendedRow' : 'sensorGroup';
+  const id = group.lookgroup ? 'gradeAnchor' : 'sensorGroup';
   const anchor = document.getElementById(id);
   if (!anchor) throw new Error(`the panel group ${group.key} has no anchor: no #${id} in the markup`);
   return anchor;
@@ -2781,7 +2764,7 @@ function panelAnchor(group) {
 
 // Placing after a fixed anchor reverses what placing before it preserves: each `before`
 // against `#sensorGroup` lands under the last one, while each `after` against
-// `#extendedRow` would land above it and build the grade upside down. So the grade
+// `#gradeAnchor` would land above it and build the grade upside down. So the grade
 // walks a cursor - the first group goes after the anchor, every later one after its
 // predecessor - and `PANEL_GROUPS` order survives down the panel either way.
 const panelTail = new Map();
@@ -2843,10 +2826,10 @@ function panelHead(group) {
 let panelRowsEmitted = 0;
 for (const group of PANEL_GROUPS) {
   const groupNode = panelNode('div', group.lookgroup ? 'group lookgroup' : 'group');
-  // A data attribute and not an id, because the six hand-written groups in the markup
+  // A data attribute and not an id, because the hand-written groups in the markup
   // are already `#cameraGroup`, `#sensorGroup`, `#monitorGroup`, `#programOutGroup`,
-  // `#recordGroup` and `#recLookGroup`, and a generated group minting ids in the same
-  // shape is one registry key away from colliding with one of them silently.
+  // and `#recordGroup`, and a generated group minting ids in the same shape is one
+  // registry key away from colliding with one of them silently.
   groupNode.dataset.group = group.key;
   groupNode.dataset.panelTab = group.tab;
   // Named apart from the keyframe button the row loop below declares, which is a
@@ -2957,10 +2940,11 @@ for (const group of PANEL_GROUPS) {
 // document: the registry and proof sweeps still see the complete surface.
 const panelTabsEl = document.getElementById('panelTabs');
 const panelTabButtons = [...panelTabsEl.querySelectorAll('.paneltab')];
-let activePanelTab = 'look';
+// Default to 'record' on the record surface, 'look' on the editor.
+let activePanelTab = EDITING ? 'look' : 'record';
 
 function setPanelTab(tab) {
-  if (!['camera', 'framing', 'look', 'region'].includes(tab)) return false;
+  if (!['record', 'camera', 'framing', 'look', 'region'].includes(tab)) return false;
   activePanelTab = tab;
   for (const button of panelTabButtons) {
     button.setAttribute('aria-selected', String(button.dataset.panelTab === tab));
@@ -2980,6 +2964,9 @@ function showInspector() {
   panelTabsEl.hidden = false;
   setPanelTab(activePanelTab);
 }
+
+// On the record surface, initialize the tabs immediately since they're always visible.
+if (!EDITING) setPanelTab(activePanelTab);
 
 params.reset();
 
@@ -6799,11 +6786,7 @@ const ui = {
   recMark: document.getElementById('recMark'),
   recNote: document.getElementById('recNote'),
   recSpace: document.getElementById('recSpace'),
-  recPreset: document.getElementById('recPreset'),
-  recPresetApply: document.getElementById('recPresetApply'),
-  recLookNote: document.getElementById('recLookNote'),
   recRange: document.getElementById('recRange'),
-  extended: document.getElementById('extended'),
 };
 
 const exportRatioButtons = buildExportRatios(ui.exportRatios, ui.exportSize);
@@ -9924,7 +9907,6 @@ async function deletePreset(picker, name) {
 }
 
 definePicker(ui.preset, document.getElementById('tPresetList'), { adds: 'tPresetAdd', autoApply: true });
-definePicker(ui.recPreset, document.getElementById('recPresetList'), { note: ui.recLookNote });
 
 // A press outside any open list shuts it, which is what makes this behave like the menu it
 // replaces rather than like a box that has to be dismissed by its own control.
@@ -11661,7 +11643,7 @@ function paintPreviewRange(minDepth, maxDepth) {
 // sits on the handlers rather than inside `applyStoredPreset`, because that function and
 // `restoreProject` beside it are exposed raw for the proof tools to drive: a guard
 // pushed down there would start silently dropping calls that are not gestures at all.
-const PRESET_WRITERS = [ui.presetSave, ui.presetExport, ui.presetImport, ui.recPresetApply];
+const PRESET_WRITERS = [ui.presetSave, ui.presetExport, ui.presetImport];
 
 // Whether one of those gestures is running. It is a flag on the program rather than a
 // state of a control, because what has to be true is that there is one gesture, not that
@@ -11738,22 +11720,6 @@ async function whileWriting(run) {
     if (stranded && PRESET_WRITERS.includes(held) && held.isConnected) held.focus();
   }
 }
-
-ui.recPresetApply.addEventListener('click', () => withPresetGesture(ui.recLookNote, () => whileWriting(async () => {
-  const name = ui.recPreset.value;
-  if (!name) return;
-  try {
-    const applied = applyStoredPreset(await (await fetch(`/presets/${encodeURIComponent(name)}`)).json());
-    ui.recLookNote.textContent = presetAppliedNote(name, applied);
-  } catch (err) {
-    // The recorder has no timeline bar, so `showTimelineError` would write into a
-    // strip nobody on this surface can see. Kept at the call site rather than folded
-    // into the guard for that reason: one shared `catch` would move this sentence to a
-    // surface the person pressing the button cannot see.
-    ui.recLookNote.textContent = `could not apply ${name}: ${err.message}`;
-    console.error(err);
-  }
-})));
 
 /** Pick a subset, then do one thing with it, inside the one gesture the program allows. */
 async function withPresetSubset(ask, run) {
@@ -12287,7 +12253,7 @@ addEventListener('keydown', (event) => {
   // command keys below are the ones a text field has a claim on.
   if (isTyping(event.target) || !(event.metaKey || event.ctrlKey)) return;
   const key = event.key.toLowerCase();
-  if (key === 'o') {
+  if (key === 'o' && EDITING) {
     event.preventDefault();
     location.assign('/gallery');
   } else if (key === 's' && event.shiftKey && EDITING) {
@@ -12465,16 +12431,6 @@ if (ui.recGo) {
 // but a big screen and a quiet moment before a take is a good place to find out where
 // a look wants to go, and refusing that would be the panel deciding how people work.
 //
-// Hidden with a class rather than by leaving the controls out of the document,
-// because the registry stamps every slider's bounds at boot and throws if any look
-// parameter has no control: a surface that built a subset would either need its own
-// second registry pass or would silently stop being checkable against the first.
-ui.extended.addEventListener('click', () => {
-  const on = document.body.classList.toggle('extended');
-  ui.extended.setAttribute('aria-pressed', String(on));
-  ui.extended.textContent = on ? 'fewer settings' : 'extended settings';
-});
-
 // Camera view toggle handler used by both panel and timeline controls
 function toggleCameraView() {
   const program = viewCamera === freeCamera;
@@ -12757,11 +12713,9 @@ if (EDITING && !REQUESTED_TAKE) {
   // look accidental when it is a requirement.
   connect();
   renderer.setAnimationLoop(liveLoop);
-  // The preset library on the surface the design wants it on. Failing softly because
-  // a node may be shooting with nothing connected to it and an empty selector is a
-  // worse shoot than a missing one, but not silently: the note says which it was.
+  // The preset library, refreshed at startup.
   refreshPresets().catch((err) => {
-    ui.recLookNote.textContent = `preset library unavailable: ${err.message}`;
+    console.error('preset library unavailable:', err.message);
   });
   // Until the hello lands there is nothing truthful to say about the kept range, and
   // the label still has to say the part that does not depend on the sensor.
