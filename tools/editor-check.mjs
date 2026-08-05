@@ -417,8 +417,7 @@ const MUTATIONS = {
   // picker ignoring the boxes writes the *whole* look, so the sparse document those rows
   // exist to reason about no longer exists, the import stamps the clip, the apply note
   // names a revision, and the save moves the stamp it should have left alone. None is a
-  // second defect. `detail-ignores-the-reading` below has the identical shape and has
-  // always said so; this said "the two rows that read the exported document's keys" and
+  // second defect. This said "the two rows that read the exported document's keys" and
   // undercounted, which under this suite's rule that the next agent re-derives the fired
   // set from scratch reads as a bug to chase. Measured, settled machine, 278 assertions:
   // `caught, as required (5 assertions fired)`.
@@ -498,8 +497,8 @@ const MUTATIONS = {
   // these three are about the predicate rather than about reloading.
   //
   // It reddened one more for one round, and that one was a leak rather than a finding:
-  // 15f-bis left `optical` pinned open on this build, and 15g four rows later asks every
-  // collapsible group but `detail` to be shut. The block puts the pin back now, so this
+  // 15f-bis left `post` pinned open on this build, and 15g four rows later asks every
+  // collapsible group but `style` to be shut. The block puts the pin back now, so this
   // control fails rows about the predicate and none about a neighbour's fixture.
   //
   // The rows that stay green are the ones about the toggle itself - it still presses, and
@@ -542,36 +541,6 @@ const MUTATIONS = {
     ]],
   },
 
-  // The third control, and it takes the widening off the one group that has one.
-  // `Reading · detail` keeps its own parameters and loses the readings, which is the
-  // state the feature has with no `reveals` at all - and because its seven parameters
-  // sit at the shader literals they replaced, that means the group stays shut whichever
-  // reading is live. A build with this mutation is not obviously broken from the panel:
-  // three groups open and close correctly, this one opens correctly when you tune
-  // something inside it, and the only thing missing is the case its closure exists for.
-  //
-  // It is the *narrowing* direction on purpose. The opposite defect - a closure that
-  // replaced the default rule instead of widening it - is caught by 15c-bis rather than
-  // by a mutation, because that row is the one place the two spellings differ and it
-  // fails on any build that drops the self term.
-  //
-  // Must redden: the row that moves a reading and expects `detail` to open, which is the
-  // row carrying the claim. Two more go with it and they are the fixture rather than the
-  // claim - a `detail` that cannot be made live by a reading is a `detail` the store-rule
-  // rows below it have nothing to establish their state on, so they measure a group in
-  // the wrong condition and say so. It used to redden a fourth in 15i, which asserted
-  // about a `detail` that a reading had opened; that block pins `detail` open while it is
-  // *quiet* now, which is a disagreement whether or not the closure reads the readings, so
-  // a narrowing here no longer decides what the reloaded page shows. The rows about the
-  // other three groups stay green throughout, which is what says this control is about
-  // the closure and not about the predicate under it.
-  'detail-ignores-the-reading': {
-    file: 'web/main.js',
-    edits: [[
-      "    reveals: () => revealsItself('detail') || revealsItself('source') || revealsItself('treatment'),",
-      "    reveals: () => revealsItself('detail'),",
-    ]],
-  },
 
   // The store rule's own control, and the reason it exists is that the section did not
   // have one and could not have noticed. 15f pressed a toggle, pressed it back, and
@@ -5797,9 +5766,9 @@ try {
     // task too early: `close()` clears that flag synchronously and queues its `close`
     // event, and the promise the handler is awaiting settles from that event. So a
     // driver can be past the wait, through a Node-side fetch, and still pressing into a
-    // gesture that has not finished. It cost a whole run to find - `detail-ignores-the-
-    // reading` died at 238 of 274 with zero failed assertions, which is a crash reading
-    // as a catch. The page publishes the guard's own state and this waits on that, which
+    // gesture that has not finished. It cost a whole run to find - a mutation run died
+    // at 238 of 274 with zero failed assertions, which is a crash reading as a catch.
+    // The page publishes the guard's own state and this waits on that, which
     // is the only observable that means what the sentence means.
     //
     // **And the guard covers every preset control now, not only the two that share the
@@ -7313,7 +7282,7 @@ try {
     check(Boolean(framing) && !framing.collapsible && framing.onScreen === framing.inDom,
       'framing is not collapsible, because the crop button under it is one section 8 has to click',
       framing ? `collapsible: ${framing.collapsible}, ${framing.onScreen} of ${framing.inDom} rows on screen` : 'no framing group');
-    await showGroup('optical');
+    await showGroup('post');
 
     // ---- 15b. a document nobody has touched renders them shut
     const fresh = (await groups()).filter((g) => g.collapsible);
@@ -7338,31 +7307,22 @@ try {
     // mechanism it relies on is working.
     await page.evaluate("__kinect.params.set('bloom', 1.5)");
     await settle();
-    const opened = await groupOf('optical');
+    const opened = await groupOf('post');
     check(!opened.shut && opened.expanded === 'true' && opened.onScreen === opened.inDom,
       'moving one parameter off its default opens the group that holds it',
-      `optical: shut=${opened.shut}, ${opened.onScreen} of ${opened.inDom} rows on screen`);
+      `post: shut=${opened.shut}, ${opened.onScreen} of ${opened.inDom} rows on screen`);
     // And its neighbours did not move, because a build that opened everything the
     // moment anything changed would satisfy the row above while saying nothing.
-    const neighbours = (await groups()).filter((g) => g.collapsible && g.key !== 'optical');
+    const neighbours = (await groups()).filter((g) => g.collapsible && g.key !== 'post');
     check(neighbours.every((g) => g.shut),
       'and only that group, so the rule is about the parameter rather than about the write',
       neighbours.map((g) => `${g.key}:${g.shut ? 'shut' : 'OPEN'}`).join(' '));
 
-    // ---- 15c-bis. a `reveals` closure widens the default rule and does not replace it
+    // ---- 15c-bis. a style tuning parameter opens the style group
     //
     // The row that holds the invariant the whole feature rests on: which groups are open
     // is the look's diff against its defaults, so what a look is made of is a thing you
-    // read off the panel. `Reading · detail` is the one group with a rule of its own, and
-    // a closure written to *replace* the default rather than widen it would break that
-    // invariant on this group alone - a preset naming `contourBands` and no reading would
-    // leave a live value behind a closed heading with the panel's own rule agreeing that
-    // there was nothing to show.
-    //
-    // It is a row rather than a comment because nothing else here can see it. Every other
-    // group derives from its own parameters by construction, so this is the only place
-    // the two spellings of the rule differ, and the difference is invisible until a
-    // parameter in this group moves with the readings left alone.
+    // read off the panel. Every group derives from its own parameters by construction.
     await freshLook();
     await settle();
     const rimDefault = await defaultOf('ghostRim');
@@ -7378,12 +7338,12 @@ try {
     const readingsQuiet = await page.evaluate(`__kinect.readings().every((n) =>
       __kinect.params.get(n) === __kinect.params.normalise(n, __kinect.params.spec(n).default))`);
     check(rimNow !== rimDefault && readingsQuiet,
-      'one detail parameter moved with every reading left at its default, or the row below tests nothing',
+      'one style parameter moved with every reading left at its default, or the row below tests nothing',
       `ghostRim reads ${rimNow} against a default of ${rimDefault}, readings untouched: ${readingsQuiet}`);
-    const tuned = await groupOf('detail');
+    const tuned = await groupOf('style');
     check(!tuned.shut && tuned.onScreen === tuned.inDom,
-      'a group with a rule of its own still opens for its own parameters, so the open set is the whole diff',
-      `detail: shut=${tuned.shut}, ${tuned.onScreen} of ${tuned.inDom} rows on screen`);
+      'moving a style parameter opens the style group, so the open set is the whole diff',
+      `style: shut=${tuned.shut}, ${tuned.onScreen} of ${tuned.inDom} rows on screen`);
 
     // ---- 15d. a keyframe counts even where the value does not
     //
@@ -7406,10 +7366,10 @@ try {
     check(parked === grainDefault,
       'the keyed parameter really is sitting on its default at the parked frame, or the row below tests nothing',
       `grain reads ${parked} against a default of ${grainDefault}`);
-    const keyed = await groupOf('optical');
+    const keyed = await groupOf('post');
     check(!keyed.shut && keyed.onScreen === keyed.inDom,
       'a keyframe opens the group even where the value it holds is the default',
-      `optical: shut=${keyed.shut}, ${keyed.onScreen} of ${keyed.inDom} rows on screen`);
+      `post: shut=${keyed.shut}, ${keyed.onScreen} of ${keyed.inDom} rows on screen`);
 
     // ---- 15e. a shut group that is in use says so
     //
@@ -7425,15 +7385,15 @@ try {
       await settle();
       return groupOf(key);
     };
-    const marked = await shut('optical');
+    const marked = await shut('post');
     check(marked.shut && marked.markVisible && marked.mark === '1',
       'a shut group carrying a value says how many of its parameters are set',
-      `optical: shut=${marked.shut}, mark visible=${marked.markVisible}, reads "${marked.mark}"`);
+      `post: shut=${marked.shut}, mark visible=${marked.markVisible}, reads "${marked.mark}"`);
     // Two parameters, so the mark is a count rather than a light that came on. A mark
     // reading "1" whatever is underneath it would pass the row above on every build.
     await page.evaluate("__kinect.params.set('grain', 0.4)");
     await settle();
-    const marked2 = await groupOf('optical');
+    const marked2 = await groupOf('post');
     check(marked2.mark === '2',
       'and it is a count of them rather than a lamp, so the header says how much is hidden',
       `two parameters set, the mark reads "${marked2.mark}"`);
@@ -7454,14 +7414,14 @@ try {
     // is the other term, and `override-prunes-only-on-toggle` is what makes the pair
     // falsifiable rather than asserted.
     const disagreeing = JSON.parse((await stored()) ?? '{}');
-    check(disagreeing.optical === false,
+    check(disagreeing.post === false,
       'collapsing a group that derives open writes the disagreement down',
       JSON.stringify(disagreeing));
-    await page.click('[data-group-toggle=optical]');
+    await page.click('[data-group-toggle=post]');
     await settle();
     const agreeing = JSON.parse((await stored()) ?? '{}');
-    const reopened = await groupOf('optical');
-    check(!reopened.shut && !Object.hasOwn(agreeing, 'optical'),
+    const reopened = await groupOf('post');
+    check(!reopened.shut && !Object.hasOwn(agreeing, 'post'),
       'and opening it again removes the entry rather than storing the agreement',
       `open=${!reopened.shut}, stored ${JSON.stringify(agreeing)}`);
 
@@ -7487,24 +7447,24 @@ try {
     // state by pressing rather than by clearing the store behind the page's back.
     await freshLook();
     await settle();
-    const quiet = await groupOf('optical');
-    if (quiet.shut) await page.click('[data-group-toggle=optical]');
+    const quiet = await groupOf('post');
+    if (quiet.shut) await page.click('[data-group-toggle=post]');
     await settle();
-    const pinned = await groupOf('optical');
+    const pinned = await groupOf('post');
     const pinnedStore = JSON.parse((await stored()) ?? '{}');
-    check(!pinned.shut && pinned.onScreen === pinned.inDom && pinnedStore.optical === true,
+    check(!pinned.shut && pinned.onScreen === pinned.inDom && pinnedStore.post === true,
       'pinning a quiet group open is a disagreement and is written down, or the two rows below test nothing',
       `open=${!pinned.shut}, ${pinned.onScreen} of ${pinned.inDom} rows on screen, stored ${JSON.stringify(pinnedStore)}`);
     await page.evaluate("__kinect.params.set('bloom', 1.5)");
     await settle();
-    const caughtUp = await groupOf('optical');
+    const caughtUp = await groupOf('post');
     const caughtStore = JSON.parse((await stored()) ?? '{}');
-    check(!caughtUp.shut && !Object.hasOwn(caughtStore, 'optical'),
+    check(!caughtUp.shut && !Object.hasOwn(caughtStore, 'post'),
       'and the document catching up with it takes the entry away, with nothing on screen changing',
       `open=${!caughtUp.shut}, stored ${JSON.stringify(caughtStore)}`);
     await freshLook();
     await settle();
-    const decayed = await groupOf('optical');
+    const decayed = await groupOf('post');
     check(decayed.shut && decayed.onScreen === 0,
       'so taking the value away again shuts it, rather than leaving it pinned open with nothing in it',
       `shut=${decayed.shut}, ${decayed.onScreen} of ${decayed.inDom} rows on screen, stored ${await stored()}`);
@@ -7512,18 +7472,13 @@ try {
     // that prunes, the group is already shut and this presses nothing; on
     // `override-prunes-only-on-toggle` it is still pinned, and a pin that outlived this
     // block is a group the rows below would read as in use - 15g asks every collapsible
-    // group but `detail` to be shut. Without this the control reddens its own two rows
+    // group but `style` to be shut. Without this the control reddens its own two rows
     // *and* a neighbour's fixture, and a mutation that fails a row it has nothing to say
     // about cannot tell you which question it was answering.
-    if (!(await groupOf('optical')).shut) await page.click('[data-group-toggle=optical]');
+    if (!(await groupOf('post')).shut) await page.click('[data-group-toggle=post]');
     await settle();
 
-    // ---- 15g. detail is governed by the readings as well as by its own parameters
-    //
-    // The other half of its widened rule, and 15c-bis above is the first. Its seven
-    // parameters sit at the shader literals they replaced, so on the default rule alone
-    // the group would stay shut whichever reading is live - and
-    // `detail-ignores-the-reading` is exactly that build.
+    // ---- 15g. moving a treatment opens the style group
     //
     // `readGhost` rather than `readRgb`, and the difference is the whole trap: `readRgb`
     // defaults to 1, so "open when a reading is non-zero" fires on a page nobody has
@@ -7532,48 +7487,43 @@ try {
     // No `localStorage.removeItem` here, deliberately. Clearing the store behind the
     // page's back desynchronises it from the overrides the page is holding in memory, so
     // the next write puts the leftovers back and the rows below would be reading a state
-    // this section did not establish. Nothing has pressed `detail` yet, so it has no
+    // this section did not establish. Nothing has pressed `style` yet, so it has no
     // override to clear.
     await freshLook();
     await settle();
-    const detailQuiet = await groupOf('detail');
+    const styleQuiet = await groupOf('style');
     await page.evaluate("__kinect.params.set('readGhost', 0.7)");
     await settle();
-    const detailLive = await groupOf('detail');
-    check(detailQuiet.shut && !detailLive.shut && detailLive.onScreen === detailLive.inDom,
-      'moving a reading opens Reading · detail, with every one of its own parameters still at its default',
-      `shut with the readings at their defaults: ${detailQuiet.shut}, after readGhost moved: ${detailLive.shut}`);
-    // The other direction, and it is what makes the row above about `detail`'s own
-    // rule rather than about any parameter write opening any group: the reading that
-    // opened `detail` belongs to `treatment`, which is not collapsible, and the three
-    // groups that are collapsible have to be unmoved by it.
-    const untouched = (await groups()).filter((g) => g.collapsible && g.key !== 'detail');
+    const styleLive = await groupOf('style');
+    check(styleQuiet.shut && !styleLive.shut && styleLive.onScreen === styleLive.inDom,
+      'moving a treatment (readGhost) opens the style group',
+      `shut with the readings at their defaults: ${styleQuiet.shut}, after readGhost moved: ${styleLive.shut}`);
+    // The other direction: the parameter that opened `style` belongs to `style`, so
+    // the other collapsible groups should be unmoved by it.
+    const untouched = (await groups()).filter((g) => g.collapsible && g.key !== 'style');
     check(untouched.every((g) => g.shut),
       'and leaves the three groups the reading has nothing to do with shut',
       untouched.map((g) => `${g.key}:${g.shut ? 'shut' : 'OPEN'}`).join(' '));
 
-    // ---- 15h. shutting a live detail group sticks
+    // ---- 15h. shutting a live style group sticks
     //
-    // The row that separates the store rule from the obvious spelling of it. Comparing
-    // what a person asked for against `revealsItself('detail')` - the group's own
-    // parameters - finds the two already agreeing on false, deletes the override and
-    // re-derives the group open, so the collapse would not survive the repaint it
-    // caused. Compared against what the group *derives*, which for this one is a
-    // different question, the disagreement is real and gets written down.
-    await page.click('[data-group-toggle=detail]');
+    // The row that separates the store rule from the obvious spelling of it. The group
+    // was opened by a parameter write, so shutting it creates a disagreement between
+    // what the user asked for (shut) and what the derivation says (open). That
+    // disagreement is written down and survives.
+    await page.click('[data-group-toggle=style]');
     await settle();
-    const detailShut = await groupOf('detail');
-    const detailStored = JSON.parse((await stored()) ?? '{}');
-    check(detailShut.shut && detailStored.detail === false,
-      'shutting a group whose rule reads another group stays shut and is written down',
-      `shut=${detailShut.shut}, stored ${JSON.stringify(detailStored)}`);
-    // And it is marked, because it is still in use - the reading that opened it has not
-    // moved. This is the mark answering a wider question than the open rule does: none
-    // of `detail`'s own parameters is off its default, so the header carries the dot
-    // with no number rather than a misleading zero.
-    check(detailShut.markVisible && detailShut.mark === '',
+    const styleShut = await groupOf('style');
+    const styleStored = JSON.parse((await stored()) ?? '{}');
+    check(styleShut.shut && styleStored.style === false,
+      'shutting a group while it is in use stays shut and is written down',
+      `shut=${styleShut.shut}, stored ${JSON.stringify(styleStored)}`);
+    // And it is marked, because it is still in use - the treatment that opened it has
+    // not moved. The header carries the dot with a count of how many parameters are
+    // off their defaults.
+    check(styleShut.markVisible && styleShut.mark === '',
       'and it is marked as in use with nothing of its own to count',
-      `mark visible=${detailShut.markVisible}, reads "${detailShut.mark}"`);
+      `mark visible=${styleShut.markVisible}, reads "${styleShut.mark}"`);
 
     // ---- 15i. the override outlives the page that wrote it
     //
@@ -7602,11 +7552,11 @@ try {
     await freshLook();
     await page.evaluate("__kinect.params.set('bloom', 1.5)");
     await settle();
-    if (!(await groupOf('optical')).shut) await page.click('[data-group-toggle=optical]');
-    if ((await groupOf('detail')).shut) await page.click('[data-group-toggle=detail]');
+    if (!(await groupOf('post')).shut) await page.click('[data-group-toggle=post]');
+    if ((await groupOf('style')).shut) await page.click('[data-group-toggle=style]');
     await settle();
     const beforeReload = JSON.parse((await stored()) ?? '{}');
-    check(beforeReload.optical === false && beforeReload.detail === true,
+    check(beforeReload.post === false && beforeReload.style === true,
       'a group shut while it is in use and a quiet one pinned open are two disagreements to survive, or the rows below test nothing',
       `stored ${JSON.stringify(beforeReload)}`);
     await page.reload({ waitUntil: 'load' });
@@ -7619,18 +7569,18 @@ try {
     // pruned map back. The entry is gone from `localStorage` at this line on that build
     // and present on this one, with nothing about the panel involved either way.
     const carriedStore = JSON.parse((await stored()) ?? '{}');
-    check(carriedStore.optical === false && carriedStore.detail === true,
+    check(carriedStore.post === false && carriedStore.style === true,
       'the store the page booted from still holds both, so nothing pruned them against a document that had not loaded yet',
       `stored ${JSON.stringify(carriedStore)}`);
     // The pin, read off the page: it is open on a document holding nothing that would
     // open it, so it is open *because of the store*. A group whose parameters had come
     // back off their defaults would derive open on its own and pass on a build that had
     // forgotten the entry entirely.
-    const pinCarried = await showGroup('detail');
+    const pinCarried = await showGroup('style');
     const quietAfter = await page.evaluate(`(() => {
       const k = globalThis.__kinect;
       const known = new Set(k.params.names());
-      const group = [...document.querySelectorAll('#panel .group[data-group]')].find((g) => g.dataset.group === 'detail');
+      const group = [...document.querySelectorAll('#panel .group[data-group]')].find((g) => g.dataset.group === 'style');
       const names = [...group.querySelectorAll('input')].map((i) => i.id).filter((n) => known.has(n));
       return { names: names.length, quiet: names.every((n) => k.params.get(n) === k.params.normalise(n, k.params.spec(n).default)) };
     })()`);
@@ -7648,7 +7598,7 @@ try {
     // the entry pruned at boot the group opens here.
     await page.evaluate("__kinect.params.set('bloom', 1.5)");
     await settle();
-    const collapseCarried = await groupOf('optical');
+    const collapseCarried = await groupOf('post');
     check(collapseCarried.shut && collapseCarried.onScreen === 0
       && collapseCarried.markVisible && collapseCarried.mark === '1',
       'and the collapse survives it too, so a group shut while it was in use is still shut when the value comes back',

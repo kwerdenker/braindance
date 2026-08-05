@@ -176,7 +176,6 @@ node tools/editor-check.mjs --mutate picker-ignores-the-boxes --no-render # ... 
 node tools/editor-check.mjs --mutate readings-tick-alone --no-render   # ... and the five weights that move as one
 node tools/editor-check.mjs --mutate group-never-reveals --no-render      # ... a panel group is open because the clip says so
 node tools/editor-check.mjs --mutate reveal-ignores-tracks --no-render    # ... and a keyframe counts where the value does not
-node tools/editor-check.mjs --mutate detail-ignores-the-reading --no-render # ... the group that answers for another group's values
 node tools/editor-check.mjs --mutate override-prunes-only-on-toggle --no-render # ... and the override the document, not the toggle, has caught up with
 node tools/editor-check.mjs --mutate panel-row-skips-parameter --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate nav-at-the-foot --no-render       # ... and must FAIL

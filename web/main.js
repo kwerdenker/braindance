@@ -1807,52 +1807,16 @@ const PANEL_GROUPS = [
   // blend of the camera image and the range ramp, and each one keyframes, so a clip
   // can dissolve from one reading into another under the playhead.
   //
-  // Source is what the point is coloured *by* and treatment is what is then made of
-  // it, which is the axis worth seeing on the panel - picking a treatment used to
-  // mean picking its source with it and there was no way to say otherwise.
-  { key: 'source', label: 'Reading · source', tab: 'look', collapses: true },
-  { key: 'treatment', label: 'Reading · treatment', tab: 'look', collapses: true },
-  // What each reading is *made of*, rather than which reading you are in. Every one of
-  // these was a literal in the fragment shader, so a reading was a picture you could
-  // select and not adjust - and because they are ordinary registry parameters they
-  // keyframe, so the band spacing or the rim falloff can move under the playhead.
-  //
-  // Below the extended button rather than beside the two groups above, and the
-  // shooting surface is what decides that: seven more sliders where the recorder wants
-  // record, mark, remaining time and a preview range would push the crop controls off
-  // the bottom of a laptop panel to buy nothing anybody needs before a take. Which
-  // reading you are shooting against is a shooting decision; how wide its bands are is
-  // grading.
-  {
-    key: 'detail',
-    label: 'Reading · detail',
-    tab: 'look',
-    lookgroup: true,
-    collapses: true,
-    // The one group the default rule is not enough for, and it *widens* that rule rather
-    // than replacing it. Every one of these seven sits at the shader literal it replaced,
-    // so a fresh project has them all at their defaults - and choosing a reading writes
-    // `source` and `treatment` and never these, so on the default rule alone the group
-    // would stay shut whichever reading is live. Which reading you are shooting is
-    // exactly when these constants become worth reading, so the readings are a second
-    // way in and not a different door.
-    //
-    // **The `revealsItself('detail')` term is the load-bearing half of the widening.**
-    // Without it this group stops answering the question every other group answers -
-    // which groups are open is the look's diff against its defaults, so "what is this
-    // look made of" is a thing you can read off the panel - and a preset naming
-    // `contourBands` and no reading would leave a live value behind a closed heading
-    // while the panel had room to show it. Keeping the term is what holds that invariant
-    // across all four groups instead of three, and it is what lets the in-use mark be
-    // keyed on this rule alone rather than on a wider condition of its own.
-    //
-    // The obvious phrasing is wrong and is worth naming so nobody writes it back: "open
-    // when a reading is non-zero" fires on a page nobody has touched, because `readRgb`
-    // defaults to 1 and a default reading is the absence of a decision. Comparing
-    // against the defaults is the whole of what keeps a fresh project shut, on this
-    // group exactly as on the other three.
-    reveals: () => revealsItself('detail') || revealsItself('source') || revealsItself('treatment'),
-  },
+  // Colour: what the point is coloured by (the source blend) and the core colour
+  // adjustments. The source weights mix rather than exclude, so `readRgb` at 0.6
+  // against `readDepth` at 0.4 is a 60/40 blend of the camera image and the range
+  // ramp, and each one keyframes.
+  { key: 'colour', label: 'Colour', tab: 'look', collapses: true },
+  // Style: the treatments applied to the colour (ghost, contour, blackwall), the
+  // secondary colour effects (scan, rim, thermal, edges), and the tuning parameters
+  // for each. Everything that stylises the image lives here, and the tuning params
+  // reveal naturally when their parent effect is enabled because they share a group.
+  { key: 'style', label: 'Style', tab: 'look', lookgroup: true, collapses: true },
   // Framing: what you can see, and where you are seeing it from. `sensor view` is
   // navigation and writes nothing - distinct from `look through it` in the camera
   // group, which adopts the program camera whose pose is document state.
@@ -1879,7 +1843,7 @@ const PANEL_GROUPS = [
   // signal is conditioned into, where the points are moved to, how they are drawn,
   // what colour they take, what persists between frames, and what the optics do to
   // the result.
-  { key: 'conditioning', label: 'Depth conditioning', tab: 'look', lookgroup: true, collapses: true },
+  { key: 'signal', label: 'Signal', tab: 'look', lookgroup: true, collapses: true },
   { key: 'displacement', label: 'Displacement', tab: 'region', lookgroup: true, collapses: true },
   // One region in the room, read three ways: it displaces, it scrambles, and it
   // masks. Everything here is metres in the sensor frame, so a look holds at any
@@ -1889,12 +1853,11 @@ const PANEL_GROUPS = [
   // enum could not keyframe and these sliders can.
   { key: 'region', label: 'Region (metres)', tab: 'region', lookgroup: true, collapses: true },
   { key: 'points', label: 'Points', tab: 'look', lookgroup: true, collapses: true },
-  { key: 'colour', label: 'Colour & tone', tab: 'look', lookgroup: true, collapses: true },
   // The three terms that accumulate across frames, together. Fade and wake are the
   // surface memory and trails is the afterimage buffer; they were two groups apart
   // while doing one thing, which is how a look gets tuned twice.
-  { key: 'time', label: 'Time (ms)', tab: 'look', lookgroup: true, collapses: true },
-  { key: 'optical', label: 'Optical', tab: 'look', lookgroup: true, collapses: true },
+  { key: 'motion', label: 'Motion', tab: 'look', lookgroup: true, collapses: true },
+  { key: 'post', label: 'Post', tab: 'look', lookgroup: true, collapses: true },
   // The two parameters that are not part of the clip, in the one group that says so.
   // They are tagged `view` in the registry, they get no keyframe control and no
   // preset carries them - and while they sat inside look groups that read as an
@@ -1972,10 +1935,10 @@ const PARAMS = {
     apply: (v) => { uniforms.cropT.value = v; } },
 
   interpolate: { def: true, kind: 'step', tag: 'look',
-    group: 'conditioning', label: 'interpolate frames',
+    group: 'signal', label: 'interpolate frames',
     apply: (on) => { uniforms.interpolate.value = on ? 1 : 0; } },
   snapDelta: { def: 250, min: 20, max: 1200, step: 10, kind: 'scalar', tag: 'look',
-    group: 'conditioning', label: 'snap mm',
+    group: 'signal', label: 'snap mm',
     apply: (v) => { uniforms.snapDelta.value = v; } },
 
   // Both drive the same memory: fade is the honest cross-fade, wake is how much
@@ -1984,10 +1947,10 @@ const PARAMS = {
   // ghost half of the geometry is left out of the draw range entirely when neither
   // can shed, so a look with no persistence costs nothing to have the option.
   fade: { def: 120, min: 0, max: 1500, step: 10, kind: 'scalar', tag: 'look',
-    group: 'time', label: 'fade',
+    group: 'motion', label: 'fade',
     apply: (v) => { uniforms.fadeTime.value = v / 1000; updateDrawRange(); } },
   wake: { def: 0, min: 0, max: 4000, step: 10, kind: 'scalar', tag: 'look',
-    group: 'time', label: 'wake',
+    group: 'motion', label: 'wake',
     apply: (v) => { uniforms.wakeTime.value = v / 1000; updateDrawRange(); } },
 
   // The turbulence field, in world units throughout: amplitude in metres, scale in
@@ -2090,19 +2053,19 @@ const PARAMS = {
   // between enumerating and listing - and this file has been bitten by the listing
   // version often enough to be worth the one extra field.
   readRgb: { def: 1, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look', reading: true,
-    group: 'source', label: 'colour',
+    group: 'colour', label: 'colour',
     apply: (v) => { uniforms.readRgb.value = v; } },
   readDepth: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look', reading: true,
-    group: 'source', label: 'depth',
+    group: 'colour', label: 'depth',
     apply: (v) => { uniforms.readDepth.value = v; } },
   readGhost: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look', reading: true,
-    group: 'treatment', label: 'ghost',
+    group: 'style', label: 'ghost',
     apply: (v) => { uniforms.readGhost.value = v; } },
   readContour: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look', reading: true,
-    group: 'treatment', label: 'contour',
+    group: 'style', label: 'contour',
     apply: (v) => { uniforms.readContour.value = v; } },
   readBlackwall: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look', reading: true,
-    group: 'treatment', label: 'blackwall',
+    group: 'style', label: 'blackwall',
     apply: (v) => { uniforms.readBlackwall.value = v; } },
 
   // The seven constants each reading was built out of. Every default is exactly the
@@ -2120,23 +2083,23 @@ const PARAMS = {
   // colour reading - so the reachability problem that rule exists to avoid is answered
   // instead by the sweep running with all five readings live at once.
   rgbSaturation: { def: 1, min: 0, max: 2, step: 0.01, kind: 'scalar', tag: 'look',
-    group: 'detail', label: 'saturation',
+    group: 'colour', label: 'saturation',
     apply: (v) => { uniforms.rgbSaturation.value = v; } },
   depthGamma: { def: 1, min: 0.25, max: 4, step: 0.05, kind: 'scalar', tag: 'look',
-    group: 'detail', label: 'gamma',
+    group: 'colour', label: 'gamma',
     apply: (v) => { uniforms.depthGamma.value = v; } },
   ghostRim: { def: 0.7, min: 0.2, max: 3, step: 0.01, kind: 'scalar', tag: 'look',
-    group: 'detail', label: 'ghost rim',
+    group: 'style', label: 'ghost rim',
     apply: (v) => { uniforms.ghostRim.value = v; } },
   ghostFill: { def: 0.35, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
-    group: 'detail', label: 'ghost fill',
+    group: 'style', label: 'ghost fill',
     apply: (v) => { uniforms.ghostFill.value = v; } },
   // Bands per metre of depth, so the spacing is a distance in the room rather than a
   // number of stripes across whatever the clip range happens to be - the same reasoning
   // the turbulence field is in cycles per metre for. Its step is 1 because a fraction of
   // a band per metre is not a thing anybody is grading towards.
   contourBands: { def: 12, min: 1, max: 60, step: 1, kind: 'scalar', tag: 'look',
-    group: 'detail', label: 'bands /m',
+    group: 'style', label: 'bands /m',
     apply: (v) => { uniforms.contourBands.value = v; } },
   // The one parameter here that is not a uniform: it is half the width of the drawn
   // line, and the two band edges are computed from it in double precision on the way
@@ -2144,49 +2107,49 @@ const PARAMS = {
   // than the literal it replaces. The arithmetic is stated once, here, so a check can
   // hold the pair against it rather than against a second copy of the sum.
   contourWidth: { def: 0.08, min: 0.01, max: 0.4, step: 0.01, kind: 'scalar', tag: 'look',
-    group: 'detail', label: 'thickness',
+    group: 'style', label: 'thickness',
     apply: (v) => { uniforms.contourLo.value = 0.5 - v; uniforms.contourHi.value = 0.5 + v; } },
   blackwallSweep: { def: 0.28, min: 0, max: 2, step: 0.01, kind: 'scalar', tag: 'look',
-    group: 'detail', label: 'wall sweep',
+    group: 'style', label: 'wall sweep',
     apply: (v) => { uniforms.blackwallSweep.value = v; } },
 
   scan: { def: 0, min: 0, max: 1.5, step: 0.01, kind: 'scalar', tag: 'look',
-    group: 'colour', label: 'scan',
+    group: 'style', label: 'scan',
     apply: (v) => { uniforms.scanAmount.value = v; } },
   rim: { def: 0.55, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
-    group: 'colour', label: 'rim',
+    group: 'style', label: 'rim',
     apply: (v) => { uniforms.rimAmount.value = v; } },
   // The same argument the readings above were rebuilt on, made here first.
   thermal: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
-    group: 'colour', label: 'thermal',
+    group: 'style', label: 'thermal',
     apply: (v) => { uniforms.thermal.value = v; } },
   edges: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
-    group: 'colour', label: 'edges',
+    group: 'style', label: 'edges',
     apply: (v) => { uniforms.edges.value = v; } },
   // Each post pass costs a full-screen read and write whether or not it changes
   // anything, so a zero value switches its pass off rather than running it as a
   // no-op. The three grade terms share one pass, so they gate it together.
   bloom: { def: 0, min: 0, max: 6, step: 0.05, kind: 'scalar', tag: 'look',
-    group: 'optical', label: 'bloom',
+    group: 'post', label: 'bloom',
     apply: (v) => { bloom.strength = v; bloom.enabled = v > 0; } },
   trails: { def: 0, min: 0, max: 0.97, step: 0.01, kind: 'scalar', tag: 'look',
-    group: 'time', label: 'trails',
+    group: 'motion', label: 'trails',
     apply: (v) => { afterimage.uniforms.damp.value = v; afterimage.enabled = v > 0; } },
   rgbSplit: { def: 0, min: 0, max: 6, step: 0.05, kind: 'scalar', tag: 'look',
-    group: 'optical', label: 'rgb split',
+    group: 'post', label: 'rgb split',
     apply: (v) => { grade.uniforms.rgbSplit.value = v; grade.enabled = gradeNeeded(); } },
   scanlines: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
-    group: 'optical', label: 'scanlines',
+    group: 'post', label: 'scanlines',
     apply: (v) => { grade.uniforms.scanlines.value = v; grade.enabled = gradeNeeded(); } },
   grain: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
-    group: 'optical', label: 'grain',
+    group: 'post', label: 'grain',
     apply: (v) => { grade.uniforms.grain.value = v; grade.enabled = gradeNeeded(); } },
 
   denoise: { def: true, kind: 'step', tag: 'look',
-    group: 'conditioning', label: 'cull speckle',
+    group: 'signal', label: 'cull speckle',
     apply: (on) => { uniforms.denoise.value = on ? 1 : 0; } },
   edgeTol: { def: 120, min: 10, max: 1200, step: 10, kind: 'scalar', tag: 'look',
-    group: 'conditioning', label: 'edge tol',
+    group: 'signal', label: 'edge tol',
     apply: (v) => { uniforms.edgeTol.value = v; } },
   renderScale: { def: 100, min: 40, max: 200, step: 5, kind: 'scalar', tag: 'view',
     group: 'viewer', label: 'render %',
