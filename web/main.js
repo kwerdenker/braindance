@@ -12085,7 +12085,6 @@ shell.surfaceName.textContent = EDITING ? 'Editor' : 'Record';
 for (const control of [shell.saveProject, shell.render, shell.export, shell.lookImport, shell.lookExport]) {
   control.disabled = !EDITING;
 }
-shell.topView.disabled = !EDITING;
 
 function closeApplicationMenus({ restore = false } = {}) {
   for (const menu of shell.menus) {
@@ -12844,6 +12843,12 @@ if (EDITING && !REQUESTED_TAKE) {
   // look accidental when it is a requirement.
   connect();
   renderer.setAnimationLoop(liveLoop);
+  // The top-down and stats overlays, on the recorder as well as the editor. The
+  // comment that used to say "only with the timeline" was written when there was
+  // no timeline on the recorder - now there is a preview, and the same furniture
+  // that helps compose a shot helps frame one.
+  chromeOn = true;
+  placeChrome();
   // The preset library, refreshed at startup.
   refreshPresets().catch((err) => {
     console.error('preset library unavailable:', err.message);
