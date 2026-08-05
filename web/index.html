@@ -1185,6 +1185,13 @@
              writes the summary, and a refused one has to leave the picker showing the
              adopted name rather than the refused one - which is a thing to see without
              opening a modal. -->
+        <!-- Opening a saved edit onto the take already open. File > Open goes to the
+             gallery, which opens a *take* - a different question from putting one of
+             several edits of this take on screen, and the gallery has no answer to it.
+             `loadProjectNamed` is the door both the resume chip and this button use, so
+             the hash refusal on the way in is one behaviour rather than two. -->
+        <label class="tchip">project<select id="tProject"><option value="">&mdash;</option></select>
+          <button id="tProjectOpen" type="button">open</button></label>
         <label class="tchip">deliverable<select id="tDeliverable"><option value="">&mdash;</option></select>
           <button id="tDeliverableNew" type="button">new</button>
           <b id="tDeliverableReadout"></b></label>

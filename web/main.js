@@ -6875,20 +6875,20 @@ const sayExport = (text) => {
 /**
  * The editor's one line of prose, and the only way anything writes it.
  *
- * `#tNote` is a chip in `.tchips`, which scrolls horizontally with its scrollbar
- * hidden so the bar keeps its 51px - so a sentence wider than the strip has nothing
- * to drag, and the fade `.tchips.more` paints says that something is off the right
- * edge without ever saying what. The whole of the editor's error channel wrote into
- * that element and nothing else, which left a long refusal unreadable by any means
- * available to the person it was written for, and a refusal is exactly the message
- * that runs long. `title` is the same sentence somewhere it cannot be cut off, which
- * is the repair `sayExport` above already made for the export note beside it.
+ * `#tNote` is a chip in the application bar's status slot, which ellipsises - so a
+ * sentence wider than the slot is cut off with nothing to drag and no way to ask for
+ * the rest. The whole of the editor's error channel writes into that element and
+ * nothing else, which left a long refusal unreadable by any means available to the
+ * person it was written for, and a refusal is exactly the message that runs long.
+ * `title` is the same sentence somewhere it cannot be cut off, which is the repair
+ * `sayExport` above already made for the export note beside it.
  *
- * **The scroll is why every note comes through here and not only the errors.** A
- * message that has just arrived should be the part of the strip on screen, and the
- * strip is wherever the last one left it. Taken after the text lands, because
- * `scrollWidth` read before the write is the previous message's width and would park
- * the strip at the end of a sentence that is no longer there.
+ * **There is no scroll to do any more, and that is why one came out of here.** The note
+ * was a chip in `.tchips` when this was written, a strip that scrolls with its scrollbar
+ * hidden, so a message that had just arrived had to be scrolled to or it stayed off the
+ * right edge behind a fade. In the bar the slot holds one message at a time and the
+ * ellipsis is where it ends, so the scroll had nothing left to move and `closest`
+ * answered null on every call - a line that reads as behaviour and performs none.
  *
  * A declaration rather than a `const` arrow like its neighbour, and that is about the
  * auto-save fifteen hundred lines above this line: it reports a failed save through
@@ -6899,11 +6899,6 @@ function say(text) {
   if (!ui.note) return;
   ui.note.textContent = text;
   ui.note.title = text;
-  // An empty note is the strip being cleared, and scrolling a cleared strip to its
-  // end moves it for no reason anybody watching could account for.
-  if (!text) return;
-  const chips = ui.note.closest('.tchips');
-  if (chips) chips.scrollLeft = chips.scrollWidth;
 }
 
 const timecode = (sec) => {

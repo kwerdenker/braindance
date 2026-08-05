@@ -6737,29 +6737,41 @@ try {
     await page.click('#tProjectOpen');
     await page.waitForFunction("document.getElementById('tNote').textContent.includes('different footage')",
       null, { timeout: 15000 }).catch(() => {});
+    // **Measured on the note's own box, because the note moved out of the strip.** It
+    // was a chip in `.tchips` when these rows were written - a scroller, which is why
+    // one of them asked whether the strip had scrolled to the arriving message. It is
+    // in the application bar's status slot now, which holds one message and ellipsises,
+    // so the question "did the strip scroll" has no answer on this build rather than a
+    // false one, and the row that asked it is gone with the surface it was about.
+    //
+    // What survives is the claim that actually mattered: a refusal runs longer than the
+    // space it is given, and the whole of it has to stay reachable. `scrollWidth` on the
+    // element against its own `clientWidth` is that measurement wherever the element
+    // lives, and it is the ellipsis rather than a hidden scrollbar doing the cutting now.
     const noteBox = await page.evaluate(`(() => {
       const note = document.getElementById('tNote');
-      const chips = note.closest('.tchips');
       return {
         text: note.textContent,
         title: note.title,
-        overflows: chips.scrollWidth > chips.clientWidth + 1,
-        scrollLeft: chips.scrollLeft,
-        scrollWidth: chips.scrollWidth,
-        clientWidth: chips.clientWidth,
+        overflows: note.scrollWidth > note.clientWidth + 1,
+        scrollWidth: note.scrollWidth,
+        clientWidth: note.clientWidth,
+        clipped: getComputedStyle(note).textOverflow,
       };
     })()`);
     // The row that makes the next one mean something: a message that fitted would be
     // readable whatever the title said.
     check(noteBox.overflows && noteBox.text.length > 120,
-      'the refusal is genuinely wider than the strip it is written into, which is what the title is for',
+      'the refusal is genuinely wider than the space it is written into, which is what the title is for',
       `${noteBox.text.length} characters, ${noteBox.scrollWidth}px of content in ${noteBox.clientWidth}px`);
     check(noteBox.title === noteBox.text && /different footage/.test(noteBox.title),
       'and the whole of it is reachable off the note\'s title, which is the only surface it fits on',
       `title "${noteBox.title.slice(0, 60)}..." against text "${noteBox.text.slice(0, 60)}..."`);
-    check(noteBox.scrollLeft > 0,
-      'and the strip scrolled to the message that just arrived rather than leaving it off the right edge',
-      `scrollLeft ${noteBox.scrollLeft} of ${noteBox.scrollWidth - noteBox.clientWidth} available`);
+    // And that the cutting is the ellipsis rather than the sentence simply running off
+    // the end of the bar, which would take the sensor readout beside it with it.
+    check(noteBox.clipped === 'ellipsis',
+      'and it is cut with an ellipsis rather than allowed to push the rest of the bar off the edge',
+      `text-overflow ${noteBox.clipped}`);
     // The refusal above is this section's own doing and `showTimelineError` logs every
     // note it writes, so the mark moves past it. Left where it was, the page-error row
     // at the foot of the section would be reporting the fixture it was handed.
