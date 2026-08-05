@@ -1916,3 +1916,44 @@ id added next year would simply not be checked, and the row would go on printing
 line about the ones it still knew. Parsing the literal is what makes a shell entry added
 later asked by existing. It carries its own floor for the same reason — an extraction that
 matched nothing would print `all 0 ids` and read as a pass.
+
+## A rule that walks a table outwards cannot see what the table never held
+
+The row above — every id the application shell drives is one `web/index.html` declares —
+went in to close the class, and then failed to catch the very next instance of it, while
+printing a green line the whole time. It was not wrong. It was answering the other
+question.
+
+A fork of this branch had made *stats for nerds* a dialog on the record surface and an
+overlay in the editor, against a tree where the dialog had been deliberately deleted:
+`index.html` says in as many words that the `#stateDialog` "is gone rather than kept beside
+what replaced it". Merging brought back three references to it, including a *top-level*
+`shell.stateDialog.addEventListener`, so both surfaces threw during module evaluation and
+`connect()` — which runs below that wiring — never opened the socket. Git reported no
+conflict, correctly: one side added consumers, the other left the shell table alone, and
+every line was individually fine.
+
+**The shell row stayed green because `stateDialog` was not in the table to be walked.**
+The rule iterates the declared ids and asks the page about each, so a key the table never
+declares is outside its domain by construction. The distinction that matters is between
+the two absences: an id in the table that the markup dropped resolves to `null` and is
+caught at the lookup, while a key the table never mentions is never looked up at all and
+is plain `undefined` — the same `Cannot read properties of undefined` crash, arriving
+through a door the check was not watching. Both directions are now asserted, with
+`--mutate shell-id-renamed` and `--mutate shell-key-undeclared` as their controls.
+
+Two things to carry past this instance:
+
+**When a rule enumerates one side of a correspondence, ask what the other side can hold
+that the enumeration cannot reach.** A table-driven check is only as wide as its table,
+and the failure it cannot see is the one where the table itself is short. That is not a
+gap you find by reading the rule, because the rule is correct; you find it by asking what
+would have to be true for the rule to pass on a broken tree.
+
+**The scan needed comments stripped, and found that out by reddening on its own
+explanation.** The paragraph documenting the rule names `shell.stateDialog` while
+discussing it, and a raw source scan counted that prose as a dereference. A check that
+fires when somebody writes *about* the thing it guards is a false positive, and false
+positives are how a check stops being read. Stripping can only remove text, so its failure
+mode is a miss rather than a phantom — which is why the rule carries a floor that fails
+when the scan matches nothing at all.

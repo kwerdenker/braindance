@@ -3,10 +3,14 @@
 **The shipped program is the design.** There was a long design document and a set of HTML
 studies, and they were deleted when the thing they described was finished and working —
 a drawing of a surface that now exists is a second representation that can only drift out
-of step with the first. `README.md` carries what survived: the architecture, the wire
-format, the four surfaces, the measurements, and the negative results worth not
-re-deriving. The reasoning that used to live in the design doc now lives where it is
-enforced — in the code's comments, which are long on purpose, and in the proof tools.
+of step with the first. `README.md` carries the usage path and nothing else, because a
+README that opened on the architecture was a README nobody read to the part that says how
+to shoot a take. What survived of the design lives in three pages beside it:
+`docs/architecture.md` (the four surfaces, program time, the wire format),
+`docs/reference.md` (the command line, the controls, the readings, presets) and
+`docs/performance.md` (the measurements and the negative results worth not re-deriving).
+The reasoning that used to live in the design doc now lives where it is enforced — in the
+code's comments, which are long on purpose, and in the proof tools.
 
 What has not changed is what to do when reality disagrees with an intention: **report the
 contradiction rather than silently redesigning**. That has happened repeatedly and
@@ -317,6 +321,7 @@ node tools/syntax-check.mjs                          # every JS file this repo s
                                                      #   constants the two languages cannot share agree
 node tools/syntax-check.mjs --mutate spec-drifts     # ... and the .knct decoder specification must FAIL when a constant moves under it
 node tools/syntax-check.mjs --mutate shell-id-renamed # ... and a surface whose shell drives an id the markup stopped declaring
+node tools/syntax-check.mjs --mutate shell-key-undeclared # ... and the other direction, which is the one a merge produces
 node tools/release-gate-check.mjs                    # the .npmrc supply-chain gate is actually armed
 node tools/release-gate-check.mjs --mutate wrong-unit # ... and must FAIL (also: no-gate, absent)
 ```

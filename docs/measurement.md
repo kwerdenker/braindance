@@ -4,8 +4,9 @@ Read this before reporting a measurement. It is the case file behind the short r
 `CLAUDE.md`: how a number gets taken here, which runs get thrown away, and the two pieces
 of hardware whose behaviour reads differently from how it measures.
 
-The seam against its neighbour: **this file is about a number you would report.**
-`docs/instruments.md` is about a check that must fail when the thing under test is broken.
+The seam against its two neighbours: **this file is about a number you would report.**
+`docs/instruments.md` is about a check that must fail when the thing under test is broken,
+and `docs/performance.md` is the numbers already taken, which this file says how to take.
 
 ## Read a health number the measurement itself reports, and throw the run away when it is wrong
 
@@ -132,9 +133,10 @@ unit, entirely by accident, which is not a method.
 ## The Mac's USB topology reads worse than it measures
 
 `ioreg -p IOUSB -w0` shows the sensor as controller -> `USB3.0 Hub` -> `NuiSensor Adaptor` ->
-`Xbox NUI Sensor`, with a gigabit ethernet adapter on that same hub. Against the README's
-"1 hub, own controller" that looks like the degraded topology which measures 12.82fps, and it
-is not - **this rig sustains 30.02fps with 2 subsequence warnings in 1921 frames.** The
+`Xbox NUI Sensor`, with a gigabit ethernet adapter on that same hub. Against
+`docs/performance.md`'s "1 hub, own controller" that looks like the degraded topology which
+measures 12.82fps, and it is not - **this rig sustains 30.02fps with 2 subsequence warnings
+in 1921 frames.** The
 `USB3.0 Hub` is a good high-speed one and the count is not the thing that matters.
 
 Note also that `system_profiler SPUSBDataType` returns *nothing at all* on this machine, so a

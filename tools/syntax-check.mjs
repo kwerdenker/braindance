@@ -2,7 +2,7 @@
 // Parses every JavaScript file this repo ships, and asks the five questions about the
 // tree that need nothing to answer: that every tool is documented, that every cited
 // `docs/` page exists, that the `.knct` decoder specification still agrees with the
-// module it specifies, that the hello the grabber emits is the hello the README
+// module it specifies, that the hello the grabber emits is the hello the wire-format
 // documents, and that every element id the application shell drives is one the page
 // drawing it declares. No server, no browser, no sensor, no dependencies - which is what
 // makes it the one thing CI can run on a fresh clone and mean it.
@@ -69,6 +69,20 @@ const MUTATIONS = {
   'shell-id-renamed': {
     file: 'web/index.html',
     edits: [['id="menuCameraReset"', 'id="menuCameraResetRenamed"']],
+  },
+
+  // The control for the other direction, and it reproduces a merge rather than a typo:
+  // code that reads a shell key the table never declares, which is what arrived when a
+  // fork's `shell.stateDialog` met a table with no `stateDialog` in it. The distinction
+  // the row cares about is that this key is never looked up at all, so it is `undefined`
+  // rather than `null` - and `shell-id-renamed` cannot catch it, because a key absent
+  // from the table is absent from the walk that rule does.
+  'shell-key-undeclared': {
+    file: 'web/main.js',
+    edits: [[
+      "shell.exportClose.addEventListener('click', () => ui.exportDialog.close());",
+      "shell.exportCloseDialog.addEventListener('click', () => ui.exportDialog.close());",
+    ]],
   },
 };
 
@@ -241,7 +255,7 @@ if (!existsSync(DOC)) {
 // green, which is a claim asserted in prose with nothing bringing it about.
 //
 // Enumerated rather than listed: the paths are read out of what actually cites them, so a
-// fourth document added next year is checked by existing and a pointer that outlives its
+// document added next year is checked by existing and a pointer that outlives its
 // target fails here. The control is `mv docs/instruments.md /tmp` and a run.
 //
 // **Every shipped tool, and not every parseable one.** The first version of this block
@@ -343,9 +357,14 @@ if (!existsSync(DOC)) {
   }
 }
 
-// **The hello the grabber emits and the hello the README documents have to be the same
-// set of keys, and the constant saying which generation wrote it has to be the same
-// number in both languages.**
+// **The hello the grabber emits and the hello `docs/architecture.md` documents have to be
+// the same set of keys, and the constant saying which generation wrote it has to be the
+// same number in both languages.**
+//
+// That stanza lived in `README.md` until the README was cut back to the usage path. The
+// anchor is the stanza rather than the file, so the move cost this block a path and
+// nothing else - but the path is the thing that silently passes on nothing if it is
+// wrong, which is why an empty extraction below is a failure and not a pass.
 //
 // The prose block was nine keys against the thirteen actually emitted for long enough
 // that the four it omitted became the argument for this: `startedAt` is the only durable
@@ -362,8 +381,8 @@ if (!existsSync(DOC)) {
 // grabber does not keep, which is the same reader misled by the opposite mistake.
 //
 // **Scoped anchors, and an empty extraction is a failure rather than a pass.** A bare
-// `readme.includes('width')` is true of the word appearing anywhere in a 700-line file,
-// so the README side is cut to the `type 1 hello` stanza and stops at `type 2`, and the
+// `doc.includes('width')` is true of the word appearing anywhere in the page, so the
+// document side is cut to the `type 1 hello` stanza and stops at `type 2`, and the
 // grabber side to the one `snprintf` that builds the hello. Zero keys from either side
 // means the anchor moved and the comparison ran on nothing, which is exactly the shape
 // this tool's own header is about.
@@ -379,17 +398,17 @@ if (!existsSync(DOC)) {
 // that entry belongs to the specification row - so there is no named mutation for this
 // block, and saying so is the point: a reader who saw the flag and assumed it covered
 // every row here would take a green `--mutate spec-drifts` as a control over these
-// assertions, which it is not. Add a key to the grabber literal and not to the README,
+// assertions, which it is not. Add a key to the grabber literal and not to the stanza,
 // then the other way round, then bump the constant in one language, and require a named
 // failure each time.
 {
   const grabberPath = join(ROOT, 'native/grabber.cpp');
-  const readmePath = join(ROOT, 'README.md');
-  if (!existsSync(grabberPath) || !existsSync(readmePath)) {
-    fail('native/grabber.cpp or README.md is missing, so the hello the format claims to have cannot be tested against the one it emits');
+  const formatDocPath = join(ROOT, 'docs/architecture.md');
+  if (!existsSync(grabberPath) || !existsSync(formatDocPath)) {
+    fail('native/grabber.cpp or docs/architecture.md is missing, so the hello the format claims to have cannot be tested against the one it emits');
   } else {
     const grabber = readFileSync(grabberPath, 'utf8');
-    const readme = readFileSync(readmePath, 'utf8');
+    const formatDoc = readFileSync(formatDocPath, 'utf8');
 
     // The literal that builds the hello, from the call to its closing paren. Anchored on
     // the call rather than on the opening brace of the JSON, because the brace is a
@@ -403,15 +422,15 @@ if (!existsSync(DOC)) {
     // The stanza, and only the stanza: from the type 1 line to the type 2 line, then the
     // braced list inside it. Splitting a brace on commas rather than scanning for words
     // keeps the prose around it - "UTF-8 JSON, once, before any frame" - out of the set.
-    const stanzaAt = readme.indexOf('type 1  hello');
-    const stanza = stanzaAt === -1 ? '' : readme.slice(stanzaAt, readme.indexOf('type 2', stanzaAt));
+    const stanzaAt = formatDoc.indexOf('type 1  hello');
+    const stanza = stanzaAt === -1 ? '' : formatDoc.slice(stanzaAt, formatDoc.indexOf('type 2', stanzaAt));
     const braced = stanza.match(/\{([^}]*)\}/);
     const documented = new Set((braced?.[1] ?? '').split(',').map((k) => k.trim()).filter(Boolean));
 
     if (emitted.size === 0) {
       fail('no hello keys found in native/grabber.cpp - the snprintf anchor moved, so this comparison would have passed on nothing');
     } else if (documented.size === 0) {
-      fail("no hello keys found in README.md's type 1 hello stanza - the anchor moved, so this comparison would have passed on nothing");
+      fail("no hello keys found in docs/architecture.md's type 1 hello stanza - the anchor moved, so this comparison would have passed on nothing");
     } else {
       const undocumented = [...emitted].filter((k) => !documented.has(k)).sort();
       const unemitted = [...documented].filter((k) => !emitted.has(k)).sort();
@@ -419,10 +438,10 @@ if (!existsSync(DOC)) {
       // diagnosis: one is a writer that grew a key nobody was told about, the other is a
       // reader promised a key that never arrives.
       if (undocumented.length) {
-        fail(`the grabber's hello emits ${undocumented.join(', ')} and README.md's type 1 hello does not document ${undocumented.length === 1 ? 'it' : 'them'}`);
+        fail(`the grabber's hello emits ${undocumented.join(', ')} and docs/architecture.md's type 1 hello does not document ${undocumented.length === 1 ? 'it' : 'them'}`);
       }
       if (unemitted.length) {
-        fail(`README.md's type 1 hello documents ${unemitted.join(', ')} and the grabber does not emit ${unemitted.length === 1 ? 'it' : 'them'}`);
+        fail(`docs/architecture.md's type 1 hello documents ${unemitted.join(', ')} and the grabber does not emit ${unemitted.length === 1 ? 'it' : 'them'}`);
       }
       if (!undocumented.length && !unemitted.length) {
         console.log(`  hello/  all ${emitted.size} keys emitted are documented, and back`);
@@ -747,7 +766,51 @@ if (!existsSync(DOC)) {
         fail(`the application shell drives #${id}, which ${page} does not declare`
           + ' - the module refuses by name at boot, so this is a surface that will not start');
       }
-      if (gone.length === 0) console.log(`  shell/ all ${ids.length} ids the shell drives are declared by ${page}`);
+
+      // **The other direction, and it is the one that actually shipped.** The rule above
+      // walks the table outwards and asks the page about each id; it is blind by
+      // construction to a `shell.thing` the table never declares, because such a key is
+      // not in the table to be walked. A fork of this branch merged in code reading
+      // `shell.stateDialog` against a table with no `stateDialog` in it - so the lookup
+      // was never made, the property was `undefined`, and a top-level `addEventListener`
+      // on it killed both surfaces at boot. The row above stayed green throughout,
+      // truthfully, about a question that was not the one being failed.
+      //
+      // Git had no conflict to report either: one side added consumers, the other left
+      // the table alone, and every line was individually fine. That is the shape a merge
+      // produces and neither reviewer sees, which is why it belongs to a check rather
+      // than to attention.
+      const keys = new Set([...table.matchAll(/^\s*(\w+):\s*'[^']+',$/gm)].map((m) => m[1]));
+      // `shell.menus` is assigned beside the table rather than declared in it, being a
+      // query with no id to miss, so it is a key this rule knows about without the table
+      // saying so.
+      keys.add('menus');
+      // Comments stripped first, because the prose in this file and in `main.js` names
+      // these keys while discussing them - the paragraph above names the very key this
+      // rule was written for, and scanning raw source reddened the build on its own
+      // explanation. A check that fires when somebody writes *about* a key is a false
+      // positive, and false positives are how a check stops being read.
+      //
+      // Stripping can only ever remove text, so its failure mode is a miss rather than a
+      // phantom - a `//` inside a string on the same line as a dereference would take the
+      // dereference with it. The floor below is what stops that degrading silently into a
+      // row that scans nothing and reports no problems.
+      const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+      const used = new Set([...code.matchAll(/\bshell\.(\w+)/g)].map((m) => m[1]));
+      if (used.size === 0) {
+        fail(`${rel} reads no shell keys at all once comments are stripped, so this rule scanned nothing`);
+      }
+      const undeclared = [...used].filter((k) => !keys.has(k));
+      for (const key of undeclared) {
+        fail(`${rel} reads shell.${key}, which the shell table does not declare`
+          + ' - the lookup is never made, so it is undefined rather than missing, and a top-level'
+          + ' use of it stops the surface booting');
+      }
+
+      if (gone.length === 0 && undeclared.length === 0) {
+        console.log(`  shell/ all ${ids.length} ids the shell drives are declared by ${page},`
+          + ` and all ${used.size} keys read off the shell are declared by the table`);
+      }
     }
   }
 }

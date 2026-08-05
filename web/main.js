@@ -36,7 +36,7 @@ const EDITING = location.pathname === '/edit';
  * **It is a second WebGL context on the same GPU as the operator's, and that is the
  * trade this mode is.** A browser source cannot mirror somebody's pixels; CEF renders
  * its own. What it can do is be told the same camera, which is what mirror mode is,
- * and the cost of the pair is measurable - the rendering-cost table in README puts a
+ * and the cost of the pair is measurable - the rendering-cost table in docs/performance.md puts a
  * full 1080p Blackwall frame at 1.17ms, so two of them at 30fps is a small fraction
  * of the 8.33ms a 120Hz operator has. OBS window capture would give the exact pixels
  * for free and was rejected because it is window-sized and carries whatever chrome
@@ -9520,8 +9520,8 @@ function refusePresetBody(name, body) {
   // look values nor the camera track, so the commit that follows cannot undo it: the
   // pose is simply somewhere else now. `presetFromCurrentLook` writes the look tag and
   // only the look tag, so this is the reading side of a rule the writing side already
-  // keeps, and the note in the README that applying a preset never moves your camera
-  // is only true with it here.
+  // keeps, and the note in `docs/reference.md` that applying a preset never moves your
+  // camera is only true with it here.
   for (const [key, value] of Object.entries(body.values)) {
     const { tag } = params.spec(key);
     if (tag !== 'look') {
@@ -12328,32 +12328,27 @@ shell.obsOpen.addEventListener('click', () => {
 // opening the dialog and nothing writing the dump - two representations of one state,
 // the dead one silently unable to disagree with the live one. Both are gone, which is
 // why this listener only flips a flag and asks for a repaint.
+//
+// **The dialog half of this came back in a merge and is gone again.** A fork of this
+// branch had `#menuState` open a `#stateDialog` on the record surface and toggle the
+// overlay only when editing, and merging it produced code referring to three things that
+// do not exist: the element, which `index.html` says in as many words was deleted rather
+// than left beside what replaced it; `updateStatsDialog`, which is defined nowhere in
+// this tree; and `statsInterval`, which was never declared. None of that is a design
+// disagreement to settle - restoring it would mean writing the feature, not restoring it.
+//
+// It is worth naming what the fragment cost, because the shape recurs. The surviving
+// reference was a *top-level* `shell.stateDialog.addEventListener`, so it threw during
+// module evaluation, and `connect()` runs below here: both surfaces died at boot with the
+// socket unopened, showing "connecting..." over a black viewport while the server went on
+// recording perfectly well with `clients=0`. Git merged it without a conflict, because
+// each side's lines were individually fine.
 shell.state.addEventListener('click', () => {
   closeApplicationMenus();
-  if (EDITING) {
-    // Editor: toggle the chrome overlay
-    statsVisible = !statsVisible;
-    shell.state.setAttribute('aria-checked', String(statsVisible));
-    chromeStale = true;
-    drawChrome();
-  } else {
-    // Record: open the dialog
-    if (shell.stateDialog.open) {
-      shell.stateDialog.close();
-    } else {
-      updateStatsDialog();
-      openDialog(shell.stateDialog);
-      statsInterval = setInterval(updateStatsDialog, 500);
-    }
-  }
-});
-
-shell.stateDialog.addEventListener('close', () => {
-  if (statsInterval) {
-    clearInterval(statsInterval);
-    statsInterval = null;
-  }
-  shell.state.setAttribute('aria-checked', 'false');
+  statsVisible = !statsVisible;
+  shell.state.setAttribute('aria-checked', String(statsVisible));
+  chromeStale = true;
+  drawChrome();
 });
 
 shell.exportClose.addEventListener('click', () => ui.exportDialog.close());
