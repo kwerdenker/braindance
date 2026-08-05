@@ -26,9 +26,10 @@ not a rejection.
 
 **The shipped program is the design.** A long design document and a set of HTML studies used to
 carry it; they were deleted once the thing they described was built, because a drawing of a
-surface that now exists can only drift out of step with it. The README carries the architecture,
-the wire format and the measurements, and the rest of the reasoning lives in the code's comments,
-which are long on purpose.
+surface that now exists can only drift out of step with it. The README carries the usage path,
+`docs/architecture.md` the wire format and the four surfaces, `docs/reference.md` the controls and
+presets, and `docs/performance.md` the measurements. The rest of the reasoning lives in the code's
+comments, which are long on purpose.
 
 If reality contradicts an intention you find there, **report the contradiction rather than quietly
 redesigning around it** — that has happened several times and reporting was the right move every

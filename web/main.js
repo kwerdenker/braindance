@@ -36,7 +36,7 @@ const EDITING = location.pathname === '/edit';
  * **It is a second WebGL context on the same GPU as the operator's, and that is the
  * trade this mode is.** A browser source cannot mirror somebody's pixels; CEF renders
  * its own. What it can do is be told the same camera, which is what mirror mode is,
- * and the cost of the pair is measurable - the rendering-cost table in README puts a
+ * and the cost of the pair is measurable - the rendering-cost table in docs/performance.md puts a
  * full 1080p Blackwall frame at 1.17ms, so two of them at 30fps is a small fraction
  * of the 8.33ms a 120Hz operator has. OBS window capture would give the exact pixels
  * for free and was rejected because it is window-sized and carries whatever chrome
@@ -9169,8 +9169,8 @@ function refusePresetBody(name, body) {
   // look values nor the camera track, so the commit that follows cannot undo it: the
   // pose is simply somewhere else now. `presetFromCurrentLook` writes the look tag and
   // only the look tag, so this is the reading side of a rule the writing side already
-  // keeps, and the note in the README that applying a preset never moves your camera
-  // is only true with it here.
+  // keeps, and the note in `docs/reference.md` that applying a preset never moves your
+  // camera is only true with it here.
   for (const [key, value] of Object.entries(body.values)) {
     const { tag } = params.spec(key);
     if (tag !== 'look') {

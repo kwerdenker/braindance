@@ -164,7 +164,7 @@ try {
   // run that set it.** native/CMakeLists.txt declares it `CACHE PATH` with vendor/prefix as
   // its default, and a default only applies to a cache that does not already hold the key -
   // so anybody who once configured this tree with the documented `-DFREENECT2_ROOT=` override
-  // (the Pi's ~/freenect2 is the one in the README) keeps that path on every later configure
+  // (the Pi's ~/freenect2 is the usual one) keeps that path on every later configure
   // that does not name one. This command would then build the vendored library, install it,
   // verify it, and link the grabber against the other prefix entirely - and the `--help` probe
   // below would still pass, because the rpath points at whichever libdir was found and an

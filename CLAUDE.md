@@ -3,10 +3,14 @@
 **The shipped program is the design.** There was a long design document and a set of HTML
 studies, and they were deleted when the thing they described was finished and working —
 a drawing of a surface that now exists is a second representation that can only drift out
-of step with the first. `README.md` carries what survived: the architecture, the wire
-format, the four surfaces, the measurements, and the negative results worth not
-re-deriving. The reasoning that used to live in the design doc now lives where it is
-enforced — in the code's comments, which are long on purpose, and in the proof tools.
+of step with the first. `README.md` carries the usage path and nothing else, because a
+README that opened on the architecture was a README nobody read to the part that says how
+to shoot a take. What survived of the design lives in three pages beside it:
+`docs/architecture.md` (the four surfaces, program time, the wire format),
+`docs/reference.md` (the command line, the controls, the readings, presets) and
+`docs/performance.md` (the measurements and the negative results worth not re-deriving).
+The reasoning that used to live in the design doc now lives where it is enforced — in the
+code's comments, which are long on purpose, and in the proof tools.
 
 What has not changed is what to do when reality disagrees with an intention: **report the
 contradiction rather than silently redesigning**. That has happened repeatedly and
