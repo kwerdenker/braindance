@@ -4805,6 +4805,8 @@ function connect() {
       if (msg.recording) {
         recordState = msg.recording;
         paintRecord(null);
+        chromeStale = true;
+        drawChrome();
         return;
       }
 
@@ -7911,6 +7913,26 @@ addEventListener('keydown', (e) => {
     history.undo();
     return;
   }
+  // Start or stop recording - the same action the sidebar button takes. The button's
+  // disabled state is the authority on whether the action is available.
+  if ((e.key === 'r' || e.key === 'R') && !EDITING && ui.recGo && !ui.recGo.disabled) {
+    e.preventDefault();
+    ui.recGo.click();
+    return;
+  }
+  // Mark during recording - the same action the sidebar button takes, before the editing
+  // surface claims the key for its own marks. The button's disabled state is the authority
+  // on whether there is a recording to mark.
+  if ((e.key === 'm' || e.key === 'M') && !EDITING && ui.recMark && !ui.recMark.disabled) {
+    e.preventDefault();
+    (async () => {
+      const body = await (await fetch('/record/mark', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      })).json();
+      ui.recNote.textContent = body.error ?? `${body.label} at ${(body.sourceMs / 1000).toFixed(1)}s`;
+    })();
+    return;
+  }
   // Everything below is about a clip, and the recorder has none.
   if (!EDITING || !timeline) return;
   // A modifier other than shift means the key belongs to the browser or the OS.
@@ -10817,15 +10839,18 @@ function drawChrome() {
   const path = pathPoints();
 
   // ── over the picture: the path, its nodes and the shot the program camera has.
-  chromeCtx.lineWidth = 1.4;
-  chromeCtx.strokeStyle = 'rgba(90, 209, 196, 0.85)';
-  strokePolyline(path.map((p) => projectThrough(p, viewCamera, stage)));
-  chromeCtx.strokeStyle = 'rgba(255, 157, 90, 0.9)';
-  chromeCtx.lineWidth = 1;
-  for (const [a, b] of frustumSegments()) {
-    strokePolyline([projectThrough(a, viewCamera, stage), projectThrough(b, viewCamera, stage)]);
+  // Editor only - the recorder has no clip to compose and no path to show.
+  if (EDITING) {
+    chromeCtx.lineWidth = 1.4;
+    chromeCtx.strokeStyle = 'rgba(90, 209, 196, 0.85)';
+    strokePolyline(path.map((p) => projectThrough(p, viewCamera, stage)));
+    chromeCtx.strokeStyle = 'rgba(255, 157, 90, 0.9)';
+    chromeCtx.lineWidth = 1;
+    for (const [a, b] of frustumSegments()) {
+      strokePolyline([projectThrough(a, viewCamera, stage), projectThrough(b, viewCamera, stage)]);
+    }
+    drawNodes((p) => projectThrough(p, viewCamera, stage));
   }
-  drawNodes((p) => projectThrough(p, viewCamera, stage));
 
   // ── the top-down. A camera move is the one thing you cannot judge from inside
   // the camera, so this is where the path is actually edited.
@@ -10981,6 +11006,14 @@ function drawChrome() {
     chromeCtx.fillStyle = '#e8ecf1';
     const cp = viewCamera.position;
     chromeCtx.fillText(`${cp.x.toFixed(1)} ${cp.y.toFixed(1)} ${cp.z.toFixed(1)}`, col2, y);
+  }
+
+  // ── recording indicator: a red outline around the viewport while recording.
+  if (recordState.recording) {
+    const inset = 2;
+    chromeCtx.strokeStyle = 'rgba(220, 38, 38, 0.9)';
+    chromeCtx.lineWidth = 4;
+    chromeCtx.strokeRect(inset, inset, w - inset * 2, h - inset * 2);
   }
 }
 
@@ -12065,7 +12098,6 @@ shell.surfaceName.textContent = EDITING ? 'Editor' : 'Record';
 for (const control of [shell.saveProject, shell.render, shell.export, shell.lookImport, shell.lookExport]) {
   control.disabled = !EDITING;
 }
-shell.topView.disabled = !EDITING;
 
 function closeApplicationMenus({ restore = false } = {}) {
   for (const menu of shell.menus) {
@@ -12835,6 +12867,12 @@ if (EDITING && !REQUESTED_TAKE) {
   // look accidental when it is a requirement.
   connect();
   renderer.setAnimationLoop(liveLoop);
+  // The top-down and stats overlays, on the recorder as well as the editor. The
+  // comment that used to say "only with the timeline" was written when there was
+  // no timeline on the recorder - now there is a preview, and the same furniture
+  // that helps compose a shot helps frame one.
+  chromeOn = true;
+  placeChrome();
   // The preset library, refreshed at startup.
   refreshPresets().catch((err) => {
     console.error('preset library unavailable:', err.message);
@@ -12855,6 +12893,8 @@ if (EDITING && !REQUESTED_TAKE) {
   askRecordState = pollRecordState((state) => {
     recordState = state;
     paintRecord(state.storage);
+    chromeStale = true;
+    drawChrome();
   });
 }
 
