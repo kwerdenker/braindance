@@ -6249,6 +6249,16 @@ try {
         'and an entry chosen with a write in flight fetches no document and moves no stamp, so the write cannot be overtaken',
         `${getsSeen - getsBefore} GET on the wire, stamp ${JSON.stringify(stampMidRace?.name)} before `
         + `and ${JSON.stringify(stampAfterApply?.name)} after, offering ${offered}`);
+      // **The caret put back where the disable left it, because this probe moved it.**
+      // Pressing an entry is a real click and it takes the focus, which the button this
+      // door replaced never did - the old probe called `click()` from `page.evaluate` and
+      // left the caret on the body. That difference decides the focus row at the end of
+      // this block: `whileWriting` restores only from a *stranded* caret, so a picker
+      // still holding it means the restore correctly does not fire and the row goes red
+      // over the probe rather than over the build. Restoring the precondition, not the
+      // answer - the caret goes back to the body the disable dropped it to, and getting
+      // it from there onto `#tPresetSave` is still entirely `whileWriting`'s to do.
+      await page.evaluate('document.activeElement?.blur?.()');
 
       // And the import door, on the same reasoning. Its observable is a second PUT: an
       // import writes the file into the library before it applies it, so a build that let
