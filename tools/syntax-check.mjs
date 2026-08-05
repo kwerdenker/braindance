@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// Parses every JavaScript file this repo ships, and asks the four questions about the
+// Parses every JavaScript file this repo ships, and asks the five questions about the
 // tree that need nothing to answer: that every tool is documented, that every cited
 // `docs/` page exists, that the `.knct` decoder specification still agrees with the
-// module it specifies, and that the hello the grabber emits is the hello the README
-// documents. No server, no browser, no sensor, no dependencies - which is what makes it
-// the one thing CI can run on a fresh clone and mean it.
+// module it specifies, that the hello the grabber emits is the hello the README
+// documents, and that every element id the application shell drives is one the page
+// drawing it declares. No server, no browser, no sensor, no dependencies - which is what
+// makes it the one thing CI can run on a fresh clone and mean it.
 //
 //   node tools/syntax-check.mjs [--root <dir>]
 //
@@ -60,6 +61,40 @@ const MUTATIONS = {
     file: 'server/protocol.js',
     edits: [['export const TYPE_COLOR = 3;', 'export const TYPE_COLOR = 4;']],
   },
+
+  // The shell row's control: one id the application shell drives, renamed in the markup
+  // and left alone in the module - which is a rename that got half-applied, the exact
+  // shape that shipped. `menuCameraReset` rather than a dialog's button because it is an
+  // application-bar item, so the surface it breaks is the one an operator is looking at.
+  'shell-id-renamed': {
+    file: 'web/index.html',
+    edits: [['id="menuCameraReset"', 'id="menuCameraResetRenamed"']],
+  },
+};
+
+// Reads a file, and applies the mutation to it when the mutation is one that names it.
+//
+// **Keyed on the mutation's own `file` rather than on which block is running.** The
+// specification row was the only row with a control when this tool got one, so it took
+// `MUTATIONS[mutation].edits` unconditionally and applied it to `server/protocol.js` -
+// which is correct for exactly one entry and refuses every other with "the anchor is not
+// in server/protocol.js". A second control would have read as a broken control rather
+// than as this tool having one place that assumed there would never be two.
+//
+// Refusal is exit 2 and not a failed assertion, for the reason the row below it gives: a
+// mutation whose anchor has moved changes nothing, and a run that changed nothing comes
+// back green and gets recorded as the control passing.
+const sourceWithMutation = (rel) => {
+  const file = join(ROOT, rel);
+  if (!existsSync(file)) return null;
+  const src = readFileSync(file, 'utf8');
+  if (!mutation || MUTATIONS[mutation].file !== rel) return src;
+  const [[from, to]] = MUTATIONS[mutation].edits;
+  if (!src.includes(from)) {
+    console.log(`DID NOT RUN - the ${mutation} anchor "${from}" is not in ${rel}, so nothing was mutated and this run would prove nothing`);
+    process.exit(2);
+  }
+  return src.replace(from, to);
 };
 
 // Resolved before anything runs, so a name nobody implemented costs a second rather than
@@ -263,21 +298,10 @@ if (!existsSync(DOC)) {
   const SPEC_OPEN = '// ---- the .knct decoder specification';
   const SPEC_SHUT = '// ---- end of the .knct decoder specification';
   const rel = 'server/protocol.js';
-  const file = join(ROOT, rel);
-  if (!existsSync(file)) {
+  const src = sourceWithMutation(rel);
+  if (src === null) {
     fail(`${rel} is missing, so the decoder specification has nothing to be checked against`);
   } else {
-    let src = readFileSync(file, 'utf8');
-    if (mutation) {
-      const [[from, to]] = MUTATIONS[mutation].edits;
-      // Refused rather than run. A mutation whose anchor has moved does nothing, and a run
-      // that does nothing comes back green - which gets recorded as the control passing.
-      if (!src.includes(from)) {
-        console.log(`DID NOT RUN - the ${mutation} anchor "${from}" is not in ${rel}, so nothing was mutated and this run would prove nothing`);
-        process.exit(2);
-      }
-      src = src.replace(from, to);
-    }
     const open = src.indexOf(SPEC_OPEN);
     const shut = src.indexOf(SPEC_SHUT);
     let mod = null;
@@ -665,6 +689,66 @@ if (!existsSync(DOC)) {
     console.log(`  anchors/ ${anchorsChecked} checked in ${tablesWithAnchors} tables of ${tablesDeclared} declared, ${parts.join(', ')}`);
   } else {
     console.log(`  anchors/ all ${anchorsChecked} in ${tablesWithAnchors} tables match once, of ${tablesDeclared} declared`);
+  }
+}
+
+// ---- every id the application shell drives exists on the page that draws it
+//
+// `web/main.js` builds its shell from a table of element ids and then dereferences every
+// entry unguarded. An id that stopped existing therefore does not fail where it is
+// looked up - it fails at whichever consumer touches it first, and because `connect()`
+// runs below that wiring, the socket is never opened at all. What the operator gets is a
+// header stuck on "connecting...", a black viewport, and a server recording a take
+// perfectly well with `clients=0` beside it, which reads as a sensor or network fault
+// and is neither. That shipped, and it cost most of a session before anyone opened a
+// console.
+//
+// The module now refuses by name at the lookup, which is the runtime half. This is the
+// half that means nobody meets it: the two files are compared offline, so a rename that
+// takes the markup and not the module fails `npm test` rather than a shoot.
+//
+// **Read off the module's own table rather than a list kept here.** A hand-copied set of
+// ids is a second representation that drifts, and the failure it drifts into is silent -
+// an id added next year would simply not be checked, which is this repo's most-repeated
+// mistake in a new place. Parsing the literal means a shell entry added later is asked
+// by existing.
+//
+// The control is `--mutate shell-id-renamed`, which renames one id in the markup and
+// must redden this row and only this row.
+{
+  const rel = 'web/main.js';
+  const page = 'web/index.html';
+  const src = sourceWithMutation(rel);
+  const html = sourceWithMutation(page);
+  if (src === null || html === null) {
+    fail(`${src === null ? rel : page} is missing, so the shell's ids could not be checked against the page`);
+  } else {
+    // The call, not the function: `shellElements(` also appears where it is declared, and
+    // matching that would read an empty table and call it a clean row.
+    const open = src.indexOf('const shell = shellElements({');
+    const shut = open === -1 ? -1 : src.indexOf('});', open);
+    const table = open === -1 || shut === -1 ? '' : src.slice(open, shut);
+    // The values, which are the ids. The keys are the module's own names for them and
+    // the page knows nothing about those.
+    const ids = [...table.matchAll(/^\s*\w+:\s*'([^']+)',$/gm)].map((m) => m[1]);
+    const present = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
+
+    if (open === -1 || shut === -1) {
+      fail(`${rel} no longer builds its shell through shellElements({...}), so this row cannot find the ids it is meant to check`
+        + ' - if the shell moved, move this row with it rather than leaving it looking at nothing');
+    } else if (ids.length === 0) {
+      // The row's own floor. An extraction that silently matched nothing would print a
+      // clean line about zero ids, which is the shape of a green light wired to nothing
+      // that the canary at the top of this file exists to refuse.
+      fail(`${rel} declares a shell table this row could not read a single id out of, so this assertion passed on nothing`);
+    } else {
+      const gone = ids.filter((id) => !present.has(id));
+      for (const id of gone) {
+        fail(`the application shell drives #${id}, which ${page} does not declare`
+          + ' - the module refuses by name at boot, so this is a surface that will not start');
+      }
+      if (gone.length === 0) console.log(`  shell/ all ${ids.length} ids the shell drives are declared by ${page}`);
+    }
   }
 }
 

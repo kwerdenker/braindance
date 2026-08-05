@@ -11981,34 +11981,85 @@ ui.deliverableNew?.addEventListener('click', async () => {
 
 // ---------------------------------------------------------- application shell
 
-const shell = {
-  surfaceName: document.getElementById('surfaceName'),
-  menus: [...document.querySelectorAll('.appmenu')],
-  saveProject: document.getElementById('menuSaveProject'),
-  render: document.getElementById('menuRender'),
-  export: document.getElementById('menuExport'),
-  obs: document.getElementById('menuObs'),
-  cameraReset: document.getElementById('menuCameraReset'),
-  topView: document.getElementById('menuTopView'),
-  lookImport: document.getElementById('menuLookImport'),
-  lookExport: document.getElementById('menuLookExport'),
-  state: document.getElementById('menuState'),
-  exportClose: document.getElementById('exportClose'),
-  obsDialog: document.getElementById('obsDialog'),
-  obsClose: document.getElementById('obsClose'),
-  obsDone: document.getElementById('obsDone'),
-  obsProgram: document.getElementById('obsProgramMode'),
-  obsViewport: document.getElementById('obsViewportMode'),
-  obsResolution: document.getElementById('obsResolution'),
-  obsCustomSize: document.getElementById('obsCustomSize'),
-  obsBrowserUrl: document.getElementById('obsBrowserUrl'),
-  obsWebcamUrl: document.getElementById('obsWebcamUrl'),
-  obsCopyBrowser: document.getElementById('obsCopyBrowser'),
-  obsCopyWebcam: document.getElementById('obsCopyWebcam'),
-  obsOpen: document.getElementById('obsOpen'),
-  obsStatus: document.getElementById('obsStatus'),
-  obsStatusText: document.getElementById('obsStatusText'),
-};
+/**
+ * Every element the shell drives, looked up so that a missing one names itself.
+ *
+ * `document.getElementById` answers `null`, and this table used to be an object literal
+ * of bare calls whose entries are then dereferenced unguarded a few hundred lines below.
+ * So an id that stopped existing - renamed in `index.html`, moved into a surface this
+ * page does not draw, dropped by a merge - did not fail here. It failed at whichever
+ * consumer happened to touch it first, as
+ * `Uncaught TypeError: Cannot read properties of undefined (reading 'addEventListener')`,
+ * naming a line number and nothing else.
+ *
+ * **What that costs is the whole page, silently.** `connect()` is called *below* this
+ * block, so a throw anywhere in the shell wiring means the socket is never opened: the
+ * header sits on "connecting..." for as long as anyone leaves it, the viewport stays
+ * black, and the server - which takes `/record/start` over HTTP and has no opinion about
+ * whether a browser is attached - records a take perfectly happily with `clients=0`
+ * beside it in the log. That combination reads as a sensor or a network fault and is
+ * neither, and it cost a real session: the operator was looking at USB packet-loss
+ * warnings while the actual failure was one absent element id.
+ *
+ * Refusing is still the right answer and this does not soften it - a surface missing a
+ * control is a broken build, and a page that boots with half its wiring gone is worse
+ * than one that will not boot. What changes is that the refusal happens *here*, where
+ * the cause is, and carries the ids rather than a line number; and that it reaches the
+ * status line as well as the console, because the console is not where the operator is
+ * looking. Collected across the whole table rather than thrown on the first miss, since
+ * a rename usually takes more than one id with it and one round trip should name all of
+ * them.
+ */
+function shellElements(ids) {
+  const found = {};
+  const missing = [];
+  for (const [key, id] of Object.entries(ids)) {
+    const el = document.getElementById(id);
+    if (el === null) missing.push(`#${id}`);
+    found[key] = el;
+  }
+  if (missing.length > 0) {
+    const what = `${EDITING ? 'editor' : 'record'} surface is missing ${missing.join(', ')}`;
+    // Written straight to the element rather than through `setStatus`, which reads
+    // sensor state this page will never now receive.
+    if (statusEl !== null) statusEl.textContent = what;
+    throw new Error(`${what} - the page cannot finish starting, so nothing below this ran`);
+  }
+  return found;
+}
+
+const shell = shellElements({
+  surfaceName: 'surfaceName',
+  saveProject: 'menuSaveProject',
+  render: 'menuRender',
+  export: 'menuExport',
+  obs: 'menuObs',
+  cameraReset: 'menuCameraReset',
+  topView: 'menuTopView',
+  lookImport: 'menuLookImport',
+  lookExport: 'menuLookExport',
+  state: 'menuState',
+  exportClose: 'exportClose',
+  obsDialog: 'obsDialog',
+  obsClose: 'obsClose',
+  obsDone: 'obsDone',
+  obsProgram: 'obsProgramMode',
+  obsViewport: 'obsViewportMode',
+  obsResolution: 'obsResolution',
+  obsCustomSize: 'obsCustomSize',
+  obsBrowserUrl: 'obsBrowserUrl',
+  obsWebcamUrl: 'obsWebcamUrl',
+  obsCopyBrowser: 'obsCopyBrowser',
+  obsCopyWebcam: 'obsCopyWebcam',
+  obsOpen: 'obsOpen',
+  obsStatus: 'obsStatus',
+  obsStatusText: 'obsStatusText',
+});
+
+// `menus` is a query rather than an id, so it sits outside the table above: an empty
+// list is a legitimate answer to `querySelectorAll` and there is no missing name to
+// report. It stays a plain read for that reason and not by oversight.
+shell.menus = [...document.querySelectorAll('.appmenu')];
 
 shell.surfaceName.textContent = EDITING ? 'Editor' : 'Record';
 for (const control of [shell.saveProject, shell.render, shell.export, shell.lookImport, shell.lookExport]) {
