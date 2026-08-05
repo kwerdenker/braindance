@@ -59,8 +59,8 @@ const DECLARED_EDITS = new Map([
   // string, no symbol and no observable difference to find. `marker` is null because
   // the edit is genuinely absent from that build, not because nobody looked.
   ['src/libfreenect2.cpp', {
-    why: 'let the USB power-state calls fail without failing the open, on macOS only',
-    ours: '4dd892555a917d713f3db6040449a1c6c1ea5c73',
+    why: 'let the two USB link setup calls fail without failing the open, on macOS only',
+    ours: 'a89572d9bed79becdea8c61e398803c536b1b6ee',
     marker: null,
   }],
 ]);
