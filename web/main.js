@@ -4805,6 +4805,8 @@ function connect() {
       if (msg.recording) {
         recordState = msg.recording;
         paintRecord(null);
+        chromeStale = true;
+        drawChrome();
         return;
       }
 
@@ -10837,15 +10839,18 @@ function drawChrome() {
   const path = pathPoints();
 
   // ── over the picture: the path, its nodes and the shot the program camera has.
-  chromeCtx.lineWidth = 1.4;
-  chromeCtx.strokeStyle = 'rgba(90, 209, 196, 0.85)';
-  strokePolyline(path.map((p) => projectThrough(p, viewCamera, stage)));
-  chromeCtx.strokeStyle = 'rgba(255, 157, 90, 0.9)';
-  chromeCtx.lineWidth = 1;
-  for (const [a, b] of frustumSegments()) {
-    strokePolyline([projectThrough(a, viewCamera, stage), projectThrough(b, viewCamera, stage)]);
+  // Editor only - the recorder has no clip to compose and no path to show.
+  if (EDITING) {
+    chromeCtx.lineWidth = 1.4;
+    chromeCtx.strokeStyle = 'rgba(90, 209, 196, 0.85)';
+    strokePolyline(path.map((p) => projectThrough(p, viewCamera, stage)));
+    chromeCtx.strokeStyle = 'rgba(255, 157, 90, 0.9)';
+    chromeCtx.lineWidth = 1;
+    for (const [a, b] of frustumSegments()) {
+      strokePolyline([projectThrough(a, viewCamera, stage), projectThrough(b, viewCamera, stage)]);
+    }
+    drawNodes((p) => projectThrough(p, viewCamera, stage));
   }
-  drawNodes((p) => projectThrough(p, viewCamera, stage));
 
   // ── the top-down. A camera move is the one thing you cannot judge from inside
   // the camera, so this is where the path is actually edited.
@@ -11001,6 +11006,14 @@ function drawChrome() {
     chromeCtx.fillStyle = '#e8ecf1';
     const cp = viewCamera.position;
     chromeCtx.fillText(`${cp.x.toFixed(1)} ${cp.y.toFixed(1)} ${cp.z.toFixed(1)}`, col2, y);
+  }
+
+  // ── recording indicator: a red outline around the viewport while recording.
+  if (recordState.recording) {
+    const inset = 2;
+    chromeCtx.strokeStyle = 'rgba(220, 38, 38, 0.9)';
+    chromeCtx.lineWidth = 4;
+    chromeCtx.strokeRect(inset, inset, w - inset * 2, h - inset * 2);
   }
 }
 
@@ -12869,6 +12882,8 @@ if (EDITING && !REQUESTED_TAKE) {
   askRecordState = pollRecordState((state) => {
     recordState = state;
     paintRecord(state.storage);
+    chromeStale = true;
+    drawChrome();
   });
 }
 
