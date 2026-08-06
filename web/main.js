@@ -12872,6 +12872,12 @@ if (EDITING && !REQUESTED_TAKE) {
   document.body.classList.add('program-out');
   controls.enabled = false;
   chromeOn = false;
+  // The module-level resize() ran before this branch added program-out, so the
+  // canvas was positioned below the appbar that is now hidden. Clear it: the
+  // export path keeps the existing box because the editor is still present, but
+  // here the editor is gone and the canvas fills the source window.
+  renderer.domElement.style.top = '0px';
+  renderer.domElement.style.left = '0px';
   outputSize = { ...programOutSize };
   resize();
   setViewCamera(programCamera);
