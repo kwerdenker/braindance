@@ -9858,7 +9858,10 @@ function choosePicker(picker, name, { close = false } = {}) {
         }
       }));
     } else {
-      // "none" selected: reset all look parameters to their defaults.
+      // "none" selected: reset all look parameters to their defaults, and clear the
+      // stamp so autosaves stop claiming a preset and refreshPresets does not restore
+      // the old name onto the picker.
+      appliedPreset = null;
       params.reset(params.names('look'));
       history.commit();
       say('reset to defaults');
