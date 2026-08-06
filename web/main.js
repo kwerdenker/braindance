@@ -1823,6 +1823,15 @@ const PANEL_GROUPS = [
     before: () => [
       panelButtonRow(['camSensor', 'sensor view']),
       panelButtonRow(['camLevel', 'select floor'], ['camLevelReset', 'reset rotation']),
+      // **The only thing that says what the two-step gesture is, and what it just did.**
+      // Levelling is arm-then-click-a-surface, which is not a shape a button label can
+      // carry, and the same line is where `setLevelSelection` reports the fit: how many
+      // samples the plane was read from and how flat they were, or the sentence saying
+      // the press landed somewhere with no plane in it. The rework took the line out and
+      // left the writer with nowhere to write, so a floor fit that failed said nothing
+      // at all and the gesture had no instructions.
+      panelNote('levelNote', 'Select floor, then click a flat floor or ceiling plane in the picture. '
+        + 'The selection levels the room; tilt and roll below remain available for small corrections.'),
     ],
     after: () => [
       panelButtonRow(['cropReset', 'revert all to default']),
@@ -2873,25 +2882,35 @@ for (const group of PANEL_GROUPS) {
       input.addEventListener('change', () => history.commit());
     }
 
-    // The keyframe control, in the same pass that built the row it sits in. Only on
-    // the editor and only for look parameters: a keyframe is a position on a clip,
-    // the recorder has no clip, and view state is not part of one - so a control
-    // implying otherwise is the split leaking whichever of the two reasons applies.
-    if (EDITING && spec.tag === 'look') {
-      const button = makeKeyButton(name);
+    // The two controls that ride beside a look row, and **they are gated by different
+    // questions**, which is the whole of this block.
+    //
+    // The keyframe is on the editor alone: a keyframe is a position on a clip, the
+    // recorder has no clip, and view state is not part of one - so a control implying
+    // otherwise is the split leaking whichever of the two reasons applies.
+    //
+    // The reset is on both, and it was on neither but the editor because it was written
+    // inside the keyframe's condition rather than beside it. Nothing about putting a
+    // slider back needs a clip: the recorder grades the live cloud through these same
+    // sliders, and having moved one there, the way back was to remember the number.
+    // `README.md` describes the ↺ under the recorder's *Look* tab, which is where this
+    // was found - the page and the page's own documentation disagreeing about a control,
+    // with the condition above naming the reason for the other one.
+    if (spec.tag === 'look') {
+      const keyButton = EDITING ? makeKeyButton(name) : null;
+      // After the keyframe control where there is one, which is the order the design
+      // puts them in and the order the row reads in: what this value is, whether it is
+      // keyed, and how to put it back.
+      const beside = [...(keyButton ? [keyButton] : []), makeResetButton(name)];
       if (input.type === 'checkbox') {
         // The control is the whole `<label class="check">` and a button inside a
         // label would toggle the checkbox when clicked, so the two are siblings in a
-        // row of their own. The recorder gets the bare label, which is what keeps
-        // `.check`'s own layout rather than `.checkrow`'s.
+        // row of their own.
         const checkrow = panelNode('div', 'checkrow');
-        checkrow.append(row, button, makeResetButton(name));
+        checkrow.append(row, ...beside);
         groupNode.append(checkrow);
       } else {
-        // The reset sits after the keyframe control, which is the order the design puts
-        // them in and the order the row reads in: what this value is, whether it is
-        // keyed, and how to put it back.
-        row.append(button, makeResetButton(name));
+        row.append(...beside);
         groupNode.append(row);
       }
     } else {
@@ -3732,27 +3751,24 @@ function refreshGroups() {
     // against a boolean can match that, so the untouched case costs two Map lookups.
     const pair = `${want}/${inUse}`;
     const settled = groupSeen.get(key);
-    // Track what the prune deleted: if user explicitly closed (want === false) and
-    // prune removes it, auto-keep-open must not undo that decision.
-    let prunedClose = false;
     if (settled !== undefined && settled !== pair && want === inUse) {
-      prunedClose = want === false;
       groupOverride.delete(key);
       groupOverrideDirty = true;
     }
     groupSeen.set(key, `${groupOverride.get(key)}/${inUse}`);
-    // A group that is currently open stays open until explicitly closed. Without this,
-    // resetting the last modified parameter in a group would auto-collapse it, which
-    // feels like the UI fighting the user. Only auto-open, never auto-close.
-    // Skip this when the prune just deleted a `false` override - that was an explicit
-    // close, and undoing it would make the toggle appear broken.
-    const wasOpen = !node.classList.contains('shut');
-    let open = groupIsOpen(group);
-    if (wasOpen && !open && groupOverride.get(key) === undefined && !prunedClose) {
-      groupOverride.set(key, true);
-      groupOverrideDirty = true;
-      open = true;
-    }
+    // **Nothing here may author an override.** A rule that pinned a group open when the
+    // derivation went false underneath it - so that resetting a group's last value did
+    // not collapse it under the hand that reset it - was here, and it fabricated a
+    // disagreement nobody had expressed. The state it read was the panel's own
+    // `shut` class, which no group carries until this pass has painted one, so on the
+    // very first refresh every group read as open against a derivation that answers
+    // false for all of them before a document exists. It wrote `true` for every group
+    // in the panel, persisted that to `kinect.panelGroupsOpen`, and the editor booted
+    // with the whole inspector open and every collapse it had ever been taught
+    // overwritten. That is the stored panel layout this design refuses, arriving as a
+    // convenience: the derivation is the rule, and the only thing allowed to disagree
+    // with it is somebody pressing the toggle.
+    const open = groupIsOpen(group);
     const touched = groupTouchedCount(key);
     const state = `${open}/${inUse}/${touched}`;
     if (groupPainted.get(key) === state) continue;
@@ -3764,11 +3780,17 @@ function refreshGroups() {
     button.setAttribute('aria-label', `${open ? 'collapse' : 'expand'} ${group.label}`);
     // The count only where it is the only thing that can say so. An open group has its
     // rows on screen and a number over them would be a second, worse copy of them; a
-    // shut group that is genuinely at its defaults has nothing to announce. The one
-    // case with nothing to count is `detail` revealed by a reading, which shows the
-    // mark without a number rather than a misleading zero.
+    // shut group that is genuinely at its defaults has nothing to announce.
+    //
+    // The empty string is still written rather than assumed, because a group can be in
+    // use with nothing of its own to count: that is what a `reveals` closure answering
+    // a wider question than its own parameters does, and it showed the mark without a
+    // number rather than a misleading zero. No group declares one today - the rework
+    // folded `detail` into `style` and its closure went with it - so the branch is
+    // reachable only by the next group that needs one, which is why `groupRevealed`
+    // stays a call rather than becoming `revealsItself`.
     mark.hidden = open || !inUse;
-    mark.textContent = '';
+    mark.textContent = touched > 0 ? String(touched) : '';
     mark.title = touched > 0
       ? `${touched} of these are set to something` : 'this group is in use';
   }
@@ -4288,7 +4310,6 @@ const history = {
   begin() {
     this.stack.length = 0;
     this.baseline = this.snapshot();
-    paintUndoCount();
   },
 
   commit() {
@@ -4305,12 +4326,6 @@ const history = {
     this.stack.push(this.baseline);
     if (this.stack.length > UNDO_LIMIT) this.stack.shift();
     this.baseline = now;
-    // Said here rather than left to the next repaint. A commit is the end of an
-    // interaction and usually the last thing that happens in it - a node drag
-    // repaints on every pointer move and then commits on release - so a readout
-    // that waited for a repaint would sit one level behind for as long as nothing
-    // else moved.
-    paintUndoCount();
     // Auto-save the project after every change. Fire-and-forget: a failed save is
     // logged in the UI but it must not block the interaction that caused it.
     const workingBody = { ...serialiseProject(), take: { id: openTakeId, hash: openTakeHash } };
@@ -4363,7 +4378,6 @@ const history = {
     // The playhead deliberately does not move. Undo is about what the clip is, and
     // walking the playhead backwards on every press is the behaviour that teaches
     // people not to trust it.
-    paintUndoCount();
     if (resume) {
       timeline.seek(timeline.programSec)
         .then(() => { if (gen === transportGen) return timeline.play(); })
@@ -5833,7 +5847,6 @@ const CATCHUP_FRAMES = 4;
 // How far behind real time playback has to fall before it says so. About eight
 // frames at 30fps: below that it is a hitch, above it the rate on screen is not
 // the rate the readout claims.
-const BEHIND_NOTICE_MS = 250;
 // How many times an operation re-plans itself around a curve that moved while it
 // was fetching, before standing down and leaving the job to the repaint the same
 // mutation queued. Two, which is the smallest number that absorbs one
@@ -6039,6 +6052,25 @@ class TimelineTransport {
   }
 
   /**
+   * An accurate render at wherever the playhead is **when this runs**, rather than at
+   * where it was when the call was made.
+   *
+   * The difference is the whole of it, and it is a bug that shipped. A caller that
+   * means "repaint properly, here" has no position of its own to name - it wants the
+   * playhead's, and reading that at call time captures a number another seek queued
+   * ahead of it is about to change. `pumpParkedDraft` is the caller: when the orbit's
+   * damping stops it asks for one true image at the pose the camera arrived at, and if
+   * a person pressed Home during that glide the queue then held their seek to zero
+   * followed by this one to four - so the playhead travelled to the position they
+   * asked for and was pulled straight back off it, once, with nothing on screen saying
+   * why. Reading the position inside the queued work instead makes this what it always
+   * claimed to be: a render, not a move.
+   */
+  seekHere(options = {}) {
+    return this.exclusive(() => this.seekNow(this.programSec, options));
+  }
+
+  /**
    * Which output frames a seek renders and which source frames they need. Split
    * out because it has to be answered twice - see `seekNow`.
    */
@@ -6239,8 +6271,23 @@ class TimelineTransport {
    * so the same frame can be drawn directly unless another draft left incomplete
    * state behind it.
    */
-  redraw(programSec) {
-    return this.exclusive(() => this.redrawNow(programSec));
+  /**
+   * A navigation redraw at wherever the playhead is **when this runs**, which is the
+   * same distinction `seekHere` above draws and for the same reason.
+   *
+   * `redrawNow` is not the read-only operation its name suggests: it assigns
+   * `this.frame`, and on any of the four conditions it tests it hands off to a full
+   * `seekNow`. So a position captured at call time is a *move* scheduled for later, and
+   * the queue is exactly where later happens. The orbit's pump is the only caller: it
+   * arms a flag during a drag and resolves the position when the loop gets its turn,
+   * which is correct against the drag and still one link short of correct against
+   * somebody pressing Home during it. That seek queues first, the redraw queues behind
+   * it carrying the position the drag was leaving, and the playhead travels to the
+   * start and is pulled straight back. Measured as one landing in five before this,
+   * every time on the run that had not settled first.
+   */
+  redrawHere() {
+    return this.exclusive(() => this.redrawNow(this.programSec));
   }
 
   async redrawNow(programSec) {
@@ -6715,10 +6762,6 @@ const ui = {
   rateOut: document.getElementById('tRateOut'),
   rateKey: document.getElementById('tRateKey'),
   fps: document.getElementById('tFps'),
-  preroll: document.getElementById('tPreroll'),
-  cost: document.getElementById('tCost'),
-  undo: document.getElementById('tUndo'),
-  behind: document.getElementById('tBehind'),
   bed: document.getElementById('tBed'),
   rail: document.getElementById('tRail'),
   beds: document.getElementById('tBeds'),
@@ -6750,6 +6793,7 @@ const ui = {
   camLevel: document.getElementById('camLevel'),
   camLevelReset: document.getElementById('camLevelReset'),
   cropReset: document.getElementById('cropReset'),
+  levelNote: document.getElementById('levelNote'),
   exportSize: buildExportMenu(document.getElementById('tExportSize')),
   exportRatios: document.getElementById('exportRatios'),
   exportFormats: document.getElementById('exportFormats'),
@@ -7086,10 +7130,6 @@ const view = {
   },
 };
 
-function paintUndoCount() {
-  if (ui.undo) ui.undo.textContent = String(history.depth);
-}
-
 function paintDeliverable() {
   if (!ui.deliverableReadout) return;
   if (!activeDeliverable) {
@@ -7158,23 +7198,6 @@ function paintTimeline(t) {
   if (ui.inOut) ui.inOut.textContent = timecode(clipIn);
   if (ui.outOut) ui.outOut.textContent = clipOut === null ? 'end' : timecode(clipOut);
   if (ui.clipLen) ui.clipLen.textContent = `${Math.max(0, (clipOut ?? view.duration) - clipIn).toFixed(2)}s`;
-  const plan = t.preroll(program);
-  // Both halves, because which one wins is the whole point of computing it: the
-  // surface half moves with fade, wake, speed and output rate, the trails half
-  // only with damp, and a reader who sees one number cannot tell them apart.
-  if (ui.preroll) ui.preroll.textContent = `${plan.frames} frames · ${plan.sec.toFixed(2)} s `
-    + `(surface ${plan.surface}, trails ${plan.trails})`;
-  if (ui.cost) ui.cost.textContent = t.lastCostMs
-    ? `${t.drafted ? 'draft' : 'seek'} ${t.lastCostMs.toFixed(1)} ms`
-    : '—';
-  // Playback never drops a frame to keep up, so falling behind is a fact about
-  // the machine rather than about the edit, and it belongs on screen for the same
-  // reason the decimation setting does: an instrument that silently changes its
-  // own scale is worse than none.
-  if (ui.behind) ui.behind.textContent = t.playing && t.behindMs > BEHIND_NOTICE_MS
-    ? `${(t.behindMs / 1000).toFixed(1)}s behind`
-    : '';
-  paintUndoCount();
   paintDeliverable();
   paintLanes();
   // Editor furniture - the camera path, its nodes and the top-down - is drawn
@@ -8545,7 +8568,7 @@ function pumpParkedDraft() {
   if (orbitRedrawWanted && !draftBusy) {
     orbitRedrawWanted = false;
     draftBusy = true;
-    timeline.redraw(timeline.programSec)
+    timeline.redrawHere()
       .catch(showTimelineError)
       .finally(() => { draftBusy = false; });
     return;
@@ -8556,7 +8579,11 @@ function pumpParkedDraft() {
     // The redraws above are already accurate. This last seek closes the race between
     // the final redraw and the last damping step and makes release an explicit
     // accuracy boundary, the same rule the scrubber follows.
-    timeline.seek(timeline.programSec).catch(showTimelineError);
+    //
+    // `seekHere` and not `seek(timeline.programSec)`, because the position this wants
+    // is the playhead's at the moment the queue reaches it - see the note there for
+    // the seek this used to undo.
+    timeline.seekHere().catch(showTimelineError);
   }
 }
 
@@ -9035,7 +9062,6 @@ function paintMarks() {
   const host = ui.marks;
   if (!host) return;
   host.replaceChildren();
-  if (ui.markCount) ui.markCount.textContent = String(takeMarks.length);
   if (!timeline) return;
   // The clip's length, not the window's: whether a mark is past the end of the edit is
   // a fact about the edit, and it must not change because somebody scrolled.
@@ -11061,11 +11087,12 @@ function viewUnder(clientX, clientY) {
 // surface cannot strand the next orbit inside a mode the user forgot was armed.
 let levelSelectionArmed = false;
 
-function setLevelSelection(on) {
+function setLevelSelection(on, note) {
   levelSelectionArmed = on;
   ui.camLevel.setAttribute('aria-pressed', String(on));
   ui.camLevel.textContent = on ? 'cancel selection' : 'select floor';
   document.body.classList.toggle('selecting-level', on);
+  if (note) ui.levelNote.textContent = note;
 }
 
 // On the window and in capture phase for the same reason the node drag below lives
@@ -11496,7 +11523,7 @@ ui.camLevel.addEventListener('click', () => {
   // between arming and selection. Finish the orbit here, while there is still a frame
   // before the user can click the surface, rather than moving it underneath that click.
   finishOrbitDrift();
-  setLevelSelection(true);
+  setLevelSelection(true, 'Click a flat floor or ceiling plane in the picture. Press Escape to cancel.');
 });
 
 ui.camLevelReset.addEventListener('click', () => {
@@ -11507,7 +11534,7 @@ ui.camLevelReset.addEventListener('click', () => {
 addEventListener('keydown', (e) => {
   if (!levelSelectionArmed || e.key !== 'Escape') return;
   e.preventDefault();
-  setLevelSelection(false);
+  setLevelSelection(false, 'Floor selection cancelled.');
 });
 setLevelSelection(false);
 
@@ -12477,7 +12504,6 @@ async function loadProjectNamed(name, offered = null) {
   } else {
     history.begin();
   }
-  paintUndoCount();
   // A freshly loaded project gets a default deliverable unless one is already
   // selected, so export always has a target.
   ensureActiveDeliverable();
