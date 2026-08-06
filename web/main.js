@@ -5484,6 +5484,9 @@ function liveLoop() {
   const t = liveTransport.positionAt(performance.now());
   advanceNavigation(t);
   renderProgramFrame(t);
+  // The top-down and stats overlays, redrawn after the frame that marked them stale.
+  // Without this, chrome on the record surface freezes while the main picture moves.
+  if (chromeOn) drawChrome();
   // Mirror mode's pose, sent from the loop because that is where the orbit camera
   // has finished moving for this frame. Rate-limited to the sensor's own cadence
   // rather than the display's: the source draws once per arrival, so a pose sent at
