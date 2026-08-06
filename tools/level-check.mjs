@@ -736,6 +736,17 @@ try {
   const [pressLeftNormal, pressRightNormal] = await plant(SURFACES[0], SURFACES[2]);
   await page.evaluate(() => globalThis.__kinect.sensorView());
   await page.evaluate(() => { document.getElementById('panel').style.display = ''; });
+  // **And the inspector holding it is selected, because the panel is four tabs now.**
+  // Showing `#panel` was enough while it was one column; with tabs, every group outside
+  // the selected one is `display: none`, so this click waited thirty seconds on a
+  // button plainly in the document and the run ended at "did not finish" with
+  // twenty-four rows passed and one failed. The tab is read off the group that contains
+  // the button rather than named, so the next reorganisation moves it without moving
+  // this.
+  await page.evaluate(() => {
+    const tab = document.getElementById('camLevel')?.closest('[data-panel-tab]')?.dataset.panelTab;
+    if (tab) document.querySelector(`.paneltab[data-panel-tab="${tab}"]`)?.click();
+  });
   await page.locator('#camLevel').click();
   const armed = await page.evaluate(() => ({
     active: globalThis.__kinect.levelSelection(),

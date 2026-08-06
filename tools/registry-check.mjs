@@ -197,16 +197,27 @@ const STRIDE = Number(flag('--stride', '4'));
 const SUBSTEPS = Number(flag('--substeps', '3'));
 
 const VIEW = { width: 640, height: 400 };
-// The current editor gives this height to its fixed application bar. Historical
-// comparison pages have no shell, so their viewport is shortened by the same amount
-// to make both arms render the same content box rather than two different layouts.
-// editor-check independently asserts the bar's height and fixed position.
-const APP_BAR_HEIGHT = 32;
-const SHELL_CONTENT = {
-  width: Math.round(VIEW.width * ((VIEW.height - APP_BAR_HEIGHT) / VIEW.height)),
-  height: VIEW.height - APP_BAR_HEIGHT,
+// The height the current editor gives its fixed application bar, and it is **measured
+// off the page rather than declared here**. Historical comparison pages have no shell,
+// so their viewport is shortened by the same amount to make both arms render the same
+// content box rather than two different layouts - which means this number is not a
+// note about the design, it is a term in the golden comparison. Written down as a
+// literal it was 32 against a `web/nav.css` that says 38, and the two rows it feeds
+// reddened with `renderScale: 589 -> 579` - a difference that is entirely this drift
+// (`round(640 * (400-38)/400)` is 579) and reads exactly like the buffer regression
+// the golden row exists to catch. So the after arm is opened first, the bar is
+// measured, and the before arm is sized against what was measured.
+let APP_BAR_HEIGHT = null;
+let SHELL_CONTENT = null;
+let COMPARISON_VIEW = null;
+const shellGeometry = (barHeight) => {
+  APP_BAR_HEIGHT = barHeight;
+  SHELL_CONTENT = {
+    width: Math.round(VIEW.width * ((VIEW.height - barHeight) / VIEW.height)),
+    height: VIEW.height - barHeight,
+  };
+  COMPARISON_VIEW = { width: VIEW.width, height: VIEW.height + barHeight };
 };
-const COMPARISON_VIEW = { width: VIEW.width, height: VIEW.height + APP_BAR_HEIGHT };
 let RENDER_BUFFER = { width: VIEW.width, height: VIEW.height };
 const POINTS = 512 * 424;
 // THREE.NormalBlending and THREE.AdditiveBlending, by value, because the check
@@ -825,13 +836,25 @@ async function bootState(opts, reader = landingReader) {
   return { out, poses, errors, page };
 }
 
+// **The after arm goes first, because it is what says how tall the bar is.** The
+// before arm's viewport is derived from that measurement, so the order is a
+// dependency rather than a preference.
+const afterArm = await bootState({});
+const measuredBar = await afterArm.page.evaluate(
+  "Math.round(document.getElementById('appBar').getBoundingClientRect().height)");
+await afterArm.page.close();
+if (!Number.isFinite(measuredBar) || measuredBar <= 0) {
+  throw new Error(`the application bar measured ${measuredBar}px - the shell this arm is compared against is not on the page`);
+}
+shellGeometry(measuredBar);
+console.log(`  the shell's application bar measures ${APP_BAR_HEIGHT}px, `
+  + `so the content box both arms render is ${SHELL_CONTENT.width}x${SHELL_CONTENT.height}`);
+
 const beforeArm = await bootState(
   { source: beforeSource, viewportSize: SHELL_CONTENT },
   tolerantLandingReader,
 );
 await beforeArm.page.close();
-const afterArm = await bootState({});
-await afterArm.page.close();
 
 // The camera is left out of the landing comparison, alone among the twenty-five,
 // and only here. Every other parameter lands on the same uniform it landed on
@@ -1150,7 +1173,17 @@ console.log(`\n[registry] each reading renders what its mode rendered, at ${AGAI
     const first = a.findIndex((h, i) => h !== b[i]);
     check(eq(a, b),
       `${reading.padEnd(13)} at 1.0 is bit-identical to mode ${mode} at ${AGAINST_REV}`,
-      first < 0 ? `${a.length} frames` : `frame ${first}: ${a[first].slice(0, 12)} vs ${b[first].slice(0, 12)}`);
+      // **Which frames, not which frame.** Reporting only the first mismatch cannot
+      // tell a transient from a divergence, and those are different findings: one
+      // frame out of a walk is a warm-up the two builds enter differently, while every
+      // frame from some index on is a term that has actually changed. `readGhost` is
+      // the row that needed asking - it disagrees at exactly one frame of however many
+      // are walked - and the old detail line looked identical either way.
+      first < 0
+        ? `${a.length} frames`
+        : `${a.filter((h, i) => h !== b[i]).length} of ${a.length} frames differ, first at `
+          + `${first}: ${a[first].slice(0, 12)} vs ${b[first].slice(0, 12)} `
+          + `(mismatched: ${a.map((h, i) => (h === b[i] ? null : i)).filter((i) => i !== null).join(', ')})`);
   }
 
   // The falsification control, and it is the reason the five rows above mean anything.

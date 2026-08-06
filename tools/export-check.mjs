@@ -1210,7 +1210,17 @@ const REGION_AT_SUBJECT = {
 const HD_LOOK = { ...OFF, additive: false, pointSize: HD_POINT_SIZE };
 const PIPELINES = [
   ['points', { look: OFF }],
-  ['splat', { look: { ...OFF, additive: true }, camera: NEAR_CAMERA }],
+  // **A smaller point than the default, and the clamp is the reason.** The shader
+  // draws `clamp(pointSize * bufferHeight / 1080 / max(0.15, -mv.z), 1.0, 64.0)`, and
+  // this arm stands the camera inside the cloud so the splats overlap - which puts its
+  // nearest points on the `0.15` floor, where the size is `pointSize * k / 0.15`. At
+  // the default that is 88.9px at 1200, over the ceiling, and the precondition below
+  // correctly refuses to compare two output sizes through a clamped tail. Seven keeps
+  // both arms inside the band by arithmetic rather than by luck: 51.9px at 1200 and
+  // 25.9px at 600 at the near end, and the far end stays over a pixel for anything
+  // inside the 6m clip. Additive blending is what this arm is about and a smaller
+  // point blends the same way.
+  ['splat', { look: { ...OFF, additive: true, pointSize: 7 }, camera: NEAR_CAMERA }],
   ['trails', { look: { ...OFF, trails: 0.5 } }],
   ['rgbsplit', { look: { ...OFF, rgbSplit: 1.6 } }],
   // Both at full rather than at the preset's 0.35 and 0.22. At preset strength the
@@ -1323,12 +1333,23 @@ const RES_TOLERANCE = {
   scanlines: { on: 'fine', mean: 4.0, ratio: 0.005, corr: 0.88 },
   grain: { on: 'fine', mean: 4.0, ratio: 0.005, corr: 0.70 },
   // The two rows the bloom residual lands in, and the only two whose ratio band is
-  // 0.01 rather than 0.005 - measured departures of 0.0035 and 0.0046 against
-  // mutant departures of 0.0648 and 0.0807, so the band sits between them with
-  // room on both sides instead of 8% of its range left.
-  bloom: { on: 'coarse', mean: 1.6, ratio: 0.01 },
+  // wider than 0.005. It was 0.01, set between measured departures of 0.0035 and
+  // 0.0046 and mutant departures of 0.0648 and 0.0807.
+  //
+  // **The clean end of that pair is a property of the room, not of the build, and on
+  // this tree it is three times what it was.** Bloom's chain is frozen at the 600-tall
+  // buffer the look was graded on while everything else is expressed against 1080p -
+  // CLAUDE.md's "both are correct and do not reconcile them" - so the halo really is
+  // tighter at 1200 than at 600, and how much luminance that costs depends on how much
+  // of the frame is bright enough to bloom. Measured here: 0.0108 and 0.0114 clean
+  // against 0.679 and 0.836 under `pointsize-absolute`, both arms, one run each at
+  // 960x600 against 1920x1200. So the band is 0.03, which the clean numbers sit at 38%
+  // of and the mutant numbers clear by twenty-three times. Widening it is not the same
+  // as admitting bloom: `nobloom` still carries the constancy claim at 0.005, which is
+  // why the two rows exist separately.
+  bloom: { on: 'coarse', mean: 1.6, ratio: 0.03 },
   nobloom: { on: 'coarse', mean: 2.4, ratio: 0.005 },
-  full: { on: 'coarse', mean: 2.6, ratio: 0.01 },
+  full: { on: 'coarse', mean: 2.6, ratio: 0.03 },
   // The three world-space rows. Every band here sits between a measured clean number
   // and a measured mutant one rather than being chosen to fit.
   //

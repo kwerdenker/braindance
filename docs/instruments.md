@@ -1957,3 +1957,57 @@ fires when somebody writes *about* the thing it guards is a false positive, and 
 positives are how a check stops being read. Stripping can only remove text, so its failure
 mode is a miss rather than a phantom — which is why the rule carries a floor that fails
 when the scan matches nothing at all.
+
+## A modal ends a run the way a healthy suite ends
+
+`editor-check` section 7 typed a name into the export field and then clicked `#tSetIn` on
+the strip to set the range for the render it was about to run. That order was fine while
+the export was a row of chips in the timeline bar. The rework made it a `<dialog>`, and a
+modal dialog is exactly a thing the browser refuses pointer events behind — so the click
+retried against `<dialog open>` for thirty seconds and the process died there.
+
+**What it printed was `160 assertions ran, 0 failed`.** Sections 8 through 20 — the crop,
+the parked orbit, the ruler's window, the splitter, the look round trip, the panel groups,
+the resets, the key walk, the picker and the pinned drive — did not run, and nothing in
+that line says so. The suite's own rule covers this and it is worth restating with a
+second instance behind it: **count failed assertions and read which ones fired, because a
+zero-failure non-zero exit is a crash to investigate rather than a pass.** The number that
+would have caught it immediately is the section count, not the assertion count.
+
+Two things to carry:
+
+**Drive the surface in the order the surface allows.** The README says set in and out on
+the timeline bar, then open Output → Export. A check walking it the other way is not
+testing a stricter path, it is testing a path that does not exist, and the failure it
+produces reads as a hang rather than as a finding.
+
+**A control that moves behind a modal takes every later section with it**, so the cost of
+this class is not one row. It is everything downstream of the first click the modal eats.
+
+## A fixture that is gitignored is a term in the assertion
+
+Two rows failed on this tree and passed for whoever wrote them, and neither was about the
+code under test:
+
+- `editor-check` section 10 plants keys at `t: 2`, `6` and `20`, zooms the ruler to 30–42%
+  of the clip, and asserts that markers outside the window are hidden rather than drawn
+  off the edge. The key at 20 seconds is only outside that window while the capture is
+  shorter than about 48 seconds. On the 49.79s sample this tree holds it lands at 85% of
+  the window — inside it — and the row reddens over a marker that is not outside.
+- `keyframe-check` 6d drags a retime key down by 3, 6, 9 and 12 pixels. The retime lane
+  draws zero to the capture's own length across forty pixels, so those twelve pixels are
+  worth `12 * duration / 40` seconds: fifteen of them here, which takes a key sitting at
+  fifteen to exactly zero. A retime curve flat at zero never advances the source, so the
+  program length falls back to the last key's own time — and the row asserting that
+  slowing a clip makes the program longer read that collapse as the clip failing to slow.
+
+`captures/` is gitignored and `make-fixture` loops the sample to whatever length is asked
+for, so the capture a check runs against is a property of the machine. **A literal in
+seconds or in pixels, measured against a capture nobody committed, is an assertion about
+that machine's `captures/` directory.** Both are fractions of the measured duration now,
+and `keyframe-check` reads the lane's own scale back off where the page drew the key
+rather than assuming it.
+
+The tell for this class is a row that fails on a value *near* a boundary — 85% of a
+window, a value of exactly zero — rather than one that fails by a mile. A build that
+genuinely lost the window would put the marker nowhere near the edge of it.

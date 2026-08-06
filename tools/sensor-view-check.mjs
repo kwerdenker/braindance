@@ -297,8 +297,8 @@ const MUTATIONS = {
   'keyframes-on-every-surface': {
     file: 'web/main.js',
     edits: [[
-      "    if (EDITING && spec.tag === 'look') {",
-      "    if (spec.tag === 'look') {",
+      '      const keyButton = EDITING ? makeKeyButton(name) : null;',
+      '      const keyButton = makeKeyButton(name);',
     ]],
   },
   // `extended-always-open` was here, and it is gone with the claim it falsified rather

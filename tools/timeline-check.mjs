@@ -1241,8 +1241,21 @@ console.log('\n== 5. a look change while paused rebuilds the image and the estim
   // bare tag selector now matches both. This is the same element it always was.
   const canvas = page.locator('#stage');
   const image = async () => createHash('sha256').update(await canvas.screenshot()).digest('hex').slice(0, 16);
-  const chip = () => page.evaluate("document.getElementById('tPreroll').textContent");
+  // **There is no pre-roll readout to read any more, and that is a decision rather
+  // than a gap.** The transport's second row used to carry four chips - pre-roll, last
+  // cost, undo depth, mark count - and the rework took the row away; `web/index.html`
+  // records the drop beside the row that replaced it. This section asked the estimate
+  // two questions, and only one of them survives that: *is it recomputed when a look
+  // changes* still has an object, because the plan is what a seek actually runs, while
+  // *does the number on screen agree with the plan* has no second surface left to
+  // disagree with. Reading the plan into both halves would have made the second row a
+  // tautology, which is worse than not asking - so it is gone and this is the note
+  // saying where it went.
   const planned = () => page.evaluate('globalThis.__kinect.timeline.transport().preroll()');
+  const chip = async () => {
+    const plan = await planned();
+    return `${plan.frames} frames / ${plan.sec.toFixed(2)} s (surface ${plan.surface}, trails ${plan.trails})`;
+  };
   // Waited on rather than slept through: the page reports when every scheduled
   // repaint has run and the transport's queue has drained, so a slow repaint is
   // waited for and a fast one is not paid for.
@@ -1341,10 +1354,8 @@ console.log('\n== 5. a look change while paused rebuilds the image and the estim
     'and does it once for the whole look rather than once per parameter',
     `${blackwallRenders} renders against a ${blackwallPlan.frames}-frame pre-roll`);
   check(blackwallImage !== neutralImage, 'and the rebuilt image is a different one');
-  check(blackwallChip !== neutralChip, 'and recomputes the pre-roll estimate');
-  check(blackwallChip.startsWith(`${blackwallPlan.frames} frames`),
-    'and the estimate on screen is the one a seek would actually run',
-    `"${blackwallChip}" against ${blackwallPlan.frames} frames`);
+  check(blackwallChip !== neutralChip, 'and recomputes the pre-roll estimate',
+    `"${neutralChip}" then "${blackwallChip}"`);
 
   // (c) The control that makes the above mean something. Nudging the rate away
   // and back was what used to correct both surfaces, so if the repaint really
@@ -1375,7 +1386,7 @@ console.log('\n== 5. a look change while paused rebuilds the image and the estim
   console.log(`  after dragging wake to 2500 on the panel: "${wakeChip}"`);
   check(wakeRenders > 0, 'dragging a look slider rebuilds the image', `${wakeRenders} renders`);
   check(wakeImage !== blackwallImage, 'and the rebuilt image is a different one');
-  check(wakeChip.startsWith(`${wakePlan.frames} frames`) && wakePlan.frames > blackwallPlan.frames,
+  check(wakePlan.frames > blackwallPlan.frames,
     'and the estimate follows it up',
     `${blackwallPlan.frames} frames to ${wakePlan.frames}`);
 }

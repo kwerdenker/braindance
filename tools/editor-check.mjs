@@ -571,16 +571,12 @@ const MUTATIONS = {
       [
         '    const pair = `${want}/${inUse}`;\n'
         + '    const settled = groupSeen.get(key);\n'
-        + '    // Track what the prune deleted: if user explicitly closed (want === false) and\n'
-        + '    // prune removes it, auto-keep-open must not undo that decision.\n'
-        + '    let prunedClose = false;\n'
         + '    if (settled !== undefined && settled !== pair && want === inUse) {\n'
-        + '      prunedClose = want === false;\n'
         + '      groupOverride.delete(key);\n'
         + '      groupOverrideDirty = true;\n'
         + '    }\n'
         + '    groupSeen.set(key, `${groupOverride.get(key)}/${inUse}`);\n',
-        '    let prunedClose = false;\n',
+        '',
       ],
       [
         '  groupOverride.set(key, !groupIsOpen(entry.group));\n',
@@ -753,8 +749,9 @@ const MUTATIONS = {
   'reset-missing-on-a-row': {
     file: 'web/main.js',
     edits: [[
-      '        row.append(button, makeResetButton(name));',
-      "        row.append(...(name === 'noiseSpeed' ? [button] : [button, makeResetButton(name)]));",
+      '      const beside = [...(keyButton ? [keyButton] : []), makeResetButton(name)];',
+      "      const beside = name === 'noiseSpeed' ? [...(keyButton ? [keyButton] : [])]\n"
+        + "        : [...(keyButton ? [keyButton] : []), makeResetButton(name)];",
     ]],
   },
 
@@ -778,8 +775,10 @@ const MUTATIONS = {
   'reset-skips-a-tab': {
     file: 'web/main.js',
     edits: [[
-      '        row.append(button, makeResetButton(name));',
-      "        row.append(...(group.tab === 'look' ? [button, makeResetButton(name)] : [button]));",
+      '      const beside = [...(keyButton ? [keyButton] : []), makeResetButton(name)];',
+      "      const beside = group.tab === 'look'\n"
+        + "        ? [...(keyButton ? [keyButton] : []), makeResetButton(name)]\n"
+        + "        : [...(keyButton ? [keyButton] : [])];",
     ]],
   },
 
@@ -1085,7 +1084,7 @@ const MUTATIONS = {
     file: 'web/main.js',
     edits: [[
       '    draftBusy = true;\n'
-      + '    timeline.redraw(timeline.programSec)\n'
+      + '    timeline.redrawHere()\n'
       + '      .catch(showTimelineError)\n'
       + '      .finally(() => { draftBusy = false; });',
       '    draftWanted = timeline.programSec;\n    pumpDraft();',
@@ -1126,7 +1125,7 @@ const MUTATIONS = {
   'release-seeks-past-target': {
     file: 'web/main.js',
     edits: [[
-      '    timeline.seek(timeline.programSec).catch(showTimelineError);',
+      '    timeline.seekHere().catch(showTimelineError);',
       '    timeline.seek(timeline.programSec + 1).catch(showTimelineError);',
     ]],
   },
@@ -2382,6 +2381,21 @@ try {
   // to its foot there can leave it visible and put the falsification control in a
   // dead zone. Look has enough declared groups for both ends of the scroll to differ.
   await page.locator('.paneltab[data-panel-tab="look"]').click();
+  // **And the inspector is opened before it is measured, because a collapsed one does
+  // not scroll.** Every group derives shut on a document nobody has touched, which is
+  // the panel's own rule and not a state to work around - but it leaves `panelBody`
+  // shorter than its box, `scrollHeight - clientHeight` at zero, and the two rows below
+  // reading a bar that is trivially on screen at both ends of a travel that does not
+  // exist. So the groups this tab holds are opened first, which is the state a person
+  // is in when the reachability of the bar is a question at all, and the store they
+  // wrote is cleared afterwards so the sections downstream still boot into a document
+  // that has been touched by nothing.
+  const openedForTravel = await page.evaluate(`(() => {
+    const shut = [...document.querySelectorAll('#panelBody > [data-panel-tab] .grouptoggle')]
+      .filter((b) => b.getAttribute('aria-expanded') === 'false' && b.checkVisibility());
+    shut.forEach((b) => b.click());
+    return shut.length;
+  })()`);
   const nav = await page.evaluate(`(${(() => {
     const el = document.getElementById('appBar');
     const body = document.getElementById('panelBody');
@@ -2417,7 +2431,7 @@ try {
   check(nav.present, 'the editor has one application bar carrying its navigation and commands',
     nav.present ? `${nav.height}px high, surface ${nav.surface}` : `appBar/panelBody present: ${nav.hasBody}`);
   check(nav.travel > 0, 'and the panel body genuinely scrolls, so the rows below are measuring something',
-    `${nav.travel}px of travel`);
+    `${nav.travel}px of travel with the tab's ${openedForTravel} groups opened`);
   check(nav.present && nav.top.inside && nav.end.inside && nav.top.top === 0 && nav.end.top === 0,
     'the application bar stays on screen at both ends of the inspector travel',
     nav.present ? `top ${nav.top.top}px at rest, ${nav.end.top}px at the end` : 'absent');
@@ -2427,6 +2441,15 @@ try {
   check(nav.present && nav.surface === 'Editor' && nav.hrefs.join(' ') === '/ /gallery',
     'and it names the surface while both exits remain real URLs in the markup',
     `${nav.surface}: ${nav.hrefs.join(' ')}`);
+  // The overrides those presses wrote, taken back off the page and out of storage. A
+  // group pinned open here is a disagreement section 16 would find already sitting in
+  // the store it is about to make claims about.
+  await page.evaluate(`(() => {
+    [...document.querySelectorAll('#panelBody > [data-panel-tab] .grouptoggle')]
+      .filter((b) => b.getAttribute('aria-expanded') === 'true' && b.checkVisibility())
+      .forEach((b) => b.click());
+    localStorage.removeItem('kinect.panelGroupsOpen');
+  })()`);
 
   // The tabs are an outer visibility layer over one registry-built panel. Each group
   // remains in the document, and pressing a tab must leave only the groups declared
@@ -3965,6 +3988,18 @@ try {
     const smallest = sizes.slice().sort((a, b) => (a.w * a.h) - (b.w * b.h))[0];
     await page.evaluate(`__kinect.setTargetSize(${JSON.stringify(`${smallest.w}x${smallest.h}`)})`);
     await settle();
+    // **The trim is set with the dialog shut, because that is the only order the
+    // surface allows.** The export is a modal now, so while it is open the browser
+    // correctly refuses every pointer event aimed at the strip behind it - and
+    // `#tSetIn` sits on the strip. Driving them in the other order cost this file
+    // sections 8 to 20 outright: the click retried against `<dialog open>` for
+    // thirty seconds and the run died with 160 assertions passed and none failed,
+    // which reads as a healthy suite right up until you count the sections. The
+    // page's own path is the one the README gives - set in and out on the timeline
+    // bar, *then* open Output -> Export - so the check walks it the same way and
+    // reopens the dialog through the menu for the render itself.
+    await page.locator('#exportClose').click();
+    await page.waitForFunction('!document.getElementById("exportDialog").open');
     await page.evaluate('__kinect.timeline.transport().seek(0)');
     await settle();
     await page.locator('#tSetIn').click();
@@ -3972,6 +4007,9 @@ try {
     await settle();
     await page.locator('#tSetOut').click();
     await settle();
+    await page.locator('#outputMenuButton').click();
+    await page.locator('#menuRender').click();
+    await page.waitForFunction('document.getElementById("exportDialog").open');
     await setName('editor-check-copy');
     await new Promise((r) => setTimeout(r, 150));
     note(`rendering ${smallest.w}x${smallest.h}`, `range ${JSON.stringify(await range())}`);
@@ -4496,20 +4534,108 @@ try {
   // what survives is measured in two slabs, and R is 0.3 rather than 0.6 because at
   // 0.6 the near slab's content ends before the boundary and neither build cuts it -
   // a probe standing where the answer is the same either way.
-  const edge = [];
-  for (const [n, f] of [[1.0, 1.6], [3.0, 3.6]]) {
-    await setCrop({ ...CROP_OPEN, near: n, far: f });
-    await setCrop({ right: 0.3 });
-    const cut = await litEdge();
-    edge.push(cut);
-    note(`slab ${n}-${f}m with right at 0.3m`, `the surviving right edge sits at ${cut.toFixed(3)} of the stage`);
+  // **Which two slabs, asked of the capture rather than written down here.** The bands
+  // were `1.0-1.6m` and `3.0-3.6m`, and a room is only obliged to have a wall in one of
+  // them. `captures/` is gitignored, so on a sample whose nearest surface is past 1.6m
+  // the near slab renders an empty stage, `litEdge` answers 0.000 for want of a lit
+  // column, and the row reads that as the cut landing at the far left - a fixture with
+  // nothing to say arriving as a build that crops in image space. So the depth range is
+  // swept first and the two slabs are the nearest and the furthest that actually hold
+  // something, which is the same question the literals were a guess at.
+  const SLAB = 0.6;
+  const occupied = [];
+  for (let near = 0.6; near + SLAB <= 6.0; near += SLAB) {
+    await setCrop({ ...CROP_OPEN, near, far: near + SLAB });
+    const count = (await lit()).all;
+    if (count > 500) occupied.push({ near, far: near + SLAB, count });
+  }
+  note('depth bands carrying something at 0.6m thickness',
+    occupied.map((b) => `${b.near.toFixed(1)}-${b.far.toFixed(1)}m:${b.count}`).join(' ') || 'none');
+  const slabs = [occupied[0], occupied[occupied.length - 1]];
+  // The precondition, and it is a row rather than a bail-out because a fixture that
+  // cannot separate two depths is a thing to be told about. The two bands have to be
+  // genuinely apart, or "the near cut sits right of the far one" is a claim about one
+  // slab measured twice.
+  check(occupied.length >= 2 && slabs[1].near - slabs[0].near >= 1.2,
+    'the capture holds content at two depths far enough apart to tell a plane from an angle',
+    occupied.length >= 2
+      ? `${slabs[0].near.toFixed(1)}m and ${slabs[1].near.toFixed(1)}m, `
+        + `${(slabs[1].near - slabs[0].near).toFixed(1)}m apart`
+      : `${occupied.length} band(s) with content - nothing below can be measured`);
+  // **And where to put the plane, asked of the capture as well.** The author's own note
+  // on the old literal says why: at 0.6m "the near slab's content ends before the
+  // boundary and neither build cuts it - a probe standing where the answer is the same
+  // either way". 0.3 was that value one band nearer; on a room whose near content stops
+  // short of it the near arm reports its own content edge, the far arm reports a real
+  // cut, and the comparison comes out backwards while both numbers are honest readings
+  // of different things. So each slab's uncropped edge is measured first, and the plane
+  // walks inwards until it is demonstrably biting into both.
+  const openEdge = [];
+  for (const { near, far } of slabs) {
+    await setCrop({ ...CROP_OPEN, near, far });
+    openEdge.push(await litEdge());
+  }
+  const BITE = 0.02;
+  let plane = null;
+  let edge = [];
+  // Both signs and a wide walk, because where a room's content sits across the sensor
+  // axis is not something to assume: this capture's near band lies entirely left of it,
+  // so every positive plane stands outside the thing it is supposed to cut.
+  // Zero is not in the walk, and leaving it out is the point rather than tidiness: a
+  // plane on the sensor axis is crossed at the principal point at every depth, so the
+  // two slabs cut at the same column and a build cropping in image space gives the
+  // identical answer. It is the one value where the probe cannot tell them apart.
+  for (const r of [0.6, 0.45, 0.3, 0.15, -0.15, -0.3, -0.45, -0.6, -0.75, -0.9, -1.1, -1.3]) {
+    const cuts = [];
+    for (const [i, { near, far }] of slabs.entries()) {
+      await setCrop({ ...CROP_OPEN, near, far });
+      await setCrop({ right: r });
+      cuts.push(await litEdge());
+      if (openEdge[i] - cuts[i] < BITE) break;
+    }
+    if (cuts.length === slabs.length && cuts.every((c, i) => openEdge[i] - c >= BITE)) {
+      plane = r;
+      edge = cuts;
+      break;
+    }
+  }
+  check(plane !== null,
+    'a right plane can be found that cuts into both slabs rather than standing outside one',
+    plane === null
+      ? `no plane between 0.3m and -0.3m moved both edges by ${BITE} of the stage from `
+        + `${openEdge.map((e) => e.toFixed(3)).join(' and ')}`
+      : `right at ${plane}m, from open edges ${openEdge.map((e) => e.toFixed(3)).join(' and ')}`);
+  if (plane !== null) {
+    for (const [i, { near, far }] of slabs.entries()) {
+      note(`slab ${near.toFixed(1)}-${far.toFixed(1)}m with right at ${plane}m`,
+        `the surviving right edge sits at ${edge[i].toFixed(3)} of the stage, `
+        + `against ${openEdge[i].toFixed(3)} uncropped`);
+    }
   }
   // The band is measured from both sides rather than picked: this build separates the
   // two slabs by 0.038 of the stage and `crop-in-image-space` separates them by 0.001,
   // so 0.015 sits fifteen times clear of the wedge and at 40% of the box's margin.
-  check(edge[0] - edge[1] > 0.015,
-    'and the cut sits further right in a near slab than a far one, which is what a plane in metres does and an angle does not',
-    `${edge[0].toFixed(3)} against ${edge[1].toFixed(3)}, ${(edge[0] - edge[1]).toFixed(3)} of the stage apart`);
+  // Conditional on the row above, and it is a skip rather than a red: two open edges
+  // compared to each other is a reading about where the room's furniture is, and
+  // reporting that as the crop behaving like an angle would be a finding invented out
+  // of a probe that never fired. The row above is the one that goes red.
+  if (plane !== null) {
+    // **Which way the two cuts should be apart depends on the sign of the plane**, and
+    // the row read it one way because the literal it was written against was positive.
+    // A plane at R metres is crossed at image column `cx + R*fx/z`, so its distance
+    // from the principal point shrinks with depth *in R's own direction*: a plane to
+    // the right of the axis cuts the near slab further right, and a plane to the left
+    // cuts the near slab further left. Only the magnitude is the claim - an angle cuts
+    // the same column at every depth either way - so a walk that lands on a negative
+    // plane, which this capture forces because its near content is all left of the
+    // axis, must read the difference the other way round or report the geometry
+    // working as the geometry being broken.
+    const apart = plane > 0 ? edge[0] - edge[1] : edge[1] - edge[0];
+    check(apart > 0.015,
+      'and the cut walks with depth in the direction the plane sits, which is what a plane in metres does and an angle does not',
+      `${edge[0].toFixed(3)} against ${edge[1].toFixed(3)} at a plane of ${plane}m, `
+      + `${apart.toFixed(3)} of the stage apart in the direction that plane predicts`);
+  }
   await setCrop({ near: 0.05, far: 6 });
 
   // The way back. Four planes closed by hand are four numbers to remember, and a box
@@ -4819,25 +4945,44 @@ try {
     await page.evaluate('__kinect.timeline.transport().seek(4.0)');
     await settle();
     const intendedSig = await signature();
-    await page.evaluate('__kinect.timeline.transport().seek(5.0)');
-    await settle();
-    const elsewhereSig = await signature();
+    // **Somewhere else in the capture, and how far away is asked of the capture.** This
+    // was a fixed second, and a second is only a different picture if the room moved
+    // in it. The sample this repo ships is nearly static - `docs/architecture.md`
+    // records 0.06% of pixels crossing the snap threshold between frames - so one
+    // second away came back 0.07/255 apart against a control demanding more than 2,
+    // and the row that exists to prove the instrument can see anything reddened
+    // because the *subject* had not moved. Walking outwards until the picture is
+    // genuinely different asks the same question of a capture that holds the answer
+    // further along.
+    let elsewhereSig = null;
+    let elsewhereAt = null;
+    for (const at of [5.0, 6.0, 8.0, 12.0, 20.0, 32.0, 2.0, 0.5]) {
+      if (at > (await page.evaluate('__kinect.timeline.transport().duration'))) continue;
+      await page.evaluate(`__kinect.timeline.transport().seek(${at})`);
+      await settle();
+      const sig = await signature();
+      if (elsewhereSig === null || apart(intendedSig, sig) > apart(intendedSig, elsewhereSig)) {
+        elsewhereSig = sig;
+        elsewhereAt = at;
+      }
+      if (apart(intendedSig, elsewhereSig) > 2) break;
+    }
     await page.evaluate('__kinect.timeline.transport().seek(4.0)');
     await settle();
 
     const canSee = apart(intendedSig, elsewhereSig);
     const landed = apart(releasedSig, intendedSig);
     note('the released picture against an accurate seek to the same moment',
-      `worst tile ${landed.toFixed(2)}/255, where a seek one second away differs by ${canSee.toFixed(2)}`);
+      `worst tile ${landed.toFixed(2)}/255, where a seek to ${elsewhereAt}s differs by ${canSee.toFixed(2)}`);
     // The control for the row below, and it has to come first for the same reason the
     // drafts row's does: a signature that could not tell two moments apart would make
     // the comparison below pass on every build there is, including one that released
     // to the wrong second.
-    check(canSee > 2, 'the renderer signature can tell this moment from one a second away',
-      `worst tile ${canSee.toFixed(2)}/255 apart`);
+    check(canSee > 2, 'the renderer signature can tell this moment from another one in the capture',
+      `worst tile ${canSee.toFixed(2)}/255 apart, at 4.0s against ${elsewhereAt}s`);
     check(landed < canSee / 4,
       'and the release lands the picture an accurate seek to that moment gives, not merely an accurate seek',
-      `worst tile ${landed.toFixed(2)}/255 against the ${canSee.toFixed(2)} a wrong second would cost`);
+      `worst tile ${landed.toFixed(2)}/255 against the ${canSee.toFixed(2)} a wrong moment would cost`);
 
     // The renderer-level half of the bug, separated from the editor transport. A
     // camera change is rendered once through the live seam with trails enabled, then
@@ -5092,8 +5237,22 @@ try {
   // so the overview strip and its window box are no more enumerated by it than `#tIn`
   // and `#tOut` are, and they are driven by name below for the same reason the cuts are
   // driven by name in section 3.
-  await page.evaluate('__kinect.keyframes.setTracks({ bloom: [ { t: 2, value: 0.2 }, { t: 6, value: 0.9 }, { t: 20, value: 0.4 } ] })');
-  await page.evaluate("__kinect.editor.setMarks([{ id: 'm1', sourceMs: 3000 }, { id: 'm2', sourceMs: 22000 }])");
+  // **The three keys and the two marks are placed as fractions of this capture, not as
+  // seconds.** The window below is set at 30% to 42% of the clip, and the rows further
+  // down need two markers before it and one past it - which a literal `t: 20` only
+  // satisfies while the fixture is shorter than about 48 seconds. `captures/` is
+  // gitignored and `make-fixture` loops the sample to whatever length is asked for, so
+  // that literal made the section's verdict a property of the machine it ran on: on a
+  // 49.79s sample the 20-second key lands at 85% of the window, inside it, and the row
+  // saying markers outside the window are hidden reddens over a marker that is not
+  // outside it. Fractions of the duration ask the same question of any capture.
+  const clipSec = await page.evaluate('__kinect.timeline.transport().duration');
+  const at = (f) => +(clipSec * f).toFixed(3);
+  await page.evaluate(`__kinect.keyframes.setTracks({ bloom: [ { t: ${at(0.04)}, value: 0.2 }, `
+    + `{ t: ${at(0.12)}, value: 0.9 }, { t: ${at(0.55)}, value: 0.4 } ] })`);
+  await page.evaluate("__kinect.editor.setMarks(["
+    + `{ id: 'm1', sourceMs: ${Math.round(clipSec * 0.06 * 1000)} }, `
+    + `{ id: 'm2', sourceMs: ${Math.round(clipSec * 0.50 * 1000)} }])`);
   await page.evaluate('__kinect.editor.view.set(0.30, 0.42)');
   await settle();
   const win = await page.evaluate('__kinect.editor.view.window()');
@@ -7669,10 +7828,21 @@ try {
       'shutting a group while it is in use stays shut and is written down',
       `shut=${styleShut.shut}, stored ${JSON.stringify(styleStored)}`);
     // And it is marked, because it is still in use - the treatment that opened it has
-    // not moved. The header carries the dot with a count of how many parameters are
-    // off their defaults.
-    check(styleShut.markVisible && styleShut.mark === '',
-      'and it is marked as in use with nothing of its own to count',
+    // not moved. The header carries the dot with a count of how many of the group's own
+    // parameters are off their defaults, which here is the one treatment that was
+    // moved.
+    //
+    // **It reads a number and not an empty dot, and the difference is a group that no
+    // longer exists.** This row was about `detail`, which was revealed by a `reveals`
+    // closure over two *other* groups - so it could be in use with none of its own
+    // parameters touched, and the header showed the dot with no number rather than a
+    // misleading zero. The rework folded that group into `style` and took the last
+    // `reveals` closure with it, so every group now derives from its own parameters
+    // alone and a marked group always has something to count. Carrying the old
+    // expectation across the rename made this row agree with a build that had stopped
+    // writing the count at all.
+    check(styleShut.markVisible && styleShut.mark === '1',
+      'and it is marked as in use with a count of what it is holding',
       `mark visible=${styleShut.markVisible}, reads "${styleShut.mark}"`);
 
     // ---- 15i. the override outlives the page that wrote it
@@ -7943,7 +8113,10 @@ try {
           offDefault: scalar ? value !== def : null,
           value,
           def,
-          slider: input ? input.value : null,
+          // A checkbox answers .value with the string "on" whatever its state is, so
+          // reading it that way says the same thing about a row that was just put back
+          // and a row that was not. .checked is where a step parameter's state is.
+          slider: input ? (input.type === 'checkbox' ? input.checked : input.value) : null,
           readout: row ? (row.querySelector('output') ? row.querySelector('output').textContent : null) : null,
         };
       });
@@ -7971,7 +8144,8 @@ try {
     // tool assigns by hand.
     const driveSlider = async (name, value) => page.evaluate(`(() => {
       const el = document.getElementById(${JSON.stringify(name)});
-      el.value = String(${JSON.stringify(value)});
+      if (el.type === 'checkbox') el.checked = Boolean(${JSON.stringify(value)});
+      else el.value = String(${JSON.stringify(value)});
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
       return globalThis.__kinect.params.get(${JSON.stringify(name)});
@@ -7983,6 +8157,10 @@ try {
       const k = globalThis.__kinect;
       const spec = k.params.spec(${JSON.stringify(name)});
       const def = k.params.normalise(${JSON.stringify(name)}, spec.default);
+      // A step parameter has one other state and no grid to walk along, so "one step
+      // off its default" is the negation. Asking a checkbox for def plus a step
+      // answers with a number it cannot hold.
+      if (spec.kind === 'step') return !def;
       return def + spec.step <= spec.max ? def + spec.step : def - spec.step;
     })()`);
 
@@ -7992,7 +8170,15 @@ try {
 
     // ---- 17a. the set of rows that carry one, computed from the registry
     const rest = await resetState();
-    const scalars = rest.params.filter((p) => p.tag === 'look' && p.kind === 'scalar');
+    // **Every look parameter the panel gives a control to, which is the scalars and the
+    // three checkboxes.** The reset started life as a slider's affordance and the rule
+    // here named `scalar` for that reason; the panel now offers one on a step row too,
+    // and a rule still spelling `scalar` would have said the checkbox rows were
+    // carrying a control they were not entitled to while saying nothing at all about
+    // whether pressing it worked. `pose` is the one kind left out, because the camera
+    // is not a row.
+    const scalars = rest.params.filter((p) => p.tag === 'look'
+      && (p.kind === 'scalar' || p.kind === 'step'));
     const missing = scalars.filter((p) => p.claims.length !== 1 || p.claims[0] !== p.name);
     const tabs = [...new Set(scalars.map((p) => p.tab))];
     const perTab = tabs.map((t) => {
@@ -8000,9 +8186,10 @@ try {
       return `${t} ${on.filter((p) => p.claims.length === 1).length}/${on.length}`;
     }).join(', ');
     check(scalars.length > 0 && missing.length === 0,
-      `every look parameter the registry declares as a scalar carries exactly one reset naming itself (${scalars.length})`,
+      `every look parameter the panel renders a control for carries exactly one reset naming itself (${scalars.length})`,
       missing.length ? `${missing.length} wrong: ${missing.map((p) => `${p.name}[${p.tab}] ${p.claims.join('+') || 'none'}`).join(', ')}`
-        : `per inspector: ${perTab}`);
+        : `per inspector: ${perTab}, of which `
+          + `${scalars.filter((p) => p.kind === 'step').length} are checkboxes`);
 
     // The set above is the registry's `scalar`, and the generator's condition is the
     // rendered control not being a checkbox. Those are two spellings of one rule and
@@ -8025,7 +8212,7 @@ try {
     const strayButton = rest.planted.filter((b) => !entitled.has(b.claims) || b.inRowOf !== b.claims);
     const strayRow = rest.params.filter((p) => !entitled.has(p.name) && p.claims.length > 0);
     check(rest.planted.length > 0 && strayButton.length === 0 && strayRow.length === 0,
-      'and nothing else carries one: not a step parameter, not a view parameter, not a control that is no parameter at all',
+      'and nothing else carries one: not a view parameter, and not a control that is no parameter at all',
       strayButton.length || strayRow.length
         ? `${strayButton.map((b) => `${b.claims || '(unnamed)'} sits in the row of ${b.inRowOf || 'nothing'}`).join(', ')} `
           + `${strayRow.map((p) => `${p.name} (${p.kind}/${p.tag}) carries ${p.claims.join('+')}`).join(', ')}`
@@ -8122,6 +8309,19 @@ try {
     // character to three moves nothing. Both strings are printed for that reason.
     await freshLook();
     await settle();
+    // **The inspector holding the non-collapsing group is selected first**, because
+    // "on screen" is now a fact about which tab is showing. The panel became four tabs
+    // over one registry-built body, and the rows this measurement needs - in a group
+    // nothing collapses, so the two snapshots differ in the reset alone - are all in
+    // `framing`, which is on its own tab. Measured from the `look` tab this filter
+    // answers with an empty list, and the three rows below then compare nothing while
+    // reporting that they compared nothing identically.
+    const steadyTab = (await resetState()).params
+      .find((p) => p.tag === 'look' && p.kind === 'scalar' && !p.collapsible && p.tab)?.tab;
+    if (steadyTab) {
+      await page.locator(`.paneltab[data-panel-tab="${steadyTab}"]`).click();
+      await settle();
+    }
     const stable = (await resetState()).params
       .filter((p) => p.tag === 'look' && p.kind === 'scalar' && p.rowOnScreen && !p.collapsible)
       .map((p) => p.name);
@@ -8230,8 +8430,14 @@ try {
     // observables and not one: a build writing around the registry keeps the value map
     // right and leaves the slider and the readout showing what was there.
     const afterPresses = carried(await resetState());
+    // Three observables on a slider row and two on a checkbox row, because a checkrow
+    // has no `<output>` to disagree with - the checkbox is its own readout. Comparing a
+    // missing readout against the default would redden all three step rows for the one
+    // thing they cannot have.
     const notBack = afterPresses.filter((p) => p.value !== p.def
-      || p.slider !== String(p.def) || p.readout !== String(p.def));
+      || (p.kind === 'step'
+        ? p.slider !== p.def
+        : p.slider !== String(p.def) || p.readout !== String(p.def)));
     check(afterPresses.length > 0 && notBack.length === 0,
       'pressing a reset puts the registry, the slider and the readout back on the normalised default together',
       notBack.length
@@ -8249,20 +8455,31 @@ try {
     await settle();
 
     // The press is a registry write and not an assignment, and the group is where that
-    // shows: `optical` is open only because `bloom` is carrying something, so putting
-    // `bloom` back has to reach the reveal rule as well as the value map. A build
-    // writing straight into the map leaves the group open over a parameter that is no
-    // longer carrying anything, with the value correct and nothing downstream told.
+    // shows: the group holding `bloom` is open only because `bloom` is carrying
+    // something, so putting `bloom` back has to reach the reveal rule as well as the
+    // value map. A build writing straight into the map leaves the group open over a
+    // parameter that is no longer carrying anything, with the value correct and nothing
+    // downstream told.
+    //
+    // **Which group that is comes off the row, not out of a name written here.** It was
+    // `optical` and the rework renamed it, so both reads below became
+    // `querySelector(...).classList` on null and took sections 18, 19 and 20 with them -
+    // a crash carrying no failed assertion, which is the reading `docs/instruments.md`
+    // warns is not a catch. Asking the parameter's own row which group contains it is
+    // the same question with nothing to go stale.
     await freshLook();
     await settle();
     await driveSlider('bloom', await oneStepOff('bloom'));
     await settle();
+    const bloomGroup = await page.evaluate(
+      "document.getElementById('bloom').closest('.group[data-group]').dataset.group");
+    const groupShut = (key) => page.evaluate(
+      `document.querySelector('.group[data-group=${key}]').classList.contains('shut')`);
     const openedBy = (await resetState()).params.find((p) => p.name === 'bloom');
-    const opticalOpen = await page.evaluate(
-      "!document.querySelector('.group[data-group=optical]').classList.contains('shut')");
+    const opticalOpen = !(await groupShut(bloomGroup));
     check(openedBy.offered === 'yes' && opticalOpen,
       'a value moved into a collapsible group opens it and offers the reset, or the three rows below test nothing',
-      `bloom offered=${openedBy.offered}, optical open=${opticalOpen}`);
+      `bloom offered=${openedBy.offered}, ${bloomGroup} open=${opticalOpen}`);
     // Conditional for the reason `armReset` above is bounded: a press into a control the
     // build is not offering is a thirty-second timeout rather than a finding, and the row
     // above has just said whether it is being offered.
@@ -8271,7 +8488,7 @@ try {
     const bloomDefault = await page.evaluate(
       "__kinect.params.normalise('bloom', __kinect.params.spec('bloom').default)");
     const afterBloom = await page.evaluate(`(() => ({
-      shut: document.querySelector('.group[data-group=optical]').classList.contains('shut'),
+      shut: document.querySelector('.group[data-group=${bloomGroup}]').classList.contains('shut'),
       value: globalThis.__kinect.params.get('bloom'),
       focus: document.activeElement === null ? 'null'
         : (document.activeElement.id || document.activeElement.tagName.toLowerCase()),
@@ -8279,7 +8496,7 @@ try {
     }))()`);
     check(afterBloom.shut && afterBloom.value === bloomDefault,
       'and the group re-derives shut behind it, so the press reached everything a registry write reaches',
-      `optical shut=${afterBloom.shut}, bloom reads ${afterBloom.value} against a default of ${bloomDefault}`);
+      `${bloomGroup} shut=${afterBloom.shut}, bloom reads ${afterBloom.value} against a default of ${bloomDefault}`);
 
     // ---- 17f. where the caret is afterwards
     //
@@ -8305,18 +8522,38 @@ try {
       `the caret is on ${afterBloom.focus}`);
     await freshLook();
     await settle();
-    await armReset('pointSize');
+    // **A parameter whose group cannot collapse, and it is chosen rather than named.**
+    // This row is the other half of the pair above: the caret lands on the slider only
+    // where the slider is still rendered when the handler reaches for it, which is a
+    // group that does not shut behind the write. It named `pointSize`, and `points`
+    // collapses - so the honest answer here is the fallback and the row was asking the
+    // question the row above already answers. `stable` is the set the geometry rows
+    // were measured on, which is exactly "a look scalar in a group nothing collapses".
+    const steady = stable[0];
+    if (steadyTab) {
+      await page.locator(`.paneltab[data-panel-tab="${steadyTab}"]`).click();
+      await settle();
+    }
+    await armReset(steady);
     const caret = await page.evaluate(`(() => (document.activeElement === null ? 'null'
       : (document.activeElement.id || document.activeElement.tagName.toLowerCase())))()`);
-    check(caret === 'pointSize',
+    check(caret === steady,
       "pressing a reset leaves the caret on that row's own slider, which is the control the press was about",
       `the caret is on ${caret}`);
 
-    // Put the look and the store back. The section after this drags a pointer across the
-    // stage and pins the drive, and a panel left with a group open and a value planted is
-    // a different page from the one that row was measured on.
+    // Put the look, the store and the inspector back. The section after this drags a
+    // pointer across the stage and pins the drive, and a panel left with a group open
+    // and a value planted is a different page from the one that row was measured on.
+    //
+    // **The tab is part of that state**, because the rows above stand on whichever
+    // inspector holds the group nothing collapses and the preset picker is on `look`.
+    // A section leaving another tab selected costs the next one a click on an element
+    // that is `display: none`, which arrives as a thirty-second timeout naming a
+    // control that is plainly in the document.
     await page.evaluate("localStorage.removeItem('kinect.panelGroupsOpen')");
     await freshLook();
+    await page.locator('.paneltab[data-panel-tab="look"]').click();
+    await settle();
   }
 
   // ================================ 18. walking the selected parameter's own keys
@@ -8498,8 +8735,14 @@ try {
     });
     await page.evaluate('__kinect.library.refreshPresets()');
     const planted = await shape();
+    // The list is the shipped looks, whatever has been saved, **and the `none` row at
+    // the top**, which is an entry with no name and no file behind it - so it is
+    // neither shipped nor deletable, and a rule reading "everything but the planted one
+    // is builtin" counts it as a shipped look that lost its badge. That is what this
+    // row reddened over: seven entries, five shipped, and the sixth was `none`.
+    const named = planted.names.filter((n) => n !== '');
     check(planted.names.includes(PLANTED) && planted.deletable.join(',') === PLANTED
-      && planted.builtin.length === planted.names.length - 1,
+      && planted.builtin.length === named.length - 1,
       'a delete is drawn on the entries that have one and on no others, which is the shipped looks left alone',
       `${planted.names.length} entries, ${planted.builtin.length} shipped, deletable: `
       + `${planted.deletable.join(', ') || 'none'}`);

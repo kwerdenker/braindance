@@ -1915,10 +1915,19 @@ globalThis.__library = {
     disabled: el.disabled === true,
   })),
 
-  /** What the ⋯ menu on a tile offers, opened by pressing the tile's own button. */
+  /**
+   * What the ⋯ menu on a tile offers, opened by pressing the tile's own button.
+   *
+   * **The press is conditional, the way `clickMenuItem`'s is**, because the button is a
+   * toggle and this hook is named for one direction of it. A caller that had already
+   * opened this tile's menu got it shut instead, and a shut menu measures 0x0 at the
+   * origin - so `clipped` read as the whole menu sitting above the grid and the
+   * placement row reddened over a menu that had never been placed. The reading was of
+   * the hook, not of the page.
+   */
   openMenu: (hash) => {
     const tile = grid.querySelector(`.tile[data-hash="${CSS.escape(hash)}"]`);
-    tile.querySelector('.act.more').click();
+    if (tile.querySelector('.menu').hidden) tile.querySelector('.act.more').click();
     const menu = tile.querySelector('.menu');
     const box = menu.getBoundingClientRect();
     const clip = grid.getBoundingClientRect();

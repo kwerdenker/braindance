@@ -1756,13 +1756,27 @@ function writeTake(dir, id, { frames = 8, withHello = true, truncate = false, st
     // takes both machines hold are compared by content hash, and a helper that
     // re-serialised unconditionally would leave that resting on `JSON.stringify` being
     // stable rather than on the two files being the same file.
+    //
+    // **`startedAt: false` strips the key, and that is not the same request as leaving
+    // it alone.** Carrying the sample's hello through was how this fixture asked for a
+    // take from before the field existed, which is only true while the sample on the
+    // machine is one of those. `captures/` is gitignored and every current build stamps
+    // a wall clock into the hello, so on a freshly shot sample the take meant to prove
+    // the gallery falls back to the file date arrived carrying a date - and the row
+    // reddened over a fixture that had quietly stopped being the shape it was named
+    // for. Asked for explicitly, it is the same take on any sample.
+    const stripped = startedAt === false;
     const stamped = {
-      ...(startedAt === null ? {} : { startedAt }),
+      ...(startedAt === null || stripped ? {} : { startedAt }),
       ...(format === null ? {} : { format }),
     };
-    const hello = Object.keys(stamped).length === 0
+    const hello = Object.keys(stamped).length === 0 && !stripped
       ? SRC.hello
-      : Buffer.from(JSON.stringify({ ...JSON.parse(SRC.hello.toString('utf8')), ...stamped }));
+      : (() => {
+        const parsed = { ...JSON.parse(SRC.hello.toString('utf8')), ...stamped };
+        if (stripped) delete parsed.startedAt;
+        return Buffer.from(JSON.stringify(parsed));
+      })();
     parts.push(encodeMessage(TYPE_HELLO, hello));
   }
   for (let i = 0; i < frames; i++) parts.push(SRC.frames[i % SRC.frames.length]);
@@ -1850,7 +1864,7 @@ function buildFixture() {
   writeTake(macCaps, 'local-clip', { frames: 60, startedAt: Date.UTC(2026, 6, 15, 18, 5) });
 
   // The shapes the gallery has to survive rather than the shapes it likes.
-  writeTake(macCaps, 'truncated-take', { frames: 6, truncate: true });
+  writeTake(macCaps, 'truncated-take', { frames: 6, truncate: true, startedAt: false });
   writeTake(macCaps, 'no-hello-take', { frames: 6, withHello: false });
   writeTake(macCaps, 'one-frame-take', { frames: 1 });
   // **A hello, and no whole frame - the one shape that could tell the gallery's two
@@ -3170,13 +3184,30 @@ async function runChecks() {
     check([1, 2, 4, 16].every((k) => sizes[k].colorBytes === sizes[1].colorBytes && sizes[k].colorBytes > 0),
       'the colour block is carried through untouched at every divisor',
       `${sizes[1].colorBytes} bytes each`);
-    // The spec's own arithmetic: divisor 4 is 27KB of depth plus 52KB of colour,
-    // which is the ~80KB that puts a scrub position at 21ms over a 3.8 MB/s link
-    // against the 128ms a full frame costs. Dropping colour would give ~7ms, which
-    // is a different mechanism wearing this one's measured number.
-    check(Math.abs(sizes[4].total - 79 * 1024) < 6 * 1024,
-      'divisor 4 lands at the ~80KB the 21ms-per-position figure is derived from',
-      `${(sizes[4].total / 1024).toFixed(1)}KB = ${(sizes[4].depthBytes / 1024).toFixed(0)}KB depth + ${(sizes[4].colorBytes / 1024).toFixed(0)}KB colour`);
+    // The spec's own arithmetic: divisor 4 is 27KB of depth plus the whole colour
+    // block, and on the capture that figure was taken from those are the ~80KB that
+    // put a scrub position at 21ms over a 3.8 MB/s link against the 128ms a full frame
+    // costs. Dropping colour would give ~7ms, which is a different mechanism wearing
+    // this one's measured number.
+    //
+    // **So what is asserted is the composition, not the eighty.** A JPEG's size is a
+    // property of what the camera was looking at, and `captures/` is gitignored - this
+    // fixture's colour block is half the size of the one the note was written against,
+    // and a literal total reddened over a room that photographs smaller. The property
+    // that keeps the 21ms honest is that the colour block is still there and is most of
+    // what a position costs, because that is exactly what a build dropping it at
+    // decimation would break - it would take the share to zero. A third is the floor
+    // rather than a half: this fixture's colour is 50% of the total against the 66% the
+    // note was written on, and both are a long way from nothing. The cost on this
+    // capture is printed rather than asserted.
+    const LINK_MB_S = 3.8;
+    const positionMs = (sizes[4].total / (LINK_MB_S * 1024 * 1024)) * 1000;
+    const wholeFrameMs = (sizes[1].total / (LINK_MB_S * 1024 * 1024)) * 1000;
+    check(sizes[4].colorBytes / sizes[4].total > 0.35 && sizes[4].depthBytes === grid(4),
+      'divisor 4 is decimated depth plus the whole colour block, which is what the per-position figure is made of',
+      `${(sizes[4].total / 1024).toFixed(1)}KB = ${(sizes[4].depthBytes / 1024).toFixed(0)}KB depth `
+      + `+ ${(sizes[4].colorBytes / 1024).toFixed(0)}KB colour, so ${positionMs.toFixed(0)}ms a position `
+      + `against ${wholeFrameMs.toFixed(0)}ms a whole frame at ${LINK_MB_S} MB/s`);
     check([1, 2, 4, 16].every((k) => sizes[k].stamp === sizes[1].stamp),
       'and the capture timestamp is the frame\'s own at every divisor');
     check(sizes[1].total === sizes[1].depthBytes + sizes[1].colorBytes + 16,
