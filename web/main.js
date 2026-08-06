@@ -7937,16 +7937,18 @@ addEventListener('keydown', (e) => {
     return;
   }
   // Start or stop recording - the same action the sidebar button takes. The button's
-  // disabled state is the authority on whether the action is available.
-  if ((e.key === 'r' || e.key === 'R') && !EDITING && ui.recGo && !ui.recGo.disabled) {
+  // disabled state is the authority on whether the action is available. Require an
+  // unmodified press so Ctrl+R / Cmd+R still reloads the page.
+  if ((e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey && !e.altKey && !EDITING && ui.recGo && !ui.recGo.disabled) {
     e.preventDefault();
     ui.recGo.click();
     return;
   }
   // Mark during recording - the same action the sidebar button takes, before the editing
   // surface claims the key for its own marks. The button's disabled state is the authority
-  // on whether there is a recording to mark.
-  if ((e.key === 'm' || e.key === 'M') && !EDITING && ui.recMark && !ui.recMark.disabled) {
+  // on whether there is a recording to mark. Require an unmodified press for the same
+  // reason as the record shortcut above.
+  if ((e.key === 'm' || e.key === 'M') && !e.metaKey && !e.ctrlKey && !e.altKey && !EDITING && ui.recMark && !ui.recMark.disabled) {
     e.preventDefault();
     (async () => {
       const body = await (await fetch('/record/mark', {
