@@ -126,16 +126,25 @@
 // **Re-measured on the `ui-rework` branch, and the rig is a different one, so these
 // numbers sit beside the paragraph above rather than replacing it.** No Kinect: the
 // server was `--grabber "<node> tools/fake-grabber.mjs --hd"`, whose hello carries real
-// intrinsics, which is what this file actually gates the record arm on. macOS, load
-// average 19-20 across both runs, one run each. Clean: **131 assertions, 5 failed** -
-// and those five are section 6 rows about which block sits on which surface, which have
-// not run on this branch at all since `988551e`, because the recorder arm died building
-// itself and took the whole section with it. They are recorded as found rather than
-// quietly repaired: what the panel should hold after the tabs is the surface's design
-// and not this file's to decide. `keyframes-on-every-surface`: **7 fired**, which is
-// those same five plus the two recorder keyframe rows - the count row at 54 buttons,
-// and the tab walk below - with the editor's own row green beside them. The pair is
-// what the paragraph above describes, still two, and the asymmetry still the point.
+// intrinsics, which is what this file actually gates the record arm on. macOS, an idle
+// machine at load average 4-10, one run each. Clean: **132 assertions, 0 failed**.
+//
+// The mutations, and the reason to read them as a set rather than one at a time: this
+// round rewrote section 6's block rules, and a rewrite that quietly stopped asserting
+// would show up here as a count falling rather than as anything going red. Four of the
+// five land on exactly the counts the paragraph above recorded from the sensor rig -
+// `fov-hardcoded` **42**, `tanv-uses-fx` **19**, `sensor-view-keys-camera` **7**,
+// `keyframes-on-every-surface` **2** - which is the evidence that sections 1 to 5 were
+// left alone and that the pair of recorder keyframe rows is still a pair.
+// `no-repaint`: **3**.
+//
+// The keyframes count is worth one more sentence, because it moved and came back. It
+// read 7 for one round: section 6 had five rows failing on the clean build, so the
+// mutated run fired those five as well and the arithmetic hid the two that mattered.
+// Those five were the block rules describing a panel that `988551e` had restructured
+// under them, dead since then behind an arm that could not build itself. They are fixed
+// rather than recorded now, and 7 back to 2 is what says the fix was a repair rather
+// than a row quietly dropped.
 //
 // A third mutation stood here, `extended-always-open`, with 3 rows fired against a
 // recorder showing the grade before any press. Its number is left written down and its
@@ -1344,65 +1353,124 @@ try {
   // The last rule is the closer: everything the first three do not name has to be
   // reachable on both surfaces, so a group added later is asked about by existing.
   console.log('\n[6] the recorder and the editor are different panels, in the ways claimed');
-  const panelRun = await onFreshPage('the panel arms', { }, async ({ page }) => {
+  // **One walk, used by both surfaces.** The asymmetry between them is this section's
+  // whole subject, so an arm that walked its tabs differently from the other would put
+  // a difference in the instrument exactly where the claim is about the product. The
+  // editor's half of this was a literal `['camera', 'framing', 'look', 'region']`, which
+  // is the same shape as the `#extended` driver that stood here until `988551e` deleted
+  // the button under it: correct on the day and unable to notice the day it stopped
+  // being. It also silently omitted the Record tab, so what the editor did with the tab
+  // it hides was never read at all.
+  //
+  // The tabs are read off the page and **filtered by `checkVisibility`**, because each
+  // surface hides one of them outright - `display: none`, in the markup and not on the
+  // surface. Enumerating the nodes alone drives a click at a box of zero by zero and
+  // spends Playwright's thirty seconds on it, which arrives as "the arm did not run"
+  // rather than as anything about the claim. Keyed by the tab's own `data-panel-tab`
+  // rather than by element id, because that is the name the panel answers with in
+  // `activeTab` and the row below compares the two.
+  const walkTabs = async (page) => {
+    // Read before anything is clicked, so this is the surface as it opens rather than
+    // as the walk leaves it.
+    const opening = await page.evaluate('globalThis.__sv.panel()');
+    const seen = await page.evaluate(`(() => {
+      const all = [...document.querySelectorAll('#panelTabs [role="tab"]')];
+      const vis = (b) => b.checkVisibility({ checkVisibilityCSS: true });
+      const name = (b) => ({ id: b.id, tab: b.dataset.panelTab ?? b.id });
+      return { shown: all.filter(vis).map(name), hidden: all.filter((b) => !vis(b)).map(name) };
+    })()`);
     const states = {};
-    for (const tab of ['camera', 'framing', 'look', 'region']) {
-      await page.click(`#panelTab${tab[0].toUpperCase()}${tab.slice(1)}`);
+    for (const { id, tab } of seen.shown) {
+      await page.click(`#${id}`);
       states[tab] = await page.evaluate('globalThis.__sv.panel()');
     }
-    return states;
+    return {
+      opening,
+      states,
+      tabs: seen.shown.map((t) => t.tab),
+      hidden: seen.hidden.map((t) => t.tab),
+    };
+  };
+  const panelRun = await onFreshPage('the panel arms', { }, async ({ page }) => {
+    // **The collapse rule needs a document with something in it, and this arm was giving
+    // it one with nothing.** Which groups the panel leaves open derives from the clip, so
+    // a take nobody has graded puts every look parameter at its default and every
+    // collapsible group derives `shut` - and the row below, which asks that the groups
+    // left open show all of their controls, then has no groups left open to ask about.
+    // It failed at `edOpen.length > 0`, which is the floor that row added on purpose so
+    // that a build marking everything shut could not pass it. The floor was right and the
+    // fixture was empty.
+    //
+    // So one look parameter is written off its default first, through the registry the
+    // panel derives from, and put back afterwards - the value is set rather than assumed,
+    // so the arm does not inherit whatever the last run left in `__working__`. The nudge
+    // is asserted below rather than trusted: a `set` that clamped back to the default
+    // would leave the row failing for a reason that reads exactly like the panel's.
+    const nudge = await page.evaluate(`(() => {
+      const name = __kinect.params.names('look')[0];
+      const was = __kinect.params.get(name);
+      __kinect.params.set(name, was === 0 ? 1 : was * 1.7);
+      return { name, was, now: __kinect.params.get(name) };
+    })()`);
+    const walked = await walkTabs(page);
+    await page.evaluate(`__kinect.params.reset([${JSON.stringify(nudge.name)}])`);
+    return { ...walked, nudge };
   });
-  const recPanelRun = await onFreshPage('the recorder panel arm', { path: RECORDER_PATH }, async ({ page }) => {
-    // Read before anything is clicked, so `panel` is the surface as it opens rather
-    // than as the walk below leaves it.
-    const panel = await page.evaluate('globalThis.__sv.panel()');
-    // **The tabs are enumerated off the page rather than listed here.** The recorder
-    // reaches its look parameters through the Look tab now, and the `extended settings`
-    // toggle that used to reveal them went out of the markup with `988551e` - so the
-    // gesture that could plausibly conjure a keyframe control is a tab selection, and
-    // a tab added later has to be asked about by existing rather than by somebody
-    // remembering to extend a literal.
-    // Filtered by what a hand could actually reach, because the recorder hides the
-    // Camera tab outright - `display: none`, so it is in the markup and not on the
-    // surface. Enumerating the nodes alone drove a click at a box of zero by zero and
-    // spent the timeout on it, which arrives as "the arm did not run" rather than as
-    // anything about the claim; and asserting a hardcoded four would go stale the same
-    // way the toggle did.
-    const tabs = await page.evaluate(
-      `[...document.querySelectorAll('#panelTabs [role="tab"]')]
-        .filter((b) => b.checkVisibility({ checkVisibilityCSS: true })).map((b) => b.id)`,
-    );
-    const states = {};
-    for (const id of tabs) {
-      await page.click(`#${id}`);
-      states[id] = await page.evaluate('globalThis.__sv.panel()');
-    }
-    return { panel, tabs, states };
-  });
+  const recPanelRun = await onFreshPage('the recorder panel arm', { path: RECORDER_PATH },
+    async ({ page }) => walkTabs(page));
   if (!panelRun.ok) throw new Error(`the editor panel arm did not run: ${panelRun.error}`);
   if (!recPanelRun.ok) throw new Error(`the recorder panel arm did not run: ${recPanelRun.error}`);
   {
-    const edStates = panelRun.value;
-    const ed = edStates.camera;
-    const rec = recPanelRun.value.panel;
-    const recTabs = recPanelRun.value.tabs;
+    const edStates = panelRun.value.states;
     const recStates = recPanelRun.value.states;
-    const editorBlocks = new Map(ed.blocks.map((block) => [block.key, {
-      ...block,
-      visible: Object.values(edStates).some((state) => state.blocks.find((b) => b.key === block.key)?.visible),
-      controlsOnScreen: Math.max(...Object.values(edStates).map(
-        (state) => state.blocks.find((b) => b.key === block.key)?.controlsOnScreen ?? 0,
-      )),
-    }]));
-    const edAcrossTabs = { ...ed, blocks: [...editorBlocks.values()] };
+    const recTabs = recPanelRun.value.tabs;
+    /**
+     * What a surface reaches, which is the union over the tabs it shows.
+     *
+     * **The tab a surface happens to open on is not the surface**, and reading one was
+     * how four rows below came to describe a panel that had stopped existing: the
+     * recorder opens on Record, so "the grade is hidden on the recorder" and "the
+     * preview-range warning is not there" were both measured on the one tab that holds
+     * neither, and both went on passing while the Look and Framing tabs beside them
+     * held exactly what the rows said was absent. The editor's half of this section
+     * already worked this way; the recorder grew tabs in this rework and did not.
+     */
+    const across = (states) => {
+      const each = Object.values(states);
+      const at = (state, key) => state.blocks.find((b) => b.key === key);
+      return {
+        ...each[0],
+        blocks: each[0].blocks.map((block) => ({
+          ...block,
+          visible: each.some((state) => at(state, block.key)?.visible),
+          controlsOnScreen: Math.max(...each.map((state) => at(state, block.key)?.controlsOnScreen ?? 0)),
+        })),
+        // Reached the same way and for the same reason: it lives on the Framing tab.
+        recRange: each.some((state) => state.recRange),
+      };
+    };
+    const ed = across(edStates);
+    const rec = across(recStates);
     // Without this every visibility row below is a row about a function that returned
     // undefined, which is falsy, which reads as "hidden" for everything.
     check(ed.supported && rec.supported,
       '`checkVisibility` exists, so the rows below are about layout rather than about undefined',
       `editor ${ed.supported}, recorder ${rec.supported}`);
-    check(Object.entries(edStates).every(([tab, state]) => state.activeTab === tab),
-      'the four editor inspector tabs each activate the panel view they name',
+    check(Object.keys(edStates).length > 0
+      && Object.entries(edStates).every(([tab, state]) => state.activeTab === tab),
+      'every editor inspector tab activates the panel view it names',
       Object.entries(edStates).map(([tab, state]) => `${tab}:${state.activeTab}`).join(' '));
+    check(Object.keys(recStates).length > 0
+      && Object.entries(recStates).every(([tab, state]) => state.activeTab === tab),
+      'and so does every tab the recorder shows, which is the walk the rows below stand on',
+      Object.entries(recStates).map(([tab, state]) => `${tab}:${state.activeTab}`).join(' '));
+    // The fixture the collapse-rule row below stands on, asserted rather than assumed:
+    // a `set` that clamped back to where it started would leave that row failing for a
+    // reason that reads exactly like the panel's.
+    const nudge = panelRun.value.nudge;
+    check(nudge.now !== nudge.was,
+      'the editor arm moved a look parameter off its default, so the collapse rule has something to leave open',
+      `${nudge.name} ${nudge.was} -> ${nudge.now}`);
 
     // (a) the keyframe controls
     check(rec.kfButtons === 0 && rec.keyed === 0,
@@ -1422,33 +1490,57 @@ try {
       'and both surfaces are built from one registry and one panel',
       `${ed.lookNames}/${rec.lookNames} parameters, ${ed.blocks.length}/${rec.blocks.length} blocks`);
 
-    // (c) which blocks are on screen, as four rules over the whole panel
-    // `extendedRow` is not in this list and the row below is why it cannot be: the check
-    // above asserts the panel holds every block these rules name, precisely so a rule is
-    // never asserted about nothing. The button that revealed the grade on the recorder
-    // went with the rule that hid it, so naming it here would fail that check with a
-    // sentence about a block rather than about the surfaces.
-    const RECORDER_ONLY = ['recordGroup', 'recLookGroup', 'sensorGroup', 'monitorGroup', 'programOutGroup'];
-    const EDITOR_ONLY = ['cameraGroup', 'lookPresetGroup'];
-    const named = new Set([...RECORDER_ONLY, ...EDITOR_ONLY]);
-    const on = (blocks, keys) => keys.filter((key) => blocks.find((b) => b.key === key)?.visible);
-    const off = (blocks, keys) => keys.filter((key) => !blocks.find((b) => b.key === key)?.visible);
+    // (c) which blocks are on screen, as rules over the whole panel
+    //
+    // **These were two lists of ids and the lists went stale twice.** `9556663` took
+    // `extendedRow` out of the recorder's after `988551e` deleted the button, and left
+    // `recLookGroup` in it - a block the same commit had deleted - so the rule went on
+    // naming something the panel no longer held. A list of ids cannot notice the day the
+    // panel stops matching it, which is the failure this repo keeps closing by making
+    // the check enumerate the thing instead.
+    //
+    // The mechanism the lists were approximating is one sentence: **each surface hides
+    // exactly one inspector tab outright, and what it cannot reach is exactly what lives
+    // on the tab it hides.** The recorder hides Camera, so the composition block and the
+    // viewer's own settings are the two it cannot reach; the editor hides Record, so the
+    // four shooting blocks are the four it cannot reach. Both halves are measured rather
+    // than declared - the unreachable set off the surface itself, the population that
+    // ought to be unreachable off the *other* surface, where that tab is on screen - so
+    // a group added to either tab is asked about by existing.
     const listed = (blocks) => blocks.map((b) => b.key);
+    const cannotReach = (surface) => listed(surface.blocks.filter((b) => !b.visible));
+    // What lives on one tab and nowhere else, read on the surface that shows that tab.
+    const onlyUnder = (states, tab) => listed(Object.values(states)[0].blocks).filter((key) => {
+      const shows = (name) => !!states[name].blocks.find((b) => b.key === key)?.visible;
+      return shows(tab) && Object.keys(states).every((name) => name === tab || !shows(name));
+    });
+    const recHides = recPanelRun.value.hidden;
+    const edHides = panelRun.value.hidden;
+    const same = (a, b) => a.length === b.length && [...a].sort().join(' ') === [...b].sort().join(' ');
 
-    check(listed(rec.blocks).length === listed(ed.blocks).length
-      && RECORDER_ONLY.concat(EDITOR_ONLY).every((key) => listed(rec.blocks).includes(key)),
+    check(listed(rec.blocks).length === listed(ed.blocks).length,
       'the panel holds every block these rules name, so none of them is asserted about nothing',
       listed(rec.blocks).join(' '));
-    check(off(rec.blocks, RECORDER_ONLY).length === 0,
-      'the recorder shows the shooting blocks', `visible: ${on(rec.blocks, RECORDER_ONLY).join(' ')}`);
-    check(on(edAcrossTabs.blocks, RECORDER_ONLY).length === 0,
-      'and the editor shows none of them in any inspector tab',
-      `still visible: ${on(edAcrossTabs.blocks, RECORDER_ONLY).join(' ') || 'none'}`);
-    check(on(rec.blocks, EDITOR_ONLY).length === 0,
-      'the recorder hides the composition block', `still visible: ${on(rec.blocks, EDITOR_ONLY).join(' ') || 'none'}`);
-    check(off(edAcrossTabs.blocks, EDITOR_ONLY).length === 0,
-      'and the editor reaches its composition and preset blocks through the inspector',
-      `reachable: ${on(edAcrossTabs.blocks, EDITOR_ONLY).join(' ')}`);
+    check(recHides.length === 1 && edHides.length === 1 && recHides[0] !== edHides[0],
+      'each surface hides exactly one inspector tab, and not the same one as the other',
+      `the recorder hides [${recHides.join(' ') || 'nothing'}] of ${recTabs.concat(recHides).length}, `
+      + `the editor hides [${edHides.join(' ') || 'nothing'}]`);
+    // **Both sets have to be non-empty or the comparison is two empties agreeing.** That
+    // is the shape a derived rule fails at: a walk that revealed nothing would make the
+    // unreachable set everything and the population empty, and a union taken over a page
+    // that ignored every click would make both empty and the row green.
+    const recCannot = cannotReach(rec);
+    const recShould = onlyUnder(edStates, recHides[0]);
+    check(recShould.length > 0 && same(recCannot, recShould),
+      'what the recorder cannot reach is exactly what lives on the tab it hides, and that is not nothing',
+      `unreachable on the recorder [${recCannot.join(' ') || 'none'}], `
+      + `on the editor's ${recHides[0]} tab alone [${recShould.join(' ') || 'none'}]`);
+    const edCannot = cannotReach(ed);
+    const edShould = onlyUnder(recStates, edHides[0]);
+    check(edShould.length > 0 && same(edCannot, edShould),
+      'and what the editor cannot reach is exactly what lives on the tab it hides',
+      `unreachable on the editor [${edCannot.join(' ') || 'none'}], `
+      + `on the recorder's ${edHides[0]} tab alone [${edShould.join(' ') || 'none'}]`);
     // **Counted in controls as well as in headings, and the pair is the point.** A
     // group's node stays visible when the collapse rule shuts it - `shut` hides the
     // rows, not the box around them - so "9 look groups, all 9 visible" went on being
@@ -1482,14 +1574,28 @@ try {
     // so a build that marked everything shut fails the floor and one that marked
     // everything open fails the controls.
     const sum = (list, key) => list.reduce((n, b) => n + b[key], 0);
-    const recLook = rec.blocks.filter((b) => b.look);
-    const edLook = edAcrossTabs.blocks.filter((b) => b.look);
+    const hiddenTabBlocks = new Set([...recShould, ...edShould]);
+    const recLook = rec.blocks.filter((b) => b.look && !hiddenTabBlocks.has(b.key));
+    const edLook = ed.blocks.filter((b) => b.look && !hiddenTabBlocks.has(b.key));
     const edOpen = edLook.filter((b) => !b.shut);
     const edShut = edLook.filter((b) => b.shut);
-    check(recLook.length > 0 && recLook.every((b) => !b.visible) && sum(recLook, 'controlsOnScreen') === 0,
-      'the grade is hidden on the recorder, down to the last control, which is what the extended button is for',
-      `${recLook.length} look groups, ${recLook.filter((b) => b.visible).length} visible, `
-      + `${sum(recLook, 'controlsOnScreen')} of ${sum(recLook, 'controls')} controls on screen`);
+    // **This row said the grade was hidden on the recorder, and it now says the
+    // opposite, which is a claim inverted rather than a threshold moved.** The authority
+    // for inverting it is this file's own header, written by `9556663`: "the recorder no
+    // longer hides the grade at all - the surface grew inspector tabs and the Look tab
+    // holds it". That commit recorded the new truth in the paragraph and left the row
+    // asserting the old one, and the row went on passing because it read the tab the
+    // recorder opens on, which is the one tab the grade is not under. A claim that
+    // survives by being measured in the one place it is still true is the failure this
+    // section exists to catch, so it is restated rather than reworded.
+    //
+    // The look groups on the tab each surface hides are out of both lists: they are the
+    // subject of the derived rule above, and asking them here would assert the same fact
+    // twice and call the second one coverage.
+    check(recLook.length > 0 && recLook.every((b) => b.visible),
+      'the grade is reachable on the recorder too, through the tab the rework put it on',
+      `${recLook.length} look groups off the hidden tab, ${recLook.filter((b) => b.visible).length} reachable, `
+      + `unreachable [${recLook.filter((b) => !b.visible).map((b) => b.key).join(' ') || 'none'}]`);
     check(edLook.length > 0 && edLook.every((b) => b.visible)
       && edOpen.length > 0 && edOpen.every((b) => b.controls > 0 && b.controlsOnScreen === b.controls)
       && edShut.every((b) => b.controlsOnScreen === 0),
@@ -1500,8 +1606,8 @@ try {
       + `${sum(edOpen, 'controls')}; shut by it: ${edShut.map((b) => b.key).join(' ') || 'none'}`);
     // The closer. Everything the rules above do not name is common furniture and has
     // to be on both surfaces, so a block added later is covered without being listed.
-    const commonRec = rec.blocks.filter((b) => !named.has(b.key) && !b.look);
-    const commonEd = edAcrossTabs.blocks.filter((b) => !named.has(b.key) && !b.look);
+    const commonRec = rec.blocks.filter((b) => !hiddenTabBlocks.has(b.key) && !b.look);
+    const commonEd = ed.blocks.filter((b) => !hiddenTabBlocks.has(b.key) && !b.look);
     check(commonRec.length > 0 && commonRec.every((b) => b.visible) && commonEd.every((b) => b.visible),
       'and every other block in the panel is visible on the recorder and reachable through an editor tab, named or not',
       `${commonRec.map((b) => b.key).join(' ')} - hidden on the recorder [`
