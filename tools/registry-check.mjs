@@ -325,6 +325,11 @@ const LANDING = {
   regionNoise: 'k.uniforms.regionNoise.value',
   regionMask: 'k.uniforms.regionMask.value',
   glitch: 'k.uniforms.glitch.value',
+  glitchDensity: 'k.uniforms.glitchDensity.value',
+  glitchShove: 'k.uniforms.glitchShove.value',
+  glitchTint: 'k.uniforms.glitchTint.value',
+  glitchBands: 'k.uniforms.glitchBands.value',
+  glitchRate: 'k.uniforms.glitchRate.value',
   spin: 'k.controls.autoRotate',
   // The five readings land on uniforms of their own name, which is the one place in
   // this table where the parameter and the uniform were deliberately made to match:
@@ -355,6 +360,7 @@ const LANDING = {
   rgbSplit: '[k.grade.uniforms.rgbSplit.value, k.grade.enabled]',
   scanlines: '[k.grade.uniforms.scanlines.value, k.grade.enabled]',
   grain: '[k.grade.uniforms.grain.value, k.grade.enabled]',
+  vignette: '[k.grade.uniforms.vignette.value, k.grade.enabled]',
   denoise: 'k.uniforms.denoise.value',
   edgeTol: 'k.uniforms.edgeTol.value',
   renderScale: 'k.renderer.getContext().drawingBufferWidth',
@@ -417,6 +423,11 @@ const EXPECT = {
   regionNoise: (v) => v,
   regionMask: (v) => v,
   glitch: (v) => v,
+  glitchDensity: (v) => v,
+  glitchShove: (v) => v,
+  glitchTint: (v) => v,
+  glitchBands: (v) => v,
+  glitchRate: (v) => v,
   spin: (v) => v,
   readRgb: (v) => v,
   readDepth: (v) => v,
@@ -441,9 +452,13 @@ const EXPECT = {
   edges: (v) => v,
   bloom: (v) => [v, v > 0],
   trails: (v) => [v, v > 0],
-  rgbSplit: (v, all) => [v, v > 0 || all.scanlines > 0 || all.grain > 0],
-  scanlines: (v, all) => [v, all.rgbSplit > 0 || v > 0 || all.grain > 0],
-  grain: (v, all) => [v, all.rgbSplit > 0 || all.scanlines > 0 || v > 0],
+  // The four that share one pass, so each one's landing carries whether the pass is on
+  // and every one of them has to name the other three. `vignette` joined them when it
+  // stopped being a literal applied whenever the pass happened to run.
+  rgbSplit: (v, all) => [v, v > 0 || all.scanlines > 0 || all.grain > 0 || all.vignette > 0],
+  scanlines: (v, all) => [v, all.rgbSplit > 0 || v > 0 || all.grain > 0 || all.vignette > 0],
+  grain: (v, all) => [v, all.rgbSplit > 0 || all.scanlines > 0 || v > 0 || all.vignette > 0],
+  vignette: (v, all) => [v, all.rgbSplit > 0 || all.scanlines > 0 || all.grain > 0 || v > 0],
   denoise: (v) => (v ? 1 : 0),
   edgeTol: (v) => v,
   // three floors width * pixelRatio, and the context runs at deviceScaleFactor 1.
@@ -490,6 +505,17 @@ const SCRAMBLE = {
   noise: 0.08,
   noiseScale: 5.5,
   noiseSpeed: 1.45,
+  // The master well up, because the five ceilings under it are only observable through
+  // it: at a glitch of 0 no band tears, so density, shove, flare, band height and rate
+  // would every one of them land in the no-pixel bucket together - the same argument the
+  // region's three effects below are set for. The flare is above its default so it is
+  // being raised onto the picture rather than lowered out of it.
+  glitch: 0.31,
+  glitchDensity: 0.62,
+  glitchShove: 1.23,
+  glitchTint: 4.35,
+  glitchBands: 27,
+  glitchRate: 13.5,
   // The region is placed rather than picked, because the sweep below drops each
   // parameter in turn and asserts the image moved - and a region floating in empty
   // space would leave all eight of its geometry parameters inert while looking like a
@@ -525,7 +551,6 @@ const SCRAMBLE = {
   regionPush: 0.35,
   regionNoise: 0.5,
   regionMask: 0.4,
-  glitch: 0.31,
   spin: true,
   // All five readings live at once, which is what keeps every per-reading term in the
   // shader reachable from the one sweep this file runs. They are deliberately unequal:
@@ -571,6 +596,7 @@ const SCRAMBLE = {
   rgbSplit: 2.3,
   scanlines: 0.61,
   grain: 0.37,
+  vignette: 0.73,
   denoise: false,
   edgeTol: 340,
   renderScale: 85,
@@ -941,6 +967,21 @@ const GOLDEN_ABSENT = new Set([
   // that drifted moves that reading's image and fails there by name.
   'rgbSaturation', 'depthGamma', 'ghostRim', 'ghostFill',
   'contourBands', 'contourWidth', 'blackwallSweep',
+  // The five ceilings under the glitch master, on exactly those terms: at the pinned
+  // revision each was a literal inside the vertex stage's glitch block, and each
+  // defaults to the literal it replaced, so a build carrying them tears identically to
+  // one without them. What holds them to that is section 1b, which renders at parameter
+  // defaults - a default that drifted off its literal would move whichever readings the
+  // torn bands reach and fail there by name rather than being excused here.
+  'glitchDensity', 'glitchShove', 'glitchTint', 'glitchBands', 'glitchRate',
+  // `vignette` is here on different terms from everything above it, and the difference
+  // is worth the sentence. It was a literal too, but it is the one promoted literal that
+  // does NOT keep its old value: the behaviour it replaces is conditional - 0.55 while
+  // some other grade term held the pass open, 0 while none did - so no default can
+  // reproduce both branches. It defaults to the branch the parameter defaults are in,
+  // which is why section 1b still agrees with a build from before it existed. The look
+  // that did carry a vignette, `blackwall.json`, now names 0.55 for itself.
+  'vignette',
   // The program-out size, on the same terms and for the same reason: not a registry
   // parameter, no such control at the earlier revision, and its own bounds live in the
   // handler that parses it rather than in the markup. What it is held to is
@@ -1525,12 +1566,16 @@ console.log('\n[registry] the side effects that are not a uniform write');
 
   const gates = [];
   for (const [values, want] of [
-    [{ bloom: 0, trails: 0, rgbSplit: 0, scanlines: 0, grain: 0 }, { bloom: false, trails: false, grade: false }],
+    [{ bloom: 0, trails: 0, rgbSplit: 0, scanlines: 0, grain: 0, vignette: 0 }, { bloom: false, trails: false, grade: false }],
     [{ bloom: 0.05 }, { bloom: true, trails: false, grade: false }],
     [{ trails: 0.01 }, { bloom: false, trails: true, grade: false }],
     [{ rgbSplit: 0.05 }, { bloom: false, trails: false, grade: true }],
     [{ scanlines: 0.01 }, { bloom: false, trails: false, grade: true }],
     [{ grain: 0.01 }, { bloom: false, trails: false, grade: true }],
+    // The fourth term sharing that pass, and the one that used to ride on the other
+    // three: raised on its own it has to bring the pass up by itself, or the vignette
+    // is back to being a thing you can only have by asking for something else.
+    [{ vignette: 0.01 }, { bloom: false, trails: false, grade: true }],
   ]) {
     const r = await setAndRead(values);
     const got = { bloom: r.bloom, trails: r.trails, grade: r.grade };

@@ -51,6 +51,23 @@ zoom about the pointer, `+`/`-` about the playhead, `,`/`.` to pan, `F` to fit t
 to frame the trim. The overview underneath is always the whole clip: drag its box to pan, an
 edge to zoom, click to go there.
 
+**Glitch** tears horizontal bands of the feed sideways, and it is six controls rather than
+one because the interesting looks live off the diagonal. `amount` is the master and the one
+worth keyframing — it scales density and shove together, so corruption fades in and out on a
+single track. `density` is what fraction of the bands tear at a full master and `shove m` is
+how far one travels, in metres in the room: sparse-and-violent and dense-and-subtle are the
+two ends those give you, and neither is reachable from a single slider. `flare` is the cyan
+a torn band burns, per metre it was shoved, so a bigger tear lights harder on its own.
+`band rows` is the height of a band in the sensor's own scanlines — 424 over that many bands,
+so 35 at the default of 12 — and `rate hz` is how often the torn set is redrawn, where 0
+freezes the pattern where it stands rather than switching it off.
+
+The tear is applied in the sensor's frame before the camera sees it, so it is only
+screen-horizontal from head-on: orbit around a torn band and it shoves in depth instead, and
+a levelled room tears along the angle the mount was really at. That is the effect saying the
+*volume* is corrupt rather than the picture, and it is why the group sits at the displacement
+stage next to what moves points rather than in `Post` next to `scanlines`.
+
 `turbulence` displaces points with a noise field. `near`/`far` is the most useful control
 for isolating a person from the room. `cull speckle` drops points whose neighbours disagree,
 cleaning up the sensor's edge noise (sigma ~= 3.5 + 1.3*d mm, so 4.6mm at 0.75m and 10mm at
@@ -63,6 +80,15 @@ it crosses an angled surface as a drifting diagonal band; wide and hot it reads 
 leak, so it is kept narrow and cyan. **`rim`** brightens depth discontinuities and gives the
 subject its edge, but under additive blending plus bloom it washes broad surfaces white, so
 turn it down before turning down bloom.
+
+**The four Post terms share one pass, and the pass carries the tonemap.** `rgb split`,
+`scanlines`, `grain` and `vignette` each switch it on, because a full-screen read and write
+that changes nothing is worth skipping. What rides along with it is the highlight rolloff and
+the black-toe crush, so a look with all four at zero is not the same image without four
+effects: it also has lifted blacks and no rolloff, and additive accumulation clips to flat
+white where it would otherwise keep its hue. Raising any one of the four brings the grade back.
+The vignette used to be part of that bundle and is now its own control, which is why a project
+saved before it existed loses its corner falloff until it names one.
 
 ## Levelling a canted mount
 

@@ -627,7 +627,13 @@ console.log('\n== 1c. the image at a program position is the frame the index nam
   // leave whatever the previous section selected - and the section before this one runs
   // in Blackwall, whose scan plane sweeps with program time. Every "nothing left that
   // can move the image" claim below would then be measuring a moving image.
-  const FLAT = { ...DEPTH_LOOK, fade: 0, wake: 0, trails: 0, bloom: 0, glitch: 0, scan: 0, noise: 0, rgbSplit: 0, scanlines: 0, grain: 0 };
+  // `vignette` is named here for the same reason every other grade term is, and it is the
+  // one that says why this list cannot be shortened: FLAT spreads over a look that has the
+  // grade up, so a term it does not zero arrives from underneath. When the vignette stopped
+  // being a literal applied whenever the pass ran and became a parameter Blackwall names,
+  // this list went on zeroing the three it knew about and the fourth came through - a flat
+  // look with a corner falloff on it, which is 100% of pixels differing from the bytes.
+  const FLAT = { ...DEPTH_LOOK, fade: 0, wake: 0, trails: 0, bloom: 0, glitch: 0, scan: 0, noise: 0, rgbSplit: 0, scanlines: 0, grain: 0, vignette: 0 };
   const look = { ...FLAT, interpolate: false };
   // A source time sitting just inside a bracket, so which pair it names is not a
   // rounding question. Which *half* of that pair the image comes from is the part
@@ -1171,7 +1177,13 @@ console.log('\n== 4b. 60 fps out of a capture whose median gap is 64ms ==');
   // leave whatever the previous section selected - and the section before this one runs
   // in Blackwall, whose scan plane sweeps with program time. Every "nothing left that
   // can move the image" claim below would then be measuring a moving image.
-  const FLAT = { ...DEPTH_LOOK, fade: 0, wake: 0, trails: 0, bloom: 0, glitch: 0, scan: 0, noise: 0, rgbSplit: 0, scanlines: 0, grain: 0 };
+  // `vignette` is named here for the same reason every other grade term is, and it is the
+  // one that says why this list cannot be shortened: FLAT spreads over a look that has the
+  // grade up, so a term it does not zero arrives from underneath. When the vignette stopped
+  // being a literal applied whenever the pass ran and became a parameter Blackwall names,
+  // this list went on zeroing the three it knew about and the fourth came through - a flat
+  // look with a corner falloff on it, which is 100% of pixels differing from the bytes.
+  const FLAT = { ...DEPTH_LOOK, fade: 0, wake: 0, trails: 0, bloom: 0, glitch: 0, scan: 0, noise: 0, rgbSplit: 0, scanlines: 0, grain: 0, vignette: 0 };
   const walk = `(async (o) => {
     const k = globalThis.__kinect;
     const tl = globalThis.__tl;

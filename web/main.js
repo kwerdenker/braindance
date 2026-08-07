@@ -417,7 +417,28 @@ const uniforms = {
   regionPush: { value: 0 },
   regionNoise: { value: 0 },
   regionMask: { value: 0 },
+  // Datastream corruption, and the five numbers one slider used to hide. `glitch` is
+  // the master and the only one of the six that is meant to be keyframed in anger: a
+  // clip brings the corruption in and out on one track, where five absolute values
+  // would have to be animated in step and reach zero together to stop. The rest are
+  // ceilings - what a fully open master means - and every default below is exactly the
+  // literal it replaced, so a document that names none of them draws what it drew.
+  //
+  // The pair that earns its keep is `glitchDensity` against `glitchShove`. Fused into
+  // the master they could only ever travel the diagonal, which made sparse-and-violent
+  // and dense-and-subtle both unaskable - the complaint that started this. Because the
+  // master still multiplies both, perceived intensity ramps as roughly the square of
+  // the fader, which is an ease-in you would otherwise keyframe by hand.
   glitch: { value: 0 },
+  glitchDensity: { value: 0.45 },
+  glitchShove: { value: 0.45 },
+  glitchTint: { value: 1.8 },
+  glitchBands: { value: 12 },
+  // Hertz, and zero is a state rather than an off switch: `floor(time * 0.0)` is a
+  // constant, so the tear pattern freezes where it stands instead of stopping. A held
+  // corruption is a different picture from no corruption, and because the rate
+  // keyframes it can be stopped and started.
+  glitchRate: { value: 7 },
   time: { value: 0 },
   // The five readings of the take, as weights rather than as a mode. Each one is a
   // complete answer to "what colour is this point", and the fragment stage mixes
@@ -483,6 +504,7 @@ uniform float noise, noiseScale, noiseSpeed;
 uniform vec3 regionCentre, regionHalf;
 uniform float regionRound, regionSoft, regionPush, regionNoise, regionMask;
 uniform float mixT, snapDelta, glitch;
+uniform float glitchDensity, glitchShove, glitchTint, glitchBands, glitchRate;
 uniform float fadeTime, wakeTime, sinceFrameSec;
 uniform int denoise, interpolate;
 
@@ -695,14 +717,29 @@ void main() {
 
   // Datastream corruption: horizontal bands tear sideways, the way a failing
   // feed shears. Bands are picked stochastically so it stutters rather than pulses.
+  //
+  // The shove is sensor-frame X applied before the view matrix, and the bands are
+  // depth-image rows, so the tear belongs to the feed rather than to the display. That
+  // is the point rather than an oversight: orbit around a torn band and it shoves in
+  // depth, which is what says the volume is corrupt, and under a levelled room the
+  // bands run at the angle the bracket was actually at. Screen-locked tearing is a
+  // different effect and would belong at the grade stage beside the scanlines.
+  //
+  // The floor of time times the rate is written twice rather than hoisted into a local,
+  // and the shove's ceiling is parenthesised as twice glitchShove rather than folded
+  // into the chain. Both are here to hold the float arithmetic at the defaults exactly
+  // where the literals left it - this file has already measured that handing a value
+  // through a variable licenses a contraction the inline expression does not get, and
+  // doubling 0.45 is exact in float32 where a re-associated product need not be. At the
+  // defaults this block is bit-identical to the one-slider version it replaces.
   vGlitch = 0.0;
   if (glitch > 0.0) {
-    float band = floor(position.y / 12.0);
-    float roll = hash(band + floor(time * 7.0) * 31.7);
-    if (roll > 1.0 - glitch * 0.45) {
-      float shove = (hash(band * 3.1 + floor(time * 7.0)) - 0.5) * glitch * 0.9;
+    float band = floor(position.y / glitchBands);
+    float roll = hash(band + floor(time * glitchRate) * 31.7);
+    if (roll > 1.0 - glitch * glitchDensity) {
+      float shove = (hash(band * 3.1 + floor(time * glitchRate)) - 0.5) * glitch * (2.0 * glitchShove);
       pos.x += shove;
-      vGlitch = abs(shove) * 3.0;
+      vGlitch = abs(shove) * glitchTint;
     }
   }
 
@@ -935,9 +972,6 @@ void main() {
     float scan = smoothstep(0.988, 1.0, sweep);
     bw += vec3(0.10, 0.62, 0.78) * scan * scanAmount;
 
-    // Torn bands flare cyan where the feed shears.
-    bw += vec3(0.2, 0.9, 1.0) * vGlitch;
-
     bw *= 0.55 + 0.75 * lum;
 
     // Shed points run hotter than the surface they left, so a wake reads as the
@@ -982,6 +1016,38 @@ void main() {
     col = mix(col, mix(vec3(0.02, 0.03, 0.05), vec3(0.82, 0.94, 1.0), e), edges);
     alpha *= mix(1.0, 0.05 + 0.95 * e, edges);
   }
+
+  // Torn bands flare cyan where the feed shears - and it sits here, after the blend,
+  // for the reason thermal and edges two blocks up sit here. This line used to live
+  // inside the Blackwall branch, which made it inert in the other four readings while
+  // the displacement that earns it kept firing in all five: the geometry tore under
+  // Colour and Depth and nothing lit up, so a slider that plainly worked in one reading
+  // looked broken in the rest. Worse than inert, it was coupled to something nobody
+  // asked it to be - the readings normalise by their weight sum, so a dissolve from
+  // Blackwall into Depth dimmed the corruption on the way past and the flare rode the
+  // colour crossfade.
+  //
+  // Moving it changes what the Blackwall preset draws, because inside the branch the
+  // flare was multiplied by that reading's 0.55 + 0.75 * lum shading before the
+  // normalisation reached it. glitchTint absorbs the difference at a default measured
+  // against the old build rather than carried over from it - a term reconstructing the
+  // old inside-the-branch arithmetic would be a second implementation of this line,
+  // which is the thing this file refuses. Colour only, no alpha term: that is what the
+  // old line did, and an additive splat shows a brighter colour without being asked to
+  // cover more.
+  //
+  // Unconditional, and the missing guard on vGlitch is a measurement rather than an
+  // oversight. Guarded, this line reddened three of registry-check's five reading rows
+  // against the pinned pre-readings build - readDepth and readContour at frame 4 and
+  // readBlackwall at frames 0 and 1 - at parameter defaults, where glitch is 0 and the
+  // guard means the add never runs at all. Nothing mathematical moved: adding zero is
+  // exact, and the branch was never taken. What moved was the code around it, because a
+  // branch dropped into the common path costs the compiler contractions it was making
+  // across the lines either side. Written straight through, all five rows are bit-identical
+  // again and only the pre-existing readGhost failure remains. So the cost of a fragment
+  // being able to skip a multiply-add it does not need is three false regressions in a
+  // check with no tolerance and no way to re-baseline, and the multiply-add is cheaper.
+  col += vec3(0.2, 0.9, 1.0) * vGlitch;
 
   // Cross-fade. A dying point thins out where it stood instead of blinking off,
   // and its replacement comes up over the same window.
@@ -1187,6 +1253,22 @@ const GradeShader = {
     rgbSplit: { value: 0 },
     scanlines: { value: 0 },
     grain: { value: 0 },
+    // The corner falloff, which was the literal 0.55 and applied whenever this pass ran
+    // at all. That made it a hidden function of the three terms above: a look with all
+    // of them at zero switched the pass off and lost its vignette, so the comment below
+    // claiming the frame "always closes down on the subject" was false in exactly the
+    // state the four shipped presets other than Blackwall are in.
+    //
+    // It defaults to 0 rather than to the 0.55 it was, and that is the one place in this
+    // file where a promoted literal does not keep its value. It cannot: the behaviour it
+    // replaces is not a constant but a conditional - 0.55 when something else was on, 0
+    // when nothing was - and no single default reproduces both branches. Zero is the
+    // branch that keeps the parameter defaults drawing what they drew, which is what
+    // registry-check hashes against a build from before any of this existed.
+    // `blackwall.json` names 0.55 explicitly so the one shipped look that had a vignette
+    // keeps it. A project saved before this that raised any grade term is the case that
+    // does change: it loses its corner falloff until it names one.
+    vignette: { value: 0 },
     time: { value: 0 },
     resolution: { value: new THREE.Vector2(1, 1) },
   },
@@ -1198,7 +1280,7 @@ const GradeShader = {
   // a full-screen read and write each.
   fragmentShader: /* glsl */ `
     uniform sampler2D tDiffuse;
-    uniform float rgbSplit, scanlines, grain, time;
+    uniform float rgbSplit, scanlines, grain, vignette, time;
     uniform vec2 resolution;
     varying vec2 vUv;
 
@@ -1249,9 +1331,12 @@ const GradeShader = {
         col += (n - 0.5) * grain * 0.22 * (0.15 + lum);
       }
 
-      // Vignette is tied to the grade so the frame always closes down on the subject.
+      // How far the frame closes down on the subject, which used to be the literal 0.55
+      // and therefore a hidden function of whether any of the three terms above was up.
+      // The extent is still fixed - a vignette this look wants is a corner falloff and
+      // not a shape to author - so the parameter is the depth alone.
       float vig = smoothstep(1.05, 0.32, length(vUv - 0.5));
-      col *= mix(1.0, vig, 0.55);
+      col *= mix(1.0, vig, vignette);
 
       // Roll highlights off per channel instead of letting additive accumulation
       // clip to flat white - hot areas keep their hue this way.
@@ -1730,7 +1815,8 @@ function updateDrawRange() {
 function gradeNeeded() {
   return grade.uniforms.rgbSplit.value > 0
     || grade.uniforms.scanlines.value > 0
-    || grade.uniforms.grain.value > 0;
+    || grade.uniforms.grain.value > 0
+    || grade.uniforms.vignette.value > 0;
 }
 
 /**
@@ -1844,6 +1930,19 @@ const PANEL_GROUPS = [
   // what colour they take, what persists between frames, and what the optics do to
   // the result.
   { key: 'signal', label: 'Signal', tab: 'look', lookgroup: true, collapses: true },
+  // Two groups at one stage of the pipeline, on two tabs, and the split is the honest
+  // one rather than a tidy one. Both displace points before projection, so both are the
+  // displacement stage - but `displacement` is the turbulence field, and the region's
+  // scramble adds into its amplitude and reuses its scale and speed, so those two have
+  // to be readable together or a look gets tuned against half of itself. Glitch shares
+  // no uniform with either of them and reads no region. It sat in `displacement` for
+  // long enough that its slider was somewhere nobody stylising an image would think to
+  // look, which is the whole of what "we cannot control the glitches" turned out to
+  // mean, and being adjacent in the render order is not a reason to be adjacent on a
+  // tab. It is not in `post` either: that group is the full-screen grade and this moves
+  // geometry, so filing it there would be the subject-heading move these groups exist
+  // to refuse.
+  { key: 'glitch', label: 'Glitch', tab: 'look', lookgroup: true, collapses: true },
   { key: 'displacement', label: 'Displacement', tab: 'region', lookgroup: true, collapses: true },
   // One region in the room, read three ways: it displaces, it scrambles, and it
   // masks. Everything here is metres in the sensor frame, so a look holds at any
@@ -1968,6 +2067,73 @@ const PARAMS = {
     group: 'displacement', label: 'speed',
     apply: (v) => { uniforms.noiseSpeed.value = v; } },
 
+  // Datastream corruption: one master and five ceilings, where there used to be one
+  // scalar carrying all six meanings at fixed ratios. The comment beside the uniforms
+  // has the argument for the shape; what belongs here is why the ceilings are ceilings
+  // and not absolute values. An absolute set would need a clip to animate density,
+  // shove and tint on three tracks that all reach zero on the same frame just to fade
+  // corruption out, and one that missed by a frame leaves a tear standing in a clean
+  // plate. The master is the fade, and these say what a full one means.
+  //
+  // Every default is exactly the literal it replaced. That is the rule the readings'
+  // seven constants are held to, and it is load-bearing the same way here: a preset
+  // written before this existed - `blackwall.json` names `glitch: 0.18` and nothing
+  // else - has to draw the picture it drew, and the only thing making that true is
+  // that 0.45, 0.45, 12 and 7 are the numbers the shader already had.
+  glitch: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'glitch', label: 'amount',
+    apply: (v) => { uniforms.glitch.value = v; } },
+  // How much of the frame tears at a full master, as a fraction of the bands. The
+  // shove's other half: this one is how *often* the feed fails and the next is how
+  // badly, and the two were the same number until now.
+  glitchDensity: { def: 0.45, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'glitch', label: 'density',
+    apply: (v) => { uniforms.glitchDensity.value = v; } },
+  // Metres a band travels at a full master, half of it either way. World units like
+  // the turbulence field and unlike every screen-space term here, because a tear is a
+  // distance in the room: the same look draws the same shear at any output size, and a
+  // shove referred to 1080p would change how far the feed failed when you exported.
+  glitchShove: { def: 0.45, min: 0, max: 2, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'glitch', label: 'shove m',
+    apply: (v) => { uniforms.glitchShove.value = v; } },
+  // What a torn band flares, per metre it was shoved. Deliberately per metre rather
+  // than normalised against `glitchShove`, so a bigger tear burns harder on its own -
+  // the alternative decouples them and then wants a second slider to couple them back.
+  // The default is not the 3.0 the literal was, and the arithmetic says what it is
+  // instead. Inside the Blackwall branch the flare was added to `bw` and then scaled by
+  // that reading's `0.55 + 0.75 * lum` on the way out, so the tint reproducing the old
+  // picture is `3.0 * (0.55 + 0.75 * lum)` over the torn pixels: 1.65 where a tear falls
+  // on black, 2.10 at a luminance of 0.2, 3.0 only where it crosses something as bright
+  // as 0.6. Which end of that applies is a fact about the footage rather than about the
+  // shader, and this look is graded for rooms shot dark - `docs/reference.md` says the
+  // sample was shot unlit and that colour "reads a signal the sensor barely produced" -
+  // so the torn bands land near the bottom of the range and 1.8 is the match at a
+  // luminance of about 0.07.
+  //
+  // Stated as arithmetic and not as an A/B of rendered frames, deliberately, because at
+  // the value anything ships with the choice barely resolves: `blackwall.json` asks for
+  // a master of 0.18, where the largest shove is 8.1cm and the whole flare spans 0.13 to
+  // 0.19 across that entire luminance range. It is at a full master that the end of the
+  // range starts to matter, and a full master is a slider anybody setting it is watching.
+  glitchTint: { def: 1.8, min: 0, max: 8, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'glitch', label: 'flare',
+    apply: (v) => { uniforms.glitchTint.value = v; } },
+  // Depth-image rows per band, so the count of bands is 424 over this - 35 of them at
+  // the default. Rows and not a fraction of the frame, because a band is a run of the
+  // sensor's own scanlines and that is what makes the tear read as the feed failing
+  // rather than as a shape drawn over the picture.
+  glitchBands: { def: 12, min: 1, max: 64, step: 1, kind: 'scalar', tag: 'look',
+    group: 'glitch', label: 'band rows',
+    apply: (v) => { uniforms.glitchBands.value = v; } },
+  // Hertz: how often the torn set is redrawn, 7 by default, so a state holds for 143ms
+  // or about 4.3 frames at 30fps. The phase is `floor(time * rate)` and stays a pure
+  // function of program time - integrating a rate for a smoother phase would make the
+  // frame depend on how the playhead got there, and seek-equals-playback dies the
+  // moment it does. Keyframing the rate therefore jumps the pattern, which is in genre.
+  glitchRate: { def: 7, min: 0, max: 30, step: 0.5, kind: 'scalar', tag: 'look',
+    group: 'glitch', label: 'rate hz',
+    apply: (v) => { uniforms.glitchRate.value = v; } },
+
   // One region, authored once and read three ways. Three scalars rather than a new
   // `point` kind, which is the awkward part and is deliberate: the design doc argues
   // composition is edited in the world because a position judged one component at a
@@ -2017,9 +2183,6 @@ const PARAMS = {
   regionMask: { def: 0, min: -1, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
     group: 'region', label: 'mask',
     apply: (v) => { uniforms.regionMask.value = v; } },
-  glitch: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
-    group: 'displacement', label: 'glitch',
-    apply: (v) => { uniforms.glitch.value = v; } },
   // Still what it always was - orbit the view you are looking at - and still view
   // state rather than an edit: the controls advance it on the program delta the
   // render loop hands them, so the same orbit renders the same way at any output
@@ -2144,6 +2307,14 @@ const PARAMS = {
   grain: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
     group: 'post', label: 'grain',
     apply: (v) => { grade.uniforms.grain.value = v; grade.enabled = gradeNeeded(); } },
+  // The corner falloff, which was a literal inside the grade shader and so arrived with
+  // whichever of the three above you happened to raise. The uniform beside it carries
+  // why this is the one promoted literal that does not keep its old value; what belongs
+  // here is that it gates the pass like the other three, so the vignette can be had on
+  // its own and a look wanting none of the four still pays for no pass at all.
+  vignette: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'post', label: 'vignette',
+    apply: (v) => { grade.uniforms.vignette.value = v; grade.enabled = gradeNeeded(); } },
 
   denoise: { def: true, kind: 'step', tag: 'look',
     group: 'signal', label: 'cull speckle',
