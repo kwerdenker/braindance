@@ -123,6 +123,20 @@
 // one per look parameter, which is the same claim over a registry seven parameters
 // larger.
 //
+// **Re-measured on the `ui-rework` branch, and the rig is a different one, so these
+// numbers sit beside the paragraph above rather than replacing it.** No Kinect: the
+// server was `--grabber "<node> tools/fake-grabber.mjs --hd"`, whose hello carries real
+// intrinsics, which is what this file actually gates the record arm on. macOS, load
+// average 19-20 across both runs, one run each. Clean: **131 assertions, 5 failed** -
+// and those five are section 6 rows about which block sits on which surface, which have
+// not run on this branch at all since `988551e`, because the recorder arm died building
+// itself and took the whole section with it. They are recorded as found rather than
+// quietly repaired: what the panel should hold after the tabs is the surface's design
+// and not this file's to decide. `keyframes-on-every-surface`: **7 fired**, which is
+// those same five plus the two recorder keyframe rows - the count row at 54 buttons,
+// and the tab walk below - with the editor's own row green beside them. The pair is
+// what the paragraph above describes, still two, and the asymmetry still the point.
+//
 // A third mutation stood here, `extended-always-open`, with 3 rows fired against a
 // recorder showing the grade before any press. Its number is left written down and its
 // entry is not, because the recorder no longer hides the grade at all - the surface
@@ -716,53 +730,6 @@ const PROBE = `(() => {
       };
     },
 
-    /** The extended toggle, driven as a user drives it and read back both ways. */
-    extended() {
-      const btn = document.getElementById('extended');
-      const vis = (el) => !!el && el.checkVisibility({ checkVisibilityCSS: true });
-      const groups = [...document.querySelectorAll('#panel .lookgroup')];
-      const controlsIn = (el) => [...el.querySelectorAll('input, select')];
-      // **Per group as well as summed, and the sums are taken from the same array.** A
-      // total is what a row about "controls included" was graded on for a round, and a
-      // total answers "did anything at all appear" - which is one control out of fifty on
-      // one group out of nine. The editor's row next door asks every group the collapse
-      // rule leaves open to show all of its controls, and this is what lets the recorder's
-      // ask the same thing rather than a weaker cousin of it.
-      const each = () => groups.map((el) => ({
-        key: el.id || \`label:\${el.querySelector('label')?.textContent.trim() ?? '(unlabelled)'}\`,
-        visible: vis(el),
-        controls: controlsIn(el).length,
-        controlsOnScreen: controlsIn(el).filter(vis).length,
-        shut: el.classList.contains('shut'),
-      }));
-      const read = () => {
-        // The same distinction \`panel()\` above draws, for the same reason: this button
-        // reveals the group nodes, and whether a revealed group has anything gradeable
-        // under it is the collapse rule's answer rather than this one's. A row asserting
-        // only the first would go on passing on a build where pressing it showed nine
-        // headings and no control.
-        const blocks = each();
-        return {
-          blocks,
-          visible: blocks.filter((b) => b.visible).length,
-          controls: blocks.reduce((n, b) => n + b.controls, 0),
-          controlsOnScreen: blocks.reduce((n, b) => n + b.controlsOnScreen, 0),
-          pressed: btn.getAttribute('aria-pressed'),
-          label: btn.textContent.trim(),
-          // Read at every state, because "the recorder has no keyframe controls" is a
-          // claim about the surface rather than about what happens to be on screen -
-          // and the toggle is the one gesture that could plausibly conjure some.
-          kfButtons: document.querySelectorAll('#panel .kf').length,
-        };
-      };
-      const before = read();
-      btn.click();
-      const after = read();
-      // Clicked back, because a toggle that only opens is a toggle that has been
-      // tested in one direction.
-      btn.click();
-      return { total: groups.length, before, after, back: read() };
-    },
   };
 })()`;
 
@@ -1385,17 +1352,41 @@ try {
     }
     return states;
   });
-  const recPanelRun = await onFreshPage('the recorder panel arm', { path: RECORDER_PATH }, async ({ page }) => ({
-    panel: await page.evaluate('globalThis.__sv.panel()'),
-    extended: await page.evaluate('globalThis.__sv.extended()'),
-  }));
+  const recPanelRun = await onFreshPage('the recorder panel arm', { path: RECORDER_PATH }, async ({ page }) => {
+    // Read before anything is clicked, so `panel` is the surface as it opens rather
+    // than as the walk below leaves it.
+    const panel = await page.evaluate('globalThis.__sv.panel()');
+    // **The tabs are enumerated off the page rather than listed here.** The recorder
+    // reaches its look parameters through the Look tab now, and the `extended settings`
+    // toggle that used to reveal them went out of the markup with `988551e` - so the
+    // gesture that could plausibly conjure a keyframe control is a tab selection, and
+    // a tab added later has to be asked about by existing rather than by somebody
+    // remembering to extend a literal.
+    // Filtered by what a hand could actually reach, because the recorder hides the
+    // Camera tab outright - `display: none`, so it is in the markup and not on the
+    // surface. Enumerating the nodes alone drove a click at a box of zero by zero and
+    // spent the timeout on it, which arrives as "the arm did not run" rather than as
+    // anything about the claim; and asserting a hardcoded four would go stale the same
+    // way the toggle did.
+    const tabs = await page.evaluate(
+      `[...document.querySelectorAll('#panelTabs [role="tab"]')]
+        .filter((b) => b.checkVisibility({ checkVisibilityCSS: true })).map((b) => b.id)`,
+    );
+    const states = {};
+    for (const id of tabs) {
+      await page.click(`#${id}`);
+      states[id] = await page.evaluate('globalThis.__sv.panel()');
+    }
+    return { panel, tabs, states };
+  });
   if (!panelRun.ok) throw new Error(`the editor panel arm did not run: ${panelRun.error}`);
   if (!recPanelRun.ok) throw new Error(`the recorder panel arm did not run: ${recPanelRun.error}`);
   {
     const edStates = panelRun.value;
     const ed = edStates.camera;
     const rec = recPanelRun.value.panel;
-    const ext = recPanelRun.value.extended;
+    const recTabs = recPanelRun.value.tabs;
+    const recStates = recPanelRun.value.states;
     const editorBlocks = new Map(ed.blocks.map((block) => [block.key, {
       ...block,
       visible: Object.values(edStates).some((state) => state.blocks.find((b) => b.key === block.key)?.visible),
@@ -1520,47 +1511,37 @@ try {
       'the preview-range warning is on the recorder, where clipping the capture is a real confusion',
       `recorder ${rec.recRange}, editor ${ed.recRange}`);
 
-    // (d) the extended toggle, driven rather than reasoned about
-    check(ext.total > 0 && ext.before.visible === 0 && ext.before.controlsOnScreen === 0,
-      'the look groups start hidden on the recorder, with none of their controls on screen',
-      `${ext.before.visible} of ${ext.total} visible, `
-      + `${ext.before.controlsOnScreen} of ${ext.before.controls} controls on screen`);
-    // The press has to put controls on screen and not only headings, and it is asked the
-    // same way the editor's row above asks it. `after.controlsOnScreen >
-    // before.controlsOnScreen` was what this said for a round, with the row above it
-    // pinning `before` at zero - so "controls included" was graded at *one control
-    // appearing anywhere*, on a surface with nine groups and fifty of them. A recorder has
-    // no clip, so every look parameter sits at its default and every collapsible group
-    // derives shut, which makes the groups the collapse rule leaves open exactly the ones
-    // this claim is about: each of them has to show all of its controls, the shut ones
-    // have to show none, and there has to be at least one of the first.
+    // (d) the inspector tabs, walked rather than reasoned about
     //
-    // This is the surface F6 was found on and the one nothing else in the suite covers -
-    // every screenshot and every `editor-check` row is `/edit` - so a weak floor here is a
-    // weak floor everywhere.
-    const extOpen = ext.after.blocks.filter((b) => !b.shut);
-    const extShut = ext.after.blocks.filter((b) => b.shut);
-    check(ext.after.visible === ext.total
-      && extOpen.length > 0 && extOpen.every((b) => b.controls > 0 && b.controlsOnScreen === b.controls)
-      && extShut.every((b) => b.controlsOnScreen === 0),
-      'and one press of `extended settings` reveals all of them, every group the collapse rule leaves open showing all its controls',
-      `${ext.after.visible} of ${ext.total} visible, `
-      + `${ext.after.controlsOnScreen} of ${ext.after.controls} controls on screen, `
-      + `${extOpen.length} left open showing ${sum(extOpen, 'controlsOnScreen')} of ${sum(extOpen, 'controls')}, `
-      + `shut by the collapse rule: ${extShut.map((b) => b.key).join(' ') || 'none'}`);
-    check(ext.before.pressed === 'false' && ext.after.pressed === 'true',
-      'and the button says so', `aria-pressed ${ext.before.pressed} then ${ext.after.pressed}, label "${ext.after.label}"`);
-    check(ext.back.visible === 0 && ext.back.controlsOnScreen === 0 && ext.back.pressed === 'false',
-      'and a second press puts them away, so the toggle is tested in both directions',
-      `${ext.back.visible} of ${ext.total} visible, `
-      + `${ext.back.controlsOnScreen} of ${ext.back.controls} controls on screen, `
-      + `aria-pressed ${ext.back.pressed}`);
-    // Revealing the grade is not the same act as gaining a clip, and the count has to
-    // hold at every state of the toggle or "the recorder has no keyframe control" is
-    // a claim about a moment rather than about the surface.
-    check(ext.before.kfButtons === 0 && ext.after.kfButtons === 0 && ext.back.kfButtons === 0,
-      'and no press of it builds a keyframe control, because there is still no clip',
-      `${ext.before.kfButtons} / ${ext.after.kfButtons} / ${ext.back.kfButtons} across the two presses`);
+    // **This block asked the `extended settings` toggle until `988551e` took it out of
+    // the markup**, and `9556663` retired the mutation that stood on it without
+    // retiring the driver beside it - which read `#extended` while that cleanup was
+    // chasing `#extendedRow`, so a grep for the name it removed could not find it. The
+    // four rows about how that toggle behaved are gone with the control they described,
+    // on the same reading `9556663` already applied to `extended-always-open`: a claim
+    // the surface stopped making is retired rather than repointed at something nearby.
+    //
+    // What is not retired is the claim underneath them, because it was never about the
+    // toggle - "the recorder builds no keyframe control" is a claim about the surface
+    // rather than about what happens to be on screen, and the toggle was merely the one
+    // gesture that could plausibly conjure some. The tabs are that gesture now, so the
+    // count is asked at every one of them rather than at three states of one button,
+    // which is a wider floor than the rows it replaces rather than a narrower one.
+    const kfTabs = recTabs.filter((id) => recStates[id].kfButtons > 0);
+    check(recTabs.length > 0 && kfTabs.length === 0,
+      'no inspector tab on the recorder builds a keyframe control, because there is still no clip',
+      `${recTabs.length} tabs walked (${recTabs.join(' ')}), `
+      + `keyframe controls under [${kfTabs.join(' ') || 'none'}]`);
+    // **The row above passes on a page where every click silently did nothing**, which
+    // is the shape a walk-and-count row fails at: nothing was revealed, so nothing was
+    // counted, so the count is zero and the claim reads proven. This is the companion
+    // that makes the walk itself the thing under test - the surface has to move under
+    // the clicks, and it moves in the way the tabs were built to move, with the grade
+    // arriving on a tab rather than being present throughout.
+    const lookVisible = recTabs.filter((id) => recStates[id].blocks.some((b) => b.look && b.visible));
+    check(lookVisible.length > 0 && lookVisible.length < recTabs.length,
+      '  and the walk moved the surface, so that count is a measurement rather than a page that ignored every click',
+      `look groups visible under [${lookVisible.join(' ') || 'none'}] of ${recTabs.length} tabs`);
     check(rec.surface === 'record' && ed.surface === 'edit',
       'and each arm is the surface it claims, so neither table is about the other page',
       `${rec.surface} and ${ed.surface}`);
