@@ -402,6 +402,25 @@ const uniforms = {
   cropR: { value: 7 },
   cropB: { value: -7 },
   cropT: { value: 7 },
+  // Whether those six faces actually cut, and what a point on the wrong side of them
+  // looks like while somebody is editing them. The two are deliberately different
+  // kinds of thing and the split is the whole design.
+  //
+  // `cropOn` is the `crop` parameter's landing site: document state, keyed and
+  // exported like every other look value, and it **gates the discard rather than
+  // moving the planes**. That is what lets one switch cover all six faces including
+  // the depth pair, which the fragment stage also normalises its depth ramp against -
+  // a switch that opened `nearClip`/`farClip` instead would re-grade every point still
+  // inside the box, and the A/B would stop being an A/B.
+  //
+  // `cropOutside` is the alpha a cut point draws at instead of vanishing, and it is
+  // viewer-only: derived from the crop box being on screen, never assigned, and zero
+  // in every path that produces a deliverable because those paths already take the
+  // chrome off. Zero also means the discard comes back, which is not a shortcut - a
+  // surviving point at alpha zero still writes depth and would punch invisible holes
+  // in the cloud behind it.
+  cropOn: { value: 1 },
+  cropOutside: { value: 0 },
   // The turbulence field. Amplitude is metres, scale is cycles per metre and speed is
   // how fast the field drifts through the scene in program seconds - all three world
   // units, so none of them owes the 1080p reference every screen-space term here does.
@@ -499,7 +518,7 @@ uniform sampler2D stateTex;
 uniform vec2 focal, center, resolution;
 uniform float bufferHeight;
 uniform float pointSize, nearClip, farClip, time, edgeTol;
-uniform float cropL, cropR, cropB, cropT;
+uniform float cropL, cropR, cropB, cropT, cropOn, cropOutside;
 uniform float noise, noiseScale, noiseSpeed;
 uniform vec3 regionCentre, regionHalf;
 uniform float regionRound, regionSoft, regionPush, regionNoise, regionMask;
@@ -654,7 +673,19 @@ void main() {
     vFade = fadeTime > 0.0 ? clamp(age / fadeTime, 0.0, 1.0) : 1.0;
   }
 
-  if (z < nearClip || z > farClip) {
+  // **One question asked in two places, because half of it needs the unprojection and
+  // half of it cannot wait for it.** The depth pair is a property of the sample and is
+  // known here; the lateral four are positions in the room and are not known until
+  // below. So outsideCrop accumulates rather than being decided once, and everything
+  // downstream reads the accumulated answer instead of re-testing a face.
+  //
+  // The early return survives, and it is the reason the box costs nothing when nobody
+  // is looking at it: with cropOutside at zero this is the same hard cull the shader
+  // has always done, and the far half of a room never reaches the unprojection or the
+  // region weight below it. Only a viewer with the box on screen pays for keeping cut
+  // points alive, and no exported frame ever does.
+  bool outsideCrop = cropOn == 1.0 && (z < nearClip || z > farClip);
+  if (outsideCrop && cropOutside <= 0.0) {
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
     gl_PointSize = 0.0;
     return;
@@ -672,10 +703,13 @@ void main() {
   // Tested on the undisplaced position, for the reason the region gives below: a
   // boundary read after turbulence lets points wander across it, and the edge
   // crawls along itself as the noise rises rather than holding still.
-  if (pos.x < cropL || pos.x > cropR || pos.y < cropB || pos.y > cropT) {
-    gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
-    gl_PointSize = 0.0;
-    return;
+  if (cropOn == 1.0 && (pos.x < cropL || pos.x > cropR || pos.y < cropB || pos.y > cropT)) {
+    if (cropOutside <= 0.0) {
+      gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+      gl_PointSize = 0.0;
+      return;
+    }
+    outsideCrop = true;
   }
 
   // The region is read at the *undisplaced* position, and both things below use this
@@ -711,9 +745,16 @@ void main() {
   // Positive hides what is inside the region, negative what is outside. Carried to the
   // fragment stage rather than culled here, because the whole point of the falloff is
   // that the edge is soft.
-  vMask = regionMask > 0.0
+  //
+  // The crop's own dimming rides here rather than on a varying of its own, and it is
+  // the same idea rather than a similar one: both are a boundary the vertex stage knows
+  // about attenuating a fragment it cannot discard. A second varying would be a second
+  // spelling of "how much is this point attenuated", and the two would then have to be
+  // multiplied together somewhere anyway.
+  vMask = (regionMask > 0.0
     ? 1.0 - regionMask * rw
-    : 1.0 + regionMask * (1.0 - rw);
+    : 1.0 + regionMask * (1.0 - rw))
+    * (outsideCrop ? cropOutside : 1.0);
 
   // Datastream corruption: horizontal bands tear sideways, the way a failing
   // feed shears. Bands are picked stochastically so it stutters rather than pulses.
@@ -773,6 +814,20 @@ void main() {
   // keep the same alpha - normalising against the drawn size instead would make
   // the identical look sum four times too bright at twice the resolution.
   vSize = gl_PointSize / k;
+
+  // Cut-away points draw at half the size, and **this has to come after vSize or it
+  // undoes the dimming it is meant to help.** The fragment stage normalises a splat's
+  // additive energy against vSize squared, so a point reported at half size gets four
+  // times the alpha back - which is right for a point that is genuinely small and wrong
+  // for one that has merely been shrunk to get out of the way. vSize therefore keeps
+  // the size a kept point would have had, and only the rasterised sprite shrinks.
+  //
+  // The size is what makes this scaffolding rather than a second cloud. Alpha alone is
+  // not enough: depthWrite is on, so a faint point still occludes at full strength,
+  // and cut-away furniture orbiting in front of the subject would flicker through it
+  // order-dependently. A quarter of the footprint is a quarter of the occlusion, and it
+  // reads as dust instead of as surface.
+  if (outsideCrop) gl_PointSize *= 0.5;
 }
 `;
 
@@ -1844,6 +1899,32 @@ const cropReach = (maxDepth = 9.5) => {
   };
 };
 
+/**
+ * Whether a sensor-space sample is on the wrong side of the crop box.
+ *
+ * **The crop is asked about in four places and this is three of them.** The vertex
+ * shader has to keep its own copy because it is in another language, but the plan
+ * inset's density map and floor selection both used to spell the six comparisons out
+ * for themselves - so a switch wired to the shader alone would have left the top-down
+ * drawing a cropped cloud underneath a picture drawing everything, and the top-down is
+ * exactly where the depth faces get dragged. Three spellings of one rule is three
+ * places for the next face, or the next switch, to be forgotten.
+ *
+ * Sensor metres and before the levelling rotation, matching the shader: the box is a
+ * place in the room, so testing a rotated position would move all six faces every time
+ * the room was levelled underneath them.
+ *
+ * `depth` is positive metres from the sensor, which is what every caller already has in
+ * hand from the depth texture - the room's own z is its negation, and asking for the
+ * value nobody has to flip is what keeps a sign error out of the callers.
+ */
+function croppedOut(x, y, depth) {
+  if (uniforms.cropOn.value !== 1) return false;
+  if (depth < uniforms.nearClip.value || depth > uniforms.farClip.value) return true;
+  return x < uniforms.cropL.value || x > uniforms.cropR.value
+    || y < uniforms.cropB.value || y > uniforms.cropT.value;
+}
+
 // The panel's groups, in the order they appear down the panel, and nothing about
 // which parameters are in them - that is the `group` field on each registry entry
 // below, so a parameter joins a group by naming it rather than by being added to a
@@ -1908,6 +1989,13 @@ const PANEL_GROUPS = [
     // come level with the picture.
     before: () => [
       panelButtonRow(['camSensor', 'sensor view']),
+      // Beside `sensor view` because it is the same kind of thing: a control that
+      // changes what the person at the screen can see and writes nothing into the
+      // take. It is in this group rather than in the View menu with the other two
+      // furniture toggles because it is the tool for the six sliders underneath it,
+      // and a control you reach for while dragging a face should not be two clicks
+      // into a menu that closes when you press it.
+      panelButtonRow(['cropBox', 'show crop box']),
       panelButtonRow(['camLevel', 'select floor'], ['camLevelReset', 'reset rotation']),
       // **The only thing that says what the two-step gesture is, and what it just did.**
       // Levelling is arm-then-click-a-surface, which is not a shape a button label can
@@ -2014,6 +2102,23 @@ const PARAMS = {
   far: { def: 6, min: 0.05, max: 9.5, step: 0.05, kind: 'scalar', tag: 'look',
     group: 'framing', label: 'far',
     apply: (v) => { uniforms.farClip.value = v; } },
+
+  // Whether the box cuts at all, over all six faces at once.
+  //
+  // **This is not a second spelling of "the faces are at their bounds".** The faces say
+  // where the box is and this says whether it bites, so releasing it keeps the numbers
+  // where a reset throws them away - which is the whole reason to have it, because
+  // cropping tight and then wanting to see what you removed is otherwise four remembered
+  // values. A document that has touched neither is uncropped under both readings, so the
+  // ±`CROP_LIMIT` defaults below go on meaning exactly what their own comment says.
+  //
+  // A look parameter and not a viewer switch, deliberately. Bypassing in the viewer alone
+  // would let the editor's picture and the exported frame disagree, and the render is
+  // where you would find that out. Here it keys like anything else, so a clip can open
+  // its box mid-shot, and `kind: 'step'` makes that a cut rather than a ramp.
+  crop: { def: true, kind: 'step', tag: 'look',
+    group: 'framing', label: 'crop',
+    apply: (on) => { uniforms.cropOn.value = on ? 1 : 0; } },
 
   // The other four faces. Same units and the same step as the two above, because they
   // are the same box - and the defaults sit at the bounds so a clip that was authored
@@ -6966,6 +7071,7 @@ const ui = {
   camSensor: document.getElementById('camSensor'),
   camLevel: document.getElementById('camLevel'),
   camLevelReset: document.getElementById('camLevelReset'),
+  cropBox: document.getElementById('cropBox'),
   cropReset: document.getElementById('cropReset'),
   levelNote: document.getElementById('levelNote'),
   exportSize: buildExportMenu(document.getElementById('tExportSize')),
@@ -10851,9 +10957,37 @@ const planVec = new THREE.Vector3();
 let chromeOn = false;
 let topViewVisible = true;
 let statsVisible = false;
+// The crop box and its handles, and with them the faint pass that shows what the box
+// is cutting.
+//
+// **A plain module flag rather than a `tag: 'view'` registry parameter**, which is the
+// one thing about it worth arguing. `spin` and `renderScale` are view parameters and
+// would have given this a generated row and the control sweep for free - but a generated
+// step row commits history on its `change`, so undo would start flipping furniture on and
+// off. Ctrl+Z means "put my edit back"; a second meaning for it is worse than a rule this
+// file states once. `topViewVisible` and `statsVisible` beside it are module flags for
+// the same reason.
+let showCropBox = false;
 // Whether anything has rendered since the furniture was last drawn, so a paint
 // that produced no image does not redraw a path over a frame that never changed.
 let chromeStale = false;
+
+// How faintly a cut point draws while the box is on screen, and the one function
+// allowed to write the uniform.
+//
+// **Derived on every call rather than assigned at the toggle**, because the two things
+// it reads change independently and from a long way apart: the button, an export, a
+// program-out boot. Assigning it at the button would mean every one of those places had
+// to remember to clear it, and the day one forgot is the day scaffolding renders into
+// somebody's deliverable. Read `chromeOn` and the flag together and the export path
+// clears it by clearing the chrome it already clears.
+//
+// Not "ghost": `readGhost` is a look treatment and the fade half of the geometry is the
+// ghost cloud, so the word is twice taken already.
+const CROP_FAINT = 0.14;
+function syncCropOutside() {
+  uniforms.cropOutside.value = chromeOn && showCropBox ? CROP_FAINT : 0;
+}
 
 const scratchVec = new THREE.Vector3();
 
@@ -10972,8 +11106,6 @@ function drawPlanCloud(rect) {
   const fy = uniforms.focal.value.y;
   const cx = uniforms.center.value.x;
   const cy = uniforms.center.value.y;
-  const near = uniforms.nearClip.value;
-  const far = uniforms.farClip.value;
   const s = planScale(rect);
   chromeCtx.fillStyle = 'rgba(232, 236, 241, 0.55)';
   for (let row = 0; row < DEPTH_H; row += PLAN_STRIDE) {
@@ -10981,7 +11113,6 @@ function drawPlanCloud(rect) {
       const mm = depth[row * DEPTH_W + col];
       if (mm === 0) continue;
       const z = mm * 0.001;
-      if (z < near || z > far) continue;
       // libfreenect2's pinhole model, the same one the vertex shader unprojects
       // with, and reading the same two uniforms so there is one set of intrinsics
       // rather than two that can drift.
@@ -11006,8 +11137,12 @@ function drawPlanCloud(rect) {
       // shader has and has to be: the box is a place in the room in sensor metres, so
       // testing it against a rotated position would move all six faces every time the
       // room was levelled underneath them.
-      if (wx < uniforms.cropL.value || wx > uniforms.cropR.value) continue;
-      if (wy < uniforms.cropB.value || wy > uniforms.cropT.value) continue;
+      //
+      // Through `croppedOut` rather than spelled out here, which is also what carries
+      // the `crop` switch into this view: a plan still culling by the faces while the
+      // picture had released them would be the disagreement this test exists to stop,
+      // arriving from the other direction.
+      if (croppedOut(wx, wy, z)) continue;
       // A top-down of a canted room drawn about the sensor's axes is a slanted section
       // labelled TOP-DOWN, and that is what this drew before levelling existed: the
       // second visible symptom of the same bug, and the reason this loop needs the
@@ -11020,6 +11155,392 @@ function drawPlanCloud(rect) {
       chromeCtx.fillRect(px, py, 1, 1);
     }
   }
+}
+
+// ------------------------------------------------------------- the crop box
+
+// Six numbers describe a box and nothing on screen was ever that box. You found out
+// where a face had landed by what disappeared, which makes framing a subject a
+// guess-and-check loop against a boundary that is invisible by construction - the
+// points that would have shown you where it is are exactly the ones it removed.
+//
+// So the box is drawn, and its faces are dragged. Both happen on the chrome canvas
+// rather than as an object in the scene, and that is the same argument the top-down
+// makes one screen up: furniture that lives in the scene has to be remembered out of
+// every path that produces a picture somebody keeps, and this one would go through the
+// bloom and the grade on its way there. On its own canvas it cannot reach an exported
+// pixel at all, so there is no flag to forget.
+//
+// What that costs is depth: a projected wireframe draws over the cloud rather than
+// being occluded by it. The faint pass is what gives it back, and gives back more than
+// a depth test would - where the box's plane cuts through the subject, the boundary
+// between full points and dim ones *is* the intersection, drawn by the cloud itself at
+// the resolution the cloud has.
+
+// Indexed `axis * 2 + side`, side 0 being the low face. The order is the order the
+// panel lists them in, and the depth pair carries `flip` because a room's z runs
+// backwards from a sensor's depth: `near` at 0.5m is the plane at z = -0.5.
+const CROP_FACES = [
+  { param: 'left', axis: 0, side: 0, flip: false },
+  { param: 'right', axis: 0, side: 1, flip: false },
+  { param: 'bottom', axis: 1, side: 0, flip: false },
+  { param: 'top', axis: 1, side: 1, flip: false },
+  { param: 'far', axis: 2, side: 0, flip: true },
+  { param: 'near', axis: 2, side: 1, flip: true },
+];
+
+// A corner is three bits, one per axis, set when that axis is at its high bound. An
+// edge varies along one axis and fixes the other two, which is also what names the two
+// faces it belongs to - so the twelve edges and their face pairs are derived from that
+// definition rather than typed out, and a typo in a hand-written table cannot put an
+// edge between two faces that do not meet.
+const CROP_EDGES = [];
+for (let axis = 0; axis < 3; axis++) {
+  const b = (axis + 1) % 3;
+  const c = (axis + 2) % 3;
+  for (const sb of [0, 1]) {
+    for (const sc of [0, 1]) {
+      const from = (sb << b) | (sc << c);
+      CROP_EDGES.push({ from, to: from | (1 << axis), faces: [b * 2 + sb, c * 2 + sc] });
+    }
+  }
+}
+
+// The four corners of each face, in ring order, as indices into the corner array.
+const CROP_FACE_CORNERS = CROP_FACES.map(({ axis, side }) => {
+  const b = (axis + 1) % 3;
+  const c = (axis + 2) % 3;
+  const base = side << axis;
+  return [base, base | (1 << b), base | (1 << b) | (1 << c), base | (1 << c)];
+});
+
+// Reused across the drawing and the hit test, which both run on every paint. One name
+// per role rather than two shared ones: the previous shape had `cropSegment` and its
+// caller writing the same vector, which is a bug that only shows up as a face drawn in
+// the wrong place once somebody reorders two lines.
+const cropCorners = Array.from({ length: 8 }, () => new THREE.Vector3());
+const cropSegA = new THREE.Vector3();
+const cropSegB = new THREE.Vector3();
+const cropCentre = new THREE.Vector3();
+const cropNormal = new THREE.Vector3();
+const cropProbe = new THREE.Vector3();
+const cropEye = new THREE.Vector3();
+
+// The face being dragged, or null. Declared up here beside the geometry rather than
+// with the pointer handlers below, because the drawing reads it to mark which handle is
+// held and a `let` read before its declaration is evaluated throws.
+let cropDrag = null;
+
+/** The box's low and high bounds per axis, in sensor metres. */
+function cropBoxBounds() {
+  return {
+    lo: [uniforms.cropL.value, uniforms.cropB.value, -uniforms.farClip.value],
+    hi: [uniforms.cropR.value, uniforms.cropT.value, -uniforms.nearClip.value],
+  };
+}
+
+/**
+ * The eight corners of the box, in the room's frame.
+ *
+ * **The rotation is the whole of this function and the reason it exists.** The crop is
+ * tested on the undisplaced sensor-space position, before the model matrix, while the
+ * cloud it is cutting carries `worldTilt` - so the box a levelled room actually has is
+ * the sensor's axis-aligned box turned by that quaternion, and a drawing that skipped
+ * the turn would be a box in one frame over points in another. The top-down's old crop
+ * rectangle did exactly that, and on a canted take it sat visibly beside the cloud it
+ * was describing.
+ */
+function cropBoxCorners() {
+  const { lo, hi } = cropBoxBounds();
+  for (let i = 0; i < 8; i++) {
+    cropCorners[i].set(
+      (i & 1) ? hi[0] : lo[0],
+      (i & 2) ? hi[1] : lo[1],
+      (i & 4) ? hi[2] : lo[2],
+    ).applyQuaternion(worldTilt);
+  }
+  return cropCorners;
+}
+
+/** A face's outward normal in the room's frame, written into `out`. */
+function cropFaceNormal(face, out) {
+  return out
+    .set(face.axis === 0 ? 1 : 0, face.axis === 1 ? 1 : 0, face.axis === 2 ? 1 : 0)
+    .multiplyScalar(face.side === 1 ? 1 : -1)
+    .applyQuaternion(worldTilt);
+}
+
+/**
+ * How a room-space point lands in the view being drawn, in stage pixels.
+ *
+ * One signature for both views, because everything below - the edges, the handles, the
+ * leverage test and the drag itself - is the same geometry seen through a different
+ * projection, and writing it twice is how the two would come to disagree about which
+ * face you grabbed.
+ */
+function cropProjector(plan, rect) {
+  if (plan) return (p) => planPoint(rect, p.x, p.z);
+  const stage = { x: 0, y: 0, ...stageSize() };
+  return (p) => projectThrough(p.toArray(), viewCamera, stage);
+}
+
+/**
+ * A segment of the box, clipped so it can be drawn at all.
+ *
+ * `projectThrough` answers per point and answers `null` behind the camera, which is
+ * right for a node and wrong for an edge: an edge with one end behind the eye is not
+ * absent, it is shortened, and dropping it makes the box lose whole sides whenever you
+ * orbit inside it. So the perspective case clips against the near plane in view space
+ * first and projects what survives. The plan has no eye to be behind and needs none.
+ */
+function cropSegment(a, b, plan, rect, project) {
+  if (plan) return [project(a), project(b)];
+  const va = cropSegA.copy(a).applyMatrix4(viewCamera.matrixWorldInverse);
+  const vb = cropSegB.copy(b).applyMatrix4(viewCamera.matrixWorldInverse);
+  // View space looks down -z, so a point in front of the near plane has z below it.
+  const near = -(viewCamera.near + 1e-4);
+  if (va.z > near && vb.z > near) return null;
+  if (va.z > near) va.lerp(vb, (va.z - near) / (va.z - vb.z));
+  else if (vb.z > near) vb.lerp(va, (vb.z - near) / (vb.z - va.z));
+  const { w, h } = stageSize();
+  const at = (v) => {
+    v.applyMatrix4(viewCamera.projectionMatrix);
+    return { x: (w * (v.x + 1)) / 2, y: (h * (1 - v.y)) / 2 };
+  };
+  return [at(va), at(vb)];
+}
+
+/** Sutherland-Hodgman against one half-plane, used for both the near plane and the frame. */
+function clipPolygon(points, inside, intersect) {
+  const out = [];
+  for (let i = 0; i < points.length; i++) {
+    const cur = points[i];
+    const prev = points[(i + points.length - 1) % points.length];
+    const curIn = inside(cur);
+    const prevIn = inside(prev);
+    if (curIn !== prevIn) out.push(intersect(prev, cur));
+    if (curIn) out.push(cur);
+  }
+  return out;
+}
+
+/**
+ * The middle of a projected face.
+ *
+ * The area centroid where there is an area, and **the mean of the points where there is
+ * not, which is the case that matters rather than a guard.** Seen from directly above,
+ * the four upright faces of a box are lines: the top-down collapses exactly the axis
+ * they have no extent along, so their projected quads have zero area and an area
+ * centroid divides by it. Those four are `left`, `right`, `near` and `far` - which is to
+ * say every face the plan exists to let you drag. Returning null there gave the top-down
+ * no handles at all.
+ */
+function polygonCentroid(points) {
+  if (points.length === 0) return null;
+  let area = 0;
+  let cx = 0;
+  let cy = 0;
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    const q = points[(i + 1) % points.length];
+    const cross = p.x * q.y - q.x * p.y;
+    area += cross;
+    cx += (p.x + q.x) * cross;
+    cy += (p.y + q.y) * cross;
+  }
+  if (Math.abs(area) > 1e-6) return { x: cx / (3 * area), y: cy / (3 * area) };
+  let mx = 0;
+  let my = 0;
+  for (const p of points) { mx += p.x; my += p.y; }
+  return { x: mx / points.length, y: my / points.length };
+}
+
+// Below this a face is too edge-on to drag: one metre of movement would travel fewer
+// than this many pixels, so the pointer has nothing to resolve the distance against and
+// a drag would jump by metres per pixel. Stated in pixels per metre because that is the
+// quantity the drag divides by, and it is the same test that decides whether a handle is
+// offered at all - a handle you can see but cannot usefully move is worse than none.
+//
+// Six, which is a seventh of the top-down's own resolution. The inset shows seven metres
+// across a hundred and eighteen pixels, so its faces sit at about 17 px/m and everything
+// it can draw at all clears this comfortably - a threshold set near that number would
+// mean resizing the inset by a few pixels silently took its handles away. What it does
+// still refuse is the genuinely degenerate case: a face pointing straight at the eye
+// projects its own movement onto nothing, which is why the far plane offers no handle
+// head-on and why the top-down offers none for `bottom` and `top`. That last one is the
+// old "a plan has no y" rule arriving as a consequence rather than as a special case,
+// and it stays right on a levelled take, where the rotation gives the vertical faces
+// some plan leverage back and the rule hands them a handle without being told to.
+const CROP_LEVERAGE_MIN = 6;
+const CROP_GRAB_PX = 11;
+
+/**
+ * Where each face's handle sits and how far a metre of it travels on screen.
+ *
+ * The handle is the centroid of the face **as the frame actually shows it** rather than
+ * the centre of the face itself, and that is not a refinement. A face sitting at its
+ * `CROP_LIMIT` default is seven metres out: its true centre is off the stage or behind
+ * the eye, so a handle drawn there is a handle nobody can reach on the one face most
+ * likely to need pulling in. Clipped first, the handle walks along the face and stays
+ * on the part of it you can see.
+ */
+function cropHandles(plan, rect) {
+  // Nothing to grab while nothing is drawn, and this is the function that says so
+  // rather than each of its three callers. The drawing, the hit test and the handle
+  // list a check reads are then one answer: a build that offered a handle over an
+  // invisible box would be offering a press with nothing on screen to explain it.
+  if (!showCropBox) return [];
+  const corners = cropBoxCorners();
+  const project = cropProjector(plan, rect);
+  const frame = plan
+    ? { x: rect.x, y: rect.y, w: rect.w, h: rect.h }
+    : { x: 0, y: 0, ...stageSize() };
+  const near = -(viewCamera.near + 1e-4);
+  const out = [];
+  for (let f = 0; f < CROP_FACES.length; f++) {
+    const face = CROP_FACES[f];
+    let poly = CROP_FACE_CORNERS[f].map((i) => corners[i]);
+    if (!plan) {
+      // Against the near plane in view space, then projected. The order matters: a quad
+      // straddling the eye has no projection to clip.
+      poly = poly.map((p) => p.clone().applyMatrix4(viewCamera.matrixWorldInverse));
+      poly = clipPolygon(poly, (p) => p.z <= near, (a, b) => a.clone().lerp(b, (a.z - near) / (a.z - b.z)));
+      if (poly.length < 3) continue;
+      poly = poly.map((p) => {
+        const q = p.clone().applyMatrix4(viewCamera.projectionMatrix);
+        return { x: frame.w * (q.x + 1) / 2, y: frame.h * (1 - q.y) / 2 };
+      });
+    } else {
+      poly = poly.map((p) => project(p));
+      if (poly.some((p) => !p)) continue;
+    }
+    for (const [inside, cut] of [
+      [(p) => p.x >= frame.x, (a, b) => lerpPoint(a, b, (frame.x - a.x) / (b.x - a.x))],
+      [(p) => p.x <= frame.x + frame.w, (a, b) => lerpPoint(a, b, (frame.x + frame.w - a.x) / (b.x - a.x))],
+      [(p) => p.y >= frame.y, (a, b) => lerpPoint(a, b, (frame.y - a.y) / (b.y - a.y))],
+      [(p) => p.y <= frame.y + frame.h, (a, b) => lerpPoint(a, b, (frame.y + frame.h - a.y) / (b.y - a.y))],
+    ]) {
+      poly = clipPolygon(poly, inside, cut);
+      if (poly.length < 3) break;
+    }
+    const at = polygonCentroid(poly);
+    if (!at) continue;
+
+    // How far one metre along the face's own normal moves that point, as a screen
+    // vector. It is the drag's scale and its direction at once, and its length is the
+    // leverage test - so the answer to "can this be dragged" and the answer to "by how
+    // much" are the same measurement rather than two that could disagree.
+    const normal = cropFaceNormal(face, cropNormal);
+    // Probed at the face's own middle where that lands in the picture, and at whichever
+    // of its corners does when it does not. A face reaching past the eye has a middle
+    // with no projection - the near plane at five centimetres is one on any normal orbit
+    // - and skipping it there would take the handle off a face that is perfectly visible
+    // and perfectly draggable along the part of it you can see.
+    let centre = cropFaceCentre(f, corners, cropCentre);
+    let a = project(centre);
+    if (!a) {
+      for (const i of CROP_FACE_CORNERS[f]) {
+        a = project(corners[i]);
+        if (a) { centre = cropCentre.copy(corners[i]); break; }
+      }
+    }
+    if (!a) continue;
+    // A quarter of a metre rather than a whole one, so the probe stays in front of the
+    // camera on a face already close to it, and scaled back up afterwards. A perspective
+    // projection is not linear, but over a quarter metre against a box metres across the
+    // difference is far below the pixel this is measured in.
+    const b = project(cropProbe.copy(centre).addScaledVector(normal, 0.25));
+    if (!b) continue;
+    const sx = (b.x - a.x) * 4;
+    const sy = (b.y - a.y) * 4;
+    if (Math.hypot(sx, sy) < CROP_LEVERAGE_MIN) continue;
+    out.push({ face: f, param: face.param, at, sx, sy });
+  }
+  return out;
+}
+
+function lerpPoint(a, b, t) {
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+}
+
+/** The middle of a face, in the room's frame. */
+function cropFaceCentre(f, corners, out) {
+  const ring = CROP_FACE_CORNERS[f];
+  out.set(0, 0, 0);
+  for (const i of ring) out.add(corners[i]);
+  return out.multiplyScalar(0.25);
+}
+
+/**
+ * The box, its faces shaded by which way they face, and its handles.
+ *
+ * The back edges are drawn thinner and dimmer because a wireframe box with every edge
+ * equal is a Necker cube: it reads inside-out as readily as the right way round, and a
+ * box you cannot tell the orientation of is worse than useless when the whole job is
+ * judging where its faces sit relative to a subject. An edge is at the back when both
+ * faces meeting along it are, which is exact for a box because a box is convex.
+ */
+function drawCropBox(plan, rect) {
+  const corners = cropBoxCorners();
+  const project = cropProjector(plan, rect);
+  const cutting = uniforms.cropOn.value === 1;
+
+  // Front-facing is decided from the eye in the picture and from straight above in the
+  // plan, which is what makes the plan's answer "the floor and ceiling faces are the
+  // back ones" rather than an accident of where the camera happens to be.
+  if (plan) cropEye.set(0, 1000, 0);
+  else viewCamera.getWorldPosition(cropEye);
+  const frontFacing = CROP_FACES.map((face, f) => {
+    const centre = cropFaceCentre(f, corners, cropCentre);
+    const normal = cropFaceNormal(face, cropNormal);
+    return normal.dot(cropProbe.copy(cropEye).sub(centre)) > 0;
+  });
+
+  chromeCtx.save();
+  // Amber, the colour the top-down's rectangle already used for this - and dashed while
+  // the crop is released, so the one state where the box is a drawing of something not
+  // happening says so without a second control to read.
+  const hue = cutting ? '240, 176, 74' : '150, 160, 172';
+  if (!cutting) chromeCtx.setLineDash([4, 3]);
+  for (const edge of CROP_EDGES) {
+    const back = !frontFacing[edge.faces[0]] && !frontFacing[edge.faces[1]];
+    const seg = cropSegment(corners[edge.from], corners[edge.to], plan, rect, project);
+    if (!seg || !seg[0] || !seg[1]) continue;
+    chromeCtx.strokeStyle = `rgba(${hue}, ${back ? 0.28 : 0.9})`;
+    chromeCtx.lineWidth = back ? 0.75 : 1.2;
+    chromeCtx.beginPath();
+    chromeCtx.moveTo(seg[0].x, seg[0].y);
+    chromeCtx.lineTo(seg[1].x, seg[1].y);
+    chromeCtx.stroke();
+  }
+
+  chromeCtx.setLineDash([]);
+  for (const handle of cropHandles(plan, rect)) {
+    const held = cropDrag && cropDrag.param === handle.param;
+    chromeCtx.beginPath();
+    chromeCtx.rect(handle.at.x - 3.5, handle.at.y - 3.5, 7, 7);
+    chromeCtx.fillStyle = '#0d1014';
+    chromeCtx.fill();
+    chromeCtx.strokeStyle = held ? '#e8ecf1' : `rgba(${hue}, 0.95)`;
+    chromeCtx.lineWidth = 1.4;
+    chromeCtx.stroke();
+  }
+
+  // **On the recorder the box is a preview and has to say so.** `near`/`far` there are
+  // viewer uniforms and reach nothing the grabber is writing - that is the whole of the
+  // `nearClip` versus `--min-depth` distinction, and `#recRange` carries the warning
+  // under the sliders for exactly this reason. A confident box drawn over a live sensor
+  // reads as "this is the frame I am shooting", which is the one misreading that costs
+  // footage, so the words come with the drawing rather than being left to a note in a
+  // panel that may be scrolled away or hidden.
+  // Top left rather than along the bottom, where the recorder already prints its
+  // keyboard hints and the two overprinted each other into an unreadable smear.
+  if (!plan && !EDITING) {
+    chromeCtx.fillStyle = `rgba(${hue}, 0.9)`;
+    chromeCtx.font = '9px ui-monospace, Menlo, monospace';
+    chromeCtx.fillText('CROP BOX · PREVIEW ONLY, NOT WHAT IS RECORDED', 8, 16);
+  }
+  chromeCtx.restore();
 }
 
 function drawChrome() {
@@ -11061,6 +11582,12 @@ function drawChrome() {
   // the camera, so this is where the path is actually edited.
   const rect = insetRect();
 
+  // The box over the picture, and **outside the `EDITING` branch above deliberately**:
+  // the path and its nodes belong to a clip and the recorder has none, but framing a
+  // shot is exactly what the recorder is for and the box is the same box there. Drawn
+  // before the inset so the top-down lands on top of it rather than under it.
+  if (showCropBox) drawCropBox(false, rect);
+
   if (topViewVisible) {
   chromeCtx.save();
   chromeCtx.beginPath();
@@ -11082,30 +11609,16 @@ function drawChrome() {
 
   drawPlanCloud(rect);
 
-  // The crop box, in the one view that can show where it sits in the room. Drawn only
-  // when it is actually cropping something, so a clip nobody has trimmed does not get
-  // a rectangle around the whole plan implying it has been.
+  // The crop box from above, the same eight corners the picture draws.
   //
-  // Three of its four sides are the faces this view has: left, right, and the near and
-  // far planes. The fourth pair, bottom and top, is in y and a plan has no y - the note
-  // under the sliders says so rather than letting this rectangle read as the whole box.
-  {
-    const l = uniforms.cropL.value;
-    const r = uniforms.cropR.value;
-    const n = uniforms.nearClip.value;
-    const f = uniforms.farClip.value;
-    const reach = cropReach(f);
-    if (l > -reach.x || r < reach.x) {
-      const a = planPoint(rect, l, -n);
-      const b = planPoint(rect, r, -f);
-      chromeCtx.save();
-      chromeCtx.strokeStyle = 'rgba(240, 176, 74, 0.85)';
-      chromeCtx.setLineDash([4, 3]);
-      chromeCtx.lineWidth = 1;
-      chromeCtx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
-      chromeCtx.restore();
-    }
-  }
+  // **This used to be a rectangle of its own and decide for itself whether to appear**,
+  // drawn when `cropL`/`cropR` had moved off the reach. Both halves of that were wrong
+  // in the same way: it was a second rule about when the box is visible, which an
+  // explicit toggle would immediately disagree with, and it was a second piece of
+  // geometry, built straight from the uniforms without the levelling rotation the cloud
+  // beside it was carrying - so on a canted take the plan drew a box in the sensor's
+  // axes over a cloud in the room's.
+  if (showCropBox) drawCropBox(true, rect);
 
   chromeCtx.strokeStyle = 'rgba(90, 209, 196, 0.9)';
   chromeCtx.lineWidth = 1.4;
@@ -11224,6 +11737,11 @@ function drawChrome() {
 
 function placeChrome() {
   chromeCanvas.hidden = !chromeOn;
+  // Here because this is the line every path that takes the furniture off already runs -
+  // the export around its render, the program-out source at boot, a resize. The faint
+  // pass is furniture, so it leaves when the rest of it does without any of those places
+  // having to know it exists.
+  syncCropOutside();
   if (!chromeOn) return;
   chromeStale = true;
   drawChrome();
@@ -11365,6 +11883,100 @@ for (const type of ['pointerup', 'pointercancel']) {
     nodeDrag = null;
     controls.enabled = viewCamera === freeCamera;
     history.commit();
+  });
+}
+
+// ------------------------------------------------ dragging a face of the crop box
+
+/** The nearest crop handle to a press, in whichever view the press landed in. */
+function cropHandleUnder(view) {
+  const rect = insetRect();
+  let best = null;
+  for (const handle of cropHandles(view.plan, rect)) {
+    const d = Math.hypot(handle.at.x - view.x, handle.at.y - view.y);
+    if (d <= CROP_GRAB_PX && (!best || d < best.d)) best = { ...handle, d };
+  }
+  return best;
+}
+
+// The same gesture as the node drag above and for the same reasons: window-level
+// capture because OrbitControls listens on the canvas and registration order beats the
+// capture flag, and `finishOrbitDrift` before the hit test because a camera still
+// draining its release would be a different camera by the second move.
+//
+// Registered after the node handler so a camera node wins where the two overlap, and
+// `nodeDrag` is checked rather than relied on: the node handler calls `stopPropagation`,
+// which stops other elements and not other listeners on this one.
+addEventListener('pointerdown', (e) => {
+  if (!showCropBox || !chromeOn || nodeDrag) return;
+  if (e.target !== renderer.domElement || e.button !== 0) return;
+  finishOrbitDrift();
+  const view = viewUnder(e.clientX, e.clientY);
+  if (!view) return;
+  const hit = cropHandleUnder(view);
+  if (!hit) return;
+  e.preventDefault();
+  e.stopPropagation();
+  renderer.domElement.setPointerCapture(e.pointerId);
+  controls.enabled = false;
+  // **The projection is read once and held for the gesture**, which is the same rule the
+  // node drag's captured depth follows. Recomputing the leverage on every move would
+  // change the metres-per-pixel underneath a hand that had not changed what it was
+  // doing, so a steady drag would accelerate as the face turned away from the eye.
+  //
+  // The value is held too, and the move sets `from + delta` rather than accumulating.
+  // An accumulating drag walks: `params.set` snaps to the slider's step, so each move
+  // would compound the rounding of the one before it and the face would end up somewhere
+  // the pointer never asked for.
+  cropDrag = {
+    param: hit.param,
+    face: hit.face,
+    sx: hit.sx,
+    sy: hit.sy,
+    x: view.x,
+    y: view.y,
+    from: params.get(hit.param),
+    pointerId: e.pointerId,
+  };
+  chromeStale = true;
+  requestRepaint();
+}, true);
+
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (!cropDrag) return;
+  const canvas = renderer.domElement.getBoundingClientRect();
+  const x = e.clientX - canvas.left;
+  const y = e.clientY - canvas.top;
+  // How far the pointer travelled along the face's own normal, in metres. `(sx, sy)` is
+  // where one metre of the face lands on screen, so the pointer's component along it
+  // divided by its squared length is the distance in the face's units - which is also
+  // why a face too edge-on to have a usable `(sx, sy)` was never offered a handle.
+  const { sx, sy } = cropDrag;
+  const metres = ((x - cropDrag.x) * sx + (y - cropDrag.y) * sy) / (sx * sx + sy * sy);
+  const face = CROP_FACES[cropDrag.face];
+  // Outward is +axis for the high face of a pair and -axis for the low one, and the
+  // depth pair's parameter is the negation of its room coordinate - `near` at 0.5 is the
+  // plane at z = -0.5. Two sign flips, each derived from the table rather than written
+  // out per face, so the six faces cannot disagree about which way is out.
+  const coord = face.side === 1 ? metres : -metres;
+  params.set(cropDrag.param, cropDrag.from + (face.flip ? -coord : coord));
+  chromeStale = true;
+  // Never a render from here. `renderProgramFrame` advances navigation, so a handler
+  // that rendered would be asking for the next render itself and the drag would run at
+  // a fraction of the frame rate it was driving.
+  requestRepaint();
+});
+
+for (const type of ['pointerup', 'pointercancel']) {
+  renderer.domElement.addEventListener(type, () => {
+    if (!cropDrag) return;
+    cropDrag = null;
+    controls.enabled = viewCamera === freeCamera;
+    // One snapshot for the gesture, the way the sliders coalesce a drag onto `change`.
+    // Nothing is pushed if the face came back to where it started.
+    history.commit();
+    chromeStale = true;
+    requestRepaint();
   });
 }
 
@@ -11524,7 +12136,7 @@ const levelInverse = new THREE.Quaternion();
  * than being a micro-optimisation - a patch on a wall dead ahead is near-degenerate in
  * two of the three columns, and picking blindly reads the answer out of the noise.
  */
-function fitPatchNormal(col0, row0, depth, fx, fy, cx, cy, near, far) {
+function fitPatchNormal(col0, row0, depth, fx, fy, cx, cy) {
   let n = 0;
   let sx = 0;
   let sy = 0;
@@ -11537,9 +12149,14 @@ function fitPatchNormal(col0, row0, depth, fx, fy, cx, cy, near, far) {
       const mm = depth[row * DEPTH_W + col];
       if (mm === 0) continue;
       const z = mm * 0.001;
-      if (z < near || z > far) continue;
       const x = ((col + 0.5 - cx) / fx) * z;
       const y = -((row + 0.5 - cy) / fy) * z;
+      // The candidate that named this patch was chosen under the same rule, so the
+      // patch fitted around it obeys it too - a plane read partly from geometry the
+      // picture is not showing is a plane fitted to something nobody pointed at. It
+      // used to be the depth pair alone here and all six one link up, which was the
+      // lateral faces being enforced on the choice and not on the answer.
+      if (croppedOut(x, y, z)) continue;
       xs.push(x); ys.push(y); zs.push(-z);
       sx += x; sy += y; sz += -z;
       n++;
@@ -11625,8 +12242,6 @@ function levelAtStagePoint(stageX, stageY) {
   const fy = uniforms.focal.value.y;
   const cx = uniforms.center.value.x;
   const cy = uniforms.center.value.y;
-  const near = uniforms.nearClip.value;
-  const far = uniforms.farClip.value;
   const size = stageSize();
   if (!Number.isFinite(stageX) || !Number.isFinite(stageY)
       || stageX < 0 || stageY < 0 || stageX > size.w || stageY > size.h) {
@@ -11643,13 +12258,12 @@ function levelAtStagePoint(stageX, stageY) {
       const mm = depth[row * DEPTH_W + col];
       if (mm === 0) continue;
       const z = mm * 0.001;
-      if (z < near || z > far) continue;
       levelVec.set(((col + 0.5 - cx) / fx) * z, -((row + 0.5 - cy) / fy) * z, -z);
       // The same six faces the renderer applies, so a surface cropped out of the
-      // picture cannot be levelled on. Sensor space and before the rotation, matching
-      // the vertex shader.
-      if (levelVec.x < uniforms.cropL.value || levelVec.x > uniforms.cropR.value) continue;
-      if (levelVec.y < uniforms.cropB.value || levelVec.y > uniforms.cropT.value) continue;
+      // picture cannot be levelled on - and released along with them, so a floor the
+      // crop was hiding becomes selectable the moment the switch says the box does not
+      // bite. Sensor space and before the rotation, matching the vertex shader.
+      if (croppedOut(levelVec.x, levelVec.y, z)) continue;
       levelVec.applyQuaternion(worldTilt).project(viewCamera);
       if (levelVec.z < -1 || levelVec.z > 1) continue;
       const d = Math.hypot(
@@ -11666,7 +12280,7 @@ function levelAtStagePoint(stageX, stageY) {
   }
   if (!best) return { ok: false, reason: 'nothing near the selected point to level on' };
 
-  const fit = fitPatchNormal(best.col, best.row, depth, fx, fy, cx, cy, near, far);
+  const fit = fitPatchNormal(best.col, best.row, depth, fx, fy, cx, cy);
   if (!fit) return { ok: false, reason: 'too few samples around the selected point to fit a surface' };
 
   levelUp.set(0, 1, 0).applyQuaternion(levelInverse.copy(worldTilt).invert());
@@ -11728,6 +12342,32 @@ ui.cropReset.addEventListener('click', () => {
   requestRepaint();
   history.commit();
 });
+
+// Show the box, its handles, and what it is cutting.
+//
+// **Three effects and one control, because a third switch would buy one state that is a
+// lie.** Splitting the faint pass out would allow "box drawn, nothing dimmed, crop on",
+// which is a wireframe around content that is not there - the box says a boundary is
+// here and the picture shows nothing crossing it. Coupled, every reachable state is
+// truthful, and the useful one is the default: while you can see the box you can see
+// what it removes, which is the only way to drag a face onto something deliberately
+// rather than by watching it disappear.
+//
+// `aria-pressed` rather than `aria-checked`: this is a toggle button, where `#menuTopView`
+// beside it is a menu item with a checked state.
+ui.cropBox.addEventListener('click', () => {
+  showCropBox = !showCropBox;
+  ui.cropBox.setAttribute('aria-pressed', String(showCropBox));
+  // Both, and they are not the same repaint. `syncCropOutside` changes a uniform, so the
+  // cloud has to be rendered again; the box itself lives on the chrome canvas, which is
+  // redrawn from `chromeStale` and would otherwise keep the last frame's furniture until
+  // something else happened to move.
+  syncCropOutside();
+  chromeStale = true;
+  drawChrome();
+  requestRepaint();
+});
+ui.cropBox.setAttribute('aria-pressed', 'false');
 
 // ------------------------------------------------------------- the export controls
 
@@ -13145,6 +13785,23 @@ globalThis.__kinect = {
   // this sensor rather than about the constant, and a check should be able to hold
   // the two against each other for the take that is open.
   cropReach,
+
+  // The crop box as the chrome actually draws it, which is the distinction that makes
+  // these worth exposing at all. `cropBoxCorners` is the array the edges and the handles
+  // are built from, so a check reading it is reading the geometry on screen rather than
+  // recomputing the same eight corners beside it and agreeing with itself - and the
+  // rotation is the thing worth asking about, since a box drawn in the sensor's axes
+  // over a levelled cloud is exactly the bug the top-down's old rectangle had.
+  //
+  // `cropHandles` answers per view because which faces can be dragged is a fact about
+  // the projection rather than about the box: a face seen edge-on has no leverage for a
+  // pointer to resolve against and is offered no handle, and that rule is what a check
+  // has to be able to see to know it is a rule rather than a hardcoded list.
+  cropBoxCorners: () => cropBoxCorners().map((v) => v.toArray()),
+  cropHandles: (plan = false) => cropHandles(plan, insetRect())
+    .map(({ param, at, sx, sy }) => ({ param, x: at.x, y: at.y, sx, sy })),
+  cropBoxShown: () => showCropBox,
+  cropOutside: () => uniforms.cropOutside.value,
 
   // The sizes the export menu offers, and the way to adopt one.
   //

@@ -114,6 +114,8 @@ node tools/keyframe-check.mjs --url http://localhost:8080 # step 5: tracks, reti
 node tools/keyframe-check.mjs --mutate pose-linear        # ... and must FAIL mutated
 node tools/export-check.mjs --url http://localhost:8080   # step 6: resolution, export, the file
 node tools/export-check.mjs --mutate pointsize-absolute   # ... and must FAIL mutated
+node tools/export-check.mjs --mutate cropoutside-reaches-the-export # ... the crop box's faint pass, one edit from being in a deliverable
+node tools/export-check.mjs --mutate faint-survives-at-zero # ... and a cut point kept at alpha zero, invisible and still occluding
 node tools/library-check.mjs                              # step 7: library, recorder, routes
 node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL
 node tools/library-check.mjs --mutate open-decides-its-own-reason  # ... one take, one refusal, whichever surface asks
@@ -247,6 +249,7 @@ node tools/editor-check.mjs --mutate reset-collapses-the-slot --no-render # ... 
 node tools/editor-check.mjs --mutate reset-strands-focus --no-render    # ... the caret after the press that removed its own control
 node tools/editor-check.mjs --mutate reset-writes-around-the-registry --no-render # ... and a press that is a registry write rather than an assignment
 node tools/editor-check.mjs --mutate format-segments-paint-the-press --no-render # ... the export format shown, read off the deliverable rather than off the last click
+node tools/editor-check.mjs --mutate box-drag-pumps-renders --no-render # ... a crop face dragged out of the animation loop rather than out of its own handler
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated
@@ -267,6 +270,8 @@ node tools/level-check.mjs --mutate level-order-swapped   # ... and must FAIL mu
 node tools/level-check.mjs --mutate level-selection-ignores-point # ... and must FAIL mutated
 node tools/level-check.mjs --mutate pointer-levels-the-centre # ... the press's own position, one link earlier
 node tools/level-check.mjs --mutate reset-keeps-roll      # ... and must FAIL mutated
+node tools/level-check.mjs --mutate plan-box-ignores-tilt # ... the crop box drawn in the room the shader deliberately does not test in
+node tools/level-check.mjs --mutate crop-switch-reaches-only-the-shader # ... and the switch over it, asked of all three readers
 node tools/vcam-check.mjs                                 # the output to OBS: the colour camera, the take it must not touch, and the source's picture
 node tools/vcam-check.mjs --mutate hd-upscales-registered # ... and must FAIL mutated
 node tools/vcam-check.mjs --mutate hd-reencodes-in-flight # ... the bytes, where the picture is right

@@ -656,6 +656,22 @@ const MUTATIONS = {
     ]],
   },
 
+  // The face drag renders from inside its own pointer handler instead of arming the
+  // loop, which is the shape section 9's orbit bug had: `renderProgramFrame` advances
+  // navigation, so a handler that renders has asked for the next render. Section 20
+  // measures it against the same twenty-four registry writes with no pointer, so the
+  // transport's own drafts are in both arms and only the extra render is left.
+  'box-drag-pumps-renders': {
+    file: 'web/main.js',
+    edits: [[
+      '  params.set(cropDrag.param, cropDrag.from + (face.flip ? -coord : coord));\n'
+      + '  chromeStale = true;',
+      '  params.set(cropDrag.param, cropDrag.from + (face.flip ? -coord : coord));\n'
+      + '  chromeStale = true;\n'
+      + '  renderProgramFrame(timeline ? timeline.programSec : 0);',
+    ]],
+  },
+
   'plant-unswept-control': {
     file: 'web/index.html',
     edits: [[
@@ -1742,8 +1758,8 @@ const MUTATIONS = {
   'crop-axes-swapped': {
     file: 'web/main.js',
     edits: [[
-      '  if (pos.x < cropL || pos.x > cropR || pos.y < cropB || pos.y > cropT) {',
-      '  if (pos.y < cropL || pos.y > cropR || pos.x < cropB || pos.x > cropT) {',
+      '  if (cropOn == 1.0 && (pos.x < cropL || pos.x > cropR || pos.y < cropB || pos.y > cropT)) {',
+      '  if (cropOn == 1.0 && (pos.y < cropL || pos.y > cropR || pos.x < cropB || pos.x > cropT)) {',
     ]],
   },
 
@@ -1755,10 +1771,10 @@ const MUTATIONS = {
   'crop-in-image-space': {
     file: 'web/main.js',
     edits: [[
-      '  if (pos.x < cropL || pos.x > cropR || pos.y < cropB || pos.y > cropT) {',
+      '  if (cropOn == 1.0 && (pos.x < cropL || pos.x > cropR || pos.y < cropB || pos.y > cropT)) {',
       '  float wedge = 2.0 / max(0.001, z);\n'
-      + '  if (pos.x * wedge < cropL || pos.x * wedge > cropR\n'
-      + '   || pos.y * wedge < cropB || pos.y * wedge > cropT) {',
+      + '  if (cropOn == 1.0 && (pos.x * wedge < cropL || pos.x * wedge > cropR\n'
+      + '   || pos.y * wedge < cropB || pos.y * wedge > cropT)) {',
     ]],
   },
 
@@ -2071,6 +2087,8 @@ const DRIVER_IDS = {
   tExport: 'section 6 asserts it is reachable, section 7 renders with it',
   tExportSave: 'section 7 - the saved copy, against a stubbed picker',
   cropReset: 'section 8 - opens the crop box again and the planes are read back',
+  cropBox: 'section 20 - presses it, reads the handles it puts on screen, drags one of them '
+    + 'and counts what the gesture cost the animation loop',
   camLevel: 'level-check section 5 - arms this element, clicks the stage and reads the pair, '
     + 'the slider, the note and the spent mode back; it drives both parts of the gesture '
     + 'rather than the function behind them, which is the distinction this whole section exists to enforce',
@@ -8790,7 +8808,192 @@ try {
 
   // ================================ 20. the pinned drive takes the loop away with it
 
-  console.log('\n[20] pinning the drive drops what the loop was going to serve');
+  console.log('\n[20] the crop box: shown, dragged, and paid for out of the animation loop');
+
+  // Six numbers describing a box, with the box drawn and its faces draggable. Three
+  // claims, and the third is the one that would ship broken quietly.
+  //
+  // The box lives on the chrome canvas, so nothing here can read a pixel of it - what
+  // it reads is the geometry the drawing is built from, which is the same array the
+  // edges and the handles come out of rather than a second computation agreeing with
+  // itself. `plan-box-ignores-tilt` in `level-check` is what holds that array to the
+  // room's frame; this section is about the control, the gesture and its cost.
+  {
+    await page.locator('#panelTabFraming').click();
+    await page.evaluate('__kinect.timeline.transport().pause()');
+    await settle();
+
+    const handles = (plan) => page.evaluate(`__kinect.cropHandles(${plan})`);
+    const shownBefore = await page.evaluate('__kinect.cropBoxShown()');
+    const beforePress = await handles(false);
+    check(shownBefore === false && beforePress.length === 0,
+      'the box is off until it is asked for, and offers nothing to grab',
+      `shown ${shownBefore}, ${beforePress.length} handles`);
+
+    await page.locator('#cropBox').click();
+    await settle();
+    const pressed = await page.locator('#cropBox').getAttribute('aria-pressed');
+    check(await page.evaluate('__kinect.cropBoxShown()') === true && pressed === 'true',
+      'pressing it turns the box on and says so on the control', `aria-pressed ${pressed}`);
+
+    // The faint pass rides on the same press, and this is the row that says so. What it
+    // must not do is leave the editor: `cropoutside-reaches-the-export` in `export-check`
+    // is that half, and it is a different tool because only an export can see it.
+    check(await page.evaluate('__kinect.cropOutside()') > 0,
+      'and what the box is cutting draws faintly instead of vanishing while it is on');
+
+    // Faces placed against this fixture rather than at round numbers, on the same terms
+    // `registry-check`'s scrambled set is placed: the cloud runs x [-2.31, 2.97] and
+    // y [-2.26, 1.63], so a box at +/-0.8 has something to cull on every side and a
+    // handle on each face has cloud behind it rather than empty stage.
+    await page.evaluate(`(() => {
+      for (const [n, v] of [['left', -0.8], ['right', 0.8], ['bottom', -0.8], ['top', 0.8], ['far', 3]]) {
+        __kinect.params.set(n, v);
+      }
+    })()`);
+    await settle();
+
+    // **Which faces can be dragged is a measurement, not a list**, and the two views
+    // disagreeing about it is the evidence. A face pointing along the line of sight
+    // projects its own movement onto nothing, so the pointer has nothing to resolve a
+    // distance against - which is why the top-down, which looks straight down, offers
+    // the four upright faces and refuses `bottom` and `top`. A build that hardcoded
+    // "the plan owns left, right, near and far" would agree with this row and stop
+    // agreeing the moment the room was levelled, where the rotation gives the vertical
+    // faces real plan leverage and this rule hands them a handle unprompted.
+    const planHandles = await handles(true);
+    const planNames = planHandles.map((h) => h.param).sort();
+    check(!planNames.includes('bottom') && !planNames.includes('top')
+      && planNames.includes('near') && planNames.includes('far'),
+      'the top-down offers the faces it can show the movement of, and refuses the two it cannot',
+      `plan offers ${planNames.join(' ') || 'nothing'}`);
+    check(planHandles.every((h) => Math.hypot(h.sx, h.sy) > 0),
+      'and every handle it does offer carries a screen scale for the drag to divide by');
+
+    // ---- the drag itself
+    const grab = (await handles(false)).find((h) => h.param === 'right');
+    check(Boolean(grab), 'the right face is grabbable in the picture');
+    if (grab) {
+      const canvas = await page.evaluate(`(() => {
+        const r = __kinect.renderer.domElement.getBoundingClientRect();
+        return { x: r.x, y: r.y };
+      })()`);
+      const from = await page.evaluate("__kinect.params.get('right')");
+      // The setup above wrote through the registry without committing, so the drag's own
+      // commit would otherwise be the first snapshot since the section started and one
+      // undo would walk back past the box this row is about.
+      await page.evaluate('__kinect.keyframes.undo.commit()');
+
+      // Installed before the counters are read, or the first read is of a variable that
+      // does not exist yet and every count below comes out NaN - which reads as a row
+      // that fired rather than one that never measured anything.
+      await page.evaluate(`(() => {
+        globalThis.__cropFrames = 0;
+        const tick = () => { globalThis.__cropFrames++; requestAnimationFrame(tick); };
+        requestAnimationFrame(tick);
+      })()`);
+      // **The control the row below is measured against, and it has to be taken here
+      // rather than reasoned about.** Every pointer move writes a registry value, and a
+      // registry write on a parked playhead is a draft the transport renders - so
+      // counting renders across a drag counts the transport's work as well as the
+      // handler's, and both builds do the same amount of it. Twenty-four writes with no
+      // pointer anywhere near them is exactly the part that is not the gesture, and what
+      // the drag is then allowed is that plus a margin.
+      const MOVES = 24;
+      const writeOnly = await page.evaluate(`(async () => {
+        const start = __kinect.timeline.counters.renders;
+        for (let i = 1; i <= ${MOVES}; i++) {
+          __kinect.params.set('right', 0.8 - i * 0.01);
+          await new Promise(requestAnimationFrame);
+        }
+        return __kinect.timeline.counters.renders - start;
+      })()`);
+      await page.evaluate("__kinect.params.set('right', 0.8)");
+      await settle();
+
+      const before = await page.evaluate(
+        '({ renders: __kinect.timeline.counters.renders, frames: globalThis.__cropFrames })');
+
+      const x0 = canvas.x + grab.x;
+      const y0 = canvas.y + grab.y;
+      await page.mouse.move(x0, y0);
+      await page.mouse.down();
+      for (let i = 1; i <= MOVES; i++) {
+        await page.mouse.move(x0 - i * 4, y0);
+        await page.evaluate('new Promise(requestAnimationFrame)');
+      }
+      const during = await page.evaluate("__kinect.params.get('right')");
+      const shownDuring = await page.evaluate("document.getElementById('right').value");
+      // Read at the release rather than after `settle()`, which drains an accurate seek
+      // and renders a pre-roll nobody asked this row about.
+      const after = await page.evaluate(
+        '({ renders: __kinect.timeline.counters.renders, frames: globalThis.__cropFrames })');
+      await page.mouse.up();
+      await settle();
+      const moved = from - during;
+      // Where the pointer went, in the face's own units, from the scale the handle
+      // reported before the press. Predicted rather than merely "it changed", because a
+      // drag that moved the face the wrong way, or by an arbitrary amount, changes it
+      // just as well - and the step is 0.05, so the tolerance is a step either side.
+      const predicted = (MOVES * 4) / Math.abs(grab.sx);
+      note('dragging the right face', `${from} -> ${during} m over ${MOVES * 4} px `
+        + `at ${Math.abs(grab.sx).toFixed(1)} px/m, predicted ${predicted.toFixed(3)} m`);
+      check(Math.abs(moved - predicted) <= 0.06,
+        'the face follows the pointer by the scale its handle reported, in the face\'s own metres',
+        `moved ${moved.toFixed(3)} m against ${predicted.toFixed(3)} m predicted`);
+      check(String(during) === shownDuring,
+        'and the write goes through the registry, so the slider beside it reads the drag',
+        `parameter ${during}, slider ${shownDuring}`);
+      // Asserted by undoing rather than by counting the stack, because the stack has a
+      // ceiling: a session at its cap grows by nothing whatever a gesture pushed, so a
+      // depth comparison reads a build that committed twenty-four times as one that
+      // committed once. One press has to put the face all the way back.
+      await page.evaluate('__kinect.keyframes.undo.pop()');
+      await settle();
+      const undone = await page.evaluate("__kinect.params.get('right')");
+      check(undone === from,
+        'one snapshot for the whole gesture, so one undo puts the face back where it started',
+        `undo left it at ${undone}, started at ${from}`);
+      await page.evaluate("__kinect.params.set('right', 0.8)");
+
+      // **The row this section exists for.** A handler that rendered would be asking for
+      // the next render itself: `renderProgramFrame` runs `advanceNavigation`, which
+      // calls `controls.update()`, which fires `change` on a damped control - so the
+      // drag would pace itself off its own output. Counted rather than timed, for the
+      // reason section 9 gives, and `box-drag-pumps-renders` is the control.
+      //
+      // **Renders and not `navigationRedraws`**, which was the first counter reached for
+      // and would have made this row worthless: a face drag moves no camera, so that
+      // counter sits at zero on the correct build and on a build rendering out of the
+      // handler alike, and any ceiling at all passes. What separates them is how many
+      // frames were drawn for the turns the compositor gave - one apiece when the loop
+      // pumps the request, two or more when the handler renders and then asks for
+      // another.
+      const renders = after.renders - before.renders;
+      const frames = after.frames - before.frames;
+      note(`${MOVES} pointer moves on a crop handle`,
+        `${renders} renders over ${frames} animation frames, against ${writeOnly} `
+        + `for the same ${MOVES} writes with no pointer`);
+      check(frames > 0, 'the animation loop ran during the drag', `${frames} frames`);
+      check(renders > 0, 'and the drag was drawn at all', `${renders} renders`);
+      // A handler that rendered would add one render per move on top of the writes it is
+      // already making, so the mutated build lands a full `MOVES` above the control. Half
+      // of that is the ceiling: comfortably clear of the jitter between two runs of the
+      // same twenty-four writes, and half a gesture short of what the bug costs.
+      check(renders <= writeOnly + MOVES / 2,
+        'and it asked the loop for those renders rather than rendering out of the handler',
+        `${renders} renders against ${writeOnly} for the writes alone`);
+    }
+
+    await page.evaluate("__kinect.params.reset(['left', 'right', 'bottom', 'top', 'near', 'far'])");
+    await page.locator('#cropBox').click();
+    await settle();
+    check(await page.evaluate('__kinect.cropOutside()') === 0
+      && (await handles(false)).length === 0,
+      'pressing it again takes the box, its handles and the faint pass back off');
+  }
+
+  console.log('\n[21] pinning the drive drops what the loop was going to serve');
 
   // The third state that strands an armed position, and the only one `pumpParkedDraft`
   // cannot notice on its own: `drive.pin` calls `setAnimationLoop(null)`, so that

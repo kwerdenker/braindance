@@ -102,9 +102,25 @@ const MUTATIONS = {
   // Section 2's identity is what sees it - the surviving set changes, and no camera
   // move can put a discarded point back.
   'crop-follows-tilt': { file: 'web/main.js', edits: [[
-    '  if (pos.x < cropL || pos.x > cropR || pos.y < cropB || pos.y > cropT) {',
+    '  if (cropOn == 1.0 && (pos.x < cropL || pos.x > cropR || pos.y < cropB || pos.y > cropT)) {',
     '  vec3 cropAt = (modelMatrix * vec4(pos, 1.0)).xyz;\n'
-    + '  if (cropAt.x < cropL || cropAt.x > cropR || cropAt.y < cropB || cropAt.y > cropT) {',
+    + '  if (cropOn == 1.0 && (cropAt.x < cropL || cropAt.x > cropR || cropAt.y < cropB || cropAt.y > cropT)) {',
+  ]] },
+  // The crop box is drawn straight off the uniforms, in the sensor's axes, over a cloud
+  // in the room's. This is what the top-down's old rectangle did for as long as levelling
+  // existed, and it had no control at all - the rectangle was two of the six faces and
+  // nothing compared it to anything.
+  'plan-box-ignores-tilt': { file: 'web/main.js', edits: [[
+    '    ).applyQuaternion(worldTilt);',
+    '    );',
+  ]] },
+  // The switch reaches the shader and stops there. The picture releases and the top-down
+  // goes on culling the cloud it draws underneath the box, and floor selection goes on
+  // refusing a surface nothing is hiding any more - which is the "close the class"
+  // failure written as one line: three readers, one of them told.
+  'crop-switch-reaches-only-the-shader': { file: 'web/main.js', edits: [[
+    '  if (uniforms.cropOn.value !== 1) return false;\n',
+    '',
   ]] },
   // The picture levels and the box in the corner does not, which is exactly the state
   // this feature was built to end. Nothing outside section 3 can see it.
@@ -116,9 +132,16 @@ const MUTATIONS = {
   // care about. Levelling turns sensor y into the plan's own x and z, so points the
   // renderer discarded reappear inside the footprint - and only section 3's extent,
   // measured with a crop that bites vertically, can see it.
+  //
+  // Spelled out at the call site rather than by editing `croppedOut`, and the
+  // distinction is the point of the shared predicate: floor selection asks the same
+  // function, so a mutation that reached into it would be changing two things and the
+  // row that reddened would not say which. This changes only what the plan asks.
   'plan-skips-vertical-crop': { file: 'web/main.js', edits: [[
-    '      if (wy < uniforms.cropB.value || wy > uniforms.cropT.value) continue;\n',
-    '',
+    '      if (croppedOut(wx, wy, z)) continue;',
+    '      if (uniforms.cropOn.value === 1\n'
+    + '        && (z < uniforms.nearClip.value || z > uniforms.farClip.value\n'
+    + '          || wx < uniforms.cropL.value || wx > uniforms.cropR.value)) continue;',
   ]] },
   // The sensor view keeps navigation's own pole and its own axis, so on a levelled
   // take the one button that means "exactly what the sensor shot" shows a rolled
@@ -855,6 +878,74 @@ try {
     boundary.ranges[0][0] <= -90 && boundary.ranges[0][1] >= 90
     && boundary.ranges[1][0] <= -180 && boundary.ranges[1][1] >= 180,
     JSON.stringify(boundary.ranges));
+  console.log('\n7. the crop box is drawn in the room and its switch reaches every reader');
+
+  // Section 2 asserts the crop is *tested* in sensor metres, before the model matrix, so
+  // a box shrunk onto a subject stays on that subject when the room is levelled. This is
+  // the drawing's half of the same fact and it points the other way: the box is drawn in
+  // the room, so the picture of it has to carry the rotation the test deliberately does
+  // not. Both halves are needed - the shader ignoring the tilt and the chrome applying
+  // it are two statements about one box, and the old top-down rectangle got the second
+  // one wrong for as long as levelling existed.
+  await setTilt(14, -9);
+  const box = await page.evaluate(() => {
+    const k = globalThis.__kinect;
+    const q = k.worldTilt();
+    const u = k.uniforms;
+    const lo = [u.cropL.value, u.cropB.value, -u.farClip.value];
+    const hi = [u.cropR.value, u.cropT.value, -u.nearClip.value];
+    // Turned by the quaternion read off the cloud rather than by one composed from the
+    // two sliders. That is the difference between holding the drawing to what the
+    // renderer is actually doing and holding it to a second calculation that agrees with
+    // it by construction.
+    const v = new (k.freeCamera.position.constructor)();
+    const rot = k.freeCamera.quaternion.clone().fromArray(q);
+    const want = [];
+    for (let i = 0; i < 8; i++) {
+      want.push(v.set(
+        (i & 1) ? hi[0] : lo[0],
+        (i & 2) ? hi[1] : lo[1],
+        (i & 4) ? hi[2] : lo[2],
+      ).applyQuaternion(rot).toArray());
+    }
+    const got = k.cropBoxCorners();
+    const worst = Math.max(...got.map((c, i) => Math.max(...c.map((n, j) => Math.abs(n - want[i][j])))));
+    // The control for the row: a box already sitting in the room's frame would satisfy
+    // the comparison above without carrying anything, so the corners must also be
+    // somewhere the unrotated box is not.
+    const bare = Math.max(...got.map((c, i) => Math.max(...c.map((n, j) => Math.abs(n
+      - [(i & 1) ? hi[0] : lo[0], (i & 2) ? hi[1] : lo[1], (i & 4) ? hi[2] : lo[2]][j])))));
+    return { worst, bare };
+  });
+  ok('the box the chrome draws is the sensor box turned by the rotation the cloud carries',
+    box.worst < 1e-6, `worst corner off by ${box.worst.toExponential(2)} m`);
+  ok('and it is not simply the sensor box, which a levelled room would draw beside its cloud',
+    box.bare > 0.05, `${box.bare.toFixed(3)} m from the unrotated box`);
+
+  // The switch, asked of a reader that is not the shader. Floor selection walks the
+  // depth texture and applies the same six faces, so a surface the crop is hiding cannot
+  // be levelled on - and must become selectable the moment the switch says the box does
+  // not bite. A `crop` wired to the shader alone leaves this refusing, and leaves the
+  // top-down culling a cloud the picture is showing in full.
+  await setTilt(0, 0);
+  const reach = await page.evaluate(async () => {
+    const k = globalThis.__kinect;
+    const stage = k.renderer.domElement.getBoundingClientRect();
+    const at = () => k.levelAtStagePoint(stage.width * 0.5, stage.height * 0.5);
+    // Closed onto nothing: a box this thin in depth has the planted plane outside it,
+    // so every candidate the walk finds is refused for being cropped away.
+    k.params.set('near', 0.05);
+    k.params.set('far', 0.3);
+    const biting = at();
+    k.params.set('crop', false);
+    const released = at();
+    k.params.reset(['near', 'far', 'crop']);
+    return { biting: biting.ok, released: released.ok, why: biting.reason ?? '' };
+  });
+  ok('a surface the crop is hiding cannot be levelled on', reach.biting === false, reach.why);
+  ok('and releasing the switch hands it back, so the switch reaches more than the shader',
+    reach.released === true);
+
   ok('the page reported no error through any of it', pageErrors.length === 0,
     pageErrors.slice(0, 2).join(' | '));
 

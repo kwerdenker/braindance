@@ -303,6 +303,7 @@ const LANDING = {
   right: 'k.uniforms.cropR.value',
   bottom: 'k.uniforms.cropB.value',
   top: 'k.uniforms.cropT.value',
+  crop: 'k.uniforms.cropOn.value',
   interpolate: 'k.uniforms.interpolate.value',
   snapDelta: 'k.uniforms.snapDelta.value',
   fade: '[k.uniforms.fadeTime.value, k.geometry.drawRange.count]',
@@ -404,6 +405,7 @@ const EXPECT = {
   right: (v) => v,
   bottom: (v) => v,
   top: (v) => v,
+  crop: (v) => (v ? 1 : 0),
   interpolate: (v) => (v ? 1 : 0),
   snapDelta: (v) => v,
   fade: (v, all) => [v / 1000, v > 0 || all.wake > 0 ? POINTS * 2 : POINTS],
@@ -488,6 +490,18 @@ const SCRAMBLE = {
   roll: -21.5,
   near: 0.35,
   far: 4.2,
+  // **Left at its default, which is the one value in this table that is**, and the
+  // reason is the same one the three region effects below give: it is a gate, and the
+  // six faces either side of it are only observable through it. Flipped to `false` the
+  // box stops biting, so `near`, `far` and the four lateral faces all render the same
+  // image whatever they are set to, and six real parameters land in the no-pixel bucket
+  // at once looking like parameters that do nothing.
+  //
+  // What that costs is this sweep's own view of `crop`: dropping it restores the value
+  // it already has, so it changes nothing here and is declared in `NO_PIXEL_EFFECT`. A
+  // drop-one sweep cannot see a parameter whose scrambled value is its default, and the
+  // section below is where the switch is actually proven.
+  crop: true,
   // The four lateral faces, placed against the same fixture the region is placed
   // against rather than picked: the cloud runs x [-2.31, 2.97] and y [-2.26, 1.63],
   // so each of these sits inside the extent on its own side and has something to cull,
@@ -498,6 +512,10 @@ const SCRAMBLE = {
   right: 1.5,
   bottom: -1.5,
   top: 1,
+  // Flipped, and the drop-one sweep is what makes it worth stating. Reverting `crop` to
+  // its default puts all six faces back to work against the four placed above and the
+  // near/far pair above them - so the row it produces is a large one, and a build whose
+  // switch reached the shader and nothing else, or nothing at all, cannot pass it. The
   interpolate: false,
   snapDelta: 410,
   fade: 260,
@@ -609,6 +627,15 @@ const SCRAMBLE = {
 // Anything else landing in that bucket is a failure, which is what stops the sweep
 // growing holes as later steps add parameters.
 const NO_PIXEL_EFFECT = {
+  // Not a parameter that fails to reach pixels - it is a switch over all six crop faces
+  // and reaches them hard. It is invisible to *this method*: the sweep drops a parameter
+  // and lets it fall back to its default, and `crop` is scrambled to its default because
+  // flipping it would take the six faces beside it out of the picture. A drop-one sweep
+  // cannot see a parameter it cannot drop. The section that does see it is
+  // "the crop switch, which the sweep above cannot see", and this entry is a hole
+  // without it.
+  crop: 'its scrambled value is its default, because releasing the box would make the '
+    + 'six faces it gates unobservable - proven instead by the section below',
   spin: 'auto-orbit only advances when the animation loop calls controls.update, '
     + 'and a pinned run has replaced the loop',
   camera: 'nothing draws the program camera on the pinned run - the viewport is the '
@@ -934,6 +961,14 @@ const GOLDEN_ABSENT = new Set([
   // renders. That equality is the row above, and it is the reason this arm still means
   // something with four more parameters in it.
   'left', 'right', 'bottom', 'top',
+  // The switch over all six of them, and it is excused on the strongest version of the
+  // terms the four faces above are: not merely that the pinned revision has no such
+  // control, but that its default is the state that revision was permanently in. A build
+  // whose box always bites renders exactly what a build with a switch defaulting to
+  // biting renders, so this arm is unchanged by the switch existing. What happens when
+  // it is *off* is not excused anywhere - it is asserted three ways in "the crop switch,
+  // which the sweep above cannot see".
+  'crop',
   // The two levelling angles, excused on exactly the crop faces' terms and for exactly
   // their reason: the pinned revision has no such control, and the default is the
   // identity rotation, so a build that levels the room by nothing renders what a build
@@ -2007,6 +2042,55 @@ console.log('\n[registry] the falsification control: each parameter left out of 
     unexplained.length ? `unexplained: ${unexplained.join(' ')}` : '');
   check(changed.length > 0 && noEffect.length === Object.keys(NO_PIXEL_EFFECT).length,
     `${changed.length} of ${Object.keys(serialised).length} parameters are proven to reach the pixels`);
+}
+
+// The switch that gates the crop, which the sweep above declares it cannot see: it is
+// scrambled to its default so the six faces it gates stay observable, and dropping a
+// parameter that is already at its default changes nothing. So it is proven here
+// instead, and the second row is the one that carries the design decision.
+//
+// **`crop` covers all six faces and not the four lateral ones.** That was very nearly
+// got wrong on the grounds that `nearClip`/`farClip` also normalise the depth ramp, so
+// releasing them would re-grade every point still inside the box - which is true of a
+// switch that opened the values and false of this one, because it gates the discard and
+// leaves the uniforms where the document put them. The second row is what keeps the
+// design honest under a later edit: it authors nothing but the depth pair, so the only
+// thing the switch has left to release is `near` and `far`.
+console.log('\n[registry] the crop switch, which the sweep above cannot see');
+{
+  const released = await run({ ...SCRAMBLE, crop: false });
+  check(!eq(scrambledRun, released),
+    'releasing the crop changes the image, against the six faces the scrambled set authors',
+    eq(scrambledRun, released) ? 'identical' : `first divergence at image ${scrambledRun.findIndex((h, i) => h !== released[i])}`);
+
+  // Everything unnamed falls back to its default, so the four lateral faces are wide
+  // open here and cannot be what changes. Written as an omission rather than by naming
+  // `CROP_LIMIT`, which would be this file carrying a second copy of a bound the
+  // registry already owns.
+  const depthOnly = { near: SCRAMBLE.near, far: SCRAMBLE.far };
+  const depthBiting = await run(depthOnly);
+  const depthReleased = await run({ ...depthOnly, crop: false });
+  check(!eq(depthBiting, depthReleased),
+    'and it reaches the depth pair, not only the four lateral faces',
+    eq(depthBiting, depthReleased) ? 'identical with only near/far authored' : 'the box releases in depth too');
+
+  // The control for both rows. Two images that differ prove the switch does something;
+  // they do not prove it does the *right* thing, and the thing it must not do is move
+  // the planes. A build whose release opened `nearClip`/`farClip` instead of skipping
+  // the test would pass both rows above and fail this one, because the depth ramp is
+  // normalised against those two uniforms and every surviving point would be recoloured.
+  const landing = await page.evaluate(`(() => {
+    const k = globalThis.__kinect;
+    k.params.set('near', ${SCRAMBLE.near});
+    k.params.set('far', ${SCRAMBLE.far});
+    k.params.set('crop', false);
+    const off = [k.uniforms.nearClip.value, k.uniforms.farClip.value];
+    k.params.set('crop', true);
+    return { off, on: [k.uniforms.nearClip.value, k.uniforms.farClip.value] };
+  })()`);
+  check(eq(landing.off, landing.on) && eq(landing.on, [SCRAMBLE.near, SCRAMBLE.far]),
+    'and it releases by not testing rather than by moving the planes, so the depth ramp is unchanged',
+    `nearClip/farClip released ${JSON.stringify(landing.off)}, applied ${JSON.stringify(landing.on)}`);
 }
 
 // ------------------------------------------------------------------- verdict

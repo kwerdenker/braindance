@@ -105,6 +105,24 @@ Crop faces and the region stay in sensor metres and are tested before the model 
 box shrunk onto a subject stays there when the room levels underneath it. `level-check`
 holds that as a bit-identity.
 
+**Show crop box** draws the six faces in the picture and in the top-down, and puts a handle
+on each face you can drag with the pointer. It is a viewer control and writes nothing: the
+drag itself writes, through the same registry door the sliders use, so a dragged face keys,
+undoes and presets exactly as a typed one does. A face is offered a handle in a view that can
+show it moving, which is why the top-down carries `left`, `right`, `near` and `far` and not
+`bottom`/`top`, and why the far plane has no handle when you are looking straight down the
+axis it moves along — turn the orbit and it appears. While the box is on screen the points it
+cuts draw faintly rather than vanishing, so you can see what a face is about to remove and
+drag it onto something deliberately. None of that reaches an exported frame or the OBS
+output, which `export-check` asserts as byte-identity.
+
+**`crop`** is whether the box bites, over all six faces at once, and it is a look value like
+any other — it keys, it presets, and it exports what you see. It releases by not testing
+rather than by moving the planes, so `near` and `far` still normalise the depth ramp while
+the crop is off and the picture you get back is the room, not a re-grade of it. Use it to
+check what a tight box removed without losing the numbers; **revert all to default** is the
+other way back and throws them away. With the crop released the box draws dashed and grey.
+
 ## The five readings
 
 Five readings of the take, split on the panel into what colours a point and what is then

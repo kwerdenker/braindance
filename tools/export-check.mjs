@@ -333,11 +333,50 @@ const MUTATIONS = {
   // that named a box a subject stood in now name a different box at every output size,
   // so the `crop` row must say so while `noise` and the two region rows stay clean.
   'crop-in-pixels': { file: 'web/main.js', edits: [[
-    '  if (pos.x < cropL || pos.x > cropR || pos.y < cropB || pos.y > cropT) {',
+    '  if (cropOn == 1.0 && (pos.x < cropL || pos.x > cropR || pos.y < cropB || pos.y > cropT)) {',
     '  float cropScale = bufferHeight / 1080.0;\n'
-    + '  if (pos.x < cropL * cropScale || pos.x > cropR * cropScale\n'
-    + '   || pos.y < cropB * cropScale || pos.y > cropT * cropScale) {',
+    + '  if (cropOn == 1.0 && (pos.x < cropL * cropScale || pos.x > cropR * cropScale\n'
+    + '   || pos.y < cropB * cropScale || pos.y > cropT * cropScale)) {',
   ]] },
+  // The faint pass stops reading the chrome flag and answers to the button alone, so a
+  // box left on while somebody exports puts the cut points into the file. This is the
+  // whole reason the uniform is derived rather than assigned, and the edit is one term.
+  'cropoutside-reaches-the-export': { file: 'web/main.js', edits: [[
+    '  uniforms.cropOutside.value = chromeOn && showCropBox ? CROP_FAINT : 0;',
+    '  uniforms.cropOutside.value = showCropBox ? CROP_FAINT : 0;',
+  ]] },
+  // Both early returns go, so a point outside the box always survives to the fragment
+  // stage - invisible at `cropOutside` zero, because `vMask` multiplies its alpha to
+  // nothing, and still writing depth the whole time. Alpha does not stop a splat
+  // occluding: `depthWrite` is on, so the cut half of a room goes on hiding the half
+  // that was kept, and the picture with the box off quietly loses geometry that is not
+  // cropped at all.
+  'faint-survives-at-zero': { file: 'web/main.js', edits: [
+    [
+      '  if (outsideCrop && cropOutside <= 0.0) {\n'
+      + '    gl_Position = vec4(0.0, 0.0, 2.0, 1.0);\n'
+      + '    gl_PointSize = 0.0;\n'
+      + '    return;\n'
+      + '  }',
+      '  if (false) {\n'
+      + '    gl_Position = vec4(0.0, 0.0, 2.0, 1.0);\n'
+      + '    gl_PointSize = 0.0;\n'
+      + '    return;\n'
+      + '  }',
+    ],
+    [
+      '    if (cropOutside <= 0.0) {\n'
+      + '      gl_Position = vec4(0.0, 0.0, 2.0, 1.0);\n'
+      + '      gl_PointSize = 0.0;\n'
+      + '      return;\n'
+      + '    }',
+      '    if (false) {\n'
+      + '      gl_Position = vec4(0.0, 0.0, 2.0, 1.0);\n'
+      + '      gl_PointSize = 0.0;\n'
+      + '      return;\n'
+      + '    }',
+    ],
+  ] },
   'grain-continuous': { file: 'web/main.js', edits: [[
     'float n = hash(floor(vUv * ref) + fract(time) * 137.0);',
     'float n = hash(vUv * ref + fract(time) * 137.0);',
@@ -1744,6 +1783,115 @@ for (const [label, arm] of [['1728x1080', rebaseFullRef], ['1920x1200', rebaseFu
     + `worst of 40 tile means ${fixed(worst)}/255`);
 }
 
+console.log('\n[3] the crop box is editing furniture and cannot reach an exported pixel');
+
+// The box itself is drawn on a canvas of its own and could not reach `readPixels` if it
+// tried. What *can* is the pass that comes with it: while the box is on screen, points
+// the crop cuts draw faintly instead of vanishing, and that is a uniform on the same
+// shader every exported frame goes through. A viewer setting one edit away from being in
+// somebody's deliverable is the `hd-reaches-recorder` class, so it is asserted here in
+// the tool that owns the exported bytes.
+//
+// **The mechanism under test is that the uniform is derived rather than assigned.** It
+// reads the chrome flag the export already clears around its render, so the export does
+// not have to know the faint pass exists. `cropoutside-reaches-the-export` cuts that
+// dependency and must redden the first row.
+{
+  const arm = async (label, { box, chrome, near = 0.05, crop = true, wide = false }) => main.page.evaluate(`(async () => {
+    const k = globalThis.__kinect;
+    const ex = globalThis.__ex;
+    k.keyframes.chrome.set(true);
+    if (k.cropBoxShown() !== ${box}) document.getElementById('cropBox').click();
+    // Straight to the flag rather than through a button, because this is the state an
+    // export puts the page into: \`exportClip\` sets it and calls \`placeChrome\`, which is
+    // where the faint pass is meant to be recomputed.
+    k.keyframes.chrome.set(${chrome});
+    const faces = ${wide} ? [['left', -7], ['right', 7], ['bottom', -7], ['top', 7], ['far', 9.5]]
+      : [['left', -0.8], ['right', 0.8], ['bottom', -0.8], ['top', 0.8], ['far', 3]];
+    for (const [n, v] of [...faces, ['near', ${near}], ['crop', ${crop}]]) {
+      k.params.set(n, v);
+    }
+    await k.timeline.settled();
+    await k.timeline.transport().seek(${AT_SEC});
+    ex.grab('${label}');
+    return { outside: k.cropOutside(), sha: await ex.sha(ex.shots.get('${label}').px) };
+  })()`);
+
+  const shown = await arm('cropShown', { box: true, chrome: true });
+  const exporting = await arm('cropExporting', { box: true, chrome: false });
+  const hidden = await arm('cropHidden', { box: false, chrome: true });
+
+  console.log(`  ....  faint pass   shown ${shown.outside}, mid-export ${exporting.outside}, `
+    + `box off ${hidden.outside}`);
+
+  // The control, and it comes first because the row below is an equality: two identical
+  // images prove nothing if the faint pass never reaches a pixel in the first place, and
+  // a build whose `cropOutside` was stuck at zero would pass the export row perfectly.
+  check(shown.sha !== hidden.sha,
+    'the faint pass reaches the rendered image while the editor is showing the box',
+    `${shown.sha.slice(0, 12)} shown against ${hidden.sha.slice(0, 12)} with the box off`);
+  check(exporting.sha === hidden.sha && exporting.outside === 0,
+    'and an exported frame is byte-identical with the box shown and with it hidden',
+    `${exporting.sha.slice(0, 12)} mid-export against ${hidden.sha.slice(0, 12)} with the box off`);
+
+  // **And with the box off the crop is a cull, not a fade to nothing.** A point kept
+  // alive at alpha zero is invisible and still writes depth, so the half of a room the
+  // crop removed goes on hiding the half it kept - which is a picture missing geometry
+  // that was never cropped, in the state every exported frame is rendered in.
+  //
+  // **Read as "cutting the front of the room shows you the back of it"**, which needs no
+  // brightness threshold tuned to a fixture and is exactly what an invisible occluder
+  // cannot do. A near plane at 1.5m removes the foreground; on a build that culls, the
+  // rays it was standing in front of come through and light pixels the uncropped picture
+  // has nothing on. On a build that keeps it at alpha zero, the foreground goes on
+  // occluding and those pixels stay dark - the picture is missing geometry the crop
+  // never touched, in the state every exported frame is rendered in.
+  //
+  // The two rows above cannot see this because both of their arms carry the same holes.
+  const cut = await arm('cropCut', { box: false, chrome: true, near: 2.5, wide: true });
+  const whole = await arm('cropWhole', { box: false, chrome: true, near: 2.5, crop: false, wide: true });
+  const revealed = await main.page.evaluate(`(() => {
+    const ex = globalThis.__ex;
+    const a = ex.shots.get('cropCut').px;
+    const b = ex.shots.get('cropWhole').px;
+    const lum = (px, i) => 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2];
+    let seen = 0;
+    let litCut = 0;
+    let litWhole = 0;
+    for (let i = 0; i < a.length; i += 4) {
+      const la = lum(a, i);
+      const lb = lum(b, i);
+      if (la > lb + 8) seen++;
+      if (la > 8) litCut++;
+      if (lb > 8) litWhole++;
+    }
+    return { seen, litCut, litWhole };
+  })()`);
+  note('cutting the first 2.5m of the room',
+    `${revealed.seen} pixels the released picture has nothing on; `
+    + `${revealed.litCut} lit with the near plane biting against ${revealed.litWhole} released`);
+  // Two thousand, sitting between two measurements rather than just under one: this
+  // fixture reveals 3776 pixels through the gap the cull leaves, and 993 with
+  // `faint-survives-at-zero` keeping the foreground alive to occlude. It is a ratio and
+  // not a presence, because a cloud is sprites rather than a surface and rays get
+  // through a stack of invisible points anyway - which is also why the lit-pixel counts
+  // beside it separate the two builds by 3% and are printed rather than asserted on. A
+  // near plane at 2.5m with the lateral faces wide open is what makes the ratio big
+  // enough to divide: it puts the bulk of the room in front of what survives, where
+  // 1.5m left too little foreground and the two builds came out 225 against 154.
+  check(revealed.seen > 2000,
+    'and with the box off the crop is a cull, so what it removes stops occluding what it kept',
+    `${revealed.seen} revealed, ${revealed.litCut} lit against ${revealed.litWhole} released`);
+}
+
+// Left in the state the rows below expect, since this section moved six parameters.
+await main.page.evaluate(`(() => {
+  const k = globalThis.__kinect;
+  if (k.cropBoxShown()) document.getElementById('cropBox').click();
+  k.keyframes.chrome.set(true);
+  k.params.reset(['left', 'right', 'bottom', 'top', 'near', 'far']);
+})()`);
+
 // The main page has said everything it has to say, and it is closed here. Every
 // claim below runs on a page of its own, one browser at a time: two live WebGL
 // pages while an export is reading pixels back is a renderer process this machine
@@ -1753,7 +1901,7 @@ await main.close();
 
 // ------------------------------------------- 3. an exported frame is the editor's
 
-console.log('\n[3] an exported frame is the frame the editor showed at that program time');
+console.log('\n[4] an exported frame is the frame the editor showed at that program time');
 
 // Both arms in one page and at the editor's own stage, so no resize and no second
 // page load sits between the two things being compared. The export's output size
@@ -1817,7 +1965,7 @@ if (shown.ok) {
 
 // ---------------------------------------------------- 4. no wall clock anywhere
 
-console.log('\n[4] the same export twice is the same bytes');
+console.log('\n[5] the same export twice is the same bytes');
 
 const RERUN = {
   width: STAGE.width, height: STAGE.height, fps: EXPORT_FPS,
@@ -1881,7 +2029,7 @@ if (twice.every((r) => r.ok)) {
 
 // ------------------------------------------------------------- 5. the file
 
-console.log('\n[5] the file has the frames, the duration and the rate that were asked for');
+console.log('\n[6] the file has the frames, the duration and the rate that were asked for');
 
 const probe = (path) => {
   const raw = execFileSync(FFPROBE, [
@@ -2028,7 +2176,7 @@ if (lossless.ok && twice[0]?.ok) {
 
 // ------------------------------------ 6. a failed export leaves the last one alone
 
-console.log('\n[6] a failed export leaves the previous file and its record exactly as they were');
+console.log('\n[7] a failed export leaves the previous file and its record exactly as they were');
 
 // The one claim here that does not go through the running server, because it cannot:
 // what it is about is a path inside `server/export.js`, and a page can be served a
