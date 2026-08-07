@@ -1977,7 +1977,21 @@ const DRIVER_RULES = [
     what: 'an application-bar command or navigation link',
     by: 'section 1 opens every menu, drives the commands that stay on this page, and '
       + 'asserts the two real navigation destinations in the markup',
-    match: (row) => inGroup(row, '#appBar'),
+    // `#navRow` and not `#appBar`, and the narrowing is the whole point of the entry.
+    // Written as the container, this rule covered anything anywhere in the application
+    // bar - and the bar stopped being only menus when the status slot moved into it, so
+    // `plant-unswept-control` planted its button beside `#tNote`, matched here on the
+    // strength of sharing an ancestor with the File menu, and the mutation went NOT
+    // CAUGHT while reporting 420 assertions and 0 failures. A falsification control that
+    // passes is worse than none, because the row it guards goes on reading green.
+    //
+    // What section 1 actually enumerates is the menus, so that is what the rule may
+    // claim: the nav row, and a button or a link inside it. The back link sits outside
+    // the nav row and is named in `DRIVER_IDS` instead, beside the assertion that reads
+    // its href. Anything else the bar grows - a chip, a field, a button in the status
+    // slot - is now uncovered until something drives it, which is the answer this rule
+    // was supposed to be giving all along.
+    match: (row) => inGroup(row, '#navRow') && (row.tag === 'BUTTON' || row.tag === 'A'),
   },
   {
     key: 'preset',
@@ -2045,6 +2059,11 @@ const DRIVER_IDS = {
   // shape this table exists to refuse, so they are gone rather than left as three lines
   // that would silently cover a control if one came back under the same name.
   tResumeOpen: 'section 13 - plants an autosave, presses it, and reads the restored document back',
+  // The back link, named here because it sits in the application bar but outside the nav
+  // row the `appbar` rule was narrowed to. Section 1 reads its href alongside the
+  // library link's rather than following it, which is the assertion that matters for a
+  // control whose whole behaviour is where it points.
+  toMenu: 'section 1 - reads the href it navigates to, beside the library link',
   tDeliverable: 'library-check, and section 6 here plants a long name in it',
   tDeliverableNew: 'library-check',
   tExportName: 'section 7 - names the file and refuses a path',

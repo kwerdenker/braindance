@@ -248,6 +248,31 @@ the row asserting that unticking a group heading takes its whole group out was f
 a row that cannot fail, in the middle of a section about rows that cannot fail. It reads the
 panel's own group out of the DOM now and requires the two groupings to be the same grouping.
 
+### A driver rule keyed to a container covers whatever the container grows next
+
+`editor-check`'s `appbar` rule claimed that "section 1 opens every menu, drives the commands that
+stay on this page, and asserts the two real navigation destinations in the markup" — an accurate
+sentence about the menus. It matched on `inGroup(row, '#appBar')`, which is not the menus but the
+bar they happen to sit in, and for as long as the bar held only menus the two were the same set.
+
+Then the status slot moved into the application bar, and the bar stopped being only menus without
+the rule noticing that its sentence had narrowed under it. `--mutate plant-unswept-control` plants
+a bare button beside `#tNote`, which is in that slot: the sweep found it through `.appbar button`,
+`DRIVER_IDS` did not name it, and then the container rule matched it on the strength of sharing an
+ancestor with the File menu. **The run reported 420 assertions, 0 failed, and NOT CAUGHT** — the
+falsification control for the whole "enumerate rather than list" claim, passing. Nothing else was
+red, so section 1 went on reading green while enforcing nothing about any control the bar might
+grow.
+
+The narrowing is to `#navRow` plus a button-or-anchor test, because the nav row is what section 1
+actually walks, and the back link — which sits outside it — moved into `DRIVER_IDS` beside the
+assertion that reads its href. **The general form: a rule's `match` has to name the class its `by`
+describes, and a container is a different claim from the controls that were in it when the rule
+was written.** A rule matching an ancestor is a rule that silently adopts every control added to
+that ancestor afterwards, which is the opposite of what a coverage rule is for. There is already a
+row asserting that no rule matches *nothing*; the mirror of it — that no rule matches more than
+its sentence — is the harder one, and this is the case that says why it is worth having.
+
 ## Mutation-test the instrument, don't just reason about it
 
 Deliberately break the thing under test, run the check, and confirm it fails on the
