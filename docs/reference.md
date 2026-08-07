@@ -152,6 +152,23 @@ so they keyframe: the colour's saturation, the depth ramp's gamma, the ghost she
 exponent and fill, the contour's bands per metre and line thickness, and the Blackwall scan
 speed. Each defaults to the literal it replaced.
 
+**The duotone sits on top of all five**, beside `thermal` and `edges` and for their reason:
+a term written into one reading is inert in every other. It is a tonal transform rather than
+a tint, because its two poles carry luminance as well as hue — the near one runs toward black
+and the far one toward hot, so one term gives both the depth-keyed palette and the near-black
+figure against a burning core. A plain global toe cannot draw that second thing at all, since
+it darkens near and far alike, which is why there is no separate silhouette control to look
+for. `duotone depth` is how far the image lands between the poles, `duotone hue` turns both of
+them together, and `duotone split` is the depth they meet at, as a fraction of the clip range
+— so the crossover is a place in the room rather than a fraction of the frame. The pair itself
+is baked, the way `heatRamp` and `depthRamp` are: what is parameterised is how you use them.
+
+`crush` is the toe under the grade's Reinhard curve, promoted from a literal and defaulting to
+it. It is a sub-control of the grade pass rather than a fifth term gating it — raise it on its
+own and nothing happens, because the pass only runs when the split, the scanlines, the grain
+or the vignette asks for it. That asymmetry is deliberate: its default is not zero, so gating
+on it would hold the pass open for every look there has ever been.
+
 The panel is generated from the registry at boot. A parameter is one entry naming its group
 and label, and the row, bounds, readout and keyframe control are built from that, so an
 effect cannot get a control the registry does not own. The generator refuses to boot if the

@@ -503,6 +503,32 @@ const uniforms = {
   // sixth and seventh one. Unitless mixes.
   thermal: { value: 0 },
   edges: { value: 0 },
+  // The duotone, which sits beside those two for their reason and carries a second one
+  // of its own. It is a tonal transform rather than a palette: the two poles it lands
+  // between hold **luminance as well as hue**, the near one running toward black and the
+  // far one toward hot, so the near-black figure against a burning core comes out of the
+  // same term that decides what colour the room is.
+  //
+  // That pairing is the design rather than an economy, and it was reached by asking what
+  // the obvious shape could not draw. A global toe darkens near and far by the same
+  // amount, so a parameter named for the silhouette would have shipped unable to produce
+  // one - a control that appears to work, arriving at the level of the look instead of at
+  // the level of the wiring, which is the harder place to notice it. Keying the poles on
+  // depth is the whole of what makes a subject go black while the space behind it burns,
+  // and once the poles carry luminance there is nothing left for a second parameter to do.
+  //
+  // The pair itself is baked, following the precedent `heatRamp` and `depthRamp` set:
+  // both are hardcoded ramps and what is parameterised is how you use them. A `colour`
+  // registry kind would be the first new kind since `pose` and would drag a keyframe
+  // interpolation in with it - two saturated hues lerped through sRGB pass through grey
+  // on the way, so the honest version interpolates perceptually and the document format
+  // then carries that choice forever. `duotoneHue` turns both poles together instead,
+  // which is the one degree of freedom a look actually reaches for, and it keyframes.
+  //
+  // Radians here and degrees on the slider, the way the levelling angles are.
+  duotoneDepth: { value: 0 },
+  duotoneHue: { value: 0 },
+  duotoneSplit: { value: 0.5 },
   stateTex: { value: statePrev.texture },
   fadeTime: { value: 0.12 },
   wakeTime: { value: 0 },
@@ -845,6 +871,7 @@ precision highp float;
 uniform sampler2D colorPrev, colorCurr;
 uniform float opacity, exposure, nearClip, farClip, mixT, time;
 uniform float scanAmount, rimAmount, thermal, edges;
+uniform float duotoneDepth, duotoneHue, duotoneSplit;
 uniform float readRgb, readDepth, readGhost, readContour, readBlackwall;
 uniform float rgbSaturation, depthGamma, ghostRim, ghostFill;
 uniform float contourBands, contourLo, contourHi, blackwallSweep;
@@ -883,6 +910,29 @@ vec3 depthRamp(float t) {
   return t < 0.33 ? mix(a, b, t / 0.33)
        : t < 0.66 ? mix(b, c, (t - 0.33) / 0.33)
                   : mix(c, d, (t - 0.66) / 0.34);
+}
+
+// Turning both duotone poles by one angle, as a rotation about the grey axis.
+//
+// Rodrigues rather than a trip through HSV, and the axis is what makes it the right
+// arithmetic rather than the cheap one: rotating about the diagonal leaves the
+// component along it alone, so a pole that is nearly black stays nearly black however
+// far the hue is turned. A round trip through HSV would rebuild the value from a
+// maximum and hand the dark pole back lifted, which is precisely the luminance the
+// silhouette is made of.
+//
+// What is deliberately *not* claimed here is that a hue of zero is the exact identity.
+// It collapses to one where the driver returns exact values at zero, and GLSL ES permits
+// a couple of thousandths of absolute error on a trigonometric function, so that would be
+// a premise about this GPU wearing the clothes of a fact about the language - which is the
+// shape this repo has already been bitten by at the power of one. Nothing rests on it: the
+// block below guards on the *amount*, so at the defaults this function is never reached at
+// all, and the bit-exactness the pinned comparison measures is the branch's rather than
+// this arithmetic's.
+vec3 hueSpin(vec3 c, float a) {
+  const vec3 axis = vec3(0.5773502691896258);
+  float ca = cos(a), sa = sin(a);
+  return c * ca + cross(axis, c) * sa + axis * dot(axis, c) * (1.0 - ca);
 }
 
 void main() {
@@ -1078,6 +1128,42 @@ void main() {
     float e = pow(vEdge, 0.6);
     col = mix(col, mix(vec3(0.02, 0.03, 0.05), vec3(0.82, 0.94, 1.0), e), edges);
     alpha *= mix(1.0, 0.05 + 0.95 * e, edges);
+  }
+
+  // The duotone, and it is the governing tonal transform rather than a tint over one:
+  // the near pole runs toward black and the far pole toward hot, so a single term
+  // produces both the depth-keyed palette and the near-black silhouette against a
+  // burning core. The note beside the uniforms has why those are one parameter.
+  //
+  // It sits here, after the blend, for the reason thermal and edges above it do - a term
+  // written into one reading is inert in every other, and is then exercised only by
+  // whichever sweep arm happens to select that reading. And it sits *before* the glitch
+  // flare below rather than after it, which is a decision rather than an ordering
+  // accident: a torn band is emitted light, so it belongs on top of the tonal transform
+  // and not underneath one that would crush it back toward black.
+  //
+  // Read off t, the point's position inside the near/far clip range, so the split is a
+  // place in the room the way the crop faces are and not a fraction of a frame. The split
+  // is where the two poles meet, with the ramp spanning the clip range either side of it -
+  // at the default of 0.5 that is exactly a smoothstep from zero to one over t, and moving
+  // it decides which half of the room the subject falls in.
+  //
+  // Guarded, and the shape was measured rather than chosen. Both shapes are arithmetically
+  // clean here, which is not obvious and is worth writing down: a mix at zero is a plus
+  // zero times b minus a, which is exact whether or not the compiler contracts it, where
+  // the mix at one this file guards elsewhere is the one that is not. So the question was
+  // never the identity but what a branch does to the contractions either side of it, which
+  // the flare below records going the surprising way. Measured here, guarded, against the
+  // pinned pre-registry build: readRgb, readDepth, readContour and readBlackwall all came
+  // back bit-identical over six frames, and readGhost reproduced its own pre-existing
+  // failure unchanged - the same two frames, 2 and 3, and the same pair of hashes
+  // 55d01311394e against 36fb79d8fa45. That last part is the half that matters, because a
+  // row already red is where a new perturbation would hide.
+  if (duotoneDepth > 0.0) {
+    vec3 cold = hueSpin(vec3(0.020, 0.030, 0.075), duotoneHue);
+    vec3 heat = hueSpin(vec3(1.000, 0.380, 0.120), duotoneHue);
+    float k = smoothstep(duotoneSplit - 0.5, duotoneSplit + 0.5, t);
+    col = mix(col, mix(cold, heat, k), duotoneDepth);
   }
 
   // Torn bands flare cyan where the feed shears - and it sits here, after the blend,
@@ -1332,6 +1418,19 @@ const GradeShader = {
     // keeps it. A project saved before this that raised any grade term is the case that
     // does change: it loses its corner falloff until it names one.
     vignette: { value: 0 },
+    // The toe under the Reinhard curve, promoted from the literal 0.018 - and unlike
+    // `vignette` above it this one keeps the value it replaced, because the behaviour it
+    // replaces is a constant rather than a conditional. That difference decides the whole
+    // of how it is wired: a non-zero default cannot gate the pass, so `crush` is a
+    // sub-control inside the grade rather than a fifth term beside the four that gate it.
+    // See its registry entry for what gating it would have cost.
+    //
+    // **It is not the silhouette crush, whatever the name suggests**, and the comment is
+    // here to stop the next reader concluding that it is. This darkens near and far alike,
+    // so it cannot separate a subject from the space behind it; the term that does that is
+    // the duotone in the point shader. What this is for is the thing it always did - keep
+    // the empty background genuinely black after Reinhard lifts it.
+    crush: { value: 0.018 },
     time: { value: 0 },
     resolution: { value: new THREE.Vector2(1, 1) },
   },
@@ -1343,7 +1442,7 @@ const GradeShader = {
   // a full-screen read and write each.
   fragmentShader: /* glsl */ `
     uniform sampler2D tDiffuse;
-    uniform float rgbSplit, scanlines, grain, vignette, time;
+    uniform float rgbSplit, scanlines, grain, vignette, crush, time;
     uniform vec2 resolution;
     varying vec2 vUv;
 
@@ -1406,7 +1505,14 @@ const GradeShader = {
       col = col / (1.0 + col);
       // Then crush the toe back down: Reinhard lifts blacks, and this look needs
       // the empty space to stay genuinely black rather than dark red.
-      col = max(col - 0.018, 0.0) * 1.12;
+      //
+      // The gain stays a literal while the toe becomes a parameter, and that asymmetry is
+      // measured rather than lazy. The obvious reading - that 1.12 normalises the toe back
+      // out and so should follow it - is wrong: a toe of 0.018 would normalise at 1.018,
+      // so 1.12 is an independent graded lift that happens to sit near it. Tying the two
+      // together would re-grade every look ever authored the moment anybody moved the toe,
+      // which is a whole preset library drifting to buy a tidier-looking line.
+      col = max(col - crush, 0.0) * 1.12;
 
       gl_FragColor = vec4(col, 1.0);
     }
@@ -2397,6 +2503,35 @@ const PARAMS = {
   edges: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
     group: 'style', label: 'edges',
     apply: (v) => { uniforms.edges.value = v; } },
+  // The duotone: how far the image lands between the two poles, which way they are
+  // turned, and where they meet. Three amounts and no source selector, which is the same
+  // argument `thermal` and the readings above are built on - a shading idea expressed as
+  // a mode is refused during evaluation as a user action and can therefore never move
+  // under the playhead, where three scalars each key like anything else.
+  //
+  // `duotoneDepth` is an amount rather than a switch for the reason every other term here
+  // is one: a clip brings the tonal transform in and out on one track. It is the term the
+  // rest of this look sits on top of, because in the frames this is graded against the
+  // light is emitted by the data rather than reflected off surfaces - so the interiors
+  // have to fall toward black before a raster over the top reads as a reconstruction
+  // instead of as a filter laid over a video.
+  duotoneDepth: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'style', label: 'duotone depth',
+    apply: (v) => { uniforms.duotoneDepth.value = v; } },
+  // Degrees on the slider and radians at the uniform, the way `tilt` and `roll` are, so
+  // the panel reads in the unit a person turns a hue in and the shader gets the unit a
+  // trigonometric function takes. The full turn either way rather than a half, because
+  // the two poles are asymmetric - the near one is nearly black - so +90 and -90 are
+  // genuinely different pictures and a half-range would hide one of them.
+  duotoneHue: { def: 0, min: -180, max: 180, step: 1, kind: 'scalar', tag: 'look',
+    group: 'style', label: 'duotone hue',
+    apply: (v) => { uniforms.duotoneHue.value = THREE.MathUtils.degToRad(v); } },
+  // Where the poles meet, as a fraction of the near/far clip range. A place in the room
+  // rather than a fraction of the frame, which is what lets a subject keep its silhouette
+  // when the camera moves - and it is the same reasoning `contourBands` is per metre for.
+  duotoneSplit: { def: 0.5, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'style', label: 'duotone split',
+    apply: (v) => { uniforms.duotoneSplit.value = v; } },
   // Each post pass costs a full-screen read and write whether or not it changes
   // anything, so a zero value switches its pass off rather than running it as a
   // no-op. The three grade terms share one pass, so they gate it together.
@@ -2423,6 +2558,26 @@ const PARAMS = {
   vignette: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
     group: 'post', label: 'vignette',
     apply: (v) => { grade.uniforms.vignette.value = v; grade.enabled = gradeNeeded(); } },
+  // The toe under the grade's Reinhard curve, and **the one term sharing that pass which
+  // deliberately does not gate it** - note the missing `grade.enabled` beside the four
+  // above. That is the whole of its wiring and it is worth the paragraph, because the
+  // symmetry is the thing a reader will reach to restore.
+  //
+  // Its default is the literal it replaces, so gating on it would be gating on
+  // `0.018 > 0`: the pass held open for every look there has ever been, the four shipped
+  // presets that ask for no grade at all suddenly paying a full-screen read and write and
+  // drawing a tone curve they were never graded through, and `registry-check` red on all
+  // five readings at once against a build from before any of this existed. `vignette`
+  // escaped the same trap in the other direction, by defaulting to 0 because no single
+  // default reproduces the conditional it replaced. `crush` has no such escape - its old
+  // behaviour is a constant, and the constant is not zero.
+  //
+  // What that costs is honest and small: the toe is reachable only while some other term
+  // is holding the pass open, exactly as it was when it was a literal. The drop-one sweep
+  // still sees it, because `SCRAMBLE` has the grade up.
+  crush: { def: 0.018, min: 0, max: 0.2, step: 0.001, kind: 'scalar', tag: 'look',
+    group: 'post', label: 'crush',
+    apply: (v) => { grade.uniforms.crush.value = v; } },
 
   denoise: { def: true, kind: 'step', tag: 'look',
     group: 'signal', label: 'cull speckle',

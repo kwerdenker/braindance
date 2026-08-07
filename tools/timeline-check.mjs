@@ -633,7 +633,12 @@ console.log('\n== 1c. the image at a program position is the frame the index nam
   // being a literal applied whenever the pass ran and became a parameter Blackwall names,
   // this list went on zeroing the three it knew about and the fourth came through - a flat
   // look with a corner falloff on it, which is 100% of pixels differing from the bytes.
-  const FLAT = { ...DEPTH_LOOK, fade: 0, wake: 0, trails: 0, bloom: 0, glitch: 0, scan: 0, noise: 0, rgbSplit: 0, scanlines: 0, grain: 0, vignette: 0 };
+  // `duotoneDepth` joins that list ahead of needing to. It is not time-varying, so seek
+  // still equals playback with it up - but it is a tonal transform after the blend, and
+  // this arm compares the rendered image against the frame bytes themselves, so the moment
+  // the shipped Blackwall look names a duotone it would arrive from underneath exactly the
+  // way the vignette did. The list is cheaper to extend than the failure is to diagnose.
+  const FLAT = { ...DEPTH_LOOK, fade: 0, wake: 0, trails: 0, bloom: 0, glitch: 0, scan: 0, noise: 0, rgbSplit: 0, scanlines: 0, grain: 0, vignette: 0, duotoneDepth: 0 };
   const look = { ...FLAT, interpolate: false };
   // A source time sitting just inside a bracket, so which pair it names is not a
   // rounding question. Which *half* of that pair the image comes from is the part
@@ -1183,7 +1188,12 @@ console.log('\n== 4b. 60 fps out of a capture whose median gap is 64ms ==');
   // being a literal applied whenever the pass ran and became a parameter Blackwall names,
   // this list went on zeroing the three it knew about and the fourth came through - a flat
   // look with a corner falloff on it, which is 100% of pixels differing from the bytes.
-  const FLAT = { ...DEPTH_LOOK, fade: 0, wake: 0, trails: 0, bloom: 0, glitch: 0, scan: 0, noise: 0, rgbSplit: 0, scanlines: 0, grain: 0, vignette: 0 };
+  // `duotoneDepth` joins that list ahead of needing to. It is not time-varying, so seek
+  // still equals playback with it up - but it is a tonal transform after the blend, and
+  // this arm compares the rendered image against the frame bytes themselves, so the moment
+  // the shipped Blackwall look names a duotone it would arrive from underneath exactly the
+  // way the vignette did. The list is cheaper to extend than the failure is to diagnose.
+  const FLAT = { ...DEPTH_LOOK, fade: 0, wake: 0, trails: 0, bloom: 0, glitch: 0, scan: 0, noise: 0, rgbSplit: 0, scanlines: 0, grain: 0, vignette: 0, duotoneDepth: 0 };
   const walk = `(async (o) => {
     const k = globalThis.__kinect;
     const tl = globalThis.__tl;

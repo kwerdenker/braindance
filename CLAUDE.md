@@ -106,6 +106,11 @@ node tools/index-check.mjs --url http://localhost:8123   # step 2: index, hash, 
 node tools/registry-check.mjs --url http://localhost:8080 # step 3: one registry, sliders as views
 node tools/registry-check.mjs --mutate mix-ignores-normalisation  # ... and must FAIL mutated
 node tools/registry-check.mjs --mutate rgb-contributes-no-alpha   # ... and must FAIL mutated
+node tools/registry-check.mjs --mutate duotone-ignored            # ... the tonal transform the rest of the look sits on
+node tools/registry-check.mjs --mutate duotone-ignores-depth      # ... and that it is keyed on depth, which is the whole claim
+node tools/registry-check.mjs --mutate duotone-hue-in-degrees     # ... a unit no picture comparison can see the shape of
+node tools/registry-check.mjs --mutate crush-ignored              # ... the toe, promoted to the literal it defaults to
+node tools/registry-check.mjs --mutate crush-gates-the-grade      # ... and the one term in that pass that must not gate it
 node tools/timeline-check.mjs --url http://localhost:8080 # step 4: seek equals playback
 node tools/timeline-check.mjs --mutate preroll-constant   # ... and must FAIL mutated
 node tools/timeline-check.mjs --mutate draft-always-resets # ... and must FAIL mutated

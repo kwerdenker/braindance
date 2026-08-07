@@ -143,6 +143,69 @@ const MUTATIONS = {
     to: '  if (false) {',
     fails: 'readGhost, ghostRim and ghostFill in the drop-one sweep, plus readGhost\'s 1b row',
   },
+  // The duotone's amount reaches no pixel, and it takes the hue and the split down with
+  // it - the `weight-ignored` shape one block up, for the same structural reason. Both of
+  // those are only observable through the block this switches off, so three names land in
+  // the no-effect bucket and none of them is declared there. Three is the right answer
+  // and a fourth would mean some other parameter had quietly become reachable only
+  // through the duotone.
+  'duotone-ignored': {
+    from: '  if (duotoneDepth > 0.0) {',
+    to: '  if (false) {',
+    fails: 'duotoneDepth, duotoneHue and duotoneSplit in the drop-one sweep',
+  },
+  // The sharper half of the one above, and the reason both are kept: the duotone goes on
+  // working as a flat tint, so `duotoneDepth` still moves pixels and only the split stops
+  // meaning anything. That is the difference between "the term is wired up" and "the term
+  // is keyed on depth", and depth is the whole claim - a duotone that is not depth-keyed
+  // cannot draw the silhouette this parameter exists for, which is exactly the shape of
+  // failure that ships looking like a control that works.
+  'duotone-ignores-depth': {
+    from: '    float k = smoothstep(duotoneSplit - 0.5, duotoneSplit + 0.5, t);',
+    to: '    float k = 0.5;',
+    fails: 'duotoneSplit in the drop-one sweep, alone - the amount and the hue still reach pixels',
+  },
+  // The unit conversion dropped, which is a defect no image comparison can see the shape
+  // of: the poles still turn, the picture still changes, and every sweep row that asks
+  // whether the slider reaches a pixel goes on passing. What separates the two builds is
+  // the number at the uniform, so the landing row is the only thing that can fail here.
+  'duotone-hue-in-degrees': {
+    from: '    apply: (v) => { uniforms.duotoneHue.value = THREE.MathUtils.degToRad(v); } },',
+    to: '    apply: (v) => { uniforms.duotoneHue.value = v; } },',
+    fails: 'the duotoneHue row of the one-at-a-time landing sweep, reporting "landed 47 want '
+      + '0.8203047484373349", and the all-at-once row beside it - that second one is the same '
+      + 'comparison over the whole set rather than a separate finding',
+  },
+  // The toe goes back to being the literal it was promoted from. Nothing about the
+  // rendered default changes - that is the point, since the default *is* the literal - so
+  // the only row that can see it is the drop-one sweep, where reverting a parameter that
+  // reaches nothing changes no pixel.
+  'crush-ignored': {
+    from: '      col = max(col - crush, 0.0) * 1.12;',
+    to: '      col = max(col - 0.018, 0.0) * 1.12;',
+    fails: 'crush in the drop-one sweep, alone',
+  },
+  // The tempting edit, planted: `crush` joins the four terms that gate the grade pass, so
+  // the pass runs whenever the toe is non-zero, which is always. This is deliberately not
+  // a well-behaved control and the whole set has to be read rather than the count. It
+  // reddens the pass-gate row it is aimed at; then it reddens all five reading rows of
+  // section 1b, because every reading at its defaults is now drawn through a Reinhard
+  // curve the pinned build never applied; and then the boot comparison, because all four
+  // gating terms report their pass on where the pinned build has it off. Seven rows for
+  // one fact, measured rather than predicted - the first draft of this line guessed the
+  // boot failure would arrive as four separate landing rows and it arrives as one row
+  // naming four terms in its detail, which is the sort of thing only a run settles.
+  //
+  // Note what reddening 1b's readGhost row means here, since that row is red in every run
+  // of this tool: it goes from its own standing 2 of 6 frames to 6 of 6. A row already
+  // failing is exactly where a new defect hides, so the count is not the reading - the
+  // frame tally is.
+  'crush-gates-the-grade': {
+    from: '  return grade.uniforms.rgbSplit.value > 0',
+    to: '  return grade.uniforms.crush.value > 0 || grade.uniforms.rgbSplit.value > 0',
+    fails: 'the pass-gate row for crush, all five rows of 1b (readGhost widening from 2 of 6 '
+      + 'frames to 6 of 6), and the boot comparison naming all four gating terms',
+  },
 };
 
 const MUTATE = flag('--mutate');
@@ -356,12 +419,27 @@ const LANDING = {
   rim: 'k.uniforms.rimAmount.value',
   thermal: 'k.uniforms.thermal.value',
   edges: 'k.uniforms.edges.value',
+  duotoneDepth: 'k.uniforms.duotoneDepth.value',
+  // Degrees on the slider and radians at the uniform, so this row is the conversion as
+  // much as the arrival. An apply that handed the shader its degrees straight through
+  // would read here as a perfectly ordinary number and spin the poles fifty-seven times
+  // too far, which is a look nobody authored arriving through a slider that works.
+  duotoneHue: 'k.uniforms.duotoneHue.value',
+  duotoneSplit: 'k.uniforms.duotoneSplit.value',
   bloom: '[k.bloom.strength, k.bloom.enabled]',
   trails: '[k.afterimage.uniforms.damp.value, k.afterimage.enabled]',
   rgbSplit: '[k.grade.uniforms.rgbSplit.value, k.grade.enabled]',
   scanlines: '[k.grade.uniforms.scanlines.value, k.grade.enabled]',
   grain: '[k.grade.uniforms.grain.value, k.grade.enabled]',
   vignette: '[k.grade.uniforms.vignette.value, k.grade.enabled]',
+  // The fifth term in that pass, and **the missing `k.grade.enabled` beside it is the
+  // assertion**. The four above gate the pass and so each has to carry whether it is on;
+  // this one is a sub-control inside the pass and deliberately does not, because its
+  // default is the literal it replaced and a gate on a non-zero default would hold the
+  // grade open for every look there is. Pairing it here would make this row agree with a
+  // build that gated it, which is the one build this landing site exists to refuse. What
+  // proves the negative is the row in the pass-gate matrix below.
+  crush: 'k.grade.uniforms.crush.value',
   denoise: 'k.uniforms.denoise.value',
   edgeTol: 'k.uniforms.edgeTol.value',
   renderScale: 'k.renderer.getContext().drawingBufferWidth',
@@ -452,6 +530,14 @@ const EXPECT = {
   rim: (v) => v,
   thermal: (v) => v,
   edges: (v) => v,
+  duotoneDepth: (v) => v,
+  // The degrees-to-radians the registry does on the way through, written out here as the
+  // same double arithmetic rather than read back off the page - three's `degToRad` is a
+  // multiply by `Math.PI / 180` and so is this, which makes the equality exact instead of
+  // nearly exact. A tool that asked the page what conversion it used would agree with the
+  // implementation by construction and could never see a wrong one.
+  duotoneHue: (v) => v * (Math.PI / 180),
+  duotoneSplit: (v) => v,
   bloom: (v) => [v, v > 0],
   trails: (v) => [v, v > 0],
   // The four that share one pass, so each one's landing carries whether the pass is on
@@ -461,6 +547,9 @@ const EXPECT = {
   scanlines: (v, all) => [v, all.rgbSplit > 0 || v > 0 || all.grain > 0 || all.vignette > 0],
   grain: (v, all) => [v, all.rgbSplit > 0 || all.scanlines > 0 || v > 0 || all.vignette > 0],
   vignette: (v, all) => [v, all.rgbSplit > 0 || all.scanlines > 0 || all.grain > 0 || v > 0],
+  // Reads its own value and nothing else, because it shares the pass without gating it -
+  // so unlike the four above it names none of the others and none of them name it.
+  crush: (v) => v,
   denoise: (v) => (v ? 1 : 0),
   edgeTol: (v) => v,
   // three floors width * pixelRatio, and the context runs at deviceScaleFactor 1.
@@ -609,12 +698,32 @@ const SCRAMBLE = {
   // detail line, because every value matches and only the ordering does not.
   thermal: 0.6,
   edges: 0.45,
+  // The duotone amount well up, because the two below are only observable through it -
+  // the same argument the glitch master and the region's three effects are set on. At a
+  // depth of 0 the poles never reach a pixel, so the hue and the split would both land in
+  // the no-pixel bucket together looking like parameters that do nothing.
+  duotoneDepth: 0.65,
+  // Off the axis in both senses: a rotation big enough to move both poles well clear of
+  // where they started, and not one of the right angles a hardcoded constant would
+  // plausibly be. 47 degrees is on the step grid and is nobody's round number.
+  duotoneHue: 47,
+  // Off centre, so reverting it moves the crossover through the cloud rather than
+  // symmetrically about it. The fixture's points run z [-4.50, -0.50] against a near/far
+  // of 0.35/4.2, so a split at 0.36 puts the meeting plane inside the subject where the
+  // default at 0.5 puts it behind them.
+  duotoneSplit: 0.36,
   bloom: 1.35,
   trails: 0.44,
   rgbSplit: 2.3,
   scanlines: 0.61,
   grain: 0.37,
   vignette: 0.73,
+  // Well above the 0.018 it defaults to, and the four terms above hold the pass open so
+  // it is reachable at all - a toe inside a pass nothing switched on is the dead zone
+  // this table's `rgbSaturation` comment describes, arriving by a different route.
+  // Reverting it to its default lifts every unclamped pixel by 0.044 * 1.12, which is
+  // about 12.6 of 255 and nothing a sampling residual explains.
+  crush: 0.062,
   denoise: false,
   edgeTol: 340,
   renderScale: 85,
@@ -1017,6 +1126,21 @@ const GOLDEN_ABSENT = new Set([
   // which is why section 1b still agrees with a build from before it existed. The look
   // that did carry a vignette, `blackwall.json`, now names 0.55 for itself.
   'vignette',
+  // The duotone's three, on the plainest version of these terms: nothing at the pinned
+  // revision resembles them, and all three default to the identity - a depth of 0 never
+  // enters the block, so a build carrying them draws precisely what a build without them
+  // drew. That equality is what this arm measures, and section 1b is where it stops being
+  // an excuse and becomes a framebuffer hash, since the duotone sits after the blend and
+  // would move every one of the five readings if its default reached a pixel.
+  'duotoneDepth', 'duotoneHue', 'duotoneSplit',
+  // `crush` is here on `vignette`'s terms turned the other way up, and the contrast is
+  // the reason it gets its own sentence. It was a literal too, and unlike the vignette it
+  // *keeps* the value it replaced - so the excuse is the strong one rather than the
+  // conditional one: 0.018 is what the grade always subtracted, and a build whose toe is
+  // a uniform sitting at 0.018 draws what a build with the literal drew. What it cannot
+  // be excused for is gating the pass, which nothing here would see and the pass-gate
+  // matrix asserts directly.
+  'crush',
   // The program-out size, on the same terms and for the same reason: not a registry
   // parameter, no such control at the earlier revision, and its own bounds live in the
   // handler that parses it rather than in the markup. What it is held to is
@@ -1611,6 +1735,18 @@ console.log('\n[registry] the side effects that are not a uniform write');
     // three: raised on its own it has to bring the pass up by itself, or the vignette
     // is back to being a thing you can only have by asking for something else.
     [{ vignette: 0.01 }, { bloom: false, trails: false, grade: true }],
+    // The fifth term in that pass, and the only one whose expectation is `false`. `crush`
+    // shares the grade and deliberately does not gate it, so this row is the negative
+    // asserted rather than left as an omission - an omission would pass on a build that
+    // gated it, and gating it is the tempting edit, because every neighbour above does.
+    //
+    // What it would cost is why the row is worth its line. The toe defaults to 0.018 and
+    // not to 0, so `crush > 0` is true of every document there has ever been: the pass
+    // would run for the four shipped presets that ask for no grade at all, each paying a
+    // full-screen read and write to be put through a Reinhard curve nobody graded them
+    // through, and section 1b would redden on all five readings at once against a build
+    // from before the registry existed.
+    [{ crush: 0.5 }, { bloom: false, trails: false, grade: false }],
   ]) {
     const r = await setAndRead(values);
     const got = { bloom: r.bloom, trails: r.trails, grade: r.grade };
