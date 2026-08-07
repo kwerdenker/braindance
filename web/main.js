@@ -679,11 +679,19 @@ void main() {
   // below. So outsideCrop accumulates rather than being decided once, and everything
   // downstream reads the accumulated answer instead of re-testing a face.
   //
-  // The early return survives, and it is the reason the box costs nothing when nobody
-  // is looking at it: with cropOutside at zero this is the same hard cull the shader
-  // has always done, and the far half of a room never reaches the unprojection or the
-  // region weight below it. Only a viewer with the box on screen pays for keeping cut
-  // points alive, and no exported frame ever does.
+  // The early return survives, and it is what keeps the box free when nobody is looking
+  // at it: with cropOutside at zero this is the same hard cull the shader has always
+  // done, and the far half of a room never reaches the unprojection or the region weight
+  // below it. Only a viewer with the box on screen pays for keeping cut points alive, and
+  // no exported frame ever does.
+  //
+  // **What that viewer pays is large in proportion and small in the budget**, which is
+  // not obvious either way and so was measured rather than argued: 0.285ms per draft
+  // rises to 0.518ms, up 82%, on a box tight enough to cut most of the room. The
+  // proportion is that big because the cull it replaces is the cheapest exit in this
+  // shader - almost every point was leaving at the depth test and now runs the whole
+  // vertex stage - and 0.23ms is still under a hundredth of a 30fps frame. See
+  // docs/performance.md for the method.
   bool outsideCrop = cropOn == 1.0 && (z < nearClip || z > farClip);
   if (outsideCrop && cropOutside <= 0.0) {
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
@@ -12337,8 +12345,12 @@ setLevelSelection(false);
 // to "no crop" has to be one press rather than four remembered numbers. `near`/`far`
 // deliberately stay where they are: they are a depth range somebody usually chose on
 // purpose, and this button is about the four that were opened together.
+// `crop` is in the list because it is the switch over exactly the four faces this
+// button reverts. Left out, "revert all to default" could hand back four faces at their
+// bounds with the box still released - a document carrying a non-default value, keyed
+// and exported and drawn dashed, after a press whose label says everything is back.
 ui.cropReset.addEventListener('click', () => {
-  params.reset(['left', 'right', 'bottom', 'top']);
+  params.reset(['left', 'right', 'bottom', 'top', 'crop']);
   requestRepaint();
   history.commit();
 });

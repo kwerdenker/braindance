@@ -2036,3 +2036,44 @@ rather than assuming it.
 The tell for this class is a row that fails on a value *near* a boundary — 85% of a
 window, a value of exactly zero — rather than one that fails by a mile. A build that
 genuinely lost the window would put the marker nowhere near the edge of it.
+
+## A probe placed where both builds answer the same thing
+
+Four instruments written for the crop box in one session were each aimed somewhere the
+correct build and the broken one would have agreed. All four were caught by running the
+mutation rather than by reading the code, which is the argument for the rule that a proof
+tool is mutation-tested rather than reasoned about.
+
+**A counter that is zero in both builds.** The face drag had to be shown to arm a redraw
+rather than render out of its own handler, and the first counter reached for was
+`navigationRedraws` — the one section 9 uses for the same claim about orbiting. A face
+drag moves no camera, so that counter sits at zero whether the handler renders or not, and
+*any* ceiling passes. `counters.renders` is the one that separates them, because the bug is
+an extra frame drawn per pointer move.
+
+**A count taken against a stack with a ceiling.** "One undo snapshot for the gesture" was
+first asserted as `depth === before + 1`. The undo stack is capped, and the session reached
+the cap: a build committing twenty-four times and a build committing once both leave the
+depth at 100. Pressing undo and reading the face back is the assertion that means
+something, and it is a smaller edit than the one that was wrong.
+
+**A ratio measured where the ratio is small.** The row proving a hidden box culls rather
+than fading to alpha zero counts pixels revealed behind cut foreground — an invisible
+occluder cannot reveal anything. At a near plane of 1.5 m the correct build revealed 225
+pixels and the mutated one 154, which no threshold divides. At 2.5 m with the lateral faces
+open it is 3776 against 993. The claim was right at both settings; only the second one can
+be asserted on. A cloud is sprites rather than a surface, so rays get through a stack of
+invisible points and this will never be presence-versus-absence.
+
+**An arm lit by a single source.** `registry-check`'s row proving the crop switch reaches
+`near`/`far` rendered with everything but the depth pair at its defaults — which leaves
+`readRgb` carrying the whole image alone. `--mutate rgb-contributes-no-alpha` renders black
+on both arms, they compare identical, and the row fired against a mutation with nothing to
+do with the crop. Carrying the scrambled readings into the arm fixes it: a probe lit by five
+sources cannot be switched off by one of them. **This is the reason to re-run a tool's
+existing mutations after editing the tool**, not only after editing what it tests.
+
+The shape they share is the one this file keeps arriving at from different directions: ask
+what the broken build would have to do to still pass, and check the probe is somewhere the
+answer differs. Three of the four still measured the right quantity — they measured it where
+it had no range.

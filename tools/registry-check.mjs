@@ -2063,11 +2063,24 @@ console.log('\n[registry] the crop switch, which the sweep above cannot see');
     'releasing the crop changes the image, against the six faces the scrambled set authors',
     eq(scrambledRun, released) ? 'identical' : `first divergence at image ${scrambledRun.findIndex((h, i) => h !== released[i])}`);
 
-  // Everything unnamed falls back to its default, so the four lateral faces are wide
-  // open here and cannot be what changes. Written as an omission rather than by naming
-  // `CROP_LIMIT`, which would be this file carrying a second copy of a bound the
-  // registry already owns.
-  const depthOnly = { near: SCRAMBLE.near, far: SCRAMBLE.far };
+  // The scrambled set with the four lateral faces put back to their own defaults, which
+  // are their bounds - so the only thing the switch has left to release is the depth
+  // pair. The bounds are read off the registry rather than named here, which would be
+  // this file carrying a second copy of `CROP_LIMIT`.
+  //
+  // **The rest of the scrambled look comes along, and that is a repair.** The arm was
+  // written as `{ near, far }` alone, which leaves every reading at its default - one
+  // source, `readRgb`, carrying the whole image. `--mutate rgb-contributes-no-alpha`
+  // then renders black on both arms, they compare identical, and this row fired against
+  // a mutation that has nothing to do with the crop. A probe lit by five readings cannot
+  // be switched off by one of them.
+  const depthOnly = {
+    ...SCRAMBLE,
+    left: defaults.left,
+    right: defaults.right,
+    bottom: defaults.bottom,
+    top: defaults.top,
+  };
   const depthBiting = await run(depthOnly);
   const depthReleased = await run({ ...depthOnly, crop: false });
   check(!eq(depthBiting, depthReleased),

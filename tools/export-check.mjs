@@ -1889,7 +1889,10 @@ await main.page.evaluate(`(() => {
   const k = globalThis.__kinect;
   if (k.cropBoxShown()) document.getElementById('cropBox').click();
   k.keyframes.chrome.set(true);
-  k.params.reset(['left', 'right', 'bottom', 'top', 'near', 'far']);
+  // The switch among them, because the last arm above ran with it off - without it
+  // this block leaves the state its own comment says it restores, and every row below
+  // would render with the box released.
+  k.params.reset(['left', 'right', 'bottom', 'top', 'near', 'far', 'crop']);
 })()`);
 
 // The main page has said everything it has to say, and it is closed here. Every
