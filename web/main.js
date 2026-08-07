@@ -1910,13 +1910,17 @@ const cropReach = (maxDepth = 9.5) => {
 /**
  * Whether a sensor-space sample is on the wrong side of the crop box.
  *
- * **The crop is asked about in four places and this is three of them.** The vertex
- * shader has to keep its own copy because it is in another language, but the plan
- * inset's density map and floor selection both used to spell the six comparisons out
- * for themselves - so a switch wired to the shader alone would have left the top-down
- * drawing a cropped cloud underneath a picture drawing everything, and the top-down is
- * exactly where the depth faces get dragged. Three spellings of one rule is three
- * places for the next face, or the next switch, to be forgotten.
+ * **The crop is asked about in two places and this is one of them.** The vertex shader
+ * has to keep its own copy because it is in another language, but the plan inset's
+ * density map used to spell the six comparisons out for itself - so a switch wired to
+ * the shader alone left the top-down drawing a cropped cloud underneath a picture
+ * drawing everything, and the top-down is exactly where the depth faces get dragged.
+ * A second spelling of one rule is a second place for the next face, or the next
+ * switch, to be forgotten, which is why the plan asks here rather than deciding.
+ *
+ * It had a third caller while the room could be levelled by selecting a floor in the
+ * picture, and that gesture is gone; the sharing is what survived it, because the one
+ * reader left is the one the switch was originally wired past.
  *
  * Sensor metres and before the levelling rotation, matching the shader: the box is a
  * place in the room, so testing a rotated position would move all six faces every time
@@ -2004,16 +2008,7 @@ const PANEL_GROUPS = [
       // and a control you reach for while dragging a face should not be two clicks
       // into a menu that closes when you press it.
       panelButtonRow(['cropBox', 'show crop box']),
-      panelButtonRow(['camLevel', 'select floor'], ['camLevelReset', 'reset rotation']),
-      // **The only thing that says what the two-step gesture is, and what it just did.**
-      // Levelling is arm-then-click-a-surface, which is not a shape a button label can
-      // carry, and the same line is where `setLevelSelection` reports the fit: how many
-      // samples the plane was read from and how flat they were, or the sentence saying
-      // the press landed somewhere with no plane in it. The rework took the line out and
-      // left the writer with nowhere to write, so a floor fit that failed said nothing
-      // at all and the gesture had no instructions.
-      panelNote('levelNote', 'Select floor, then click a flat floor or ceiling plane in the picture. '
-        + 'The selection levels the room; tilt and roll below remain available for small corrections.'),
+      panelButtonRow(['camLevelReset', 'reset rotation']),
     ],
     after: () => [
       panelButtonRow(['cropReset', 'revert all to default']),
@@ -2092,12 +2087,12 @@ const PARAMS = {
   // belongs to the take and every project on it wants the same answer - see the long
   // note above `applyWorldTilt` for why it rotates the world instead of the camera.
   //
-  // The ranges are the whole of what the plane fit can ever produce and not a
-  // judgement about how far a bracket can lean: `roll` comes out of an `atan2` over
-  // the full turn, and `tilt` out of an `atan2` against a non-negative horizontal
-  // component, so it cannot leave the quarter turn either side. That means selecting
-  // a floor can never write a value its own slider would clamp, which would otherwise
-  // be a silent disagreement between the button and the panel.
+  // The ranges are the whole of what the pair can mean and not a judgement about how
+  // far a bracket can lean. `roll` turns the picture in its frame, so it needs the full
+  // turn; `tilt` pitches the room onto its vertical, and a quarter turn either side
+  // already reaches every orientation a surface can have, because past that the same
+  // room is described by a roll of the other sign. A range chosen by taste instead
+  // would refuse a mount somebody actually built.
   tilt: { def: 0, min: -90, max: 90, step: 0.5, kind: 'scalar', tag: 'look',
     group: 'framing', label: 'tilt',
     apply: (v) => { worldTiltAngles.tilt = v; applyWorldTilt(); } },
@@ -7077,11 +7072,9 @@ const ui = {
   tCamKey: document.getElementById('tCamKey'),
   tCamView: document.getElementById('tCamView'),
   camSensor: document.getElementById('camSensor'),
-  camLevel: document.getElementById('camLevel'),
   camLevelReset: document.getElementById('camLevelReset'),
   cropBox: document.getElementById('cropBox'),
   cropReset: document.getElementById('cropReset'),
-  levelNote: document.getElementById('levelNote'),
   exportSize: buildExportMenu(document.getElementById('tExportSize')),
   exportRatios: document.getElementById('exportRatios'),
   exportFormats: document.getElementById('exportFormats'),
@@ -11785,40 +11778,6 @@ function viewUnder(clientX, clientY) {
   return { plan, x, y };
 }
 
-// Floor selection is a one-shot mode because its first press is in the panel and the
-// point it names is in the picture. The state is visible on both ends of that gap: the
-// button changes face and the frame gets a crosshair cursor. `Escape` and pressing the
-// button again are explicit ways out, so hiding the panel or deciding not to select a
-// surface cannot strand the next orbit inside a mode the user forgot was armed.
-let levelSelectionArmed = false;
-
-function setLevelSelection(on, note) {
-  levelSelectionArmed = on;
-  ui.camLevel.setAttribute('aria-pressed', String(on));
-  ui.camLevel.textContent = on ? 'cancel selection' : 'select floor';
-  document.body.classList.toggle('selecting-level', on);
-  if (note) ui.levelNote.textContent = note;
-}
-
-// On the window and in capture phase for the same reason the node drag below lives
-// there: OrbitControls owns pointerdown on the canvas. The selecting press must reach
-// exactly one owner or the room levels while the camera begins orbiting underneath it.
-// Registered before the node handler, with stopImmediatePropagation, because the
-// editor's camera nodes are drawn over the same picture and floor selection wins while
-// it is visibly armed.
-addEventListener('pointerdown', (e) => {
-  if (!levelSelectionArmed || e.target !== renderer.domElement || e.button !== 0) return;
-  e.preventDefault();
-  e.stopImmediatePropagation();
-  const view = viewUnder(e.clientX, e.clientY);
-  if (!view) return;
-  if (chromeOn && view.plan) return;
-  const result = levelAtStagePoint(view.x, view.y);
-  if (!result.ok) return;
-  setLevelSelection(false,
-    `levelled on ${result.samples} samples, ${(result.rms * 1000).toFixed(1)}mm from flat`);
-}, true);
-
 function nodeUnder(view) {
   let best = null;
   cameraKeys().forEach((key, i) => {
@@ -12110,105 +12069,15 @@ function sensorView() {
 
 ui.camSensor.addEventListener('click', () => { sensorView(); });
 
-// How far either side of the winning sample the plane is fitted, in depth pixels. At
-// two metres on this sensor's 366px focal length a 25x25 patch spans about 14cm -
-// wide enough that the fit is reading a surface rather than the depth quantisation,
-// narrow enough that a headliner does not take the windscreen in with it.
-const LEVEL_PATCH = 12;
-// How close to the selected point a sample has to land to be a candidate, in stage
-// pixels. Generous, because asking for sub-pixel aim on a cloud full of holes would
-// make a visible surface answer as though there were nothing under the pointer.
-const LEVEL_PICK_PX = 60;
-// The grid is walked at this stride hunting for the selected sample - two rather than
-// the plan view's four, because this decides which surface gets levelled and a miss
-// here is a wrong answer rather than a coarse drawing.
-const LEVEL_PICK_STRIDE = 2;
-// Below this many valid samples in the patch there is no plane to speak of. This is
-// the only thing that refuses: see `levelAtStagePoint` on why the flatness is reported
-// rather than judged.
-const LEVEL_MIN_SAMPLES = 32;
-
-const levelVec = new THREE.Vector3();
-const levelUp = new THREE.Vector3();
-const levelNormal = new THREE.Vector3();
-const levelInverse = new THREE.Quaternion();
-
-/**
- * The plane through a patch of the depth image around one sample, as a unit normal in
- * sensor metres, or null where the patch is too empty or too degenerate to have one.
- *
- * The normal is the smallest axis of the patch's covariance, taken by the determinant
- * route rather than by an eigen solver: for a 3x3 symmetric matrix the three cofactor
- * columns are each proportional to that axis, and the one belonging to the largest
- * determinant is the numerically stable one to read it off. That matters here rather
- * than being a micro-optimisation - a patch on a wall dead ahead is near-degenerate in
- * two of the three columns, and picking blindly reads the answer out of the noise.
- */
-function fitPatchNormal(col0, row0, depth, fx, fy, cx, cy) {
-  let n = 0;
-  let sx = 0;
-  let sy = 0;
-  let sz = 0;
-  const xs = [];
-  const ys = [];
-  const zs = [];
-  for (let row = Math.max(0, row0 - LEVEL_PATCH); row <= Math.min(DEPTH_H - 1, row0 + LEVEL_PATCH); row++) {
-    for (let col = Math.max(0, col0 - LEVEL_PATCH); col <= Math.min(DEPTH_W - 1, col0 + LEVEL_PATCH); col++) {
-      const mm = depth[row * DEPTH_W + col];
-      if (mm === 0) continue;
-      const z = mm * 0.001;
-      const x = ((col + 0.5 - cx) / fx) * z;
-      const y = -((row + 0.5 - cy) / fy) * z;
-      // The candidate that named this patch was chosen under the same rule, so the
-      // patch fitted around it obeys it too - a plane read partly from geometry the
-      // picture is not showing is a plane fitted to something nobody pointed at. It
-      // used to be the depth pair alone here and all six one link up, which was the
-      // lateral faces being enforced on the choice and not on the answer.
-      if (croppedOut(x, y, z)) continue;
-      xs.push(x); ys.push(y); zs.push(-z);
-      sx += x; sy += y; sz += -z;
-      n++;
-    }
-  }
-  if (n < LEVEL_MIN_SAMPLES) return null;
-  const mx = sx / n;
-  const my = sy / n;
-  const mz = sz / n;
-  let xx = 0; let xy = 0; let xz = 0; let yy = 0; let yz = 0; let zz = 0;
-  for (let i = 0; i < n; i++) {
-    const dx = xs[i] - mx;
-    const dy = ys[i] - my;
-    const dz = zs[i] - mz;
-    xx += dx * dx; xy += dx * dy; xz += dx * dz;
-    yy += dy * dy; yz += dy * dz; zz += dz * dz;
-  }
-  const detX = yy * zz - yz * yz;
-  const detY = xx * zz - xz * xz;
-  const detZ = xx * yy - xy * xy;
-  const detMax = Math.max(detX, detY, detZ);
-  if (!(detMax > 0)) return null;
-  if (detMax === detX) levelNormal.set(detX, xz * yz - xy * zz, xy * yz - xz * yy);
-  else if (detMax === detY) levelNormal.set(xz * yz - xy * zz, detY, xy * xz - yz * xx);
-  else levelNormal.set(xy * yz - xz * yy, xy * xz - yz * xx, detZ);
-  if (levelNormal.lengthSq() === 0) return null;
-  levelNormal.normalize();
-  // How far the patch actually is from the plane it was given, in metres. Reported
-  // rather than used, for the reason `levelAtStagePoint` gives.
-  let sq = 0;
-  for (let i = 0; i < n; i++) {
-    const d = (xs[i] - mx) * levelNormal.x + (ys[i] - my) * levelNormal.y + (zs[i] - mz) * levelNormal.z;
-    sq += d * d;
-  }
-  return { normal: levelNormal, samples: n, rms: Math.sqrt(sq / n) };
-}
-
 /**
  * Writes both world-rotation controls as one interaction.
  *
- * This is the door used by both the plane selection and reset. Keeping them on the
- * same `writeFromControl` path matters when either angle is keyed: a direct registry
- * reset would be overwritten on the next evaluated frame while its button and sliders
- * briefly claimed it had succeeded.
+ * The pair is written through `writeFromControl` rather than straight into the
+ * registry, and that matters when either angle is keyed: a direct registry write would
+ * be overwritten on the next evaluated frame while the button and its sliders briefly
+ * claimed it had succeeded. The two angles go in one commit for the same reason they
+ * are one gesture - an undo after `reset rotation` puts the room back where it was,
+ * rather than handing back one axis and leaving the other at neutral.
  */
 function writeWorldRotation(tilt, roll) {
   writeFromControl('roll', roll);
@@ -12222,122 +12091,7 @@ function resetWorldRotation() {
   return writeWorldRotation(0, 0);
 }
 
-/**
- * Levels the room on the surface selected at one point in the rendered picture.
- *
- * The button exists because the two sliders are two numbers nobody can guess: the
- * angle a bracket ended up at is not a thing anybody knows to half a degree, and
- * hunting for it by eye on a cloud is slow enough that people would rather work
- * canted. Selecting the floor names the surface directly, and it writes the same two
- * parameters the sliders do - so it is a way of *saying* the value rather than a
- * second place the value lives, which is what keeps this one implementation and lets
- * the user nudge afterwards.
- *
- * **A surface has two normals and both of them make it level.** Picking the one that
- * disagrees least with the vertical already in force is what stops levelling on a
- * ceiling from turning the room over, and it is why the fit is compared against the
- * current tilt taken back into sensor space rather than against a constant.
- *
- * **The flatness is reported and never judged.** A threshold that refused a patch for
- * being too rough would be a number invented at a desk, and this repo has the scars
- * from those; the honest thing is to hand back the RMS so somebody can see the fit was
- * taken across the gap between two seats and press again somewhere better. The one
- * refusal is an empty patch, which is an impossibility rather than an opinion.
- */
-function levelAtStagePoint(stageX, stageY) {
-  const depth = depthCurr.image.data;
-  const fx = uniforms.focal.value.x;
-  const fy = uniforms.focal.value.y;
-  const cx = uniforms.center.value.x;
-  const cy = uniforms.center.value.y;
-  const size = stageSize();
-  if (!Number.isFinite(stageX) || !Number.isFinite(stageY)
-      || stageX < 0 || stageY < 0 || stageX > size.w || stageY > size.h) {
-    return { ok: false, reason: 'the selected point is outside the picture' };
-  }
-  viewCamera.updateMatrixWorld(true);
-
-  // Candidates are projected through the camera that is actually drawing rather than
-  // through the one in front of the sensor, because the gesture names a surface by
-  // where it sits in the picture and the picture is whatever the view happens to be.
-  let best = null;
-  for (let row = 0; row < DEPTH_H; row += LEVEL_PICK_STRIDE) {
-    for (let col = 0; col < DEPTH_W; col += LEVEL_PICK_STRIDE) {
-      const mm = depth[row * DEPTH_W + col];
-      if (mm === 0) continue;
-      const z = mm * 0.001;
-      levelVec.set(((col + 0.5 - cx) / fx) * z, -((row + 0.5 - cy) / fy) * z, -z);
-      // The same six faces the renderer applies, so a surface cropped out of the
-      // picture cannot be levelled on - and released along with them, so a floor the
-      // crop was hiding becomes selectable the moment the switch says the box does not
-      // bite. Sensor space and before the rotation, matching the vertex shader.
-      if (croppedOut(levelVec.x, levelVec.y, z)) continue;
-      levelVec.applyQuaternion(worldTilt).project(viewCamera);
-      if (levelVec.z < -1 || levelVec.z > 1) continue;
-      const d = Math.hypot(
-        (levelVec.x * 0.5 + 0.5) * size.w - stageX,
-        (0.5 - levelVec.y * 0.5) * size.h - stageY,
-      );
-      if (d > LEVEL_PICK_PX) continue;
-      // Nearest to the camera among the candidates rather than nearest to the
-      // crosshair: this footage is full of holes, and a hole in the surface being
-      // aimed at lets the wall behind it through, where levelling on the wall behind
-      // is the one answer nobody wanted.
-      if (!best || levelVec.z < best.ndcZ) best = { col, row, ndcZ: levelVec.z };
-    }
-  }
-  if (!best) return { ok: false, reason: 'nothing near the selected point to level on' };
-
-  const fit = fitPatchNormal(best.col, best.row, depth, fx, fy, cx, cy);
-  if (!fit) return { ok: false, reason: 'too few samples around the selected point to fit a surface' };
-
-  levelUp.set(0, 1, 0).applyQuaternion(levelInverse.copy(worldTilt).invert());
-  if (fit.normal.dot(levelUp) < 0) fit.normal.negate();
-
-  // The closed form of "which pair of angles carries this normal onto +Y", under the
-  // `Rx(tilt) * Rz(roll)` order the cloud is turned by. `roll` is whatever takes the
-  // normal into the YZ plane, which leaves a non-negative horizontal component behind;
-  // `tilt` is whatever then swings that onto the axis. Two angles for two degrees of
-  // freedom, with the yaw that would be the third left where it belongs, on the drag.
-  const horizontal = Math.hypot(fit.normal.x, fit.normal.y);
-  const roll = THREE.MathUtils.radToDeg(Math.atan2(fit.normal.x, fit.normal.y));
-  const tilt = THREE.MathUtils.radToDeg(Math.atan2(-fit.normal.z, horizontal));
-  const written = writeWorldRotation(tilt, roll);
-  return {
-    ok: true,
-    // Read back rather than returned as computed, so the answer is the value the
-    // registry holds after snapping to the slider's step and not the one before it.
-    ...written,
-    normal: fit.normal.toArray(),
-    samples: fit.samples,
-    rms: fit.rms,
-    pixel: [best.col, best.row],
-  };
-}
-
-ui.camLevel.addEventListener('click', () => {
-  if (levelSelectionArmed) {
-    setLevelSelection(false, 'Floor selection cancelled.');
-    return;
-  }
-  // The second press names a pixel in the picture, so the camera cannot keep coasting
-  // between arming and selection. Finish the orbit here, while there is still a frame
-  // before the user can click the surface, rather than moving it underneath that click.
-  finishOrbitDrift();
-  setLevelSelection(true, 'Click a flat floor or ceiling plane in the picture. Press Escape to cancel.');
-});
-
-ui.camLevelReset.addEventListener('click', () => {
-  setLevelSelection(false);
-  resetWorldRotation();
-});
-
-addEventListener('keydown', (e) => {
-  if (!levelSelectionArmed || e.key !== 'Escape') return;
-  e.preventDefault();
-  setLevelSelection(false, 'Floor selection cancelled.');
-});
-setLevelSelection(false);
+ui.camLevelReset.addEventListener('click', () => { resetWorldRotation(); });
 
 // Four planes back to their defaults, which are their bounds. Cropping is easy to do
 // by accident and hard to undo by hand once all four have moved - and a box closed
@@ -13772,8 +13526,8 @@ globalThis.__kinect = {
   // would work on screen while every assertion read the corpse.
   get controls() { return controls; },
 
-  // Levelling: the rotation the room is carrying, the selected-plane fit that derives
-  // it, and the neutral-state action that uses the same control write path.
+  // Levelling: the rotation the room is carrying, and the neutral-state action that
+  // writes the pair back through the same control path a slider does.
   //
   // Read off **the cloud** rather than off the quaternion the parameters compose into,
   // and the difference is the whole value of the row. `registry-check` calls this the
@@ -13782,8 +13536,6 @@ globalThis.__kinect = {
   // been computed correctly and never applied, which is one edit away at all times and
   // is exactly what `level-check --mutate tilt-ignored` does.
   worldTilt: () => cloud.quaternion.toArray(),
-  levelAtStagePoint,
-  levelSelection: () => levelSelectionArmed,
   resetWorldRotation,
 
   // The sensor's own view, and the numbers it derived. Returned rather than left to

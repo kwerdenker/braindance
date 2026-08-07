@@ -662,13 +662,12 @@ holding only `sample.knct` reports `1 takes`.
 
 **`level-check` needs no sensor and no capture, and that is a claim about what it can grade
 rather than a convenience.** It writes analytic planes — `z = c / (u . n)` along each pixel's
-own ray — straight into the depth texture, so it knows the normal of every surface it plants
-and can mark the plane fit against the answer. A fixture take would have given it a surface
-nobody knows the normal of, and the fit would then only ever have been asserted against itself.
-Section 5 also plants different planes on the left and right of one frame, selects each side,
-and checks the two resulting rotations. A full frame of one plane cannot distinguish a selected
-point from a hard-coded centre. The same section drives the reset button and reads both axes and
-both sliders back at neutral.
+own ray — straight into the depth texture, so it knows the normal of every surface it plants.
+That is what lets its `levelPair` oracle state the cant a planted surface is level at instead
+of asking the page, and the distinction is the point: a check that read the expected angles off
+the build under test would agree with any build by construction, including one composing the
+pair the other way round. A fixture take would have given it a surface nobody knows the normal
+of. Section 5 drives the reset button and reads both axes and both sliders back at neutral.
 
 **Its staged tree deliberately has no `native/`, and that is the reason it works.** A live
 socket wipes a planted frame in well under a second — an arriving frame swaps the two depth
@@ -690,14 +689,18 @@ tested on the undisplaced sensor-space position. It carries its own anti-vacuity
 the camera behind *must* change the picture — because otherwise a build that ignored the
 parameters entirely satisfies the identity by drawing the same thing twice. **And surface A is
 deliberately blind to `level-order-swapped`**: it leans along one axis, its roll comes out zero,
-and `Rx * Rz` and `Rz * Rx` are then the same rotation. B and C catch it. The blind arm stays,
-because a sweep where every arm reddens cannot say which property is load-bearing.
+and `Rx * Rz` and `Rz * Rx` are then the same rotation. Which is why section 3 — that mutation's
+catcher — plants surface B, whose roll is 27 degrees, rather than the simplest of the three. A
+surface that only tipped away from the sensor would be levelled by either order and the section
+would stay green under the swap.
 
-Its `LEVEL_TOLERANCE` is a bound and not a fitted number: snapping two angles to the sliders'
-half-degree step leaves about 0.0062 radians in the worst case, the gate is 0.012, the clean
-run's worst arm sits at 0.0035 and `level-order-swapped` misses by 0.19. An earlier 0.02 let
-surface C through by 0.0005 — green or red depending on the machine — which is the shape
-`docs/instruments.md` warns about under gates that pass for a neighbouring reason.
+**Section 7's switch rows have exactly one catcher and it is the top-down.** `crop` has two
+readers: the vertex shader, and `croppedOut`, which the plan inset asks. The rows close the
+crop in sensor y until the plan loses points, release the switch, and demand the same count
+back — so a `crop` wired to the shader alone reddens there and nowhere else. It had a third
+reader until the select-floor gesture was removed on 2026-08-08, and that gesture was the one
+those rows used to ask, so anything that narrows the plan's use of `croppedOut` now takes the
+mutation's only catcher with it.
 
 **`registration-check` builds both sides every run** - a pristine upstream prefix and ours -
 because a stale oracle `.dylib` turns the whole thing into a build compared against itself and

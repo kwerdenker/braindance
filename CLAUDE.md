@@ -265,13 +265,10 @@ node tools/level-check.mjs --mutate plan-ignores-tilt     # ... and must FAIL mu
 node tools/level-check.mjs --mutate plan-skips-vertical-crop # ... and must FAIL mutated
 node tools/level-check.mjs --mutate region-follows-tilt   # ... and must FAIL mutated
 node tools/level-check.mjs --mutate sensor-view-ignores-tilt # ... and must FAIL mutated
-node tools/level-check.mjs --mutate level-writes-zero     # ... and must FAIL mutated
-node tools/level-check.mjs --mutate level-order-swapped   # ... and must FAIL mutated
-node tools/level-check.mjs --mutate level-selection-ignores-point # ... and must FAIL mutated
-node tools/level-check.mjs --mutate pointer-levels-the-centre # ... the press's own position, one link earlier
+node tools/level-check.mjs --mutate level-order-swapped   # ... the pair's composition order, seen by the one surface that leans both ways
 node tools/level-check.mjs --mutate reset-keeps-roll      # ... and must FAIL mutated
 node tools/level-check.mjs --mutate plan-box-ignores-tilt # ... the crop box drawn in the room the shader deliberately does not test in
-node tools/level-check.mjs --mutate crop-switch-reaches-only-the-shader # ... and the switch over it, asked of all three readers
+node tools/level-check.mjs --mutate crop-switch-reaches-only-the-shader # ... and the switch over it, asked of the reader that is not the shader
 node tools/vcam-check.mjs                                 # the output to OBS: the colour camera, the take it must not touch, and the source's picture
 node tools/vcam-check.mjs --mutate hd-upscales-registered # ... and must FAIL mutated
 node tools/vcam-check.mjs --mutate hd-reencodes-in-flight # ... the bytes, where the picture is right

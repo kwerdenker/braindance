@@ -1208,6 +1208,12 @@ and the right-side row exists to say the gesture works on both ends rather than 
 anything. **Ask of a control set which member would still be green under the mutation, and do
 not mistake it for redundancy: it is measuring a different thing.**
 
+Written in the past tense on purpose: floor selection was removed on 2026-08-08, and with it
+`levelAtStagePoint`, both mutations named above, and the split plant. Nothing in this section
+can be re-run. It is kept because the lesson is about seams and not about levelling — the same
+shape is live wherever a proof tool reaches a hook the shipped surface reaches through a
+handler, and `editor-check`'s driver map exists to make that reach visible.
+
 ### `nav-at-the-foot` stood in a dead zone and then moved the page it measured
 
 Both flaws at once, in one probe, and both were found by running the mutation and reading

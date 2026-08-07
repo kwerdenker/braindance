@@ -95,11 +95,10 @@ saved before it existed loses its corner falloff until it names one.
 A sensor bolted to a dashboard shoots a room that arrives on its side, and nothing measures
 the angle, since libfreenect2 exposes camera intrinsics and no accelerometer. `tilt` and
 `roll` under Framing rotate the *room* rather than the camera, so the turntable's pole, the
-top-down inset, auto-orbit's axis and the exported frame all come level together. Press
-**select floor** and click a flat floor or ceiling plane to derive both angles from that
-surface; `Escape` cancels, and **Reset rotation** zeroes them. A ceiling works like a floor,
-since the fit takes whichever normal disagrees less with the vertical already in force.
-There is no third angle because yaw is what dragging on the picture already does.
+top-down inset, auto-orbit's axis and the exported frame all come level together. Set them
+by eye against the top-down, which is where a canted room reads as canted, and **Reset
+rotation** zeroes both in one press. There is no third angle because yaw is what dragging on
+the picture already does.
 
 Crop faces and the region stay in sensor metres and are tested before the model matrix, so a
 box shrunk onto a subject stays there when the room levels underneath it. `level-check`

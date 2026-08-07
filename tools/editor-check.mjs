@@ -2089,9 +2089,6 @@ const DRIVER_IDS = {
   cropReset: 'section 8 - opens the crop box again and the planes are read back',
   cropBox: 'section 20 - presses it, reads the handles it puts on screen, drags one of them '
     + 'and counts what the gesture cost the animation loop',
-  camLevel: 'level-check section 5 - arms this element, clicks the stage and reads the pair, '
-    + 'the slider, the note and the spent mode back; it drives both parts of the gesture '
-    + 'rather than the function behind them, which is the distinction this whole section exists to enforce',
   camLevelReset: 'level-check section 5 - clicks this element and reads both axes and both sliders at neutral',
 };
 
