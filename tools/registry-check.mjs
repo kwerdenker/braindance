@@ -185,6 +185,49 @@ const MUTATIONS = {
     to: '      col = max(col - 0.018, 0.0) * 1.12;',
     fails: 'crush in the drop-one sweep, alone',
   },
+  // The guard around the raster's default path removed, so the general form computes what
+  // the old line computed instead of reaching it. Every value stays what it was and the
+  // arithmetic is algebraically the same, which is the whole difficulty: a reader deleting
+  // this branch as a redundant fast path would see nothing wrong, and the shipped Blackwall
+  // document would start drawing a raster a hair off the one it was graded with.
+  //
+  // This control is also how the guard was justified rather than assumed. Run it and read
+  // the raster row: red means the general form genuinely drifts and the branch is load
+  // bearing, green means it does not and the branch should come out, because a fast path
+  // that is bit-identical to the slow one is the second implementation this repo refuses.
+  'raster-recomputes-the-default': {
+    from: '        if (scanAxis.x == 0.0 && scanAxis.y == 1.0 && scanPitch == 1.3 && scanHard == 0.0) {',
+    to: '        if (false) {',
+    fails: 'the raster-at-0.35 row against the pinned build, and nothing else',
+  },
+  // The raster's axis nailed back to the frame's y, which is what it was before the angle
+  // existed. Everything else about the raster goes on working - the pitch still sets the
+  // line frequency and the hardness still squares the wave - so the only row that can see
+  // it is the drop-one sweep, where an angle that reaches nothing changes no pixel when it
+  // is reverted. This is the vertical column grille the whole of D1 is for, so a build
+  // that quietly lost it would be drawing television scanlines under a green run.
+  'raster-ignores-angle': {
+    from: '          float coord = dot(vUv * ref, scanAxis);',
+    to: '          float coord = vUv.y * ref.y;',
+    fails: 'scanAngle in the drop-one sweep, alone',
+  },
+  // The pitch back to the literal it was promoted from. Its default *is* that literal, so
+  // nothing about the shipped picture moves - which is the point, and which leaves the
+  // drop-one sweep as the only thing that can tell the two builds apart.
+  'raster-pitch-fixed': {
+    from: '          float wave = sin(coord * scanPitch + time * 2.0) * 0.5 + 0.5;',
+    to: '          float wave = sin(coord * 1.3 + time * 2.0) * 0.5 + 0.5;',
+    fails: 'scanPitch in the drop-one sweep, alone',
+  },
+  // The duty cycle dropped, leaving the sine the term has always drawn. This is the
+  // control that separates "the raster rotates and crowds" from "the raster is a grille",
+  // and a build without it draws rotated softness at every setting - which looks like a
+  // raster right up until you compare it against a reference frame.
+  'raster-hard-ignored': {
+    from: '          line = mix(wave, smoothstep(0.5 - w, 0.5 + w, wave), scanHard);',
+    to: '          line = wave;',
+    fails: 'scanHard in the drop-one sweep, alone',
+  },
   // The tempting edit, planted: `crush` joins the four terms that gate the grade pass, so
   // the pass runs whenever the toe is non-zero, which is always. This is deliberately not
   // a well-behaved control and the whole set has to be read rather than the count. It
@@ -430,6 +473,16 @@ const LANDING = {
   trails: '[k.afterimage.uniforms.damp.value, k.afterimage.enabled]',
   rgbSplit: '[k.grade.uniforms.rgbSplit.value, k.grade.enabled]',
   scanlines: '[k.grade.uniforms.scanlines.value, k.grade.enabled]',
+  // The raster's three settings, and like `crush` below none of them carries
+  // `k.grade.enabled` - they are settings of the master above rather than terms beside
+  // it, so the pass is the master's to gate. The angle is degrees on the slider and
+  // radians at the uniform, which makes its row the conversion as well as the arrival.
+  // Named as the pair rather than as an angle, because that is what the registry
+  // actually writes: an apply that moved one component and not the other, or wrote the
+  // sine where the cosine belongs, reads identically at either one on its own.
+  scanAngle: '[k.grade.uniforms.scanAxis.value.x, k.grade.uniforms.scanAxis.value.y].map((v) => Number(v.toFixed(9)))',
+  scanPitch: 'k.grade.uniforms.scanPitch.value',
+  scanHard: 'k.grade.uniforms.scanHard.value',
   grain: '[k.grade.uniforms.grain.value, k.grade.enabled]',
   vignette: '[k.grade.uniforms.vignette.value, k.grade.enabled]',
   // The fifth term in that pass, and **the missing `k.grade.enabled` beside it is the
@@ -545,6 +598,21 @@ const EXPECT = {
   // stopped being a literal applied whenever the pass happened to run.
   rgbSplit: (v, all) => [v, v > 0 || all.scanlines > 0 || all.grain > 0 || all.vignette > 0],
   scanlines: (v, all) => [v, all.rgbSplit > 0 || v > 0 || all.grain > 0 || all.vignette > 0],
+  // Same double arithmetic three's `degToRad` does, so the equality is exact rather than
+  // near - and written out here rather than read back off the page, because a tool that
+  // asked the page what conversion it used could never see a wrong one.
+  // The same double arithmetic the registry does on the way through, so the two agree bit
+  // for bit rather than nearly - and stated here rather than read back off the page,
+  // because a tool that asked the page which axis it built could never see a wrong one.
+  // Rounded on both sides, exactly as the levelling pair above is and for its reason:
+  // the comparison is a `JSON.stringify` equality and this rebuilds the cosine in a
+  // different order of operations from the registry, so the two land a ULP apart -
+  // 0.4539904997395468 against 0.45399049973954686 at the scrambled 63 degrees. A ULP is
+  // not a finding; an axis built the wrong way round still is, and still fails here.
+  scanAngle: (v) => [Math.sin(v * (Math.PI / 180)), Math.cos(v * (Math.PI / 180))]
+    .map((x) => Number(x.toFixed(9))),
+  scanPitch: (v) => v,
+  scanHard: (v) => v,
   grain: (v, all) => [v, all.rgbSplit > 0 || all.scanlines > 0 || v > 0 || all.vignette > 0],
   vignette: (v, all) => [v, all.rgbSplit > 0 || all.scanlines > 0 || all.grain > 0 || v > 0],
   // Reads its own value and nothing else, because it shares the pass without gating it -
@@ -716,6 +784,21 @@ const SCRAMBLE = {
   trails: 0.44,
   rgbSplit: 2.3,
   scanlines: 0.61,
+  // Off every axis the raster has a right angle at, so a build that rounded the angle to
+  // the nearest quarter turn - or dropped it - draws a visibly different grille. The
+  // master above is what makes these three observable at all: at a scanlines of 0 the
+  // block never runs and all three would land in the no-pixel bucket together, which is
+  // the argument the glitch ceilings and the region's three effects are set on.
+  scanAngle: 63,
+  // Well above the 1.3 it defaults to, so the lines are the dense column raster rather
+  // than the television artifact - and a pitch that only moved a hair would be a
+  // parameter the drop-one sweep could not separate from sampling noise.
+  scanPitch: 4.7,
+  // High enough that the wave is a grille rather than a sine, which is the state the
+  // hardness exists to reach. At its default of 0 it is the identity by construction, so
+  // leaving it there would have the sweep record it as a parameter that cannot touch a
+  // pixel - the trap `rgbSaturation` and `depthGamma` above are set off their defaults for.
+  scanHard: 0.82,
   grain: 0.37,
   vignette: 0.73,
   // Well above the 0.018 it defaults to, and the four terms above hold the pass open so
@@ -1141,6 +1224,15 @@ const GOLDEN_ABSENT = new Set([
   // be excused for is gating the pass, which nothing here would see and the pass-gate
   // matrix asserts directly.
   'crush',
+  // The raster's three, on the terms the glitch ceilings are excused by: at the pinned
+  // revision the pitch was a literal inside the wave and the other two did not exist in
+  // any form, and each defaults to the behaviour that build had - an angle of zero along
+  // the frame's y, the pitch's own 1.3, and a hardness whose zero is the identity. So a
+  // build carrying them draws precisely what a build without them drew, which is the
+  // equality this arm measures. That it holds is not taken on trust: section 1b renders
+  // at parameter defaults, where the raster block does not run at all, and the drop-one
+  // sweep is where the three are shown to reach pixels once the master is up.
+  'scanAngle', 'scanPitch', 'scanHard',
   // The program-out size, on the same terms and for the same reason: not a registry
   // parameter, no such control at the earlier revision, and its own bounds live in the
   // handler that parses it rather than in the markup. What it is held to is
@@ -1313,7 +1405,7 @@ console.log(`\n[registry] each reading renders what its mode rendered, at ${AGAI
   // Both arms are pinned to the same frames and the same camera, so the only thing
   // that differs between them is the shader. `params.reset()` first on each, because a
   // reading has to be measured against the same defaults the other arm booted with.
-  const hashesFor = async (opts, select) => {
+  const hashesFor = async (opts, select, cases = READING_WAS, extra = '') => {
     const { page: p, errors } = await openPage({ ...opts, pin: true });
     await p.evaluate(async () => {
       const buffer = await (await fetch('/__pinned.bin')).arrayBuffer();
@@ -1338,11 +1430,12 @@ console.log(`\n[registry] each reading renders what its mode rendered, at ${AGAI
       };
     })()`);
     const out = {};
-    for (const [reading, mode] of Object.entries(READING_WAS)) {
+    for (const [reading, mode] of Object.entries(cases)) {
       out[reading] = await p.evaluate(`(async () => {
         ${PAGE_HELPERS}
         k.params.reset();
         ${select}
+        ${extra}
         k.drive.reset();
         pinCamera(k.freeCamera);
         const hashes = [];
@@ -1384,6 +1477,91 @@ console.log(`\n[registry] each reading renders what its mode rendered, at ${AGAI
         : `${a.filter((h, i) => h !== b[i]).length} of ${a.length} frames differ, first at `
           + `${first}: ${a[first].slice(0, 12)} vs ${b[first].slice(0, 12)} `
           + `(mismatched: ${a.map((h, i) => (h === b[i] ? null : i)).filter((i) => i !== null).join(', ')})`);
+  }
+
+  // ---- the grade term whose default is not zero, at the value the shipped look uses.
+  //
+  // **The five rows above cannot see the raster at all, and that is worth saying plainly
+  // rather than leaving as a gap somebody finds later.** They render at parameter
+  // defaults, `scanlines` defaults to 0, and the whole raster block sits behind
+  // `if (scanlines > 0.0)` - so a run that came back bit-identical has measured the
+  // branch being added and not one line of the arithmetic inside it. Every mutation in
+  // this file's table is likewise blind to it, because the drop-one sweep compares arms
+  // of one build against each other rather than against a build from before.
+  //
+  // What makes that a hole rather than a nicety is `presets-builtin/blackwall.json`,
+  // which names `scanlines: 0.35`. The generalisation replaced an inline expression with
+  // a coordinate through a local, which is exactly the substitution `docs/measurement.md`
+  // records producing a third image out of two that were each bit-identical - so "the
+  // defaults reach the old expression" is a claim about a compiler, and the shipped look
+  // is what pays if it is wrong. `determinism-check` and `export-check` both read that
+  // file and deliberately *follow* it rather than pinning it, so neither would notice.
+  //
+  // One reading, so the raster is the only thing that can differ between the arms, and
+  // **Blackwall rather than colour, which is a correction rather than a preference.**
+  // Written on `readRgb` first, this arm was an arm lit by a single source: the pinned
+  // build selects a reading by integer mode and cannot mix, so one reading is all either
+  // side gets, and `--mutate rgb-contributes-no-alpha` then renders black on both of them.
+  // They compare identical, the control reports `0 of 6 frames differ with the master
+  // off`, and the whole section fires against a mutation with nothing to do with the
+  // raster - which is the last entry in `docs/instruments.md`, reproduced in the tool that
+  // entry is about. Blackwall writes its own alpha and the readRgb block is guarded on a
+  // weight this arm leaves at zero, so no reading's mutation can switch this probe off.
+  //
+  // It is also the more faithful choice: `blackwall.json` is the document that names a
+  // scanlines of 0.35, so this arm now stands where the shipped look actually stands.
+  //
+  // **The two arms are handed different values on purpose, and the first version of this
+  // row was wrong for exactly the reason that sounds like a bug.** Raising the raster
+  // opens the grade pass on both builds, and the pinned one bakes its corner falloff into
+  // that pass as `mix(1.0, vig, 0.55)` where this one reads a `vignette` parameter that
+  // defaults to 0. So the obvious arrangement - the same look on both sides - compares a
+  // frame with a vignette against a frame without one, and reports 6 of 6 frames differing
+  // over a promotion that landed in `40ab241` and has nothing to do with the raster. Named
+  // here, the two arms draw the same corner falloff and the raster is what is left.
+  //
+  // This is the units error `export-check`'s cross-build arm already records, arriving
+  // from the other direction: **each build has to be given the values that mean the same
+  // picture in its own vocabulary**, not the same numbers. `blackwall.json` names 0.55 for
+  // precisely this reason.
+  const RASTER_LOOK = "k.params.set('scanlines', 0.35);";
+  const RASTER_NEW_LOOK = `${RASTER_LOOK} k.params.set('vignette', 0.55);`;
+  {
+    const rasterOld = await hashesFor(
+      { source: againstSource, viewportSize: COMPARISON_VIEW, comparisonShell: true },
+      'k.uniforms.mode.value = $MODE;',
+      { readBlackwall: 4 },
+      RASTER_LOOK,
+    );
+    const rasterNew = await hashesFor(
+      { viewportSize: COMPARISON_VIEW, comparisonShell: true },
+      'k.readings().forEach((n) => k.params.set(n, 0)); k.params.set($READING, 1);',
+      { readBlackwall: 4 },
+      RASTER_NEW_LOOK,
+    );
+    const a = rasterOld.out.readBlackwall;
+    const b = rasterNew.out.readBlackwall;
+    const first = a.findIndex((h, i) => h !== b[i]);
+    check(eq(a, b),
+      `and the raster at the shipped look's 0.35 is bit-identical to the one line it replaced, at ${AGAINST_REV}`,
+      first < 0
+        ? `${a.length} frames, angle 0 pitch 1.3 hardness 0`
+        : `${a.filter((h, i) => h !== b[i]).length} of ${a.length} frames differ, first at `
+          + `${first}: ${a[first].slice(0, 12)} vs ${b[first].slice(0, 12)}`);
+    // The control, and this row is the reason the one above is not vacuous. Two arms that
+    // both drew no raster at all would compare bit-identical just as happily, so the
+    // sweep has to be shown to have something in it: raising the master has to move the
+    // picture on the build under test.
+    const flat = rasterNew.out.readBlackwall;
+    const lit = (await hashesFor(
+      { viewportSize: COMPARISON_VIEW, comparisonShell: true },
+      'k.readings().forEach((n) => k.params.set(n, 0)); k.params.set($READING, 1);',
+      { readBlackwall: 4 },
+      "k.params.set('scanlines', 0.0); k.params.set('vignette', 0.55);",
+    )).out.readBlackwall;
+    check(!eq(flat, lit),
+      'and the raster is actually drawing at that value, so the equality above is about something',
+      `${flat.filter((h, i) => h !== lit[i]).length} of ${flat.length} frames differ with the master off`);
   }
 
   // The falsification control, and it is the reason the five rows above mean anything.
@@ -1747,6 +1925,15 @@ console.log('\n[registry] the side effects that are not a uniform write');
     // through, and section 1b would redden on all five readings at once against a build
     // from before the registry existed.
     [{ crush: 0.5 }, { bloom: false, trails: false, grade: false }],
+    // The raster's three settings, on `crush`'s terms and each for its own reason. The
+    // pitch is the one that would fail loudest if it gated, since it defaults to 1.3 and
+    // so is non-zero in every document there has ever been; the angle and the hardness
+    // would merely switch a full-screen pass on to rotate and square a raster whose master
+    // is off, which is the no-op this row exists to refuse. All three are settings of
+    // `scanlines`, and the pass is the master's to gate.
+    [{ scanAngle: 90 }, { bloom: false, trails: false, grade: false }],
+    [{ scanPitch: 6 }, { bloom: false, trails: false, grade: false }],
+    [{ scanHard: 1 }, { bloom: false, trails: false, grade: false }],
   ]) {
     const r = await setAndRead(values);
     const got = { bloom: r.bloom, trails: r.trails, grade: r.grade };

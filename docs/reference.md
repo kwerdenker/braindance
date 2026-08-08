@@ -163,6 +163,22 @@ them together, and `duotone split` is the depth they meet at, as a fraction of t
 — so the crossover is a place in the room rather than a fraction of the frame. The pair itself
 is baked, the way `heatRamp` and `depthRamp` are: what is parameterised is how you use them.
 
+**The scanlines term is a raster now**, with three settings under it in a `Raster` group of
+its own. `angle` turns it — at 0 it is the horizontal scanline it has always been, at 90 the
+dense vertical column grille the reference frames slice a picture into — and because it keys,
+a raster can rotate under the playhead. `pitch` is the line frequency, promoted from a literal
+and defaulting to it. `hardness` squares the wave into a grille with dark gaps between the
+lines, and it is the one that makes the other two worth having: an angle over a sine only ever
+buys rotated softness, where the references are hard line grilles.
+
+They are settings of `scanlines` rather than terms beside it, so only the master gates the
+grade pass — raise the angle with the master at zero and nothing happens, which is deliberate,
+since switching a full-screen pass on to draw nothing is the no-op the gate exists to refuse.
+The angle is one parameter behind a two-component uniform, computed in double on the way
+through for the reason `contourWidth`'s two band edges are: taking the sine in the shader is
+allowed to be a couple of thousandths off, and a raster meant to run along y then leaks a
+whisker of x.
+
 `crush` is the toe under the grade's Reinhard curve, promoted from a literal and defaulting to
 it. It is a sub-control of the grade pass rather than a fifth term gating it — raise it on its
 own and nothing happens, because the pass only runs when the split, the scanlines, the grain
