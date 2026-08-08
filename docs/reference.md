@@ -118,15 +118,20 @@ white where it would otherwise keep its hue. Raising any one of the five brings 
 The vignette used to be part of that bundle and is now its own control, which is why a project
 saved before it existed loses its corner falloff until it names one.
 
-**`streak`** bleeds light down the frame. Each pixel gathers along the column above it and
-keeps the brightest thing it finds, decayed by distance, so a highlight smears downward the way
-a sensor smears one down a column of wells — sixteen taps at geometric spacing, reaching about
-168 pixels at the 1080p reference. It falls and only falls, because every reference frame
-agrees that is what light does under gravity, and a control for the direction would be a
-control for getting it wrong. It is a gather over the current frame rather than a buffer that
-accumulates across frames: a buffer would smear along whatever the camera did last, so an orbit
-would drag every streak sideways and a seek would arrive carrying the streak the scrub built
-rather than the one playback would have.
+**`streak`** bleeds light across the frame. Each pixel gathers back along the streak's axis and
+keeps the brightest thing it finds, decayed by distance, so a highlight smears the way a sensor
+smears one down a column of wells — sixteen taps at geometric spacing, reaching about 168 pixels
+at the 1080p reference. `streak angle` beside it is which way, in degrees, and **0 is straight
+down**, which is what this term did when it did nothing else: a look authored before the control
+existed names no angle and keeps the fall it was graded with, to the bit. Positive turns the
+smear clockwise on the glass, so 90 runs it across to the left, 180 sends it up and -90 across to
+the right, and the same half-turn is reachable either way round. It is degrees rather than the
+axis blend `axis` under Glitch gets, because this runs in the grade pass in screen space where
+the pixels are square and an angle means what an angle means, where the tear is quantised in the
+sensor's own frame and has no square to mean it in. It is a gather over the current frame rather
+than a buffer that accumulates across frames: a buffer would smear along whatever the camera did
+last, so an orbit would drag every streak sideways and a seek would arrive carrying the streak
+the scrub built rather than the one playback would have.
 
 ## Levelling a canted mount
 

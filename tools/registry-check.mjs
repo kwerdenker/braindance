@@ -319,23 +319,71 @@ const MUTATIONS = {
   'streak-ignored': {
     from: '      if (streak > 0.0) {',
     to: '      if (false) {',
-    // Three rows and not the one this first claimed, taken off the run rather than
-    // predicted: the drop-one sweep, the count beneath it, and the direction section's own
-    // first row, which asks whether the streak adds any light before asking where it puts
-    // it. That last one reporting zero is the whole reason it is there - without it the
-    // direction row would be comparing two identical images and could pass by arithmetic.
-    fails: 'streak in the drop-one sweep, the proven-parameter count, and the added-light row',
+    // Six rows and not the one this first claimed, taken off the run rather than
+    // predicted - and it has grown twice, which is the argument for taking it off a run
+    // every time rather than reasoning about it. The drop-one sweep names both `streak`
+    // and `streakAngle`, because a direction that reaches nothing is a parameter that
+    // changes no pixel when it is reverted; the count beneath the sweep follows; and all
+    // four rows of the direction section go, its guard first. **Three of those are the
+    // fixture rather than the claim**: the pair rows compare the light two angles add, and
+    // a term that adds no light at either end of a pair is not a term that pointed the
+    // wrong way. The guard row is what tells them apart, and it reporting zero added
+    // luminance is the whole reason it is there - without it the pair rows would be
+    // differencing two empty images and could pass by arithmetic.
+    fails: 'streak and streakAngle in the drop-one sweep, the proven-parameter count '
+      + 'beneath it, and all four rows of the direction section - the added-light guard '
+      + 'reporting zero, and the three pair rows behind it, which are the fixture going '
+      + 'rather than three findings about direction',
   },
-  // The gather turned around, so light climbs instead of falling. **This is the mutation
-  // the drop-one sweep cannot see**, and it is here because the sign was got wrong during
-  // development and no part of the suite noticed: every uniform still landed, every image
-  // still changed, and reverting the parameter still moves pixels whichever way the taps
-  // point. An effect whose direction is its entire claim needs a probe placed where the
-  // direction is the answer, and this is the control for that probe.
-  'streak-climbs': {
-    from: '          vec3 tap = texture2D(tDiffuse, vUv + vec2(0.0, d * texel.y)).rgb;',
-    to: '          vec3 tap = texture2D(tDiffuse, vUv - vec2(0.0, d * texel.y)).rgb;',
-    fails: 'the streak-falls row, and nothing else - the drop-one sweep stays green',
+  // The gather nailed back to straight down, which is what it was before the angle
+  // existed. **This replaces `streak-climbs`**, which flipped the one sign there used to
+  // be and cannot be written any more because the expression it anchored on is gone - and
+  // the replacement is the stronger control anyway, because a build that has lost the
+  // direction entirely also has the flipped one inside it at 180. Everything else about
+  // the streak goes on working: the same taps at the same decay reaching the same
+  // distance, so the term still bleeds light and the picture still moves.
+  //
+  // It is the sharper half of `streak-ignored` above in the same way `duotone-ignores-depth`
+  // is the sharper half of `duotone-ignored`: that one asks whether the term is wired up at
+  // all, this one asks whether it does the thing it is named for.
+  'streak-ignores-angle': {
+    from: '          vec3 tap = texture2D(tDiffuse, vUv + d * texel * streakAxis).rgb;',
+    to: '          vec3 tap = texture2D(tDiffuse, vUv + vec2(0.0, d * texel.y)).rgb;',
+    fails: 'streakAngle in the drop-one sweep and the proven-parameter count beneath it, '
+      + 'and all three of the direction section\'s pair rows - a nailed build renders the '
+      + 'same frame at every angle, so each pair differs by exactly nothing',
+  },
+  // The degrees-to-radians conversion dropped, which is a defect **no picture comparison
+  // can see the shape of**: the streak still runs at an angle, the slider still moves it,
+  // and every sweep row asking whether the parameter reaches a pixel goes on passing. It is
+  // `duotone-hue-in-degrees` one block over, and the row that separates the two builds is
+  // the landing sweep, where the axis is compared against the arithmetic written out in
+  // EXPECT rather than against whatever the page did.
+  // **Predicted to redden a direction row as well, and it does not - the prediction was
+  // wrong and the threshold stays where it is.** The reasoning was that a radian-fed 180
+  // points up and off to one side rather than straight up, so the 0-against-180 pair would
+  // drift past the ceiling on how far across the angle its light may land. Measured, that
+  // pair goes from 1.06% across 7.86% along on a clean build to 1.62% across 5.67%, which
+  // is 0.29 of the distance travelled against a ceiling of 0.4: moved in the predicted
+  // direction and not past it. Two reasons it cannot get there, and both are structural
+  // rather than a matter of margin. The pairs are anchored at 0, where the sine of zero is
+  // zero in either unit, so the one angle they all share is the one angle this mutation
+  // cannot move. And the frame is wider than it is tall, so a sideways drift measured as a
+  // fraction of the frame is worth about six tenths of the same drift measured vertically.
+  //
+  // Left as it is deliberately. Tightening the ceiling until this fired would put it at
+  // 0.2 against a clean build sitting at 0.135, which is a gate adjusted to make a
+  // prediction come true - the failure `docs/instruments.md` records twice, both times
+  // arriving with a written justification that stopped anybody looking again.
+  'streak-angle-in-degrees': {
+    from: '      grade.uniforms.streakAxis.value.set(Math.sin(r), Math.cos(r));',
+    to: '      grade.uniforms.streakAxis.value.set(Math.sin(v), Math.cos(v));',
+    fails: 'the streakAngle row of the one-at-a-time landing sweep, reporting "landed '
+      + '[-0.097181906,0.995266636] want [0.920504853,-0.390731128]", and the all-at-once '
+      + 'row beside it - that second one is the same comparison over the whole set rather '
+      + 'than a separate finding. Nothing in the direction section moves: this is a unit '
+      + 'error, and a streak running at the wrong angle is still a streak running at an '
+      + 'angle',
   },
   // The raster's axis nailed back to the frame's y, which is what it was before the angle
   // existed. Everything else about the raster goes on working - the pitch still sets the
@@ -629,6 +677,14 @@ const LANDING = {
   scanHard: 'k.grade.uniforms.scanHard.value',
   grain: '[k.grade.uniforms.grain.value, k.grade.enabled]',
   streak: '[k.grade.uniforms.streak.value, k.grade.enabled]',
+  // The streak's direction, on the raster angle's terms exactly: degrees on the slider,
+  // an axis at the uniform, so this row is the conversion as much as the arrival, and
+  // named as the pair because an apply that wrote the sine where the cosine belongs reads
+  // as a perfectly ordinary number at either component on its own. No `k.grade.enabled`
+  // beside it, and the absence is the assertion - it is a setting of `streak` above rather
+  // than a term beside it, so switching the pass on to point a streak nobody raised is the
+  // no-op the gate matrix refuses by name.
+  streakAngle: '[k.grade.uniforms.streakAxis.value.x, k.grade.uniforms.streakAxis.value.y].map((v) => Number(v.toFixed(9)))',
   vignette: '[k.grade.uniforms.vignette.value, k.grade.enabled]',
   // The fifth term in that pass, and **the missing `k.grade.enabled` beside it is the
   // assertion**. The four above gate the pass and so each has to carry whether it is on;
@@ -778,6 +834,13 @@ const EXPECT = {
     || all.streak > 0],
   streak: (v, all) => [v, all.rgbSplit > 0 || all.scanlines > 0 || all.grain > 0
     || all.vignette > 0 || v > 0],
+  // The same double arithmetic the registry does on the way through, written out here
+  // rather than read back off the page for `scanAngle`'s reason two rows up: a tool that
+  // asked the page which axis it built could never see a wrong one. Rounded on both sides,
+  // because this rebuilds the cosine in a different order of operations from the registry
+  // and a ULP apart is not a finding, where an axis built in degrees still is.
+  streakAngle: (v) => [Math.sin(v * (Math.PI / 180)), Math.cos(v * (Math.PI / 180))]
+    .map((x) => Number(x.toFixed(9))),
   vignette: (v, all) => [v, all.rgbSplit > 0 || all.scanlines > 0 || all.grain > 0 || v > 0
     || all.streak > 0],
   // Reads its own value and nothing else, because it shares the pass without gating it -
@@ -1002,6 +1065,13 @@ const SCRAMBLE = {
   // directly under a highlight and the drop-one sweep would be separating that from the
   // grain two rows up.
   streak: 0.62,
+  // Off every right angle and off both diagonals - 113 sits 22.5 degrees from 90 and from
+  // 135, which are the two nearest values a build that quantised the axis could plausibly
+  // land on, and it is nowhere near the 0 the sweep reverts it to. A direction a hair off
+  // its default would be a parameter the drop-one sweep could not separate from sampling
+  // noise; a direction on a right angle would be one a build with four choices rather than
+  // an angle would answer correctly.
+  streakAngle: 113,
   vignette: 0.73,
   // Well above the 0.018 it defaults to, and the four terms above hold the pass open so
   // it is reachable at all - a toe inside a pass nothing switched on is the dead zone
@@ -1458,6 +1528,13 @@ const GOLDEN_ABSENT = new Set([
   // the same standard: the pass-gate row below has it opening the grade on its own, and
   // the drop-one sweep has it reaching pixels once it is up.
   'streak',
+  // And its direction, which is excused twice over: there was no streak at the pinned
+  // revision to point anywhere, and the axis it defaults to is the one the gather ran
+  // along when it ran one way only. That second half is the stronger claim and it is not
+  // taken on trust here either - the gather's own comment carries the hash comparison, and
+  // section 1b renders at parameter defaults, where a streak of 0 keeps the block shut
+  // whichever way the axis points.
+  'streakAngle',
   // The program-out size, on the same terms and for the same reason: not a registry
   // parameter, no such control at the earlier revision, and its own bounds live in the
   // handler that parses it rather than in the markup. What it is held to is
@@ -2194,6 +2271,11 @@ console.log('\n[registry] the side effects that are not a uniform write');
     [{ scanAngle: 90 }, { bloom: false, trails: false, grade: false }],
     [{ scanPitch: 0.3 }, { bloom: false, trails: false, grade: false }],
     [{ scanHard: 1 }, { bloom: false, trails: false, grade: false }],
+    // The streak's direction, on the raster angle's terms: a setting of the term above it
+    // rather than a term beside it, so pointing a streak nobody raised has to leave the
+    // pass shut. Gating it would switch a full-screen read and write on to aim an effect
+    // whose amount is zero, which is precisely the no-op the gate exists to refuse.
+    [{ streakAngle: 90 }, { bloom: false, trails: false, grade: false }],
   ]) {
     const r = await setAndRead(values);
     const got = { bloom: r.bloom, trails: r.trails, grade: r.grade };
@@ -2692,54 +2774,48 @@ console.log('\n[registry] the crop switch, which the sweep above cannot see');
 // The streak's direction, which the drop-one sweep cannot see either, and for a sharper
 // reason than the crop switch's. That sweep asks whether reverting a parameter changes the
 // image; a streak pointed the wrong way changes it just as much as one pointed the right
-// way, so the sweep is green on a build where the light climbs. The direction is the entire
-// claim the term makes - every reference frame agrees it is gravity - and nothing above
-// this line tests it.
+// way, so the sweep is green on a build that runs every streak the same direction whatever
+// the slider says. Where the light goes is the entire claim the term makes, and nothing
+// above this line tests it.
 //
 // **This is a probe placed where its answer is different rather than where it was
-// convenient.** It exists because the sign was written wrong from a derivation about which
-// way v grows in the grade pass, and that build had every uniform landing, every image
-// changing and a green suite. What caught it was looking at a picture, and this is the arm
-// that means the next one does not depend on somebody looking.
+// convenient.** It exists because the direction was got wrong once already, from a
+// derivation about which way v grows in the grade pass, and that build had every uniform
+// landing, every image changing and a green suite. What caught it was somebody looking at a
+// picture, and this is the arm that means the next one does not have to.
 //
-// The statistic is the luminance-weighted mean row of the light the streak *adds*, against
-// the mean row of the light already there.
+// **The arm calibrates its own axes rather than asserting them, and that is a repair rather
+// than a design.** It was first written comparing row indices against a stated convention -
+// `readPixels` reads from the lower-left, so light that falls lands at lower indices - and
+// it went red on a build whose rendered frames plainly show the light falling. Rather than
+// flip the comparison until it agreed, which is changing the code under test to satisfy the
+// probe, both axes are measured here. The crop's four lateral faces cut in world metres,
+// and the pinned camera looks along -z with world up on screen and world +x off to its
+// right, so cutting the top removes light that is high on screen by construction and
+// cutting the right face removes light that is over on one side of it. Which index each cut
+// takes its light from is which way the rows and the columns run, read off this framebuffer
+// on this build rather than remembered.
 //
-// **The arm calibrates its own axis rather than asserting one, and that is the repair
-// rather than the design.** It was first written comparing row indices against a stated
-// convention - `readPixels` reads from the lower-left, so light that falls lands at lower
-// indices - and it went red on a build whose rendered frames plainly show the light
-// falling. Rather than flip the comparison until it agreed, which is changing the code
-// under test to satisfy the probe, the axis is now measured here: the crop's `top` and
-// `bottom` faces cut in world metres, the pinned camera looks along -z with world up on
-// screen, so cutting the top removes light that is high on screen by construction. The
-// difference between what each cut removes is which way the rows run, read off this
-// framebuffer on this build rather than remembered.
+// **Each row is a difference between two opposite angles rather than a displacement from
+// the picture, and that is a measurement rather than a preference.** The displacement form
+// is what this section shipped with, and it carries a bias the size of the answer. The
+// light a streak adds is only ever near the bright things, so its centroid sits where the
+// highlights are as much as where the streak took them - measured on this fixture, the
+// light added at 0 and the light added at 180 both sit about fifty columns to the *right*
+// of the source's own centroid, so a row written that way would report a streak running
+// rightward at both of the two angles that have no sideways component at all. The bias is
+// common to both arms of a pair and cancels term by term, which is the same subtraction
+// `level-check` makes when it reads its inset once with an empty depth grid.
 //
-// What the convention actually is, now that it has been measured, is in the row's own
-// output. The comment does not repeat it, because a number restated beside the thing that
-// measures it is the second copy that drifts.
-console.log('\n[registry] the streak falls, which the sweep above cannot see');
+// It buys an unambiguous control as well as an honest statistic: a build that ignores the
+// angle renders the *same frame* at both ends of every pair, so each difference is exactly
+// zero rather than merely small.
+console.log('\n[registry] the streak goes where the angle points');
 {
   const fall = await page.evaluate(`(async () => {
     ${PAGE_HELPERS}
     const gl = k.renderer.getContext();
-    const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
     const lum = (px, i) => px[i] * 0.2126 + px[i + 1] * 0.7152 + px[i + 2] * 0.0722;
-    // The mean row of the light in a that is not in b, so the same helper reads light
-    // gained by switching a term on and light lost by cropping it away.
-    const meanRow = (a, b) => {
-      let sum = 0, weight = 0;
-      for (let y = 0; y < H; y++) {
-        for (let x = 0; x < W; x++) {
-          const i = (y * W + x) * 4;
-          const v = b ? Math.max(0, lum(a, i) - lum(b, i)) : lum(a, i);
-          sum += v * y;
-          weight += v;
-        }
-      }
-      return { row: weight > 0 ? sum / weight : -1, weight };
-    };
     // The same program position the runs above use, so this is measured on a frame the
     // rest of the section has already shown to carry a picture rather than on one picked
     // here for being convenient.
@@ -2753,42 +2829,102 @@ console.log('\n[registry] the streak falls, which the sweep above cannot see');
       k.drive.stepTo(at);
       return k.drive.readPixels();
     };
-    // The scrambled crop window runs -1.5 to 1 in y, so a face brought to -0.2 takes
-    // roughly half the room off one side of the picture and leaves the other half.
+    // The size is taken after the first render rather than before it, because the
+    // scrambled set carries a render scale: a buffer read before anything applied it
+    // describes a drawing buffer this block never looks at, and every index below would be
+    // out by the ratio between the two. It used to be read at the top and was right only
+    // because a neighbouring section happened to leave the page scrambled.
     const base = shot({ streak: 0 });
-    const streaked = shot({ streak: 0.9 });
-    const topGone = shot({ streak: 0, top: -0.2 });
-    const bottomGone = shot({ streak: 0, bottom: -0.2 });
+    const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
+    // The luminance-weighted mean position of the light in a that is not in b, so one
+    // helper reads the light a term adds and the light a crop face takes away.
+    const meanPos = (a, b) => {
+      let sr = 0, sc = 0, weight = 0;
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          const i = (y * W + x) * 4;
+          const v = b ? Math.max(0, lum(a, i) - lum(b, i)) : lum(a, i);
+          sr += v * y;
+          sc += v * x;
+          weight += v;
+        }
+      }
+      return { row: weight > 0 ? sr / weight : -1, col: weight > 0 ? sc / weight : -1, weight };
+    };
+    // The scrambled crop window runs -1.5 to 1 in y and -1.5 to 1.5 in x, so each face
+    // brought to the value below takes roughly half the room off its own side of the
+    // picture and leaves the other half standing.
+    const cut = (over) => meanPos(base, shot({ streak: 0, ...over }));
+    const added = {};
+    for (const a of [0, 180, 90, -90, 45, -135]) {
+      added[a] = meanPos(shot({ streak: 0.9, streakAngle: a }), base);
+    }
     return {
-      source: meanRow(base, null),
-      added: meanRow(streaked, base),
-      upper: meanRow(base, topGone),
-      lower: meanRow(base, bottomGone),
+      added,
+      upper: cut({ top: -0.2 }),
+      lower: cut({ bottom: -0.2 }),
+      starboard: cut({ right: 0 }),
+      port: cut({ left: 0 }),
+      width: W,
       height: H,
     };
   })()`);
 
-  check(fall.added.weight > 0,
-    'the streak adds light at all, so the row below is about something',
-    `added luminance ${fall.added.weight.toFixed(0)}`);
+  check(fall.added[0].weight > 0,
+    'the streak adds light at all, so the rows below are about something',
+    `added luminance ${fall.added[0].weight.toFixed(0)} at an angle of 0`);
 
-  // The calibration has to have worked before its answer means anything: both cuts must
+  // Each calibration has to have worked before its answer means anything: both cuts must
   // remove light, and they must remove it from opposite ends. A pair that agreed would be
-  // a set of arms that cannot measure the quantity they were placed to measure.
-  const spread = fall.upper.row - fall.lower.row;
-  check(fall.upper.weight > 0 && fall.lower.weight > 0 && Math.abs(spread) > fall.height * 0.05,
-    'cropping the room\'s top and its bottom take light from opposite ends, so the axis is known',
+  // two arms that cannot measure the quantity they were placed to measure.
+  const upSpread = fall.upper.row - fall.lower.row;
+  check(fall.upper.weight > 0 && fall.lower.weight > 0 && Math.abs(upSpread) > fall.height * 0.05,
+    'cropping the room\'s top and its bottom take light from opposite ends, so the rows are calibrated',
     `top cut removes light at row ${fall.upper.row.toFixed(1)}, bottom cut at `
     + `${fall.lower.row.toFixed(1)} of ${fall.height}`);
 
-  // Screen-up is whichever direction the top cut's light sits in; the streak has to add
-  // its light in the other one.
-  const up = Math.sign(spread);
-  const moved = Math.sign(fall.added.row - fall.source.row);
-  check(moved !== 0 && moved === -up,
-    'and the streak adds its light on the far side from the room\'s top, so it falls',
-    `added mean row ${fall.added.row.toFixed(1)} against source ${fall.source.row.toFixed(1)}`
-    + `, with screen-up at ${up > 0 ? 'rising' : 'falling'} row indices`);
+  const acrossSpread = fall.starboard.col - fall.port.col;
+  check(fall.starboard.weight > 0 && fall.port.weight > 0 && Math.abs(acrossSpread) > fall.width * 0.05,
+    'and its right and its left do the same across the frame, so the columns are as well',
+    `right cut removes light at column ${fall.starboard.col.toFixed(1)}, left cut at `
+    + `${fall.port.col.toFixed(1)} of ${fall.width}`);
+
+  // Screen-up is whichever way the top cut's light lies and screen-right whichever way the
+  // right cut's does, so the two signs turn a pair of index differences into a direction on
+  // the glass. What it has to agree with is the direction the slider names: the registry
+  // lands (sin, cos) of the angle and the gather reads *along* that axis, so the light
+  // travels the other way, -(sin, cos) in screen right and up.
+  const up = Math.sign(upSpread);
+  const rightward = Math.sign(acrossSpread);
+  // The two gates are set between a clean build and a nailed one rather than chosen for
+  // looking round. Measured on this fixture at a 492x307 drawing buffer: the three pairs
+  // separate by 7.86%, 7.55% and 7.05% of the frame along the angle against a floor of 3%,
+  // and drift 1.06%, 0.47% and 0.45% across it, which is 0.13, 0.06 and 0.06 of the
+  // distance travelled against a ceiling of 0.4. `--mutate streak-ignores-angle` renders
+  // one frame at every angle, so it answers 0.00% along and 0.00% across and fails both
+  // terms of all three rows.
+  //
+  // Both terms earn their place: the floor is what a build that lost the direction fails,
+  // and the ceiling is what a build that has a direction but the wrong one fails - a
+  // streak running at 45 degrees to the angle its slider names clears the first and not
+  // the second.
+  for (const [a, b, sentence] of [
+    [0, 180, 'the light at 0 lands below the light at 180, so an angle of zero is straight down'],
+    [90, -90, 'and the light at 90 lands to the left of the light at -90, so a right angle runs across the frame'],
+    [45, -135, 'and the light at 45 lands on the diagonal between them, so this is an angle rather than four choices'],
+  ]) {
+    const sx = ((fall.added[a].col - fall.added[b].col) / fall.width) * rightward;
+    const sy = ((fall.added[a].row - fall.added[b].row) / fall.height) * up;
+    const r = a * (Math.PI / 180);
+    const ex = -Math.sin(r); const ey = -Math.cos(r);
+    const along = sx * ex + sy * ey;
+    const across = Math.abs(sx * ey - sy * ex);
+    check(along > 0.03 && across < along * 0.4, sentence,
+      `${a} against ${b}: ${(100 * along).toFixed(2)}% of the frame along the angle, `
+      + `${(100 * across).toFixed(2)}% across it, with screen-up at `
+      + `${up > 0 ? 'rising' : 'falling'} rows and screen-right at `
+      + `${rightward > 0 ? 'rising' : 'falling'} columns`);
+  }
 }
 
 // The ripple raised on its own, which is the one arrangement that can see whether the

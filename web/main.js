@@ -1685,6 +1685,23 @@ const GradeShader = {
     // the duotone in the point shader. What this is for is the thing it always did - keep
     // the empty background genuinely black after Reinhard lifts it.
     streak: { value: 0 },
+    // Which way the light runs, as its own axis rather than as an angle, for exactly the
+    // reason `scanAxis` forty lines up carries in full: GLSL ES permits a couple of
+    // thousandths of absolute error on a trigonometric function, so `sin(0.0)` is not
+    // promised to be exactly zero, and a whisker of the wrong axis leaking into a fall
+    // that is meant to run straight down the frame is a defect no picture shows the shape
+    // of. Done here, `Math.sin(0)` is exactly 0 and `Math.cos(0)` exactly 1 in double,
+    // they survive the cast, and the offset in the gather below collapses to the frame's
+    // own y at the default the way the one-direction version's expression did.
+    //
+    // Degrees on the slider, and unlike the glitch's `glitchAxis` that is the honest
+    // spelling rather than the lazy one. The tear's bands are quantised in the sensor's
+    // frame, where 512 columns meet 424 rows and a band is a run of scanlines rather than
+    // a distance, so there is no square in which an angle would mean what an angle means.
+    // This runs in the grade pass, in screen space, against a square reference pixel - so
+    // an angle here means what an angle means, and turning it 90 degrees turns the streak
+    // 90 degrees on the glass.
+    streakAxis: { value: new THREE.Vector2(0, 1) },
     crush: { value: 0.018 },
     time: { value: 0 },
     resolution: { value: new THREE.Vector2(1, 1) },
@@ -1699,6 +1716,7 @@ const GradeShader = {
     uniform sampler2D tDiffuse;
     uniform float rgbSplit, scanlines, grain, vignette, crush, time;
     uniform float streak;
+    uniform vec2 streakAxis;
     uniform vec2 scanAxis;
     uniform float scanPitch, scanHard;
     uniform vec2 resolution;
@@ -1730,12 +1748,12 @@ const GradeShader = {
         col = texture2D(tDiffuse, vUv).rgb;
       }
 
-      // Light falls. Each pixel gathers along the column above it and keeps the brightest
-      // thing it finds, decayed by how far it had to look, so a highlight bleeds down the
-      // frame the way a sensor smears one down a column of wells. It sits here, below the
-      // raster and the vignette and above the tonemap, because it is a thing that happened
-      // to the light rather than a thing drawn over the picture: a streak applied after the
-      // vignette would glow in the corners the vignette had just put out.
+      // Light bleeds. Each pixel gathers back along the streak's own axis and keeps the
+      // brightest thing it finds, decayed by how far it had to look, so a highlight smears
+      // across the frame the way a sensor smears one down a column of wells. It sits here,
+      // below the raster and the vignette and above the tonemap, because it is a thing that
+      // happened to the light rather than a thing drawn over the picture: a streak applied
+      // after the vignette would glow in the corners the vignette had just put out.
       //
       // **A gather and not a feedback buffer**, which is a decision rather than a
       // simplification. A buffer accumulating across frames smears along whatever the
@@ -1745,29 +1763,44 @@ const GradeShader = {
       // on, broken by an effect nobody would think to test it against.
       //
       // Distances are in reference pixels through texel, for the reason stated at the top
-      // of this shader: a fall whose length grew with the window would be the nearly
-      // resolution-independent look that is worse than an honestly dependent one.
+      // of this shader: a streak whose length grew with the window would be the nearly
+      // resolution-independent look that is worse than an honestly dependent one. The axis
+      // is a *direction* in those same reference pixels rather than in uv, which is the
+      // half that keeps the angle honest: the offset below is d reference pixels along the
+      // axis whatever shape the window is, where a step taken in uv and scaled afterwards
+      // would run at the aspect ratio's angle instead of the one the slider names, and
+      // would swing as somebody dragged the window.
       //
       // **The tap schedule is written down because the first one was wrong.** Eight taps at
       // a geometric ratio of 2.1 put the far samples so far apart that they land as separate
-      // ghosts - a vertical comb rather than a fall. Sixteen at 1.35 overlap enough to read
-      // as continuous and reach about 168 reference pixels.
+      // ghosts - a comb rather than a smear. Sixteen at 1.35 overlap enough to read as
+      // continuous and reach about 168 reference pixels.
       //
-      // **The sign is the measurement and not the derivation, and the cost of getting that
-      // backwards is recorded here because it was paid twice.** This gather was written
-      // with the plus, doubted against a busy frame that seemed to show the light climbing,
-      // flipped to a minus, and then restored - because a build cropped down to a single
-      // bright band with darkness above and below settles in one look what a full frame full
-      // of structure will support either reading of. Two separate readings of the *same*
-      // sign came out opposite. Nothing in the suite could have caught the flip: every
-      // uniform still landed and every image still changed, so the drop-one sweep stayed
-      // green through all of it, which is what the direction arm in the registry check now
-      // exists for and why it calibrates its own axis rather than trusting a stated one.
+      // **The direction is the measurement and not the derivation, and the cost of getting
+      // that backwards is recorded here because it was paid twice.** When this gather ran
+      // one way only it was written with the plus, doubted against a busy frame that seemed
+      // to show the light climbing, flipped to a minus, and then restored - because a build
+      // cropped down to a single bright band with darkness above and below settles in one
+      // look what a full frame full of structure will support either reading of. Two
+      // separate readings of the *same* sign came out opposite. Nothing in the suite could
+      // have caught the flip: every uniform still landed and every image still changed, so
+      // the drop-one sweep stayed green through all of it.
+      //
+      // That sign is now a whole direction, and the lesson is the same one scaled up: the
+      // arm in the registry check calibrates *both* screen axes off the crop's own faces
+      // and asks where each angle's light actually lands, rather than deriving where it
+      // ought to from which way uv grows - which is the derivation that was wrong the first
+      // time. An angle of 0 keeps the fall this always had, and it keeps it exactly: at the
+      // default axis the offset below renders bit-identical to the plain vertical vec2 it
+      // replaces, measured at four looks and three drawing-buffer sizes, so there is no
+      // guard here of the kind the raster below needs. Multiplying by an axis that is
+      // exactly zero and exactly one introduces no rounding, where the raster's general
+      // form is a dot product against a sum the compiler contracts differently.
       if (streak > 0.0) {
         vec3 fall = col;
         float d = 1.5;
         for (int i = 0; i < 16; i++) {
-          vec3 tap = texture2D(tDiffuse, vUv + vec2(0.0, d * texel.y)).rgb;
+          vec3 tap = texture2D(tDiffuse, vUv + d * texel * streakAxis).rgb;
           fall = max(fall, tap * exp2(-d * 0.02));
           d *= 1.35;
         }
@@ -3045,6 +3078,35 @@ const PARAMS = {
   streak: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
     group: 'post', label: 'streak',
     apply: (v) => { grade.uniforms.streak.value = v; grade.enabled = gradeNeeded(); } },
+  // Which way the light runs, and this **reverses a decision the code used to state as
+  // settled**, which is worth saying plainly rather than leaving as a diff. The gather ran
+  // down the column and nothing else, the comment above it said it falls and only falls,
+  // and `docs/reference.md` said a control for the direction would be a control for
+  // getting it wrong. The argument was that gravity has one direction. It is not a bad
+  // argument and it is not the operator's: a smear is a thing a lens and a sensor do, and
+  // a light bleeding sideways off a hot edge is in as many reference frames as one running
+  // down a column. The old sentences are gone rather than left standing next to the slider
+  // that contradicts them.
+  //
+  // Zero has to be exactly straight down, because a look authored before this control
+  // existed names no angle and has to keep the streak it was graded with. The gather's own
+  // comment carries the measurement that says it does, to the bit.
+  //
+  // A full half-turn either way, like the raster's angle and unlike it in what the sign
+  // buys: a grille at 180 degrees is the grille at 0, so there the sign only decides which
+  // way a rotating raster turns, where here 0 and 180 are opposite directions and both are
+  // reachable by two routes. Positive turns the streak clockwise on the glass - 90 puts it
+  // across to the left, -90 across to the right - which is the same sense the raster's
+  // angle turns in, and it is written down here because it was read off rendered frames
+  // rather than derived. One parameter, one vec2 uniform, and the trigonometry happens in
+  // this file so a check can hold the axis against the arithmetic stated once rather than
+  // against a second copy of the same sum.
+  streakAngle: { def: 0, min: -180, max: 180, step: 1, kind: 'scalar', tag: 'look',
+    group: 'post', label: 'streak angle',
+    apply: (v) => {
+      const r = THREE.MathUtils.degToRad(v);
+      grade.uniforms.streakAxis.value.set(Math.sin(r), Math.cos(r));
+    } },
   // The corner falloff, which was a literal inside the grade shader and so arrived with
   // whichever of the three above you happened to raise. The uniform beside it carries
   // why this is the one promoted literal that does not keep its old value; what belongs

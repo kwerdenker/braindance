@@ -126,8 +126,9 @@ node tools/registry-check.mjs --mutate lattice-ignored            # ... the grid
 node tools/registry-check.mjs --mutate ripple-ignored             # ... the region's fourth reading
 node tools/registry-check.mjs --mutate ripple-outside-the-gate    # ... and the gate that decides whether it is inert, which the sweep cannot see
 node tools/registry-check.mjs --mutate ripple-clock-continuous    # ... its clock, which steps rather than breathes
-node tools/registry-check.mjs --mutate streak-ignored             # ... the fall, and whether it reaches a pixel at all
-node tools/registry-check.mjs --mutate streak-climbs              # ... and which way it falls, which the drop-one sweep cannot see
+node tools/registry-check.mjs --mutate streak-ignored             # ... the bleed, and whether it reaches a pixel at all
+node tools/registry-check.mjs --mutate streak-ignores-angle       # ... and which way it runs, which the drop-one sweep cannot see
+node tools/registry-check.mjs --mutate streak-angle-in-degrees    # ... in the unit no picture comparison can see the shape of
 node tools/timeline-check.mjs --url http://localhost:8080 # step 4: seek equals playback
 node tools/timeline-check.mjs --mutate preroll-constant   # ... and must FAIL mutated
 node tools/timeline-check.mjs --mutate draft-always-resets # ... and must FAIL mutated

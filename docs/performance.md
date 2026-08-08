@@ -57,6 +57,14 @@ Sixteen taps per pixel in the grade pass, and it needed **two numbers rather tha
 because what a guarded block costs the looks that enable it and what it costs the looks that
 do not are different questions and only one of them answers to a parameter toggle.
 
+**Both numbers below predate `streakAngle` and neither has been re-taken.** The tap offset
+was a scalar step down the column when they were measured and is a vec2 multiply against the
+streak's axis now, so each tap gained arithmetic the figures do not include. It is left
+stated rather than guessed at: the gather is sixteen texture fetches and two more multiplies
+is unlikely to move a number whose slope is 0.05 ms per megapixel, but "unlikely to" is the
+reasoning this page exists to replace. Re-taking it wants a quiet machine, and the run that
+would have taken it was on one at load 13.0.
+
 **With the term on: 1.403 ms per frame against 1.353 off, so 0.050 ms, up 3.7%.** Interleaved,
 17 rounds of 60 renders each alternating the uniform inside one page session and one compiled
 program, first round discarded, medians reported. Editor on the `2026-08-07-take2` take at
