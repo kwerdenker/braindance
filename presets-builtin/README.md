@@ -36,6 +36,22 @@ wanted a smaller point, which is a value somebody chose rather than a rebase of 
 They are the neutral grade, which is what leaving Blackwall used to restore, and their job is
 to be a clean place to start rather than a look in their own right.
 
+**A look that switches a term on names all of that term's parameters**, and that is a
+narrower rule than "name everything". A preset is allowed to be sparse — that is the whole
+point of the picker's tick boxes, and applying one deliberately leaves everything it does not
+name where your grading left it, so `tearline` inherits a lattice you had raised and should.
+What it may not do is switch a term on and leave one of that term's own parameters unstated:
+`tearline` shipped naming `duotoneDepth` and `duotoneSplit` but not `duotoneHue`, so the
+duotone came up in whatever colour the previous look had left behind — hue 0 from a clean
+start and −10 after `voxel`, from a document that specifies neither. Fixed by naming the hue
+it was graded at.
+
+That is the same failure as the `contourBands` one below, arriving through a term rather than
+through a reading, and the same test tells them apart: **ask what the document turns on, and
+whether the document says what it looks like.** The residue after the fix is exactly
+`lattice` and `latticeCell` carrying from `voxel`, which is the sparse behaviour working
+rather than failing.
+
 **Each file carries the seven reading-detail values as well as the reading**, and writing
 them in changed no pixel: every one of the seven defaults to exactly the literal it replaced
 when the shader's per-reading constants became parameters, so these are the numbers all nine

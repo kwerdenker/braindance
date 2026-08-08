@@ -35,6 +35,7 @@
     "glitchBands": 10,
     "glitchRate": 9,
     "duotoneDepth": 0.75,
+    "duotoneHue": 0,
     "duotoneSplit": 0.45,
     "crush": 0.075,
     "scanPitch": 0.28,
