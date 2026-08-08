@@ -116,6 +116,10 @@ node tools/registry-check.mjs --mutate raster-ignores-angle       # ... the axis
 node tools/registry-check.mjs --mutate raster-pitch-fixed         # ... its line frequency, promoted from the literal it defaults to
 node tools/registry-check.mjs --mutate raster-hard-ignored        # ... and the duty cycle, without which an angle only buys rotated softness
 node tools/registry-check.mjs --mutate glitch-axis-ignored        # ... the axis a tear's bands are cut along
+node tools/registry-check.mjs --mutate lattice-ignored            # ... the grid the volume is rebuilt on
+node tools/registry-check.mjs --mutate ripple-ignored             # ... the region's fourth reading
+node tools/registry-check.mjs --mutate ripple-outside-the-gate    # ... and the gate that decides whether it is inert, which the sweep cannot see
+node tools/registry-check.mjs --mutate ripple-clock-continuous    # ... its clock, which steps rather than breathes
 node tools/registry-check.mjs --mutate streak-ignored             # ... the fall, and whether it reaches a pixel at all
 node tools/registry-check.mjs --mutate streak-climbs              # ... and which way it falls, which the drop-one sweep cannot see
 node tools/timeline-check.mjs --url http://localhost:8080 # step 4: seek equals playback

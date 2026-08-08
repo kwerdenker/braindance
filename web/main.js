@@ -427,6 +427,8 @@ const uniforms = {
   noise: { value: 0 },
   noiseScale: { value: 3 },
   noiseSpeed: { value: 0.7 },
+  lattice: { value: 0 },
+  latticeCell: { value: 0.05 },
   // One region, three uses. Centre, half-extents, corner radius and falloff width are
   // metres in the sensor frame; the three effects below are what read it.
   regionCentre: { value: new THREE.Vector3(0, 0, -2) },
@@ -436,6 +438,9 @@ const uniforms = {
   regionPush: { value: 0 },
   regionNoise: { value: 0 },
   regionMask: { value: 0 },
+  ripple: { value: 0 },
+  rippleFreq: { value: 4 },
+  rippleSpeed: { value: 1 },
   // Datastream corruption, and the five numbers one slider used to hide. `glitch` is
   // the master and the only one of the six that is meant to be keyframed in anger: a
   // clip brings the corruption in and out on one track, where five absolute values
@@ -547,8 +552,10 @@ uniform float bufferHeight;
 uniform float pointSize, nearClip, farClip, time, edgeTol;
 uniform float cropL, cropR, cropB, cropT, cropOn, cropOutside;
 uniform float noise, noiseScale, noiseSpeed;
+uniform float lattice, latticeCell;
 uniform vec3 regionCentre, regionHalf;
 uniform float regionRound, regionSoft, regionPush, regionNoise, regionMask;
+uniform float ripple, rippleFreq, rippleSpeed;
 uniform float mixT, snapDelta, glitch;
 uniform float glitchDensity, glitchShove, glitchTint, glitchBands, glitchRate, glitchAxis;
 uniform float fadeTime, wakeTime, sinceFrameSec;
@@ -780,7 +787,14 @@ void main() {
   // noise pushed points across it, which reads as the mask being broken rather than
   // as the cloud moving.
   vec3 p0 = pos;
-  float rw = (regionPush != 0.0 || regionNoise > 0.0 || regionMask != 0.0)
+  //
+  // **The gate names every effect that reads it, and a term added without joining this
+  // list is inert rather than broken** - which is the worse failure, because its slider
+  // moves, its uniform lands and its keyframes play back against a weight frozen at zero.
+  // The operators are not uniform on purpose: regionNoise and ripple cannot go negative
+  // and are tested against zero, where regionPush and regionMask run from -1 and would be
+  // switched off across half their travel by the same test.
+  float rw = (regionPush != 0.0 || regionNoise > 0.0 || regionMask != 0.0 || ripple > 0.0)
     ? regionWeight(p0)
     : 0.0;
 
@@ -801,6 +815,30 @@ void main() {
     vec3 away = p0 - regionCentre;
     float d = length(away);
     if (d > 1e-4) pos += (away / d) * regionPush * rw;
+  }
+
+  // The region read a fourth way: a wave travelling out along the radius, so the volume
+  // breathes where the push only swells it. It shares the push's radial direction and its
+  // centre guard for the same reasons - the gradient of a rounded box is degenerate at the
+  // centre, and normalize there would hand back NaN and take the vertex with it.
+  //
+  // **The clock is stepped rather than continuous, which is the whole character of it.**
+  // A sine of raw time is a thing breathing; this design wants a thing being rebuilt by a
+  // machine, so the phase advances in eighth-cycles and the surface arrives at each one
+  // rather than sliding between them. Eight steps and not a parameter: the count is what
+  // makes it read as machinery, and a slider that could set it to a thousand would just
+  // be a way to author the smooth version this is deliberately not.
+  //
+  // The step is on the clock alone and not on the radius, so the wave is quantised in
+  // time and smooth in space. Quantising both would put the region on a set of shells,
+  // which is the lattice's job two blocks down and would be a second way to do it.
+  if (ripple > 0.0 && rw > 0.0) {
+    vec3 out0 = p0 - regionCentre;
+    float dist = length(out0);
+    if (dist > 1e-4) {
+      float cycles = dist * rippleFreq - floor(time * rippleSpeed * 8.0) * 0.125;
+      pos += (out0 / dist) * (sin(cycles * 6.2831853) * ripple * rw);
+    }
   }
 
   // Positive hides what is inside the region, negative what is outside. Carried to the
@@ -851,6 +889,32 @@ void main() {
       pos.x += shove;
       vGlitch = abs(shove) * glitchTint;
     }
+  }
+
+  // The volume rebuilt on a grid: every axis quantised to a cell, so surfaces break into
+  // steps and the cloud reads as something a machine is reconstructing rather than
+  // something that was measured. It sits last of the displacements, after the tear, so
+  // what gets snapped is the position the point actually ends at - a lattice applied
+  // before the turbulence would be smoothly pushed back off its own grid and buy nothing.
+  //
+  // **Snapped in the levelled frame and not the sensor's**, which is the whole of why this
+  // is more than a rounding. The grid has to belong to the room: with a canted mount the
+  // sensor frame is tilted, and a lattice cut along its axes would stand at whatever angle
+  // the bracket happened to be at, so the floor would step diagonally. Levelling first
+  // means the cells line up with the room, and a mount corrected afterwards does not
+  // re-cut the grid.
+  //
+  // **The rotation is the model matrix three already hands this shader, not a second copy
+  // of it.** The cloud carries the world tilt as its only transform, so mat3(modelMatrix)
+  // is exactly the sensor-to-levelled rotation and cannot drift from it the way a uniform
+  // derived beside it could. Getting back is the transpose rather than inverse(), which is
+  // both cheaper and exact - but that identity holds only while the matrix stays a pure
+  // rotation, so registry-check asserts the cloud carries no scale and no translation
+  // rather than leaving it as a thing this comment claims.
+  if (lattice > 0.0) {
+    mat3 level = mat3(modelMatrix);
+    vec3 cell = floor((level * pos) / latticeCell + 0.5) * latticeCell;
+    pos = mix(pos, transpose(level) * cell, lattice);
   }
 
   vUv = (position.xy + 0.5) / resolution;
@@ -2434,6 +2498,20 @@ const PARAMS = {
   noiseSpeed: { def: 0.7, min: 0, max: 3, step: 0.05, kind: 'scalar', tag: 'look',
     group: 'displacement', label: 'speed',
     apply: (v) => { uniforms.noiseSpeed.value = v; } },
+  // How far the cloud is pulled onto its grid, so the two ends are the measured surface
+  // and a fully reconstructed one, and everything between is the surface arriving. It
+  // snaps in the levelled frame, which means a canted mount does not cut the grid on the
+  // diagonal - the shader block carries that reasoning and the rotation it uses.
+  lattice: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'displacement', label: 'lattice',
+    apply: (v) => { uniforms.lattice.value = v; } },
+  // The cell, in metres of the room like every other displacement here and unlike the
+  // screen-space terms. A cell is a distance the subject stands in rather than a size on
+  // screen, so the same look gives the same grid at any output resolution, and the floor
+  // does not re-quantise when you export at a different size.
+  latticeCell: { def: 0.05, min: 0.005, max: 0.5, step: 0.005, kind: 'scalar', tag: 'look',
+    group: 'displacement', label: 'cell m',
+    apply: (v) => { uniforms.latticeCell.value = v; } },
 
   // Datastream corruption: one master and five ceilings, where there used to be one
   // scalar carrying all six meanings at fixed ratios. The comment beside the uniforms
@@ -2571,6 +2649,25 @@ const PARAMS = {
   regionMask: { def: 0, min: -1, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
     group: 'region', label: 'mask',
     apply: (v) => { uniforms.regionMask.value = v; } },
+  // The region read a fourth way, after displacing, scrambling and masking: a wave
+  // travelling out along the radius, in metres at a full weight. Non-negative, unlike the
+  // push and the mask beside it, because the phase is what a sign would invert and the
+  // wave already visits both directions every cycle - a negative amplitude would be a
+  // second spelling of a shift the frequency can already reach.
+  ripple: { def: 0, min: 0, max: 0.5, step: 0.005, kind: 'scalar', tag: 'look',
+    group: 'region', label: 'ripple m',
+    apply: (v) => { uniforms.ripple.value = v; } },
+  // Cycles per metre of radius, so the wave's spacing is a distance in the room.
+  rippleFreq: { def: 4, min: 0.2, max: 20, step: 0.1, kind: 'scalar', tag: 'look',
+    group: 'region', label: 'ripple per m',
+    apply: (v) => { uniforms.rippleFreq.value = v; } },
+  // Cycles per second, and it advances in eighths of one rather than smoothly - the block
+  // says why. Zero freezes the wave where it stands instead of switching it off, which is
+  // the state `glitchRate` reaches the same way and for the same reason: a held shape is
+  // a different picture from no shape, and both keyframe.
+  rippleSpeed: { def: 1, min: 0, max: 8, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'region', label: 'ripple hz',
+    apply: (v) => { uniforms.rippleSpeed.value = v; } },
   // Still what it always was - orbit the view you are looking at - and still view
   // state rather than an edit: the controls advance it on the program delta the
   // render loop hands them, so the same orbit renders the same way at any output

@@ -79,6 +79,23 @@ a levelled room tears along the angle the mount was really at. That is the effec
 *volume* is corrupt rather than the picture, and it is why the group sits at the displacement
 stage next to what moves points rather than in `Post` next to `scanlines`.
 
+**`lattice`** rebuilds the volume on a grid: every axis quantised to `cell m`, so surfaces
+break into steps and the cloud reads as something being reconstructed rather than something
+that was measured. It is the last displacement applied, after the tear, so what gets snapped
+is where the point actually ends up — a grid cut before the turbulence would be smoothly
+pushed back off itself. **It snaps in the levelled frame**, so the cells line up with the room
+rather than with the bracket: level a canted mount afterwards and the grid does not re-cut.
+The cell is metres in the room like the other displacements, so a look gives the same grid at
+any export size.
+
+**`ripple`** is the region read a fourth way, after displacing, scrambling and masking: a wave
+travelling out along the radius, in metres at a full weight, so the volume breathes where
+`push` only swells it. `ripple per m` is its spacing and `ripple hz` its speed — and the wave
+advances in eighths of a cycle rather than sliding, which is the character rather than a
+limitation: the surface arrives at each step instead of gliding between them, so it reads as
+machinery rather than as breathing. A speed of 0 freezes it where it stands rather than
+switching it off, the way `rate hz` does under Glitch, and both keyframe.
+
 `turbulence` displaces points with a noise field. `near`/`far` is the most useful control
 for isolating a person from the room. `cull speckle` drops points whose neighbours disagree,
 cleaning up the sensor's edge noise (sigma ~= 3.5 + 1.3*d mm, so 4.6mm at 0.75m and 10mm at

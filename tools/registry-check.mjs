@@ -200,6 +200,36 @@ const MUTATIONS = {
     to: '        if (false) {',
     fails: 'the raster-at-0.35 row against the pinned build, and nothing else',
   },
+  // The lattice switched off at its own guard: a cell that quantises nothing.
+  'lattice-ignored': {
+    from: '  if (lattice > 0.0) {',
+    to: '  if (false) {',
+    fails: 'lattice and latticeCell in the drop-one sweep',
+  },
+  // The ripple switched off the same way.
+  'ripple-ignored': {
+    from: '  if (ripple > 0.0 && rw > 0.0) {',
+    to: '  if (false) {',
+    fails: 'ripple, rippleFreq and rippleSpeed in the drop-one sweep, and the ripple-alone row',
+  },
+  // The gate put back the way it was before the ripple existed, so the region weight is
+  // only computed when one of the older three effects asks for it. **The drop-one sweep
+  // cannot see this**: the scrambled set raises all four at once, so the weight is there
+  // anyway and the ripple goes on working. Only the arm that raises it alone reddens.
+  'ripple-outside-the-gate': {
+    from: '  float rw = (regionPush != 0.0 || regionNoise > 0.0 || regionMask != 0.0 || ripple > 0.0)',
+    to: '  float rw = (regionPush != 0.0 || regionNoise > 0.0 || regionMask != 0.0)',
+    fails: 'the ripple-alone row, and nothing else - the drop-one sweep stays green',
+  },
+  // The stepped clock made continuous, which is the term's whole character: a machine
+  // rebuilding a surface rather than a thing breathing. The scrambled speed is deliberately
+  // off the eighths it steps in, so the smooth phase lands somewhere the stepped one never
+  // does rather than agreeing with it by luck at one instant.
+  'ripple-clock-continuous': {
+    from: '      float cycles = dist * rippleFreq - floor(time * rippleSpeed * 8.0) * 0.125;',
+    to: '      float cycles = dist * rippleFreq - time * rippleSpeed;',
+    fails: 'the stepped-clock row, and nothing else - the drop-one sweep stays green',
+  },
   // The band axis nailed back to the sensor's rows, which is what it was before this
   // control existed. Everything else about the tear goes on working - the same bands are
   // chosen at the same rate and shoved the same distance - so the only thing that can see
@@ -453,6 +483,8 @@ const LANDING = {
   noise: 'k.uniforms.noise.value',
   noiseScale: 'k.uniforms.noiseScale.value',
   noiseSpeed: 'k.uniforms.noiseSpeed.value',
+  lattice: 'k.uniforms.lattice.value',
+  latticeCell: 'k.uniforms.latticeCell.value',
   // The centre and the half-extents are three sliders landing in one vector each, so
   // the component is named here rather than the uniform - an apply that wrote the
   // whole vector, or wrote y where x was meant, reads identically at `.value`.
@@ -467,6 +499,9 @@ const LANDING = {
   regionPush: 'k.uniforms.regionPush.value',
   regionNoise: 'k.uniforms.regionNoise.value',
   regionMask: 'k.uniforms.regionMask.value',
+  ripple: 'k.uniforms.ripple.value',
+  rippleFreq: 'k.uniforms.rippleFreq.value',
+  rippleSpeed: 'k.uniforms.rippleSpeed.value',
   glitch: 'k.uniforms.glitch.value',
   glitchDensity: 'k.uniforms.glitchDensity.value',
   glitchShove: 'k.uniforms.glitchShove.value',
@@ -582,6 +617,8 @@ const EXPECT = {
   noise: (v) => v,
   noiseScale: (v) => v,
   noiseSpeed: (v) => v,
+  lattice: (v) => v,
+  latticeCell: (v) => v,
   regionX: (v) => v,
   regionY: (v) => v,
   regionZ: (v) => v,
@@ -593,6 +630,9 @@ const EXPECT = {
   regionPush: (v) => v,
   regionNoise: (v) => v,
   regionMask: (v) => v,
+  ripple: (v) => v,
+  rippleFreq: (v) => v,
+  rippleSpeed: (v) => v,
   glitch: (v) => v,
   glitchDensity: (v) => v,
   glitchShove: (v) => v,
@@ -732,6 +772,13 @@ const SCRAMBLE = {
   noise: 0.08,
   noiseScale: 5.5,
   noiseSpeed: 1.45,
+  // Full strength, because a partial snap is a blend of the grid and the surface and the
+  // drop-one sweep would be separating that from the turbulence three rows up.
+  lattice: 1,
+  // Coarse enough that a cell spans several points at this pose. A cell near the point
+  // spacing snaps every point to roughly where it already was, which is a lattice that
+  // renders as its own absence.
+  latticeCell: 0.11,
   // The master well up, because the five ceilings under it are only observable through
   // it: at a glitch of 0 no band tears, so density, shove, flare, band height and rate
   // would every one of them land in the no-pixel bucket together - the same argument the
@@ -783,6 +830,11 @@ const SCRAMBLE = {
   regionPush: 0.35,
   regionNoise: 0.5,
   regionMask: 0.4,
+  ripple: 0.14,
+  rippleFreq: 6.3,
+  // Off the whole eighths its own clock steps in, so a phase that stopped being quantised
+  // would land somewhere else rather than on the same step by luck.
+  rippleSpeed: 1.35,
   spin: true,
   // All five readings live at once, which is what keeps every per-reading term in the
   // shader reachable from the one sweep this file runs. They are deliberately unequal:
@@ -1208,8 +1260,10 @@ const GOLDEN_RESCALE = { pointSize: POINT_SIZE_REBASE };
 // pixels at all is section 9's question, not this one's.
 const GOLDEN_ABSENT = new Set([
   'noise', 'noiseScale', 'noiseSpeed',
+  'lattice', 'latticeCell',
   'regionX', 'regionY', 'regionZ', 'regionW', 'regionH', 'regionD',
   'regionRound', 'regionSoft', 'regionPush', 'regionNoise', 'regionMask',
+  'ripple', 'rippleFreq', 'rippleSpeed',
   'thermal', 'edges',
   // The four lateral crop faces. They are excused here on the same terms as the rest -
   // the pinned revision has no such control, so there is nothing on that side to hold
@@ -2640,6 +2694,104 @@ console.log('\n[registry] the streak falls, which the sweep above cannot see');
     'and the streak adds its light on the far side from the room\'s top, so it falls',
     `added mean row ${fall.added.row.toFixed(1)} against source ${fall.source.row.toFixed(1)}`
     + `, with screen-up at ${up > 0 ? 'rising' : 'falling'} row indices`);
+}
+
+// The ripple raised on its own, which is the one arrangement that can see whether the
+// region's gate learned about it. **The scrambled set raises all four region effects at
+// once**, so a gate that never names the ripple still computes a weight for the other
+// three and the ripple still works - the drop-one sweep goes green over a term that is
+// inert the moment it is used the way anybody would use it, which is alone. The failure
+// this closes is not "the ripple does nothing" but "the ripple does nothing unless
+// something else is already on", and only a look with nothing else on can tell them apart.
+console.log('\n[registry] the ripple opens the region by itself');
+{
+  const alone = { ...SCRAMBLE, regionPush: 0, regionNoise: 0, regionMask: 0 };
+  const still = await run({ ...alone, ripple: 0 });
+  const moving = await run(alone);
+  check(!eq(still, moving),
+    'raising the ripple alone moves the picture, so the gate names it',
+    eq(still, moving)
+      ? 'identical with every other region effect at zero - the gate does not name the ripple'
+      : `${still.filter((h, i) => h !== moving[i]).length} of ${still.length} frames differ`);
+}
+
+// The lattice snaps in the levelled frame and gets back with the transpose, which is the
+// inverse **only while the cloud's matrix is a pure rotation**. That is currently true
+// because the world tilt is the only transform ever written on it, and using the matrix
+// three already provides is what keeps the shader from carrying a second copy of the same
+// rotation that could drift from it. But "currently true" is an assumption, and an
+// assumption a comment states is one nothing enforces: a scale or an offset added to the
+// cloud later would leave the transpose silently not the inverse, and the lattice would
+// shear the room instead of stepping it.
+console.log('\n[registry] the cloud carries a rotation and nothing else');
+{
+  const m = await page.evaluate(`(() => {
+    const k = globalThis.__kinect;
+    let cloud = null;
+    k.scene.traverse((o) => { if (o.geometry === k.geometry) cloud = o; });
+    if (!cloud) return { found: false };
+    cloud.updateMatrixWorld(true);
+    const pos = new (cloud.position.constructor)();
+    const quat = new (cloud.quaternion.constructor)();
+    const scale = new (cloud.scale.constructor)();
+    cloud.matrixWorld.decompose(pos, quat, scale);
+    return {
+      found: true,
+      position: [pos.x, pos.y, pos.z].map((v) => Number(v.toFixed(9))),
+      scale: [scale.x, scale.y, scale.z].map((v) => Number(v.toFixed(9))),
+    };
+  })()`);
+  check(m.found, 'the point cloud is reachable from the scene, so the row below is about it');
+  check(m.found && eq(m.position, [0, 0, 0]) && eq(m.scale, [1, 1, 1]),
+    'and its world matrix is a pure rotation, so the lattice\'s transpose is its inverse',
+    m.found ? `position ${JSON.stringify(m.position)} scale ${JSON.stringify(m.scale)}` : '');
+}
+
+// The ripple's clock steps rather than slides, which is the term's whole character and
+// which **no mutation of it was caught by until this arm existed**. The drop-one sweep asks
+// whether reverting `rippleSpeed` changes the picture, and it does either way - a smooth
+// wave moves when you change its speed exactly as a stepped one does - so a build whose
+// ripple breathed instead of ratcheting went green through the entire suite. Written after
+// running `--mutate ripple-clock-continuous` and watching it be missed.
+//
+// **The probe holds the clock still and moves the speed, which is the opposite of the
+// obvious arrangement and the reason this one works.** Comparing two program times inside
+// one step was tried first and failed on a build that steps correctly, because moving the
+// time moves everything else with it - which source frames are bound, the gap handed to
+// the state pass, the turbulence field that `regionNoise` keeps alive even with `noise` at
+// zero. Every one of those had to be chased down and the arm was still red. Holding the
+// time fixed removes the entire class: the two renders differ in one uniform, and a phase
+// that quantises cannot tell them apart.
+//
+// At a fixed time the phase is `floor(t * speed * 8) / 8`, so speeds that land inside one
+// eighth have to render the same frame and a speed that crosses into the next has to
+// render a different one. The second row is the control: two identical frames prove
+// quantisation only if the clock is running at all.
+console.log('\n[registry] the ripple advances in steps, not smoothly');
+{
+  const AT = 0.5;
+  const at = async (rippleSpeed) => page.evaluate(`(async () => {
+    ${PAGE_HELPERS}
+    k.params.reset();
+    k.params.apply(${JSON.stringify(SCRAMBLE)});
+    k.params.set('rippleSpeed', ${rippleSpeed});
+    k.drive.reset();
+    pinCamera(k.freeCamera);
+    k.drive.stepTo(${AT});
+    return await sha256(k.drive.readPixels());
+  })()`);
+
+  // floor(0.5 * speed * 8) is 4 at both 1.00 and 1.20, and 5 at 1.30.
+  const inStep = await at(1.0);
+  const alsoInStep = await at(1.2);
+  const nextStep = await at(1.3);
+  check(inStep === alsoInStep,
+    'two speeds inside one step render the same frame, so the phase is quantised',
+    inStep === alsoInStep ? `both ${inStep.slice(0, 12)} at 1.00 and 1.20`
+      : `${inStep.slice(0, 12)} vs ${alsoInStep.slice(0, 12)} - the phase slid inside a step`);
+  check(inStep !== nextStep,
+    'and a speed in the next step renders a different one, so the clock is running',
+    inStep === nextStep ? 'identical across a step boundary at 1.30' : 'differs at 1.30');
 }
 
 // ------------------------------------------------------------------- verdict
