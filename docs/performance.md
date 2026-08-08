@@ -51,6 +51,40 @@ delivers on: `fps in` fell to 2–7 against ~30 and, per `docs/measurement.md`, 
 noise whatever its per-segment timings say. The editor's take is a file, so there is no
 delivered-fps to break, and interleaving is what controls for the machine.
 
+### The streak
+
+Sixteen taps per pixel in the grade pass, and it needed **two numbers rather than one**,
+because what a guarded block costs the looks that enable it and what it costs the looks that
+do not are different questions and only one of them answers to a parameter toggle.
+
+**With the term on: 1.403 ms per frame against 1.353 off, so 0.050 ms, up 3.7%.** Interleaved,
+17 rounds of 60 renders each alternating the uniform inside one page session and one compiled
+program, first round discarded, medians reported. Editor on the `2026-08-07-take2` take at
+1320 frames, playhead parked at 22.000 s, camera pinned, drawing buffer 1230x692 (0.851 Mpx)
+at 100% render scale, page cache warm after repeated reads of the same 630 MB capture. Machine
+load 6.0 to 8.7 across the run, with three other agent sessions live on the box.
+
+It scales with the buffer, which is what says the number is the taps rather than an artifact:
+0.015 ms at 0.136 Mpx, 0.028 at 0.417 and 0.050 at 0.851, so **about 0.05 ms per megapixel**,
+a quarter of what the rest of the post chain costs. Each of those three is interleaved within
+its own buffer size; the three blocks ran in sequence, so the slope is sound and the absolute
+figures are not comparable between them - the off-arm reads *slower* at the smallest buffer,
+which is the point pass being vertex-bound plus warmup, not a resolution effect.
+
+**With the term off: nothing measurable, -0.003 ms.** This is the number a parameter toggle
+reports as zero by construction, so it is measured between builds instead: HEAD against
+`7c6d0fb`, the commit immediately before the streak, both held at streak 0 and interleaved
+round by round across two pages, 17 rounds of 60. The two arms are checked to be the two
+builds rather than assumed - one has the uniform and the other does not - because two pages
+that had silently loaded the same bundle would have produced this same answer.
+
+**The harness verifies its own seek, and had to.** A seek on this rig can resolve without
+moving: the first version of this measurement placed the playhead with one seek, got back a
+transport still sitting at 0 with only the opening frames resident, and would have timed
+whatever frame it happened to be on. Every seek here is checked against the position it asked
+for and retried, and the count of stand-downs comes back with the numbers - one per run at
+these loads.
+
 ## What did not work, measured rather than assumed
 
 A negative result nobody wrote down is one somebody re-derives. All on a fixed 40-45s window
