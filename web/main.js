@@ -453,6 +453,7 @@ const uniforms = {
   glitchShove: { value: 0.45 },
   glitchTint: { value: 1.8 },
   glitchBands: { value: 12 },
+  glitchAxis: { value: 0 },
   // Hertz, and zero is a state rather than an off switch: `floor(time * 0.0)` is a
   // constant, so the tear pattern freezes where it stands instead of stopping. A held
   // corruption is a different picture from no corruption, and because the rate
@@ -549,7 +550,7 @@ uniform float noise, noiseScale, noiseSpeed;
 uniform vec3 regionCentre, regionHalf;
 uniform float regionRound, regionSoft, regionPush, regionNoise, regionMask;
 uniform float mixT, snapDelta, glitch;
-uniform float glitchDensity, glitchShove, glitchTint, glitchBands, glitchRate;
+uniform float glitchDensity, glitchShove, glitchTint, glitchBands, glitchRate, glitchAxis;
 uniform float fadeTime, wakeTime, sinceFrameSec;
 uniform int denoise, interpolate;
 
@@ -835,7 +836,15 @@ void main() {
   // defaults this block is bit-identical to the one-slider version it replaces.
   vGlitch = 0.0;
   if (glitch > 0.0) {
-    float band = floor(position.y / glitchBands);
+    // The axis the bands are cut along, and the default path is the old expression itself
+    // rather than one that computes what the old expression computed. That distinction has
+    // already cost this file a measurement twice - the comment above says why, and the
+    // raster's guard two hundred lines into the grade shader says it again - so the zero
+    // case reaches the old division textually, with no local in the way to license a
+    // contraction the inline form does not get.
+    float band = glitchAxis > 0.0
+      ? floor(mix(position.y, position.x, glitchAxis) / glitchBands)
+      : floor(position.y / glitchBands);
     float roll = hash(band + floor(time * glitchRate) * 31.7);
     if (roll > 1.0 - glitch * glitchDensity) {
       float shove = (hash(band * 3.1 + floor(time * glitchRate)) - 0.5) * glitch * (2.0 * glitchShove);
@@ -2484,6 +2493,26 @@ const PARAMS = {
   glitchBands: { def: 12, min: 1, max: 64, step: 1, kind: 'scalar', tag: 'look',
     group: 'glitch', label: 'band rows',
     apply: (v) => { uniforms.glitchBands.value = v; } },
+  // Which way the bands run, from the sensor's rows at 0 to its columns at 1, and the
+  // interesting looks are the fractions in between where the bands cross the frame on a
+  // diagonal. The axis was baked as `position.y` from the first version of this effect,
+  // which is why the default is 0 and why it has to be exactly 0: a document written
+  // before this control existed names no axis and has to keep tearing along rows.
+  //
+  // A blend of the two image axes rather than an angle in degrees, and that is the honest
+  // spelling rather than a lazy one. The bands are quantised in the *sensor's* frame,
+  // where the two axes are 512 columns against 424 rows and a band is a run of scanlines
+  // rather than a distance - so there is no square in which an angle would mean what an
+  // angle means, and a raster's `scanAngle` two hundred lines down is the term that has
+  // one because it runs in screen space where the pixels are square.
+  //
+  // No shear parameter to go with it. The tear's direction stays sensor-frame x, so
+  // turning the axis rotates which bands are chosen and not which way they slide, and the
+  // pair of controls that would let those disagree buys a look nothing in the references
+  // shows and two more ways to author something incoherent.
+  glitchAxis: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'glitch', label: 'axis',
+    apply: (v) => { uniforms.glitchAxis.value = v; } },
   // Hertz: how often the torn set is redrawn, 7 by default, so a state holds for 143ms
   // or about 4.3 frames at 30fps. The phase is `floor(time * rate)` and stays a pure
   // function of program time - integrating a rate for a smoother phase would make the

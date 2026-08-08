@@ -51,7 +51,7 @@ zoom about the pointer, `+`/`-` about the playhead, `,`/`.` to pan, `F` to fit t
 to frame the trim. The overview underneath is always the whole clip: drag its box to pan, an
 edge to zoom, click to go there.
 
-**Glitch** tears horizontal bands of the feed sideways, and it is six controls rather than
+**Glitch** tears bands of the feed sideways, and it is seven controls rather than
 one because the interesting looks live off the diagonal. `amount` is the master and the one
 worth keyframing — it scales density and shove together, so corruption fades in and out on a
 single track. `density` is what fraction of the bands tear at a full master and `shove m` is
@@ -61,6 +61,17 @@ a torn band burns, per metre it was shoved, so a bigger tear lights harder on it
 `band rows` is the height of a band in the sensor's own scanlines — 424 over that many bands,
 so 35 at the default of 12 — and `rate hz` is how often the torn set is redrawn, where 0
 freezes the pattern where it stands rather than switching it off.
+
+`axis` is which way the bands run, from the sensor's rows at 0 to its columns at 1, and the
+fractions between are the point: at 0.5 the bands cross the frame on a diagonal, which is a
+look neither end reaches. It is a blend of the two image axes rather than an angle in degrees,
+because the bands are cut in the sensor's frame where 512 columns meet 424 rows and a band is
+a run of scanlines rather than a distance — there is no square in which an angle would mean
+what an angle means. The raster's `angle` under Post is the one that gets degrees, because it
+runs in screen space where the pixels are square. Turning the axis changes which bands tear
+and not which way they slide: the shove stays along sensor x, so a column of bands shears
+across itself rather than along itself, and there is no separate shear control because the
+pair that could disagree buys nothing the references show.
 
 The tear is applied in the sensor's frame before the camera sees it, so it is only
 screen-horizontal from head-on: orbit around a torn band and it shoves in depth instead, and

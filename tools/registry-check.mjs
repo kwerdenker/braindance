@@ -200,6 +200,17 @@ const MUTATIONS = {
     to: '        if (false) {',
     fails: 'the raster-at-0.35 row against the pinned build, and nothing else',
   },
+  // The band axis nailed back to the sensor's rows, which is what it was before this
+  // control existed. Everything else about the tear goes on working - the same bands are
+  // chosen at the same rate and shoved the same distance - so the only thing that can see
+  // it is the drop-one sweep, where an axis reaching nothing changes no pixel when it is
+  // reverted. A build that quietly lost it tears horizontally under a green run, which is
+  // the whole of what this control was added to stop being the only option.
+  'glitch-axis-ignored': {
+    from: '      ? floor(mix(position.y, position.x, glitchAxis) / glitchBands)',
+    to: '      ? floor(position.y / glitchBands)',
+    fails: 'glitchAxis in the drop-one sweep, alone',
+  },
   // The streak switched off at its own guard, which is the plainest thing that can go
   // wrong with it: a term whose slider moves and whose uniform lands and whose pixels never
   // change. The drop-one sweep is where that shows, because reverting a parameter nothing
@@ -461,6 +472,7 @@ const LANDING = {
   glitchShove: 'k.uniforms.glitchShove.value',
   glitchTint: 'k.uniforms.glitchTint.value',
   glitchBands: 'k.uniforms.glitchBands.value',
+  glitchAxis: 'k.uniforms.glitchAxis.value',
   glitchRate: 'k.uniforms.glitchRate.value',
   spin: 'k.controls.autoRotate',
   // The five readings land on uniforms of their own name, which is the one place in
@@ -586,6 +598,7 @@ const EXPECT = {
   glitchShove: (v) => v,
   glitchTint: (v) => v,
   glitchBands: (v) => v,
+  glitchAxis: (v) => v,
   glitchRate: (v) => v,
   spin: (v) => v,
   readRgb: (v) => v,
@@ -729,6 +742,11 @@ const SCRAMBLE = {
   glitchShove: 1.23,
   glitchTint: 4.35,
   glitchBands: 27,
+  // Most of the way to the sensor's columns, so the bands cross the frame on a steep
+  // diagonal rather than at either of the two axes it interpolates between. A value of 1
+  // would be a second baked axis and would leave the interesting half of this control -
+  // everything off the diagonal - unmeasured by the sweep.
+  glitchAxis: 0.78,
   glitchRate: 13.5,
   // The region is placed rather than picked, because the sweep below drops each
   // parameter in turn and asserts the image moved - and a region floating in empty
@@ -1248,6 +1266,11 @@ const GOLDEN_ABSENT = new Set([
   // defaults - a default that drifted off its literal would move whichever readings the
   // torn bands reach and fail there by name rather than being excused here.
   'glitchDensity', 'glitchShove', 'glitchTint', 'glitchBands', 'glitchRate',
+  // The band axis, which had no control at the pinned revision because the tear was cut
+  // along the sensor's rows and nothing else. It defaults to 0 and the block reaches the
+  // old division textually at that value, so a build carrying it draws what a build
+  // without it drew.
+  'glitchAxis',
   // `vignette` is here on different terms from everything above it, and the difference
   // is worth the sentence. It was a literal too, but it is the one promoted literal that
   // does NOT keep its old value: the behaviour it replaces is conditional - 0.55 while
