@@ -1360,9 +1360,66 @@ const PIPELINES = [
 // the chain does not, and only the first two of those are measured. A 4K export
 // inherits the constancy claim by extrapolation, and closing that wants an arm at
 // 3840x2160 against 1920x1080 rather than an argument.
+// **The coarse means were re-baselined once, and the reason is dated rather than
+// guessed at.** Every band below used to sit against a residual floor of about 0.3 to
+// 0.5 of 255. At `40ab241` - the commit that split the glitch into a master and five
+// ceilings - that floor rose to about 0.8 to 2.5 and stayed there, which put five bands
+// underneath it and left those rows red on a clean tree. A row that is red clean catches
+// nothing, and that is the defect this re-baseline fixes; the terms themselves are fine,
+// which is the part that had to be established before touching a number.
+//
+// Bisected: 47 commits touch `web/main.js` on this branch, the arm and its bands were
+// both defined at `b56d101` which is in `main`, so the instrument is constant across the
+// range and only the page moves. `e1996bb`, the parent, is 47/47 clean at noise 0.304,
+// regionpush 0.423, regionmask 0.317. `40ab241` is 0.806, 1.262, 1.023 and ten rows red
+// at once.
+//
+// **Three things in that commit were reverted individually at HEAD and none of them
+// brings the floor back**, recorded so nobody spends the runs again: guarding the cyan
+// flare that the commit moved into the common path (0.826/1.251/1.024, unchanged);
+// putting the vignette back to the literal 0.55 it replaced (unchanged, and the reason is
+// that `gradeNeeded()` is false at these arms' values in both builds, so the line is
+// unreachable there); and putting the glitch block's five constants back as literals
+// (0.826/1.255/1.028, unchanged). What is left is the graphics driver arranging the
+// arithmetic around those lines differently, which `web/main.js` already records costing
+// three false regressions in `registry-check` when the flare was guarded - and that
+// surrounding code has moved across the 40 commits since, which is why reverting at HEAD
+// cannot undo it.
+//
+// So each band is set where the table's own rule says: between a measured clean number
+// and a measured mutant one, both taken on this tree, at 960x600 against 1920x1200.
+//
+//   row         clean   region-in-metres   pointsize-absolute   band
+//   points      1.040     -                    17.190            3.0
+//   splat       2.513     -                    37.855            6.0
+//   noise       0.826     0.826 (stays green)  16.789            2.0
+//   regionpush  1.251     2.445                23.701            1.8
+//   regionmask  1.024     1.135 (caught on the ratio)  16.773    1.5
+//
+// Two mutations rather than one, because no single one of them holds all five rows.
+// `region-in-metres` is the narrow control and reddens exactly the two rows that share
+// the falloff term; `pointsize-absolute` is the wide one and every row clears its band by
+// eight to twelve times, which is what says these bands are loose enough to stop being
+// red for nothing and nowhere near loose enough to stop catching.
+//
+// `noise` is the odd one and was already: `region-in-metres` leaves it untouched to the
+// last digit, because the noise field never reaches the falloff, so its job on *that*
+// mutation is to stay green and prove the mutation is localised - which is why it needed
+// the second column to have a positive control at all. Its band is a constancy claim and
+// keeps the ratio it had, 2.4x the clean floor where the old pair was 2.5x.
+// `regionmask` is the other: its mean barely separates (1.024 against 1.135) and never
+// did, so the band clears both ends deliberately and the ratio term carries that row,
+// failing at a departure of 0.0216 against a clean 0.0023 and a 0.005 bound.
+//
+// **Five cross-build rows are still red and are deliberately not re-baselined here.**
+// They went red in the same commit and are the same difference seen against a build that
+// predates it rather than against a second output size, so they read much larger - the
+// worst of forty tile means is 24.297/255, which is visible. Moving a 0.02 ratio band
+// past 1.03 would not be re-baselining an instrument, it would be deleting the claim.
+// `docs/proof-tools.md` carries what is known about them.
 const RES_TOLERANCE = {
-  points: { on: 'coarse', mean: 1.0, ratio: 0.005 },
-  splat: { on: 'coarse', mean: 1.2, ratio: 0.005 },
+  points: { on: 'coarse', mean: 3.0, ratio: 0.005 },
+  splat: { on: 'coarse', mean: 6.0, ratio: 0.005 },
   trails: { on: 'coarse', mean: 1.6, ratio: 0.005 },
   rgbsplit: { on: 'coarse', mean: 2.2, ratio: 0.005 },
   // These two are judged on the correlation rather than on a difference, and the
@@ -1395,6 +1452,13 @@ const RES_TOLERANCE = {
   // The three world-space rows. Every band here sits between a measured clean number
   // and a measured mutant one rather than being chosen to fit.
   //
+  // **The figures in this paragraph are the ones taken before `40ab241`**, kept rather
+  // than overwritten because the shape of the argument is what they are here for and a
+  // correction that erases what it corrects leaves nobody able to check it. The floor
+  // they were measured against has since risen; the block above `RES_TOLERANCE` carries
+  // the current pairs and the bisect that dates the move. What has not changed is which
+  // measurement carries which row, which is the part the next person needs.
+  //
   // Clean, coarse mean and luminance ratio: noise 0.319/1.0002, regionpush 0.489/1.0001,
   // regionmask 0.388/1.0000. Those ratios are the tightest in the table by an order of
   // magnitude, and they should be - not one of these terms is a screen-space length, so
@@ -1413,9 +1477,9 @@ const RES_TOLERANCE = {
   // departure of 0.0085 against a clean residual of 0.0002, which is 40x the noise; its
   // mean barely moves (0.388 to 0.510), so the 0.9 band is deliberately loose rather
   // than squeezed onto a difference that is not the signal.
-  noise: { on: 'coarse', mean: 0.8, ratio: 0.005 },
-  regionpush: { on: 'coarse', mean: 1.0, ratio: 0.005 },
-  regionmask: { on: 'coarse', mean: 0.9, ratio: 0.005 },
+  noise: { on: 'coarse', mean: 2.0, ratio: 0.005 },
+  regionpush: { on: 'coarse', mean: 1.8, ratio: 0.005 },
+  regionmask: { on: 'coarse', mean: 1.5, ratio: 0.005 },
   // The crop is a cull rather than a shade, so the two sizes either keep the same
   // points or they do not - there is no partial term to average away and no soft edge
   // to alias. It gets the same band as its neighbours rather than a looser one,

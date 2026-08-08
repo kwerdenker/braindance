@@ -160,27 +160,42 @@ so it needs `--before` pointing at a commit before step 1.
 **`export-check`** needs ffmpeg and ffprobe (`--ffmpeg`, `--ffprobe`; 8.1.1 at
 `/opt/homebrew/bin`) and writes into `exports/`, which is gitignored.
 
-**It is red at HEAD on ten rows, and that predates the mirror fix.** Measured with an
-interleaved A/B/A on an idle machine against a private server on the fake grabber — baseline
-taken by copying the modified files out and `git checkout --`, never `git stash` — the same ten
-rows fail with and without the geometry change, and the two baseline arms reproduce each other
-to three decimal places:
+**It was red on ten rows, and the question this page used to leave open — when they went
+red — is answered: `40ab241`, all ten in one commit.** Bisected over the 47 commits that
+touch `web/main.js` on this branch, using each tree's own copy of the tool. That is sound
+because the arms and their bands were defined at `b56d101`, which is in `main`, so the
+instrument is constant across the range and only the page moves. `e1996bb`, the parent, is
+47/47 clean; `40ab241` is ten red. The branch point `6e1be6f` reads noise 0.304, regionpush
+0.423, regionmask 0.317, all green.
 
-- five within-build resolution rows (`points`, `splat`, `noise`, `regionpush`, `regionmask`:
-  *1920x1200 is 960x600 at twice the size*), failing on the coarse-mean term with the luminance
-  ratio well inside tolerance — `splat` is the worst at 2.516 against a 1.2 bound;
-- five cross-build rows against `f14b4be…^`, two Blackwall rebase arms failing on the ratio term
-  at 1.026 and 1.022 against a 0.02 bound, and three preset rows failing wider.
+What moved is a residual floor, from about 0.3–0.5 of 255 to about 0.8–2.5, which put five
+bands underneath it. **The terms are still correct and that was established before any
+number was touched**: `region-in-metres` still separates cleanly, taking regionpush from
+1.251 to 2.445 and reddening regionmask on its ratio at a 0.0216 departure, and
+`pointsize-absolute` clears every band by eight to twelve times. The five within-build rows
+are re-baselined against those measured pairs, with the table and the reasoning in the
+comment above `RES_TOLERANCE`.
 
-**What is not known is when they went red**, and that is the next thing to establish rather than
-a thing to assume: dating them needs a bisect over the commits that touched the look, and the
-duotone and raster work is the obvious first suspect precisely because these rows read luminance
-ratios and tile means. Do not read the ten as a finding about anything until that is done, and do
-not read them as harmless either. Nothing in the mirror work touched them: with the historical
-arm normalised for the sign, the two Blackwall arms read 1.21 and 1.12 of 255 on the worst of
-forty tile means, against 1.02 and 0.95 for the same rows at HEAD — run-to-run noise — where an
-un-normalised arm reports 22.19 and 22.14. The normalisation is what makes that comparison
-possible at all, and it is why the sign appears in this tool as well as in `registry-check`.
+**Three candidate causes inside `40ab241` were reverted individually at HEAD and none of
+them restores the floor** — the cyan flare that commit moved into the common path, the
+vignette going from a baked `0.55` to a parameter defaulting to 0, and the glitch block's
+five constants going from literals to uniforms. What remains is the driver arranging the
+arithmetic around those lines differently, an effect `web/main.js` already records costing
+three false regressions in `registry-check` when the flare was guarded, and one that
+reverting at HEAD cannot undo because the surrounding code has moved 40 commits since.
+
+**The five cross-build rows against `f14b4be…^` are still red and deliberately were not
+re-baselined.** They are the same difference seen against a build that predates it rather
+than against a second output size, which is why they read so much larger — the worst of
+forty tile means is 24.297/255, which is visible rather than sub-LSB. Moving a 0.02 ratio
+band past 1.03 would delete the claim rather than re-baseline it. What they need is either
+the cause found or the comparison moved off parameter defaults onto what the shipped look
+names, which is the lesson `docs/instruments.md` already draws from the `glitchTint` case.
+Nothing in the mirror work touched them: with the historical arm normalised for the sign,
+the two Blackwall arms read 1.21 and 1.12 of 255 on the worst of forty tile means, against
+1.02 and 0.95 for the same rows at HEAD — run-to-run noise — where an un-normalised arm
+reports 22.19 and 22.14. The normalisation is what makes that comparison possible at all,
+and it is why the sign appears in this tool as well as in `registry-check`.
 
 **`keyframe-check`** runs its cheapest claim first, on a 60-second budget, and stops the run if
 it fails. That is not ordering by cost: an evaluator that announces its writes schedules a seek
