@@ -143,16 +143,17 @@ const MUTATIONS = {
     to: '  if (false) {',
     fails: 'readGhost, ghostRim and ghostFill in the drop-one sweep, plus readGhost\'s 1b row',
   },
-  // The duotone's amount reaches no pixel, and it takes the hue and the split down with
-  // it - the `weight-ignored` shape one block up, for the same structural reason. Both of
-  // those are only observable through the block this switches off, so three names land in
-  // the no-effect bucket and none of them is declared there. Three is the right answer
-  // and a fourth would mean some other parameter had quietly become reachable only
-  // through the duotone.
+  // The duotone's amount reaches no pixel, and it takes the hue, the split and the motion
+  // term down with it - the `weight-ignored` shape one block up, for the same structural
+  // reason. All three are only observable through the block this switches off, so four
+  // names land in the no-effect bucket and none of them is declared there. Four is the
+  // right answer and a fifth would mean some other parameter had quietly become reachable
+  // only through the duotone.
   'duotone-ignored': {
     from: '  if (duotoneDepth > 0.0) {',
     to: '  if (false) {',
-    fails: 'duotoneDepth, duotoneHue and duotoneSplit in the drop-one sweep',
+    fails: 'duotoneDepth, duotoneHue, duotoneSplit and duotoneMotion in the drop-one sweep, '
+      + 'plus the planted section\'s two motion rows, which the block being off takes with it',
   },
   // The sharper half of the one above, and the reason both are kept: the duotone goes on
   // working as a flat tint, so `duotoneDepth` still moves pixels and only the split stops
@@ -164,6 +165,76 @@ const MUTATIONS = {
     from: '    float k = smoothstep(duotoneSplit - 0.5, duotoneSplit + 0.5, t);',
     to: '    float k = 0.5;',
     fails: 'duotoneSplit in the drop-one sweep, alone - the amount and the hue still reach pixels',
+  },
+  // The speed never computed, so the motion half of the duotone has nothing to key on.
+  // This is the plain one: a parameter whose slider moves, whose uniform lands and whose
+  // pixels never change, which is what the drop-one sweep is for. It reddens the planted
+  // section's motion rows too, and those are the rows that say the sweep is measuring the
+  // speed rather than something else that moved with it.
+  'vspeed-ignored': {
+    from: '    vSpeed = paired ? abs(mmC - mmP) / spanSec : 0.0;',
+    to: '    vSpeed = 0.0;',
+    fails: 'duotoneMotion in the drop-one sweep and the proven-parameter count beneath it, '
+      + 'plus the planted section\'s two motion rows - the one that says a planted pair moves '
+      + 'the picture and the one that says it moves it toward the hot pole',
+  },
+  // **The one that matters.** The speed stops being divided by the pair's own gap, so it
+  // is a per-frame difference wearing the name of a rate. Every picture still changes,
+  // every uniform still lands, the drop-one sweep stays green, and a look graded at 30fps
+  // renders differently over a degraded link - which is the one condition nobody grades
+  // in. Nothing here could see it before the planted section existed, because both arms
+  // of every comparison in this file run at the same frame rate by construction.
+  'vspeed-unnormalised': {
+    from: '    vSpeed = paired ? abs(mmC - mmP) / spanSec : 0.0;',
+    to: '    vSpeed = paired ? abs(mmC - mmP) : 0.0;',
+    fails: 'the same-speed-over-two-spans row of the planted section, alone - the drop-one '
+      + 'sweep stays green, and so do the two rows either side of it',
+  },
+  // The discontinuity half of the pairing test dropped from the speed and left on the
+  // blend, so a ray that crossed a silhouette reports the distance to the wall behind the
+  // subject as a speed. The fixture has 52 such samples in five pairs, which is far too
+  // few for any hashed run over it to notice, so the only thing that can see this is a
+  // pair planted across the threshold on purpose.
+  'vspeed-ignores-the-gate': {
+    from: '    vSpeed = paired ? abs(mmC - mmP) / spanSec : 0.0;',
+    to: '    vSpeed = mmP > 0.0 ? abs(mmC - mmP) / spanSec : 0.0;',
+    fails: 'the row that says a jump past the snap threshold is a different surface, alone',
+  },
+  // The speed read off one fixed texel rather than the point's own, which is the failure a
+  // uniformly-moving plant is invariant under - and asking what a fixture is invariant under
+  // is the rule `docs/instruments.md` puts hardest. A wall planted at one speed renders
+  // identically whether the varying is per point or a single number wearing a varying's name,
+  // so the section grew a plant whose speed differs across the frame in order to have this
+  // question at all. The blend keeps the point's own sample, so nothing about the geometry
+  // moves and section 1b is untouched.
+  'vspeed-reads-one-texel': {
+    from: '    vSpeed = paired ? abs(mmC - mmP) / spanSec : 0.0;',
+    to: '    vSpeed = paired ? abs(mmC - depthAt(depthPrev, ivec2(0))) / spanSec : 0.0;',
+    fails: 'the two chequered-plant rows of the planted section - the one that says the '
+      + 'chequer is neither of the uniform frames and the one that says its mean red sits '
+      + 'between them',
+  },
+  // The term made very slightly not-inert at its default, which is the control for the row
+  // that says a motion of 0 draws exactly what the block drew before this term existed. That
+  // row is an equality and equalities are the ones worth pointing a mutation at: nothing else
+  // in this file can fail on a default that leaks, because every other comparison here either
+  // has the term raised on both sides or has the block switched off entirely.
+  'motion-leaks-at-zero': {
+    from: '    k = mix(k, 1.0, duotoneMotion * smoothstep(0.0, 1200.0, vSpeed));',
+    to: '    k = mix(k, 1.0, (duotoneMotion + 0.02) * smoothstep(0.0, 1200.0, vSpeed));',
+    fails: 'the motion-of-0-is-inert row, alone - every other row has the term raised on '
+      + 'both sides or has nothing moving on either',
+  },
+  // The pair's gap replaced by the nominal one, which is a build that computes speeds
+  // from a frame rate it assumed rather than from the frames it holds. Every picture
+  // still changes and the sweep is green, because a speed scaled by a constant is still
+  // a speed that reverting the parameter removes. The planted rows cannot see it either -
+  // they write the span themselves, which is what makes this a probe that has to sit
+  // somewhere else: on the real transport, against the times the drive reports.
+  'spansec-nominal': {
+    from: '    return { steps, mixT: offset / span, sinceFrameSec: offset, spanSec: span };',
+    to: '    return { steps, mixT: offset / span, sinceFrameSec: offset, spanSec: 1 / 30 };',
+    fails: 'the row that holds spanSec against the gaps between the pinned frames, alone',
   },
   // The unit conversion dropped, which is a defect no image comparison can see the shape
   // of: the poles still turn, the picture still changes, and every sweep row that asks
@@ -541,6 +612,7 @@ const LANDING = {
   // too far, which is a look nobody authored arriving through a slider that works.
   duotoneHue: 'k.uniforms.duotoneHue.value',
   duotoneSplit: 'k.uniforms.duotoneSplit.value',
+  duotoneMotion: 'k.uniforms.duotoneMotion.value',
   bloom: '[k.bloom.strength, k.bloom.enabled]',
   trails: '[k.afterimage.uniforms.damp.value, k.afterimage.enabled]',
   rgbSplit: '[k.grade.uniforms.rgbSplit.value, k.grade.enabled]',
@@ -670,6 +742,7 @@ const EXPECT = {
   // implementation by construction and could never see a wrong one.
   duotoneHue: (v) => v * (Math.PI / 180),
   duotoneSplit: (v) => v,
+  duotoneMotion: (v) => v,
   bloom: (v) => [v, v > 0],
   trails: (v) => [v, v > 0],
   // The five that share one pass, so each one's landing carries whether the pass is on
@@ -889,6 +962,18 @@ const SCRAMBLE = {
   // of 0.35/4.2, so a split at 0.36 puts the meeting plane inside the subject where the
   // default at 0.5 puts it behind them.
   duotoneSplit: 0.36,
+  // Well up, because what it has to be observable against is the depth key beside it: at
+  // the split above, the middle of this cloud sits at a k of about 0.56, so there is room
+  // above it for a moving point to be pushed into and reverting this parameter takes that
+  // push away. A motion amount raised over a room already at the hot pole would land in
+  // the no-pixel bucket looking like a parameter that does nothing.
+  //
+  // What it has to key on is in the fixture rather than planted, which is why this row is
+  // safe at all: measured over the five pairs the six pinned frames make, 7.7% of paired
+  // samples move faster than 150 mm/s, the 99th percentile is about 430 and the fastest is
+  // about 1900, against a ramp that reaches its pole at 1200. The nearly-static fixture
+  // still carries a subject moving through it.
+  duotoneMotion: 0.83,
   bloom: 1.35,
   trails: 0.44,
   rgbSplit: 2.3,
@@ -1333,13 +1418,23 @@ const GOLDEN_ABSENT = new Set([
   // which is why section 1b still agrees with a build from before it existed. The look
   // that did carry a vignette, `blackwall.json`, now names 0.55 for itself.
   'vignette',
-  // The duotone's three, on the plainest version of these terms: nothing at the pinned
-  // revision resembles them, and all three default to the identity - a depth of 0 never
+  // The duotone's four, on the plainest version of these terms: nothing at the pinned
+  // revision resembles them, and all four default to the identity - a depth of 0 never
   // enters the block, so a build carrying them draws precisely what a build without them
   // drew. That equality is what this arm measures, and section 1b is where it stops being
   // an excuse and becomes a framebuffer hash, since the duotone sits after the blend and
   // would move every one of the five readings if its default reached a pixel.
-  'duotoneDepth', 'duotoneHue', 'duotoneSplit',
+  //
+  // **`duotoneMotion` is the one of the four that section 1b cannot vouch for**, and the
+  // difference is worth the sentence rather than being carried along with its neighbours.
+  // 1b renders at parameter defaults, where the depth is 0 and the block never executes,
+  // so a term added *inside* it is unreached by that hash whichever way its own default
+  // behaves - which is exactly the hole the glitch flare's compensating default fell
+  // through. What holds this one instead is the planted section at the foot of this file,
+  // where the block is entered with the depth up and a pair carrying real motion, and the
+  // frame at a motion of 0 has to come back bit-identical to the frame with no motion in
+  // it at all.
+  'duotoneDepth', 'duotoneHue', 'duotoneSplit', 'duotoneMotion',
   // `crush` is here on `vignette`'s terms turned the other way up, and the contrast is
   // the reason it gets its own sentence. It was a literal too, and unlike the vignette it
   // *keeps* the value it replaced - so the excuse is the strong one rather than the
@@ -2792,6 +2887,237 @@ console.log('\n[registry] the ripple advances in steps, not smoothly');
   check(inStep !== nextStep,
     'and a speed in the next step renders a different one, so the clock is running',
     inStep === nextStep ? 'identical across a step boundary at 1.30' : 'differs at 1.30');
+}
+
+// The duotone's motion half, which is the only term in this file whose input the fixture
+// cannot be relied on to supply. Every other parameter here is read off a value the
+// registry holds; this one is read off the difference between two depth frames, and the
+// six frames this file pins are of a nearly static room - the median sample moves 31 mm/s,
+// which is the sensor's own jitter. The drop-one sweep does see it, because a subject
+// moves through those frames and 7.7% of samples clear 150 mm/s, but what the sweep sees
+// is "reverting this changed something" and the claims worth making are all sharper than
+// that. So the input is planted rather than found.
+//
+// **The plant is a pair, and it is the only way to make one.** `injectDepth` is called
+// twice because `bindDepth` swaps the two textures and then writes, so the first call is
+// what becomes `depthPrev` and the second is `depthCurr` - the same idiom `monitor-check`
+// uses to reach both halves of the door. What the door does not touch is the three numbers
+// that describe the pair rather than its pixels, so `mixT`, `sinceFrameSec` and `spanSec`
+// are written here by hand, and a section that forgot would be dividing a planted
+// difference by whatever gap the last real frame arrived with.
+//
+// And nothing may call `drive.stepTo` afterwards: that re-enters the transport, which
+// binds real frames over the plant and hands the shader a span to match. Everything below
+// renders straight through `renderer.render`, which is what `renderProgramFrame` does
+// itself at these parameter values, since none of the post passes are on.
+//
+// **Every arm plants the same current frame and differs only in the previous one**, with
+// `mixT` held at 1 so the blend is the identity on it. That is what makes these rows about
+// the speed and nothing else: the geometry, the neighbour spread, the point size and the
+// surface memory are identical across all four, and the only thing that can move a pixel
+// is the varying. The numbers are chosen so the arithmetic is exact in float32 - 240mm over
+// a quarter second and 60mm over a sixteenth are both exactly 960 mm/s - because a row
+// asking for bit-identity cannot afford a quotient that lands one ulp apart on two paths
+// that are supposed to agree.
+console.log('\n[registry] a pair planted with a known speed in it');
+{
+  // 1100mm puts the wall at a t of 0.15 through the default clip range, so the depth key
+  // leaves it near the cold pole with the whole of the ramp above it for motion to reach
+  // into. A plant at the far end of the room would sit at a k already close to 1, where
+  // pushing toward 1 is arithmetically almost the identity - a probe placed where its
+  // answer cannot be different.
+  const CURR_MM = 1100;
+  // The look the plant is read through. The depth is up because the block is guarded on
+  // it, and the two shedding windows are at zero for two reasons: the ghost half leaves
+  // the draw range, so nothing renders from a surface memory this section never advances,
+  // and vFade takes the ternary's 1.0 rather than a value that depends on how long ago a
+  // frame notionally arrived.
+  const LOOK = { duotoneDepth: 1, fade: 0, wake: 0 };
+
+  // The previous frame is built from a rule rather than filled with a value, so one helper
+  // plants both a uniform wall and a chequered one: a block size of 0 is the plane, and any
+  // other size alternates `prevMm` with the current depth in squares of that many texels.
+  // **Block (0, 0) is deliberately one of the moving ones**, so a build reading a single
+  // fixed texel reads a moving sample and renders the chequer as the all-moving frame -
+  // which is what gives the rows below something to separate.
+  const shot = ({ prevMm, spanSec, motion, block = 0 }) => page.evaluate(`(async () => {
+    ${PAGE_HELPERS}
+    k.params.reset();
+    k.params.apply(${JSON.stringify(LOOK)});
+    k.params.set('duotoneMotion', ${motion});
+    k.drive.reset();
+    pinCamera(k.freeCamera);
+    const plane = (mm) => new Uint16Array(512 * 424).fill(mm);
+    const previous = () => {
+      const block = ${block};
+      if (block === 0) return plane(${prevMm});
+      const a = new Uint16Array(512 * 424);
+      for (let row = 0; row < 424; row++) {
+        for (let col = 0; col < 512; col++) {
+          const moving = (((col / block) | 0) + ((row / block) | 0)) % 2 === 0;
+          a[row * 512 + col] = moving ? ${prevMm} : ${CURR_MM};
+        }
+      }
+      return a;
+    };
+    k.drive.injectDepth(previous());
+    k.drive.injectDepth(plane(${CURR_MM}));
+    k.uniforms.mixT.value = 1;
+    k.uniforms.sinceFrameSec.value = 0;
+    k.uniforms.spanSec.value = ${spanSec};
+    k.renderer.render(k.scene, k.freeCamera);
+    const px = k.drive.readPixels();
+    let red = 0, lit = 0;
+    for (let i = 0; i < px.length; i += 4) {
+      red += px[i];
+      if (px[i] + px[i + 1] + px[i + 2] > 12) lit++;
+    }
+    const n = px.length / 4;
+    return { hash: await sha256(px), red: red / n, lit: lit / n };
+  })()`);
+
+  const QUARTER = 0.25, SIXTEENTH = 0.0625;
+  const still = { prevMm: CURR_MM, spanSec: QUARTER };
+  // 240mm across a quarter of a second, which is inside the 250mm snap threshold.
+  const fast = { prevMm: CURR_MM - 240, spanSec: QUARTER };
+  // The same 960 mm/s built the other way round: a quarter of the movement over a
+  // quarter of the time. A build reporting millimetres rather than millimetres per
+  // second reads these as 240 and 60 and cannot make them agree.
+  const brief = { prevMm: CURR_MM - 60, spanSec: SIXTEENTH };
+  // 300mm, which is past the threshold, so the pair is two surfaces rather than one that
+  // moved. Ungated it would read 1200 mm/s, which is exactly the top of the ramp.
+  const jumped = { prevMm: CURR_MM - 300, spanSec: QUARTER };
+  // The same 240mm, on half the frame. Every arm above moves the whole wall at once, and a
+  // wall that moves at one speed is invariant under any permutation of its texels - so all
+  // of them render identically on a build whose speed is one number rather than a value per
+  // point, which is the question `docs/instruments.md` says to ask of a fixture before
+  // trusting what it did not catch. 16-texel squares are coarse enough to survive the
+  // projection at this pose without any row here needing to know where they land on screen.
+  const chequer = { prevMm: CURR_MM - 240, spanSec: QUARTER, block: 16 };
+
+  const off = { still: await shot({ ...still, motion: 0 }), fast: await shot({ ...fast, motion: 0 }) };
+  const on = {
+    still: await shot({ ...still, motion: 1 }),
+    fast: await shot({ ...fast, motion: 1 }),
+    brief: await shot({ ...brief, motion: 1 }),
+    jumped: await shot({ ...jumped, motion: 1 }),
+    chequer: await shot({ ...chequer, motion: 1 }),
+  };
+
+  // The guard the four rows below stand on, and it is the streak section's lesson applied
+  // here: three of them are equalities, and two black frames are equal. A plant that
+  // silently failed to render would satisfy them all.
+  check(on.still.lit > 0.2 && on.still.red > 0,
+    'the planted wall renders, so the rows below are comparing pictures rather than black',
+    `${(100 * on.still.lit).toFixed(1)}% of the frame is lit, mean red ${on.still.red.toFixed(2)}`);
+
+  // The default is the picture without the term, bit for bit, and it is measured here
+  // because it cannot be measured where the rest of the defaults are. Section 1b renders
+  // against the pinned build at parameter defaults, where duotoneDepth is 0 and this whole
+  // block is skipped - so a term added inside it is unreached by that hash however its own
+  // default behaves. That is the hole the glitch flare's compensating default fell through,
+  // and this is the same hole one block over.
+  check(off.still.hash === off.fast.hash,
+    'at a motion of 0 a fast pair and a still one are bit-identical, so the default is inert',
+    off.still.hash === off.fast.hash ? `both ${off.still.hash.slice(0, 12)}`
+      : `${off.still.hash.slice(0, 12)} vs ${off.fast.hash.slice(0, 12)}`);
+
+  check(on.still.hash !== on.fast.hash,
+    'and raised, the same two pairs render differently, so the speed reaches the colour',
+    on.still.hash === on.fast.hash ? 'identical with a planted 960 mm/s'
+      : `${on.still.hash.slice(0, 12)} vs ${on.fast.hash.slice(0, 12)}`);
+
+  // Which way, rather than whether - the streak's lesson again, and it is worth a row of
+  // its own for the same reason. "Pushed toward the hot pole" is the term's whole claim,
+  // and a build that keyed the speed the other way, or onto the hue, or onto the split,
+  // changes the picture exactly as much as the correct one does and passes the row above.
+  // The poles run from a near-black blue to an orange, so the direction is legible as the
+  // mean red channel over the frame.
+  check(on.fast.red > on.still.red * 1.2,
+    'and it moves toward the hot pole rather than merely somewhere else',
+    `mean red ${on.fast.red.toFixed(2)} moving against ${on.still.red.toFixed(2)} still`);
+
+  // **The row this section exists for.** A build handing the raw per-frame difference on
+  // is correct in every picture anybody grades, because grading happens at one frame rate;
+  // it is wrong the moment the link slows down, and it is wrong silently. Nothing else in
+  // this file can see it, because both arms of every other comparison here run over the
+  // same pairs at the same spacing by construction.
+  check(on.fast.hash === on.brief.hash,
+    'the same speed over two different spans renders the same frame, so the varying is mm/s',
+    on.fast.hash === on.brief.hash
+      ? `240mm over ${QUARTER}s and 60mm over ${SIXTEENTH}s both ${on.fast.hash.slice(0, 12)}`
+      : `${on.fast.hash.slice(0, 12)} vs ${on.brief.hash.slice(0, 12)} - a per-frame difference, `
+        + 'not a rate');
+
+  // The discontinuity gate, which the vertex stage shares with the interpolation blend. A
+  // ray that crossed a silhouette carries the distance from a subject to the wall behind
+  // it, and reading that as a speed sets every edge in the room alight on every frame. The
+  // fixture has 52 samples past the threshold in five pairs, far too few for a hashed run
+  // to notice, so the only place this can be asked is a pair planted across it.
+  check(on.jumped.hash === on.still.hash,
+    'a jump past the snap threshold reads as a different surface, not as fast motion',
+    on.jumped.hash === on.still.hash ? `both ${on.still.hash.slice(0, 12)} at a 300mm jump`
+      : `${on.jumped.hash.slice(0, 12)} vs ${on.still.hash.slice(0, 12)} - the gate is off the speed`);
+
+  // **The speed is a value per point and not one number for the frame.** Every row above is
+  // satisfied by a build that computes one speed and hands it to everybody, because every
+  // plant above moves the whole wall at once - and a uniformly moving fixture is invariant
+  // under any permutation of its texels. The chequer is the asymmetry that breaks that
+  // invariance, and the row is stated without any reference to where a block lands on screen:
+  // half moving and half still can be neither of the two uniform frames.
+  check(on.chequer.hash !== on.fast.hash && on.chequer.hash !== on.still.hash,
+    'a chequered pair is neither of the uniform frames, so the speed is per point',
+    on.chequer.hash === on.fast.hash ? 'identical to the all-moving frame - one speed for everybody'
+      : on.chequer.hash === on.still.hash ? 'identical to the still frame - the speed reached nobody'
+        : `${on.chequer.hash.slice(0, 12)}, distinct from both`);
+
+  // And the quantitative half, which is what makes the row above a measurement rather than an
+  // inequality: half a frame at 960 mm/s has to warm half as much of it, so the mean sits
+  // between the two. A build reading one texel lands *on* one of the ends rather than between
+  // them, and this says which end it landed on.
+  check(on.still.red < on.chequer.red && on.chequer.red < on.fast.red,
+    'and its mean red sits between them, because half the wall is moving',
+    `still ${on.still.red.toFixed(2)}, chequer ${on.chequer.red.toFixed(2)}, `
+    + `moving ${on.fast.red.toFixed(2)}`);
+}
+
+// The span the speed above is divided by, held against the transport rather than against a
+// number this section wrote. **The planted rows cannot ask this**: they set `spanSec`
+// themselves, which is what makes them able to isolate the varying and what makes them
+// blind to where the value comes from on a real run. A build computing speeds from an
+// assumed frame rate renders a perfectly plausible picture, moves when the parameter is
+// reverted, and is wrong by whatever the link is doing.
+//
+// The probe walks every pair the pinned fixture has and lands in the middle of each rather
+// than on its head, because a build reporting the *first* gap forever would be satisfied by
+// a row that only ever asked about the first pair. The second row is what stops a constant
+// passing at all: these five gaps are genuinely unequal, so no single number is right for
+// more than one of them.
+console.log('\n[registry] and the span it is divided by is the gap between the bound frames');
+{
+  const spans = await page.evaluate(`(async () => {
+    ${PAGE_HELPERS}
+    k.params.reset();
+    k.drive.reset();
+    pinCamera(k.freeCamera);
+    const times = k.drive.times();
+    const out = [];
+    for (let i = 0; i < times.length - 1; i++) {
+      k.drive.stepTo(times[i] + (times[i + 1] - times[i]) * 0.5);
+      out.push({ want: times[i + 1] - times[i], got: k.uniforms.spanSec.value });
+    }
+    return out;
+  })()`);
+
+  const wrong = spans.filter((s) => s.got !== s.want);
+  check(spans.length > 1 && wrong.length === 0,
+    'every pair the fixture holds hands the shader its own gap',
+    wrong.length
+      ? wrong.map((s) => `wanted ${s.want.toFixed(6)}s, got ${s.got.toFixed(6)}s`).join('; ')
+      : `${spans.length} pairs at ${spans.map((s) => (s.want * 1000).toFixed(0)).join('/')}ms`);
+  check(new Set(spans.map((s) => s.want)).size > 1,
+    'and no two of those gaps are the same, so a constant cannot satisfy the row above',
+    `${new Set(spans.map((s) => s.want)).size} distinct gaps in ${spans.length} pairs`);
 }
 
 // ------------------------------------------------------------------- verdict

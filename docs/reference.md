@@ -201,6 +201,21 @@ them together, and `duotone split` is the depth they meet at, as a fraction of t
 — so the crossover is a place in the room rather than a fraction of the frame. The pair itself
 is baked, the way `heatRamp` and `depthRamp` are: what is parameterised is how you use them.
 
+**`duotone motion`** keys those same two poles on speed as well, so whatever is moving through
+the room comes out hot against a room graded by distance. It is the reading the depth key
+cannot draw on its own: a subject and the wall behind it are graded by where they stand, so a
+person walking through a scene is exactly as cold as the air they walk through until something
+keys on the walking. The speed is axial and is measured from the two depth frames the renderer
+already holds rather than from a flow pass, so what it sees is what the sensor sees — somebody
+walking toward it rather than across it. A point reaches the hot pole at 1200 mm/s, about the
+axial speed of an ordinary walk, and the amount pushes toward that pole rather than adding to
+it, so the far half of a room is already hot and has nothing to gain while the effect keeps its
+room where the picture is near-black, which is where a subject usually is. `snap mm` bounds it
+at both ends: a jump larger than it reads as a different surface rather than as fast motion,
+which is what stops every silhouette burning, and the same threshold caps the fastest speed a
+pair can express at `snap mm` over the gap between the two frames — 7500 mm/s at the default
+over a 30fps stream, and proportionally less over a slower link.
+
 **The scanlines term is a raster now**, with three settings under it in a `Raster` group of
 its own. `angle` turns it — at 0 it is the horizontal scanline it has always been, at 90 the
 dense vertical column grille the reference frames slice a picture into — and because it keys,

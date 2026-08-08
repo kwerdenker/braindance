@@ -109,6 +109,12 @@ node tools/registry-check.mjs --mutate rgb-contributes-no-alpha   # ... and must
 node tools/registry-check.mjs --mutate duotone-ignored            # ... the tonal transform the rest of the look sits on
 node tools/registry-check.mjs --mutate duotone-ignores-depth      # ... and that it is keyed on depth, which is the whole claim
 node tools/registry-check.mjs --mutate duotone-hue-in-degrees     # ... a unit no picture comparison can see the shape of
+node tools/registry-check.mjs --mutate vspeed-ignored             # ... the motion half of the same transform, and the speed it keys on
+node tools/registry-check.mjs --mutate vspeed-unnormalised        # ... that the speed is a rate, which only two planted spans can see
+node tools/registry-check.mjs --mutate vspeed-ignores-the-gate    # ... and that a jump past the snap threshold is a surface, not motion
+node tools/registry-check.mjs --mutate vspeed-reads-one-texel     # ... and that it is a value per point, which a uniformly moving plant cannot see
+node tools/registry-check.mjs --mutate motion-leaks-at-zero       # ... the default, which is the one place this term has to be exactly absent
+node tools/registry-check.mjs --mutate spansec-nominal            # ... the gap it is divided by, taken off the transport rather than assumed
 node tools/registry-check.mjs --mutate crush-ignored              # ... the toe, promoted to the literal it defaults to
 node tools/registry-check.mjs --mutate crush-gates-the-grade      # ... and the one term in that pass that must not gate it
 node tools/registry-check.mjs --mutate raster-recomputes-the-default # ... the raster's default path reached rather than recomputed, at the value the shipped look names

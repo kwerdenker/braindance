@@ -374,6 +374,20 @@ const uniforms = {
   colorPrev: { value: colorPrev },
   colorCurr: { value: colorCurr },
   mixT: { value: 1 },
+  // How far apart the two bound frames are, in seconds, which is what turns a depth
+  // difference into a speed. `mixT` says where inside the pair the playhead sits and
+  // `sinceFrameSec` says how far past the older one it has come; neither is the gap,
+  // and reconstructing it as the second over the first is degenerate at the head of
+  // every pair. So the transport hands it over as its own number.
+  //
+  // One second at boot, and it is a placeholder rather than a gap anybody should read
+  // a frame rate into. Nothing divides by it before the transport writes it: both depth
+  // textures are zero-filled until the first bind, so every point leaves at the empty
+  // sample test above the division, and the transport writes this beside `mixT` before
+  // the render that would reach it. Copying the transport's own nominal gap here would
+  // be a second declaration of the frame rate five thousand lines from the first, for a
+  // value that cannot reach a pixel.
+  spanSec: { value: 1 },
   snapDelta: { value: 250 },
   interpolate: { value: 1 },
   focal: { value: new THREE.Vector2(366, 366) },
@@ -535,6 +549,7 @@ const uniforms = {
   duotoneDepth: { value: 0 },
   duotoneHue: { value: 0 },
   duotoneSplit: { value: 0.5 },
+  duotoneMotion: { value: 0 },
   stateTex: { value: statePrev.texture },
   fadeTime: { value: 0.12 },
   wakeTime: { value: 0 },
@@ -556,7 +571,7 @@ uniform float lattice, latticeCell;
 uniform vec3 regionCentre, regionHalf;
 uniform float regionRound, regionSoft, regionPush, regionNoise, regionMask;
 uniform float ripple, rippleFreq, rippleSpeed;
-uniform float mixT, snapDelta, glitch;
+uniform float mixT, spanSec, snapDelta, glitch;
 uniform float glitchDensity, glitchShove, glitchTint, glitchBands, glitchRate, glitchAxis;
 uniform float fadeTime, wakeTime, sinceFrameSec;
 uniform int denoise, interpolate;
@@ -571,6 +586,7 @@ out float vSize;
 out float vGhost;
 out float vFade;
 out float vMask;
+out float vSpeed;
 
 float depthAt(usampler2D tex, ivec2 p) {
   return float(texelFetch(tex, p, 0).r);
@@ -670,6 +686,14 @@ void main() {
   vEdge = 0.0;
   vGhost = 0.0;
   vFade = 1.0;
+  // Written before the branch rather than inside it, which is the same rule the three
+  // above follow and which matters more here than it looks. There are three early
+  // returns below this line and a whole branch - the ghost - that never touches either
+  // depth texture, so a varying only written on the live path is undefined everywhere
+  // else, and undefined in a shader is whatever the last invocation left in the
+  // register. A shed point would come out carrying the speed of whichever live point
+  // shared its warp.
+  vSpeed = 0.0;
 
   if (aSlot > 0.5) {
     // The ghost: what the ray used to be looking at. A hard swap earns a longer
@@ -697,13 +721,48 @@ void main() {
       return;
     }
 
+    // The same ray one frame ago, and it is fetched here rather than inside the blend
+    // below because two things read it now and only one of them is optional. It used to
+    // live under the interpolation switch, which is where it belonged while the blend
+    // was its only reader - and leaving it there would have made the speed die silently
+    // the moment anybody turned interpolation off, which is exactly the arrangement
+    // registry-check's scrambled set runs in.
+    float mmP = depthAt(depthPrev, px);
+
+    // **One discontinuity test, read by both.** Lerping across a depth discontinuity
+    // smears a point through empty space for the whole inter-frame interval, and
+    // measuring a speed across one is the same mistake wearing a worse consequence: the
+    // two samples are different surfaces arriving on the same ray, so the difference
+    // between them is the distance from a subject to the wall behind it rather than
+    // anything that moved. A silhouette would burn on every frame.
+    //
+    // That the gate really is finding surfaces rather than fast motion was measured on
+    // the six frames registry-check pins, at the default 250mm: of the samples it
+    // rejects, 28.8% sit at a depth edge - a four-neighbour spread past the shipped
+    // edgeTol - against 0.37% of the ones it keeps, which is a factor of 78. There are
+    // only 52 of them in five pairs, because the fixture is nearly static, and the
+    // ratio rather than the count is the reading.
+    //
+    // A zero sample is the other half of the same test and is not a jump from the
+    // sensor to the origin: it means no prior measurement on this ray, so a point that
+    // has just come into view has no speed rather than an enormous one.
+    bool paired = mmP > 0.0 && abs(mmC - mmP) < snapDelta;
+
     float mm = mmC;
-    if (interpolate == 1) {
-      float mmP = depthAt(depthPrev, px);
-      // Lerping across a depth discontinuity smears a point through empty space for
-      // the whole inter-frame interval, so only blend when the two agree closely.
-      if (mmP > 0.0 && abs(mmC - mmP) < snapDelta) mm = mix(mmP, mmC, mixT);
-    }
+    if (interpolate == 1 && paired) mm = mix(mmP, mmC, mixT);
+
+    // Axial speed, in millimetres per second, and **the division by the pair's own gap
+    // is the whole of what makes it a property of the room rather than of the link.**
+    // A build handing the raw per-frame difference on looks completely correct until
+    // the frame rate changes: over a degraded link every speed in the scene reads low
+    // by whatever the link lost, so a look graded at 30fps grades differently at 9, and
+    // no picture comparison taken at one rate can see it.
+    //
+    // What the pair can express is bounded by the gate above it, at snapDelta over the
+    // gap - 7500 mm/s at the default 250mm and a 30fps stream, 1953 mm/s over the
+    // 128ms pairs the pinned fixture is built from. Anything keyed on this has to sit
+    // under the slower of those or the top of its ramp is a place no footage reaches.
+    vSpeed = paired ? abs(mmC - mmP) / spanSec : 0.0;
 
     z = mm * 0.001;
 
@@ -981,7 +1040,7 @@ precision highp float;
 uniform sampler2D colorPrev, colorCurr;
 uniform float opacity, exposure, nearClip, farClip, mixT, time;
 uniform float scanAmount, rimAmount, thermal, edges;
-uniform float duotoneDepth, duotoneHue, duotoneSplit;
+uniform float duotoneDepth, duotoneHue, duotoneSplit, duotoneMotion;
 uniform float readRgb, readDepth, readGhost, readContour, readBlackwall;
 uniform float rgbSaturation, depthGamma, ghostRim, ghostFill;
 uniform float contourBands, contourLo, contourHi, blackwallSweep;
@@ -995,6 +1054,7 @@ in float vSize;
 in float vGhost;
 in float vFade;
 in float vMask;
+in float vSpeed;
 
 out vec4 fragColor;
 
@@ -1273,6 +1333,57 @@ void main() {
     vec3 cold = hueSpin(vec3(0.020, 0.030, 0.075), duotoneHue);
     vec3 heat = hueSpin(vec3(1.000, 0.380, 0.120), duotoneHue);
     float k = smoothstep(duotoneSplit - 0.5, duotoneSplit + 0.5, t);
+    // The motion half of the same transform, and it is the same two poles rather than a
+    // second palette laid over them: depth decides where the room falls between cold and
+    // hot, and this pushes whatever is moving through the room toward the hot end of it.
+    // That is the reading the depth key on its own cannot draw - a subject and the wall
+    // behind it are graded by where they stand, so a person walking through a scene is
+    // exactly as cold as the air they walk through until something keys on the walking.
+    //
+    // Toward 1 rather than added to k, so a point at the hot end cannot be pushed past
+    // it and the term has its room where the picture is near-black, which is where a
+    // subject usually is. The far half of the room is already hot and has nothing to
+    // gain, which is right: motion is only news against the pole it is not at.
+    //
+    // **1200 mm/s is the speed at which a point reaches the pole**, and it is baked for
+    // the reason the two poles themselves are - a look parameterises how much of a ramp
+    // it wants, not the ramp. It is about the axial speed of somebody walking straight
+    // at the sensor at an ordinary pace, so the pole belongs to a person crossing the
+    // room rather than to a hand. Measured over the sample capture: the 99th percentile
+    // of a nearly-static stretch is 430 mm/s and the fastest sample in five pairs is
+    // about 1900, while a take with somebody moving through it runs a median of 286 and
+    // a 90th percentile of 1082.
+    //
+    // **The sensor's jitter is a displacement rather than a speed, so what it reads as
+    // here depends on how fast the frames arrive**, and that is worth knowing before
+    // trusting any threshold in these units. Measured on the same capture at two
+    // spacings: the median sample moves about 4mm whichever pair you take, which is 31
+    // mm/s across the 128ms pairs registry-check pins and about 140 mm/s across the
+    // capture's own 32ms ones. Real movement is a fixed speed and reads the same at both,
+    // so this estimator gets noisier as the link gets faster - which is a property of
+    // measuring a rate from two adjacent samples and not something a constant fixes.
+    //
+    // No floor under it, and that is measured rather than assumed. A smoothstep has zero
+    // derivative at the origin, which is most of the suppression on its own: on a wall
+    // planted flat at 1100mm with this amount at 1 and the depth at 1, driven through the
+    // editor at 1280 wide rather than through the check's own stage, mean red over the
+    // frame goes 7.83 still, 7.90 with 4mm of jitter across a 128ms pair, 8.76 with the
+    // same 4mm across a 32ms one, and 22.84 at a real 600 mm/s. So even at the frame rate
+    // where the jitter
+    // reads loudest it costs about one 8-bit step against fifteen for the signal. A floor
+    // would have to be stated in one unit or the other and neither is right at both
+    // spacings - in mm/s it would need re-tuning per link, which is what dividing by the
+    // span exists to stop, and in millimetres it would let a slow surface register over a
+    // slow link and vanish over a fast one.
+    //
+    // A duotoneMotion of 0 is exactly the picture this block drew before the term
+    // existed. mix at zero is x times one plus y times zero, or x plus zero times the
+    // difference, and both are exact whether or not the compiler contracts them - which
+    // is the same arithmetic the guard comment above this block records measuring, and
+    // it is measured again rather than inherited: the comparison is in registry-check's
+    // planted-motion section, where a frame with a fast point in it and a frame with a
+    // still one have to come back bit-identical while this sits at its default.
+    k = mix(k, 1.0, duotoneMotion * smoothstep(0.0, 1200.0, vSpeed));
     col = mix(col, mix(cold, heat, k), duotoneDepth);
   }
 
@@ -2828,6 +2939,28 @@ const PARAMS = {
   duotoneSplit: { def: 0.5, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
     group: 'style', label: 'duotone split',
     apply: (v) => { uniforms.duotoneSplit.value = v; } },
+  // The fourth of them, and the one that is not a fact about where a point is. It keys
+  // the same two poles on how fast a point is moving along the sensor's axis, so a room
+  // graded by distance gets whatever is moving through it in the hot pole - which is the
+  // one reading the depth key cannot produce, since a subject and the wall behind it are
+  // both exactly where they stand.
+  //
+  // **The speed is measured from the two depth frames the shader already holds and there
+  // is no flow pass.** Optical flow would buy lateral motion as well, and it would buy it
+  // for a full pass over the frame plus a second history to keep, on a renderer whose
+  // whole transport rests on a seek producing the same image playback would - so the pass
+  // would have to be walked forward through a pre-roll like the accumulators are, and a
+  // scrub would arrive carrying whatever the drag had built. What the depth pair gives is
+  // the axial component alone, for one texel fetch that was nearly already there, and
+  // axial is the component this look is about: the sensor measures depth, so a subject
+  // walking toward it is the movement it can actually see.
+  //
+  // An amount rather than an amount and a reference speed, on the precedent the poles
+  // themselves are baked on: what a look parameterises is how much of a ramp it wants.
+  // The shader carries the reference and the measurement behind it.
+  duotoneMotion: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'style', label: 'duotone motion',
+    apply: (v) => { uniforms.duotoneMotion.value = v; } },
   // Each post pass costs a full-screen read and write whether or not it changes
   // anything, so a zero value switches its pass off rather than running it as a
   // no-op. The three grade terms share one pass, so they gate it together.
@@ -6043,9 +6176,22 @@ class LivePairSource {
       this.pendingFrames = 0;
     }
 
+    // **This half of the seam is in milliseconds and the indexed half is in seconds**,
+    // which is why the field carries its unit in its name and why the conversion is
+    // written at each site rather than once downstream. The two `at` implementations are
+    // the only producers, they keep their times in different units for good reasons of
+    // their own - stamps arrive as integer milliseconds and a capture index is seconds -
+    // and a seam whose field name said only "span" would take a thousandfold error from
+    // either side without anything reading it noticing.
+    //
+    // Nothing in the suite renders this branch: `registry-check` intercepts the socket so
+    // no frame ever arrives, and every pinned or indexed run is the other class. The
+    // agreement between the two is held by the unit being in the name and by there being
+    // exactly two sites, which is worth stating as the limit it is rather than leaving as
+    // a thing a reader assumes is covered.
     const spanMs = Math.max(1, this.tB - this.tA);
     const offsetMs = Math.min(Math.max(programSec * 1000 - this.tA, 0), spanMs);
-    return { steps, mixT: offsetMs / spanMs, sinceFrameSec: offsetMs / 1000 };
+    return { steps, mixT: offsetMs / spanMs, sinceFrameSec: offsetMs / 1000, spanSec: spanMs / 1000 };
   }
 }
 
@@ -6215,6 +6361,13 @@ function renderProgramFrame(t) {
 
     uniforms.mixT.value = frame.mixT;
     uniforms.sinceFrameSec.value = frame.sinceFrameSec;
+    // The gap the two bound frames are actually separated by, which is the denominator
+    // the vertex stage turns a depth difference into a speed with. It is written here
+    // beside the other two rather than derived in the shader because the obvious
+    // reconstruction - the time since the older frame over the fraction across the pair -
+    // divides by zero at the head of every pair, which is precisely where an accurate
+    // seek lands.
+    uniforms.spanSec.value = frame.spanSec;
     uniforms.time.value = t;
     grade.uniforms.time.value = t;
 
@@ -6421,9 +6574,11 @@ class StampedPairSource {
     }
     this.applied = i + 1;
 
+    // Seconds throughout on this side, so the span goes out as it stands. The live
+    // source's `at` carries the note about why the unit is in the field's name.
     const span = Math.max(1e-6, times[i + 1] - times[i]);
     const offset = Math.min(Math.max(sourceSec - times[i], 0), span);
-    return { steps, mixT: offset / span, sinceFrameSec: offset };
+    return { steps, mixT: offset / span, sinceFrameSec: offset, spanSec: span };
   }
 }
 

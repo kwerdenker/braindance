@@ -122,9 +122,9 @@ const MUTATIONS = {
   // replacement that hit both would be mutating something this check never runs.
   'duplicate-frames': [[
     'const offset = Math.min(Math.max(sourceSec - times[i], 0), span);\n'
-    + '    return { steps, mixT: offset / span, sinceFrameSec: offset };',
+    + '    return { steps, mixT: offset / span, sinceFrameSec: offset, spanSec: span };',
     'const offset = Math.min(Math.max(sourceSec - times[i], 0), span);\n'
-    + '    return { steps, mixT: Math.round(offset / span), sinceFrameSec: offset };',
+    + '    return { steps, mixT: Math.round(offset / span), sinceFrameSec: offset, spanSec: span };',
   ]],
   // A draft stops bypassing the accumulators, so it inherits its history.
   'draft-keeps-accumulators': [[

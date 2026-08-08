@@ -24,9 +24,11 @@ Counted rather than recalled:
   reading `registration-check` reserves 2 for. `level-check` and `vcam-check` separate the same
   three and land in the first group instead, so the three-way split and the sign of a catch are
   independent choices rather than one decision — which is the whole reason this section exists.
-  That is not hypothetical — two of its four mutations reddened their intended row and *then* died on
-  Playwright's `Target page, context or browser has been closed`, and without the crash handler
-  each would have exited non-zero having asserted the right thing for the wrong reason.
+  That is not hypothetical — two of the four mutations it carried at the time reddened their
+  intended row and *then* died on Playwright's `Target page, context or browser has been
+  closed`, and without the crash handler each would have exited non-zero having asserted the
+  right thing for the wrong reason. (It carries twenty-seven now, and the count is written
+  as a moment rather than as a fact because the sentence is about one afternoon's runs.)
   `release-gate-check` is here because its header says it follows `vendor-check` and its code
   does: it prints the assertion count and exits 0 on a catch, and 1 with `NOT CAUGHT` on a miss.
   It is the one tool in this census that carries mutations without appearing in the fourteen
