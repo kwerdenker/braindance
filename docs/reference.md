@@ -167,7 +167,12 @@ is baked, the way `heatRamp` and `depthRamp` are: what is parameterised is how y
 its own. `angle` turns it — at 0 it is the horizontal scanline it has always been, at 90 the
 dense vertical column grille the reference frames slice a picture into — and because it keys,
 a raster can rotate under the playhead. `pitch` is the line frequency, promoted from a literal
-and defaulting to it. `hardness` squares the wave into a grille with dark gaps between the
+and defaulting to it — and **the settings worth having are below that default, not above it**,
+because the wave is sized against 1080p and 1.3 is already about 220 cycles across the frame.
+That is a television scanline; the wide bands the reference frames cut a picture into want
+something under 0.6, and 0.1 is bands you can read across the room. The slider runs to 4 rather
+than further because a line thinner than the pixel drawing it is aliasing rather than a raster.
+`hardness` squares the wave into a grille with dark gaps between the
 lines, and it is the one that makes the other two worth having: an angle over a sine only ever
 buys rotated softness, where the references are hard line grilles.
 

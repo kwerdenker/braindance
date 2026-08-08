@@ -2670,10 +2670,31 @@ const PARAMS = {
       grade.uniforms.scanAxis.value.set(Math.sin(r), Math.cos(r));
     } },
   // Cycles per reference pixel along the raster's own axis, and the default is exactly
-  // the literal it replaces. The reference frames are far denser than our scanline
-  // period, which is the whole reason this is a control: at 1.3 the lines are a television
-  // artifact and by 6 they are the column raster a frame gets sliced into.
-  scanPitch: { def: 1.3, min: 0.1, max: 12, step: 0.1, kind: 'scalar', tag: 'look',
+  // the literal it replaces.
+  //
+  // **The useful range runs below the default, not above it**, which is the opposite of
+  // what this said when it was written and is worth stating as a correction rather than
+  // quietly replacing. The claim was that 1.3 is a television artifact and 6 is the column
+  // raster a reference frame gets sliced into. The first half is right and the second is
+  // backwards: the wave is expressed against 1080p, so 1.3 is already about 220 cycles
+  // across the picture, 6 is nearer a thousand, and a line thinner than the pixel carrying
+  // it is not a grille but aliasing. The wide bands the references actually cut a picture
+  // into want a pitch under about 0.6. Measured on rendered frames at a fixed pose rather
+  // than reasoned about: at 0.1 the bands are wide enough to read across the room, and by
+  // 1.0 they have closed up into a scanline again.
+  //
+  // The old range of 0.1 to 12 in tenths therefore put every value worth having inside its
+  // bottom four percent, with six positions to choose between, and spent the rest of the
+  // travel past the point where anything is resolvable.
+  //
+  // **The default has to stay reachable to the exact bit**, because the guard in the grade
+  // shader tests this against the literal 1.3 and takes the old code path when it matches.
+  // A range input does its stepping in decimal on its own value string, so a minimum of
+  // 0.05 with a hundredth step still lands the same double `params.reset()` writes, and
+  // every one of the 396 reachable positions round-trips. Checked in a browser rather than
+  // reasoned about, because a default that missed by one bit would take the shipped raster
+  // off its bit-exact path with nothing anywhere turning red to say so.
+  scanPitch: { def: 1.3, min: 0.05, max: 4, step: 0.01, kind: 'scalar', tag: 'look',
     group: 'raster', label: 'pitch',
     apply: (v) => { grade.uniforms.scanPitch.value = v; } },
   // How square the wave is, from the sine it has always been to a hard grille with dark

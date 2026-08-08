@@ -790,10 +790,13 @@ const SCRAMBLE = {
   // block never runs and all three would land in the no-pixel bucket together, which is
   // the argument the glitch ceilings and the region's three effects are set on.
   scanAngle: 63,
-  // Well above the 1.3 it defaults to, so the lines are the dense column raster rather
-  // than the television artifact - and a pitch that only moved a hair would be a
-  // parameter the drop-one sweep could not separate from sampling noise.
-  scanPitch: 4.7,
+  // Well *below* the 1.3 it defaults to, which is where the grille is: the wave is
+  // expressed against 1080p, so the default is already the television artifact and the
+  // wide bands live under 0.6. The registry entry in `web/main.js` carries the measurement
+  // and the correction it replaced. A pitch that only moved a hair would be a parameter
+  // the drop-one sweep could not separate from sampling noise, and this one is far enough
+  // off the default to redraw the whole frame.
+  scanPitch: 0.37,
   // High enough that the wave is a grille rather than a sine, which is the state the
   // hardness exists to reach. At its default of 0 it is the identity by construction, so
   // leaving it there would have the sweep record it as a parameter that cannot touch a
@@ -1962,7 +1965,7 @@ console.log('\n[registry] the side effects that are not a uniform write');
     // is off, which is the no-op this row exists to refuse. All three are settings of
     // `scanlines`, and the pass is the master's to gate.
     [{ scanAngle: 90 }, { bloom: false, trails: false, grade: false }],
-    [{ scanPitch: 6 }, { bloom: false, trails: false, grade: false }],
+    [{ scanPitch: 0.3 }, { bloom: false, trails: false, grade: false }],
     [{ scanHard: 1 }, { bloom: false, trails: false, grade: false }],
   ]) {
     const r = await setAndRead(values);
