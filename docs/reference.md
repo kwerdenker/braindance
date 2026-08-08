@@ -258,10 +258,16 @@ rows it emitted are not the parameters that were declared.
 Selecting Blackwall used to apply twelve post-chain values with it. They are separate now: a
 preset is look values and nothing else, so applying one never moves your camera.
 
-A preset is `{ version, values }`, and the keys it names are its scope. Five ship read-only
-from `presets-builtin/`, one per reading and marked `·` in the picker, with `blackwall.json`
-carrying the twelve values the old mode wrote. A preset naming two values is equally valid,
-and applying it leaves everything else where the grade left it.
+A preset is `{ version, values }`, and the keys it names are its scope. Nine ship read-only
+from `presets-builtin/` and are marked `·` in the picker. Five of them — `rgb`, `depth`,
+`ghost`, `contour` and `blackwall` — are one per reading and differ in little else, so they
+are where a grade starts, with `blackwall.json` carrying the twelve values the old mode
+wrote. The other four — `ember`, `grille`, `voxel` and `tearline` — are graded looks in
+their own right: each reads Blackwall and spends a duotone, a raster and a toe on top of it,
+so applying one takes a finished grade rather than clearing the desk. Nothing in the format
+marks the difference and nothing should — they are all documents, and the split is
+editorial. A preset naming two values is equally valid, and applying it leaves everything
+else where the grade left it.
 
 Saving and exporting both ask which values go in, every box ticked, so a sparse preset takes
 deliberate effort. The boxes derive from the registry, so a parameter added later appears
