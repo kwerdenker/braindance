@@ -269,6 +269,14 @@ marks the difference and nothing should — they are all documents, and the spli
 editorial. A preset naming two values is equally valid, and applying it leaves everything
 else where the grade left it.
 
+**All nine name the whole look**, which is the 68 look values outside the framing group, so
+picking one gives you that look whatever was on screen before it. Framing — levelling, the
+clip planes, the crop box — is the shot rather than the look, so no shipped document names
+it and picking one never reframes what you framed. `none` is the one entry that does reach
+the framing, because it is the way back to the defaults rather than a tenth look.
+`library-check` holds the rule against the registry, so a look parameter added later fails
+all nine until each of them names it.
+
 Saving and exporting both ask which values go in, every box ticked, so a sparse preset takes
 deliberate effort. The boxes derive from the registry, so a parameter added later appears
 under its own heading by existing.
@@ -276,11 +284,13 @@ under its own heading by existing.
 **The five reading weights tick and untick together.** A file naming any reading has to name
 all five, because the ones it omits stay at whatever the clip was already wearing, and two
 fifths of a blend renders as a mixture nobody authored. A file naming none of them is a look
-that is not about the reading, which is fine. `format.js` refuses everything in between.
+that is not about the reading, which is fine. `refusePresetBody` refuses everything in
+between.
 
 **A partial preset does not stamp the clip**, because the stamp answers "what look is this
-clip wearing" and three of fifty-four values did not answer it. The two surfaces that report
-an apply say which of the two happened.
+clip wearing" and three of sixty-eight values did not answer it. The two surfaces that report
+an apply say which of the two happened, and a document naming the whole look stamps whether
+it also names the framing or not — the framing is not part of the answer.
 
 **Saving over a shipped name forks it**: the write lands in your library and shadows the
 built-in, and deleting the fork brings the shipped look back.

@@ -2196,3 +2196,36 @@ Two lessons, and the second is the one that generalises:
   defaults-only arm cannot see. The raster arm above it already stands at the shipped
   `scanlines: 0.35` for this reason; the glitch had no such arm because nobody had asked what
   the shipped document turns on. **Ask what the shipped look names, and render there.**
+
+## A number written into a document does not fail
+
+The nine shipped looks each named a different subset of the look values, so picking one
+after another left the previous look's terms standing — `voxel` was the only document
+naming `lattice`, and picking `ember` next drew amber over a lattice nobody had asked for.
+That was reported as a bug and it is one.
+
+**It had already been measured.** The README beside those files carried the sentence "all
+four render a different frame in the sequence from the frame they render alone", with four
+pairs of frame hashes to prove it, taken at 22.000s of `2026-08-07-take2`. The measurement
+was correct, it was current, and it sat two paragraphs above a note explaining why the
+files ship this way anyway. Nothing failed, because nothing was asking.
+
+The whole gap is the difference between a proof tool and a paragraph. The suite had arms
+for what a preset *is* — that the reading weights are all or none, that a partial document
+may not stamp the clip, that saving over a shipped name forks it — and no arm at all for
+what happens when you apply two of them in a row, which is the only thing a picker of looks
+is for. The hashes went into prose instead of into a check, and prose has no exit code.
+
+Re-measured across every ordered pair rather than the four that had been sampled, it was 33
+of 72 contaminated, not 4 — so even the recorded number understated it, which is the second
+half of the same failure: a measurement nobody has to keep passing is also a measurement
+nobody re-runs at the width the claim actually needs.
+
+- **When a measurement shows a defect, the output is an arm, not a sentence.** Writing the
+  finding down beside the thing that has it feels like disclosure and reads, six weeks later,
+  as a decision somebody made on purpose. If it is genuinely intended, the arm asserts the
+  intended behaviour and the next person arguing with it has to break a check rather than
+  win an argument with a comment.
+- **Ask what a surface is for, and check that, not only what its documents are.** Every
+  existing preset arm asked about one document in isolation. The property a user has is a
+  sequence of presses.

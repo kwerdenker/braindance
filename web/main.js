@@ -10293,14 +10293,44 @@ function presetFromCurrentLook(names) {
 }
 
 /**
+ * The values a document has to name to be describing a whole look: the look tag less
+ * its framing, because framing is the shot rather than the look.
+ *
+ * **The look tag is over-broad for this one question and correctly so.** It is the set
+ * of things a project saves and the set of things step 5 can keyframe, which is why
+ * `tilt`, `roll`, the clip planes and the crop box are in it - the angle a bracket ended
+ * up at belongs to the take, and a crop that could not be keyframed would be a worse
+ * program. But those nine are measured in the room and in metres, so a *look* that named
+ * them would move your crop box when you picked it, and picking a look must not reframe
+ * the shot. Every other look value is grading, and a document describing a look either
+ * says what all of it is or is adjusting part of one.
+ *
+ * Off `PARAMS[n].group` rather than a list of the nine names here, so the line is stated
+ * once, in the registry, beside the parameters it is about. Reusing the panel's grouping
+ * for a question about documents is safe in exactly one direction: renaming or splitting
+ * the group does not quietly change what a preset means, it makes every shipped look
+ * fail `library-check`'s completeness arm at once, because they would all suddenly owe
+ * nine values measured in metres. A silent drift would be the reason not to; a loud one
+ * is the reason this is derived rather than restated.
+ */
+const completeLookNames = () => params.names('look').filter((n) => PARAMS[n].group !== 'framing');
+
+/**
  * Whether a document says what the whole look is, rather than adjusting part of one.
  *
  * The distinction did not exist while the only thing that could write a preset wrote
  * the entire look tag, and it decides two separate things now - whether a file may
  * stamp a clip with its provenance, and whether saving one moves the stamp - so it is
  * one predicate both of them ask rather than the same `every` written twice.
+ *
+ * **It asks about the look and no longer about the framing**, which is what lets the
+ * nine shipped documents claim provenance again. They describe grades and none of them
+ * names a crop box, so under the old reading every one of them was a partial apply -
+ * picking `voxel` reported "applied 35 of 77 values" and left the clip stamped with
+ * whatever it had been wearing, for the sake of nine values a look has no business
+ * setting. A subset of the grading is still a subset and still cannot stamp.
  */
-const wholeLookTag = (values) => params.names('look').every((n) => Object.hasOwn(values, n));
+const wholeLookTag = (values) => completeLookNames().every((n) => Object.hasOwn(values, n));
 
 // ------------------------------------------- which look values a preset carries
 
@@ -10670,7 +10700,7 @@ function applyStoredPreset(doc) {
   if (stamped) appliedPreset = { name: doc.name, rev: doc.rev };
   requestRepaint();
   history.commit();
-  return { stamped, written: Object.keys(values).length, look: params.names('look').length };
+  return { stamped, written: Object.keys(values).length, look: completeLookNames().length };
 }
 
 /**
@@ -14332,6 +14362,18 @@ globalThis.__kinect = {
   // here for.
   params, applyPreset,
   readings: () => READINGS.slice(),
+
+  // What a document has to name to be a whole look, published for the same reason the
+  // readings are: a tool that spelled the framing exclusion out for itself would be a
+  // second statement of the line, and the two would drift in the direction where the
+  // check goes on passing. `library-check` asks this and then asserts every shipped
+  // document names *exactly* it, which is why the arm is worth anything - the documents
+  // are data on disk and this is code, so the equality is two independent probes rather
+  // than one quantity asserted twice. Shrink this function and the nine become supersets
+  // and redden; grow it and they come up short and redden. Its two mutations are the
+  // control at each end: one drops a value from a document, the other drops a group from
+  // here.
+  completeLookNames,
 
   // How often the panel has re-derived which groups are open, since boot. Published
   // because the claim it carries is about *how many times* a bulk write asks that
