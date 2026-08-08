@@ -626,7 +626,10 @@ const INSTALL = `(() => {
           if (mm === 0) continue;
           const z = mm * 0.001;
           if (z < near || z > far) continue;
-          const X = ((px + 0.5 - cx) / fx) * z;
+          // x negated: the mirror correction unproject in web/main.js carries the
+          // reasoning for. It reaches viewZ through m[2], so it only vanishes from this
+          // row while the program camera happens to face straight down the axis.
+          const X = (-(px + 0.5 - cx) / fx) * z;
           const Y = -((py + 0.5 - cy) / fy) * z;
           const Z = -z;
           // Column-major, the same product the vertex shader takes: -mv.z.
@@ -1587,10 +1590,30 @@ let rebaseFullOld = null;
 let rebaseHdOld = null;
 let rebaseNon169Old = null;
 {
-  const src = execFileSync('git', ['-C', REPO, 'show', `${BEFORE}:web/main.js`], { encoding: 'utf8', maxBuffer: 1e9 });
+  let src = execFileSync('git', ['-C', REPO, 'show', `${BEFORE}:web/main.js`], { encoding: 'utf8', maxBuffer: 1e9 });
   if (src.includes('bufferHeight / 1080.0')) {
     throw new Error(`${BEFORE} already has the resolution work: the control would be the same build twice`);
   }
+  // The pinned build is the old *point size*, not the old geometry. The unprojection's x
+  // sign changed after this rev - the sensor's frames arrive horizontally mirrored and this
+  // build undoes them, `unproject` in `web/main.js` carries the reasoning - so left alone
+  // the old arm draws the room reflected and the cross-build rows below disagree for two
+  // reasons at once. They were already failing at this rev for the first reason, which is a
+  // separate finding recorded in `docs/instruments.md`; the point of normalising here is
+  // that whoever diagnoses them is not also chasing a mirror. Measured: with this in place
+  // the worst of forty tile means on the Blackwall arms returns to the 1.02/0.95 it reads
+  // at HEAD, from the 22.19/22.14 an un-normalised arm reports.
+  //
+  // Guarded exactly once, like `registry-check`'s copy of this and like the mutations: a rev
+  // where the text stopped matching would silently become a comparison against un-normalised
+  // geometry, reported as a finding about point size.
+  const OLD_UNPROJECT_X = '     (pixel.x + 0.5 - center.x) / focal.x * z,';
+  const xHits = src.split(OLD_UNPROJECT_X).length - 1;
+  if (xHits !== 1) {
+    throw new Error(`${BEFORE}:web/main.js states the unprojection's x ${xHits} times, expected exactly 1`
+      + ' - refusing to compare a mirrored build against an unmirrored one and report it as point size');
+  }
+  src = src.replace(OLD_UNPROJECT_X, '    -(pixel.x + 0.5 - center.x) / focal.x * z,');
   const beforeHtml = execFileSync('git', ['-C', REPO, 'show', `${BEFORE}:web/index.html`], { encoding: 'utf8', maxBuffer: 1e9 });
   const before = await openPage(SMALL, src, beforeHtml);
   const measured = await resolutionSweep(before.page, PIPELINES.filter(([n]) => n === 'points' || n === 'nobloom'));

@@ -1402,6 +1402,36 @@ console.log(`\n[registry] each reading renders what its mode rendered, at ${AGAI
     throw new Error(`${AGAINST_REV}:web/main.js has no mode uniform to compare against`);
   }
 
+  // **The old arm is the old readings, not the old geometry.** The unprojection's x sign
+  // changed after this rev: the sensor's frames arrive horizontally mirrored and this build
+  // undoes them, which `unproject` in `web/main.js` carries the reasoning for. Left alone,
+  // the pinned build draws the room reflected and every row below reports 6 of 6 frames
+  // differing over a change that has nothing to do with a reading - measured, before this
+  // was here: all five rows plus the raster, uniformly, where at HEAD five of the six pass.
+  //
+  // **This is the rule the raster arm below already states, arriving at a divergence that
+  // has no parameter to express it.** That one hands the two builds different `vignette`
+  // values because a promotion in `40ab241` baked the corner falloff into one of them, on
+  // the principle that each build has to be given the values that mean the same picture in
+  // its own vocabulary rather than the same numbers. A geometry difference has no value to
+  // hand over, so the vocabulary is the source text and the patch goes here.
+  //
+  // Guarded the way the mutations are, and for the same reason: the text has to appear
+  // exactly once or this refuses to run. A rev where it stopped matching would otherwise
+  // quietly become a comparison against un-normalised geometry that reports differences as
+  // findings about the readings, which is the one failure this whole section is arranged to
+  // avoid. It is one entry because there has been one intentional geometry change; a second
+  // belongs beside it rather than folded into it, so the list stays a readable account of
+  // how this build differs from the one it is held against.
+  const OLD_UNPROJECT_X = '     (pixel.x + 0.5 - center.x) / focal.x * z,';
+  const MIRRORED_UNPROJECT_X = '    -(pixel.x + 0.5 - center.x) / focal.x * z,';
+  const xHits = againstSource.js.split(OLD_UNPROJECT_X).length - 1;
+  if (xHits !== 1) {
+    throw new Error(`${AGAINST_REV}:web/main.js states the unprojection's x ${xHits} times, expected exactly 1`
+      + ' - refusing to compare a mirrored build against an unmirrored one and report it as a reading');
+  }
+  againstSource.js = againstSource.js.replace(OLD_UNPROJECT_X, MIRRORED_UNPROJECT_X);
+
   // Both arms are pinned to the same frames and the same camera, so the only thing
   // that differs between them is the shader. `params.reset()` first on each, because a
   // reading has to be measured against the same defaults the other arm booted with.

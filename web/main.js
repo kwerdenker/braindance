@@ -614,11 +614,37 @@ float regionWeight(vec3 p) {
   return 1.0 - smoothstep(0.0, max(1e-4, regionSoft), sd);
 }
 
-// libfreenect2's pinhole model, matching Registration::getPointXYZ. Image y grows
-// downward, so it is flipped into the right-handed scene here.
+// libfreenect2's pinhole model, with the single deliberate departure from
+// Registration::getPointXYZ this build makes. Image y grows downward, so it is flipped
+// into the right-handed scene here.
+//
+// **x is negated because the frames arrive mirrored, and upstream's formula does not
+// undo it.** libfreenect2 hands out depth, IR and colour horizontally flipped on
+// purpose, to match the Microsoft SDK's selfie-view convention. Microsoft pairs that
+// mirrored image with a camera space whose x grows to the sensor's *left*, so their
+// cloud comes out chirally correct; getPointXYZ pairs the same mirrored image with an x
+// that grows right, so a faithful port of it renders the room reflected. This was a
+// faithful port of it from the first commit, and the symptom is that a raised right hand
+// appears on the right of the picture where a passport photo would put it on the left.
+// What settled it was not the cloud but the colour camera's own 1920x1080 frame off
+// /camera.mjpg: the branded text on a subject's shirt reads only after one horizontal
+// flip, and that JPEG carries a JFIF APP0 marker and no EXIF segment at all, so there is
+// no orientation tag anything downstream could have been applying.
+//
+// **The correction is one sign, and cx is deliberately not rebased with it.** The true
+// column of a mirrored pixel is W - (col + 0.5) and the true principal point is W - cx,
+// so the difference is (W - col - 0.5) - (W - cx), the grid width cancels, and what is
+// left is exactly -(col + 0.5 - cx). Rebasing cx as well would double-count the flip and
+// translate the whole cloud by the principal point's offset from centre - 1.8px here,
+// which is small enough to read as noise rather than as a bug.
+//
+// **Flipping the texture instead, or as well, would be wrong.** The texel lookup is what
+// pairs a point with its registered colour, and that colour arrives mirrored in exactly
+// the same way the depth does; mirroring the sampling would either re-mirror the picture
+// or peel the colour off the geometry. The geometry moves here and the sampling does not.
 vec3 unproject(vec2 pixel, float z) {
   return vec3(
-     (pixel.x + 0.5 - center.x) / focal.x * z,
+    -(pixel.x + 0.5 - center.x) / focal.x * z,
     -(pixel.y + 0.5 - center.y) / focal.y * z,
     -z
   );
@@ -1309,7 +1335,7 @@ for (let k = 1; k <= 16; k++) {
  * the sampling `decimatePayload` did on the node run backwards.
  *
  * A texel only means anything at the pixel it was measured at: the shader unprojects
- * `(col + 0.5 - cx) / fx * z` against intrinsics the sensor reported for a 512x424
+ * `-(col + 0.5 - cx) / fx * z` against intrinsics the sensor reported for a 512x424
  * grid, so where a sample sits in the texture *is* the ray it is claimed to lie on.
  * Writing a smaller grid straight into the larger one is therefore not a coarser
  * picture, it is a different scene. At ÷4 the 13,568 samples land in the first 27 of
@@ -11380,8 +11406,11 @@ function drawPlanCloud(rect) {
       const z = mm * 0.001;
       // libfreenect2's pinhole model, the same one the vertex shader unprojects
       // with, and reading the same two uniforms so there is one set of intrinsics
-      // rather than two that can drift.
-      const wx = ((col + 0.5 - cx) / fx) * z;
+      // rather than two that can drift. The negation on x is the mirror correction the
+      // shader's `unproject` carries the reasoning for: the sensor's frames arrive
+      // horizontally flipped, and a plan drawn without it would put the room's left on
+      // the plan's right while the cloud beside it disagreed.
+      const wx = (-(col + 0.5 - cx) / fx) * z;
       const wy = -((row + 0.5 - cy) / fy) * z;
       // All four lateral faces, applied here for the same reason `near`/`far` are: a
       // plan that drew points the renderer discards would be a second view disagreeing

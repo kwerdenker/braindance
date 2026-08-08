@@ -273,6 +273,36 @@ that ancestor afterwards, which is the opposite of what a coverage rule is for. 
 row asserting that no rule matches *nothing*; the mirror of it — that no rule matches more than
 its sentence — is the harder one, and this is the case that says why it is worth having.
 
+### A colour filter whose comment named the exception it did not exclude
+
+`planExtent` in `level-check` reads the top-down inset off the overlay's own backing store and
+keeps pixels that are bright and near-neutral, with a comment saying why: the path is drawn in
+teal and the frustum in orange, "and the cloud is the only near-neutral thing in there." That
+sentence is the assertion, and it was never true. The inset's TOP-DOWN caption is `#6d7683` —
+red 109 against a floor of 90, and 9 and 13 apart on the two neutrality bounds against a
+tolerance of 26 — so the caption cleared every term of the filter and was counted as cloud from
+the day the filter was written.
+
+It cost nothing for years because every row using it measured an **extent**, and a caption
+sitting in a fixed corner perturbs a 159x118px bounding box by a few pixels. The first row to
+ask for a **position** found it immediately, and found it as a wrong answer rather than as a
+red row: with the caption in the average, two bands planted on opposite sides of the optical
+axis both reported left of centre and 0.017 apart, which reads as a real measurement of a real
+displacement and is a measurement of the caption.
+
+The fix is subtraction rather than a tighter threshold, and the distinction is worth keeping.
+Raising the brightness floor to exclude 109 would have put the floor within about twenty of
+what a single splat of `rgba(232, 236, 241, 0.55)` composites to, so the filter would have
+started deciding between the caption and a thin cloud on a margin nobody measured. Reading the
+inset once with an **empty depth grid** and subtracting that reading is exact instead: the
+furniture is whatever the box contains with no cloud in it, and it cancels term by term.
+
+**The general form: a filter's comment enumerating what it excludes is an assertion about the
+whole drawing, and it dates the moment it was written.** Anything added to that canvas
+afterwards — or already there and never checked against the predicate — is admitted silently.
+Where the reading is a position rather than an extent, measure the baseline and subtract it,
+because a position has no tolerance to hide a passenger in.
+
 ## Mutation-test the instrument, don't just reason about it
 
 Deliberately break the thing under test, run the check, and confirm it fails on the
@@ -1565,6 +1595,55 @@ it alone — the new rows read the transport instead, because the two are differ
 the row look grounded: the arm is reading live state through a real seam, and the state it
 reads simply is not the one the behaviour depends on. Ask what the *subject* reads, not what is
 convenient to read about it.
+
+### The third form: a fixture symmetric under the very transform you are testing
+
+The two forms above are about arms agreeing and about an object nobody looks at. There is a
+third, and it is the quietest of the three: **every fixture in the rig invariant under the
+thing that is wrong.** No arm is switched off, no object is skipped, and every assertion is
+measuring exactly what it says — the fixture simply cannot hold the property.
+
+**The cloud was a mirror image of the room from the first commit, and the entire suite passed
+it for two years.** `web/main.js` ported `Registration::getPointXYZ` faithfully, which is the
+bug: libfreenect2 hands out depth, IR and colour horizontally flipped on purpose to match the
+Microsoft SDK's selfie-view convention, and Microsoft pairs that mirrored image with a camera
+space whose x grows to the sensor's *left*, so their 3D output is chirally correct while
+`getPointXYZ`'s is a reflection. Copy the formula and you get a room with its left and right
+exchanged. Nothing was switched off and nothing was excluded. Ask instead what the fixtures
+had in common:
+
+- `level-check` plants analytic **planes**. Reflect a plane and it is the same plane, so every
+  section in the file drew a bit-identical picture either way round.
+- `sensor-view-check`'s intrinsics and fov arms measure **half-angles** — `(DEPTH_W / 2) / fx`.
+  A half-angle has no side.
+- `cropReach` returns `max(cx, W - cx) / fx * z`, a **magnitude**, so it is invariant too, and
+  the row holding it against the intrinsics was correct at every stage of this.
+- `registration-check` grades `Registration::apply`, which is the colour resample and not the
+  unprojection, and both streams are mirrored the same way in any case.
+- `monitor-check` and section 3 of `level-check` measure **extents** — `maxX - minX`. A width
+  is invariant under a reflection where a position is not.
+
+A mirror has determinant −1, and every one of those quantities is a scalar invariant of the
+transform. So the tell is not a missing arm, it is a **missing asymmetry**: the whole rig was
+built out of quantities that a reflection preserves. What closed it was one deliberately
+asymmetric fixture — a band of constant depth in a column range off to one side of the
+principal point, which `level-check` section 8 plants, with `x-not-mirrored` and
+`plan-x-not-mirrored` as the controls. Adding it to `SURFACES` would not have worked, because
+that list is a list of planes and planes are the thing that could not see it.
+
+**Ask what group your fixtures are invariant under.** Reflections, translations, uniform
+scales and 180-degree rotations are the ones that bite, because each of them leaves some
+natural-looking measurement unchanged — and a suite assembled from extents, magnitudes,
+half-angles and symmetric shapes is invariant under all four at once without any single
+decision looking wrong.
+
+**It also took a physical measurement to settle, and no offline fixture could have.** Section
+8 pins the sign; it cannot see the room. What established which way the flip ran was the
+colour camera's own 1920x1080 frame off `/camera.mjpg`, where branded text on a subject's
+shirt reads only after one horizontal flip — on a JPEG carrying a JFIF APP0 marker and no EXIF
+segment, so no orientation tag downstream could have been applying it. **Record the
+measurement next to the sign it fixed**, because the check can only say the sign has not moved
+since; it cannot say the sign is right.
 
 ## Close the class, not the instance — and have the check enumerate it
 

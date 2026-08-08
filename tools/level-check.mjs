@@ -61,6 +61,8 @@
 //   node tools/level-check.mjs --mutate sensor-view-ignores-tilt # must FAIL
 //   node tools/level-check.mjs --mutate level-order-swapped      # must FAIL
 //   node tools/level-check.mjs --mutate reset-keeps-roll         # must FAIL
+//   node tools/level-check.mjs --mutate x-not-mirrored           # must FAIL
+//   node tools/level-check.mjs --mutate plan-x-not-mirrored      # must FAIL
 //
 // It spawns its own server and needs none running. `--port` takes one nothing else
 // holds; the default is not in any other tool's range, but two worktrees running this
@@ -193,6 +195,26 @@ const MUTATIONS = {
   'level-order-swapped': { file: 'web/main.js', edits: [[
     "const tiltEuler = new THREE.Euler(0, 0, 0, 'XYZ');",
     "const tiltEuler = new THREE.Euler(0, 0, 0, 'ZYX');",
+  ]] },
+  // The shader goes back to being a faithful port of `Registration::getPointXYZ`, which
+  // is the state this program shipped in from its first commit: the frames arrive
+  // mirrored and nothing undoes it, so the cloud is a reflection of the room. This is the
+  // mutation that had no catcher for two years - section 8 is its only one, and only
+  // because that section plants something asymmetric. Every other fixture in this file,
+  // and the fov and intrinsics arms of `sensor-view-check`, draw the same picture either
+  // way round.
+  'x-not-mirrored': { file: 'web/main.js', edits: [[
+    '    -(pixel.x + 0.5 - center.x) / focal.x * z,',
+    '     (pixel.x + 0.5 - center.x) / focal.x * z,',
+  ]] },
+  // The sign is fixed in the shader and the top-down keeps the old one, so the picture
+  // shows the room the right way round and the plan beside it is a reflection. This is
+  // "close the class, not the instance" written as one line, and it is a separate control
+  // from `x-not-mirrored` for the reason `plan-ignores-tilt` is separate from
+  // `tilt-ignored`: one says the sign matters and the other says which readers were told.
+  'plan-x-not-mirrored': { file: 'web/main.js', edits: [[
+    '      const wx = (-(col + 0.5 - cx) / fx) * z;',
+    '      const wx = ((col + 0.5 - cx) / fx) * z;',
   ]] },
 };
 if (MUTATE && !MUTATIONS[MUTATE]) {
@@ -378,7 +400,12 @@ try {
     data.fill(0);
     for (let row = 0; row < DH; row++) {
       for (let col = 0; col < DW; col++) {
-        const ux = (col + 0.5 - cx) / fx;
+        // The ray this sample lies on, and it is the *page's* unprojection inverted
+        // rather than upstream's - x carries the mirror correction `unproject` in
+        // `web/main.js` explains. Planting through an un-negated ray would put every
+        // surface in the texture at the mirror image of the normal asked for, and the
+        // plane fit would then be graded against a normal nobody planted.
+        const ux = -(col + 0.5 - cx) / fx;
         const uy = -(row + 0.5 - cy) / fy;
         const den = ux * n[0] + uy * n[1] - n[2];
         if (Math.abs(den) < 1e-6) continue;
@@ -589,6 +616,7 @@ try {
       const h = Math.round(r.h * scale);
       const px = canvas.getContext('2d').getImageData(x0, y0, w, h).data;
       let minX = Infinity; let maxX = -Infinity; let minY = Infinity; let maxY = -Infinity; let n = 0;
+      let sumX = 0;
       for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
           const i = (y * w + x) * 4;
@@ -599,13 +627,21 @@ try {
           // those would be measuring the furniture.
           if (red < 90 || Math.abs(red - green) > 26 || Math.abs(green - blue) > 26) continue;
           n++;
+          sumX += x;
           if (x < minX) minX = x;
           if (x > maxX) maxX = x;
           if (y < minY) minY = y;
           if (y > maxY) maxY = y;
         }
       }
-      return n === 0 ? { n: 0 } : { n, w: maxX - minX + 1, h: maxY - minY + 1, scale };
+      // `sumX` and `insetW` are raw on purpose, and section 8 is what needs them: an
+      // extent is invariant under a reflection and a position is not, so every row that
+      // measures `w` and `h` would pass a plan drawn mirrored. They come out unreduced
+      // because the filter above does not catch quite everything - see section 8 - and a
+      // centroid computed here would bake that in where a caller cannot subtract it.
+      return n === 0
+        ? { n: 0, sumX: 0, insetW: w }
+        : { n, w: maxX - minX + 1, h: maxY - minY + 1, scale, sumX, insetW: w };
     });
   };
 
@@ -831,6 +867,169 @@ try {
   ok('and releasing the switch hands them back, so the switch reaches more than the shader',
     releasedPlan.n === openPlan.n,
     `${bitingPlan.n} biting, ${releasedPlan.n} released, ${openPlan.n} open`);
+
+  // --- 8. the cloud is not a reflection of the room -------------------------
+  console.log('\n8. the unprojection is mirrored, on both readers that state it');
+  /**
+   * A slab of constant depth in one column band, and nothing anywhere else.
+   *
+   * **Asymmetric on purpose, and that is the only reason this section can exist.** Every
+   * other fixture in this file is a plane, and a plane is symmetric about the optical
+   * axis - reflect it and it is the same plane. So no row that plants a `SURFACES` entry
+   * can see a sign on x, which is how a mirrored cloud sat in this program from its first
+   * commit through every proof tool in the suite: `level-check` plants symmetric planes,
+   * the intrinsics and fov arms of `sensor-view-check` measure half-angles, and
+   * `registration-check` grades `Registration::apply` rather than the unprojection. A
+   * mirror was invariant under the entire rig. The band is deliberately off-centre and
+   * deliberately not added to `SURFACES`, because a fixture list of planes is the thing
+   * that was missing an object rather than a list that wanted one more entry.
+   *
+   * **What this section can and cannot say.** It cannot see the room - no offline fixture
+   * can, and the flip was established by measurement on the rig instead: the colour
+   * camera's own 1920x1080 frame off `/camera.mjpg` carries branded text that reads only
+   * after one horizontal flip, on a JPEG with a JFIF APP0 marker and no EXIF segment for
+   * anything downstream to have been applying. What this section does is pin the sign that
+   * measurement settled, so the next edit through here cannot quietly undo it, and hold
+   * the shader and the top-down to the same one.
+   */
+  const plantBar = (offsetFrom, offsetTo, metres) => page.evaluate(({ a, b, z }) => {
+    const k = globalThis.__kinect;
+    for (const [name, value] of Object.entries({
+      fade: 0, wake: 0, noise: 0, additive: false, spin: false, denoise: false,
+    })) k.params.set(name, value);
+    const DW = 512;
+    const DH = 424;
+    const cx = k.uniforms.center.value.x;
+    const from = Math.max(0, Math.round(cx + a));
+    const to = Math.min(DW, Math.round(cx + b));
+    const data = k.uniforms.depthCurr.value.image.data;
+    data.fill(0);
+    let n = 0;
+    if (z > 0) {
+      const mm = Math.round(z * 1000);
+      for (let row = 0; row < DH; row++) {
+        for (let col = from; col < to; col++) { data[row * DW + col] = mm; n++; }
+      }
+    }
+    k.uniforms.depthCurr.value.needsUpdate = true;
+    k.resetAccumulators();
+    return { n, from, to, cx };
+  }, { a: offsetFrom, b: offsetTo, z: metres });
+
+  /**
+   * The crop, used as a fixed frame of reference rather than as the thing under test.
+   *
+   * The six faces are world-space constants and the cloud's x is not, so half-opening the
+   * box turns "which side of the axis did this band land on" into "is the stage empty" -
+   * a question `picture()` already answers, with no pixel read and no second render path
+   * to keep honest. It is also a genuinely different reader: `croppedOut` compares against
+   * the same `pos.x` the geometry is built from, so a sign that moves moves the cloud
+   * relative to a box that does not.
+   */
+  const keepSideOfAxis = (side) => page.evaluate((s) => {
+    const k = globalThis.__kinect;
+    k.params.set('crop', true);
+    k.params.set('left', s === 'negative' ? -7 : 0.05);
+    k.params.set('right', s === 'negative' ? -0.05 : 7);
+  }, side);
+
+  await setTilt(0, 0);
+  await page.evaluate(() => globalThis.__kinect.sensorView());
+  await wait(260);
+  // The reference, and it is an empty *grid* rather than an empty crop: every row below
+  // reads "equal to this" as "the band was entirely on the other side of the axis", so
+  // the reference has to be a stage with nothing in it for a reason the crop cannot also
+  // produce by accident.
+  await plantBar(0, 0, 0);
+  const emptyStage = await picture();
+  ok('an empty depth grid draws a stable empty stage to compare against', emptyStage.stable,
+    `hash ${emptyStage.hash}`);
+
+  const RIGHT_BAND = [80, 140];
+  const LEFT_BAND = [-140, -80];
+  // Five metres rather than two, and the depth is what buys the top-down its margin. The
+  // band's world x is `offset / fx * z`, so the column offset sets the angle and the
+  // distance sets how far across the inset that angle lands. Measured at five: the two
+  // bands come out at 0.358 and 0.646 of the inset's width, 0.288 apart and symmetric
+  // about its centre to within 0.004, against thresholds at 0.44 and 0.56. Still inside
+  // `farClip` and inside the plan's 7m span. The crop rows above are indifferent to the
+  // depth - culling on x is scale-free - so one fixture serves both readers.
+  const BAND_DEPTH = 5;
+  const bandRight = await plantBar(RIGHT_BAND[0], RIGHT_BAND[1], BAND_DEPTH);
+  await plantFingerprint();
+  ok('a band planted right of the principal point has samples in it',
+    bandRight.n > 20000, `${bandRight.n} samples in columns ${bandRight.from}..${bandRight.to}`);
+  await keepSideOfAxis('negative');
+  const rightOnNeg = await picture();
+  await keepSideOfAxis('positive');
+  const rightOnPos = await picture();
+  const heldRight = await plantHeld();
+  ok('and the band is still the planted one, not a frame off the wire',
+    heldRight.sameTexture && heldRight.sum === heldRight.expected,
+    heldRight.sameTexture ? `checksum ${heldRight.sum} vs ${heldRight.expected}` : 'the depth texture was swapped under it');
+  // The load-bearing pair. A band on the image's *right* is at negative world x once the
+  // mirror is undone, so it survives a box that keeps only the negative side and vanishes
+  // from one that keeps only the positive side. Un-negate the unprojection and both rows
+  // invert together.
+  ok('a band on the image right survives a crop keeping only negative x',
+    rightOnNeg.stable && rightOnNeg.hash !== emptyStage.hash,
+    `${rightOnNeg.hash} against an empty ${emptyStage.hash}`);
+  ok('and nothing of it survives a crop keeping only positive x',
+    rightOnPos.stable && rightOnPos.hash === emptyStage.hash,
+    `${rightOnPos.hash} against an empty ${emptyStage.hash}`);
+
+  // **Two-sided, because one side cannot tell a mirror from a build that culls.** A row
+  // asking only that the right-hand band lands on negative x is satisfied by a shader
+  // that put every point at negative x, or drew nothing at all, and either would read as
+  // a pass. The complement is what makes the pair a measurement of the sign.
+  await plantBar(LEFT_BAND[0], LEFT_BAND[1], BAND_DEPTH);
+  await plantFingerprint();
+  await keepSideOfAxis('positive');
+  const leftOnPos = await picture();
+  await keepSideOfAxis('negative');
+  const leftOnNeg = await picture();
+  ok('the mirrored band answers the other way round: it survives on positive x',
+    leftOnPos.stable && leftOnPos.hash !== emptyStage.hash,
+    `${leftOnPos.hash} against an empty ${emptyStage.hash}`);
+  ok('and vanishes on negative x, so the two bands are on opposite sides of the axis',
+    leftOnNeg.stable && leftOnNeg.hash === emptyStage.hash,
+    `${leftOnNeg.hash} against an empty ${emptyStage.hash}`);
+
+  // The top-down, asked the same question, because it states the unprojection for itself
+  // in another language's worth of code and a sign fixed in the shader alone leaves the
+  // plan drawing the room's left on the plan's right. Position rather than extent: an
+  // extent is invariant under a reflection, which is why every existing row in section 3
+  // would pass a mirrored plan.
+  //
+  // **The inset's own furniture is measured and subtracted rather than filtered around.**
+  // `planExtent`'s comment claims the cloud is the only near-neutral thing in the box, and
+  // that is not quite true: the TOP-DOWN caption is `#6d7683`, which clears the brightness
+  // floor and both neutrality bounds, and it sits in the bottom-left corner. Left in, it
+  // drags a centroid a fixed distance toward the left edge - measured at about 0.17 of the
+  // inset's width, which is larger than the displacement these two bands produce, so the
+  // uncorrected reading put both of them left of centre and 0.017 apart. An empty depth
+  // grid is what the box looks like with no cloud in it, so the difference between the two
+  // readings is the cloud on its own and the caption cancels exactly rather than
+  // approximately. Section 3's extents have the same passenger and are wide enough not to
+  // care; the claim in that comment is the thing that is wrong, and it is noted here
+  // rather than quietly patched there.
+  await page.evaluate(() => globalThis.__kinect.params.reset(['left', 'right', 'crop']));
+  await plantBar(0, 0, 0);
+  const planBare = await planExtent();
+  await plantBar(LEFT_BAND[0], LEFT_BAND[1], BAND_DEPTH);
+  const planLeftBand = await planExtent();
+  await plantBar(RIGHT_BAND[0], RIGHT_BAND[1], BAND_DEPTH);
+  const planRightBand = await planExtent();
+  await page.evaluate(() => globalThis.__kinect.keyframes.chrome.set(false));
+  const bandAcross = (shot) => (shot.sumX - planBare.sumX) / (shot.n - planBare.n) / shot.insetW;
+  const rightAcross = bandAcross(planRightBand);
+  const leftAcross = bandAcross(planLeftBand);
+  ok('the top-down puts the image-right band left of its own centre, as the picture does',
+    planRightBand.n > planBare.n && rightAcross < 0.44,
+    `${planRightBand.n - planBare.n} cloud pixels at ${rightAcross.toFixed(3)} across`);
+  ok('and the image-left band right of it, so the plan and the shader share one sign',
+    planLeftBand.n > planBare.n && leftAcross > 0.56,
+    `${planLeftBand.n - planBare.n} cloud pixels at ${leftAcross.toFixed(3)} across`);
 
   ok('the page reported no error through any of it', pageErrors.length === 0,
     pageErrors.slice(0, 2).join(' | '));

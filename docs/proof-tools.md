@@ -143,6 +143,28 @@ so it needs `--before` pointing at a commit before step 1.
 **`export-check`** needs ffmpeg and ffprobe (`--ffmpeg`, `--ffprobe`; 8.1.1 at
 `/opt/homebrew/bin`) and writes into `exports/`, which is gitignored.
 
+**It is red at HEAD on ten rows, and that predates the mirror fix.** Measured with an
+interleaved A/B/A on an idle machine against a private server on the fake grabber — baseline
+taken by copying the modified files out and `git checkout --`, never `git stash` — the same ten
+rows fail with and without the geometry change, and the two baseline arms reproduce each other
+to three decimal places:
+
+- five within-build resolution rows (`points`, `splat`, `noise`, `regionpush`, `regionmask`:
+  *1920x1200 is 960x600 at twice the size*), failing on the coarse-mean term with the luminance
+  ratio well inside tolerance — `splat` is the worst at 2.516 against a 1.2 bound;
+- five cross-build rows against `f14b4be…^`, two Blackwall rebase arms failing on the ratio term
+  at 1.026 and 1.022 against a 0.02 bound, and three preset rows failing wider.
+
+**What is not known is when they went red**, and that is the next thing to establish rather than
+a thing to assume: dating them needs a bisect over the commits that touched the look, and the
+duotone and raster work is the obvious first suspect precisely because these rows read luminance
+ratios and tile means. Do not read the ten as a finding about anything until that is done, and do
+not read them as harmless either. Nothing in the mirror work touched them: with the historical
+arm normalised for the sign, the two Blackwall arms read 1.21 and 1.12 of 255 on the worst of
+forty tile means, against 1.02 and 0.95 for the same rows at HEAD — run-to-run noise — where an
+un-normalised arm reports 22.19 and 22.14. The normalisation is what makes that comparison
+possible at all, and it is why the sign appears in this tool as well as in `registry-check`.
+
 **`keyframe-check`** runs its cheapest claim first, on a 60-second budget, and stops the run if
 it fails. That is not ordering by cost: an evaluator that announces its writes schedules a seek
 per frame, each of which renders a pre-roll which evaluates, so the page never answers and
