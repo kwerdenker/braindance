@@ -197,6 +197,16 @@ the two Blackwall arms read 1.21 and 1.12 of 255 on the worst of forty tile mean
 reports 22.19 and 22.14. The normalisation is what makes that comparison possible at all,
 and it is why the sign appears in this tool as well as in `registry-check`.
 
+**`registry-check` is red on one row, `readGhost`, and it predates this branch.** The claim is
+that `readGhost` at 1.0 is bit-identical to the old `mode 2` at `f49c8339…^`. Measured at the
+branch point `6e1be6f` it fails on one frame of six; at HEAD it fails on two, frames 2 and 3.
+So it is not something this branch introduced, and it did get worse here — both halves of that
+sentence matter, and neither was written down anywhere until now, which is how a known-red row
+becomes a row nobody re-derives. A comment in `web/main.js` calls it "the pre-existing readGhost
+failure" and that comment arrived in `40ab241`, which is testimony rather than a measurement;
+the two runs above are the measurement. Nothing has dated the one-frame-to-two change, and the
+same bisect harness that dated the `export-check` rows would do it.
+
 **`keyframe-check`** runs its cheapest claim first, on a 60-second budget, and stops the run if
 it fails. That is not ordering by cost: an evaluator that announces its writes schedules a seek
 per frame, each of which renders a pre-roll which evaluates, so the page never answers and
