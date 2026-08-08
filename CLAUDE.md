@@ -115,6 +115,8 @@ node tools/registry-check.mjs --mutate raster-recomputes-the-default # ... the r
 node tools/registry-check.mjs --mutate raster-ignores-angle       # ... the axis a raster runs along
 node tools/registry-check.mjs --mutate raster-pitch-fixed         # ... its line frequency, promoted from the literal it defaults to
 node tools/registry-check.mjs --mutate raster-hard-ignored        # ... and the duty cycle, without which an angle only buys rotated softness
+node tools/registry-check.mjs --mutate streak-ignored             # ... the fall, and whether it reaches a pixel at all
+node tools/registry-check.mjs --mutate streak-climbs              # ... and which way it falls, which the drop-one sweep cannot see
 node tools/timeline-check.mjs --url http://localhost:8080 # step 4: seek equals playback
 node tools/timeline-check.mjs --mutate preroll-constant   # ... and must FAIL mutated
 node tools/timeline-check.mjs --mutate draft-always-resets # ... and must FAIL mutated

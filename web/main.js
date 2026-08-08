@@ -1482,6 +1482,7 @@ const GradeShader = {
     // so it cannot separate a subject from the space behind it; the term that does that is
     // the duotone in the point shader. What this is for is the thing it always did - keep
     // the empty background genuinely black after Reinhard lifts it.
+    streak: { value: 0 },
     crush: { value: 0.018 },
     time: { value: 0 },
     resolution: { value: new THREE.Vector2(1, 1) },
@@ -1495,6 +1496,7 @@ const GradeShader = {
   fragmentShader: /* glsl */ `
     uniform sampler2D tDiffuse;
     uniform float rgbSplit, scanlines, grain, vignette, crush, time;
+    uniform float streak;
     uniform vec2 scanAxis;
     uniform float scanPitch, scanHard;
     uniform vec2 resolution;
@@ -1524,6 +1526,50 @@ const GradeShader = {
         col.b = texture2D(tDiffuse, vUv - off).b;
       } else {
         col = texture2D(tDiffuse, vUv).rgb;
+      }
+
+      // Light falls. Each pixel gathers along the column above it and keeps the brightest
+      // thing it finds, decayed by how far it had to look, so a highlight bleeds down the
+      // frame the way a sensor smears one down a column of wells. It sits here, below the
+      // raster and the vignette and above the tonemap, because it is a thing that happened
+      // to the light rather than a thing drawn over the picture: a streak applied after the
+      // vignette would glow in the corners the vignette had just put out.
+      //
+      // **A gather and not a feedback buffer**, which is a decision rather than a
+      // simplification. A buffer accumulating across frames smears along whatever the
+      // camera did last, so an orbit would drag every streak sideways, and - the half that
+      // settles it - a seek would arrive carrying the streak the scrub built rather than
+      // the one playback would have built. That is the property the whole transport rests
+      // on, broken by an effect nobody would think to test it against.
+      //
+      // Distances are in reference pixels through texel, for the reason stated at the top
+      // of this shader: a fall whose length grew with the window would be the nearly
+      // resolution-independent look that is worse than an honestly dependent one.
+      //
+      // **The tap schedule is written down because the first one was wrong.** Eight taps at
+      // a geometric ratio of 2.1 put the far samples so far apart that they land as separate
+      // ghosts - a vertical comb rather than a fall. Sixteen at 1.35 overlap enough to read
+      // as continuous and reach about 168 reference pixels.
+      //
+      // **The sign is the measurement and not the derivation, and the cost of getting that
+      // backwards is recorded here because it was paid twice.** This gather was written
+      // with the plus, doubted against a busy frame that seemed to show the light climbing,
+      // flipped to a minus, and then restored - because a build cropped down to a single
+      // bright band with darkness above and below settles in one look what a full frame full
+      // of structure will support either reading of. Two separate readings of the *same*
+      // sign came out opposite. Nothing in the suite could have caught the flip: every
+      // uniform still landed and every image still changed, so the drop-one sweep stayed
+      // green through all of it, which is what the direction arm in the registry check now
+      // exists for and why it calibrates its own axis rather than trusting a stated one.
+      if (streak > 0.0) {
+        vec3 fall = col;
+        float d = 1.5;
+        for (int i = 0; i < 16; i++) {
+          vec3 tap = texture2D(tDiffuse, vUv + vec2(0.0, d * texel.y)).rgb;
+          fall = max(fall, tap * exp2(-d * 0.02));
+          d *= 1.35;
+        }
+        col = mix(col, fall, streak);
       }
 
       if (scanlines > 0.0) {
@@ -2076,7 +2122,8 @@ function gradeNeeded() {
   return grade.uniforms.rgbSplit.value > 0
     || grade.uniforms.scanlines.value > 0
     || grade.uniforms.grain.value > 0
-    || grade.uniforms.vignette.value > 0;
+    || grade.uniforms.vignette.value > 0
+    || grade.uniforms.streak.value > 0;
 }
 
 /**
@@ -2706,6 +2753,14 @@ const PARAMS = {
   grain: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
     group: 'post', label: 'grain',
     apply: (v) => { grade.uniforms.grain.value = v; grade.enabled = gradeNeeded(); } },
+  // The fifth term that gates the pass, and it gates for the plain reason the other four
+  // do rather than as an exception: its default is zero, so a look that never names it
+  // pays nothing and the pass stays shut. Contrast `crush` further down, whose default is
+  // the literal it replaced and which therefore cannot gate anything without holding the
+  // pass open for every look there has ever been.
+  streak: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
+    group: 'post', label: 'streak',
+    apply: (v) => { grade.uniforms.streak.value = v; grade.enabled = gradeNeeded(); } },
   // The corner falloff, which was a literal inside the grade shader and so arrived with
   // whichever of the three above you happened to raise. The uniform beside it carries
   // why this is the one promoted literal that does not keep its old value; what belongs

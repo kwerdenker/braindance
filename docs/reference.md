@@ -81,14 +81,24 @@ leak, so it is kept narrow and cyan. **`rim`** brightens depth discontinuities a
 subject its edge, but under additive blending plus bloom it washes broad surfaces white, so
 turn it down before turning down bloom.
 
-**The four Post terms share one pass, and the pass carries the tonemap.** `rgb split`,
-`scanlines`, `grain` and `vignette` each switch it on, because a full-screen read and write
-that changes nothing is worth skipping. What rides along with it is the highlight rolloff and
-the black-toe crush, so a look with all four at zero is not the same image without four
+**The five Post terms share one pass, and the pass carries the tonemap.** `rgb split`,
+`scanlines`, `grain`, `streak` and `vignette` each switch it on, because a full-screen read and
+write that changes nothing is worth skipping. What rides along with it is the highlight rolloff
+and the black-toe crush, so a look with all five at zero is not the same image without five
 effects: it also has lifted blacks and no rolloff, and additive accumulation clips to flat
-white where it would otherwise keep its hue. Raising any one of the four brings the grade back.
+white where it would otherwise keep its hue. Raising any one of the five brings the grade back.
 The vignette used to be part of that bundle and is now its own control, which is why a project
 saved before it existed loses its corner falloff until it names one.
+
+**`streak`** bleeds light down the frame. Each pixel gathers along the column above it and
+keeps the brightest thing it finds, decayed by distance, so a highlight smears downward the way
+a sensor smears one down a column of wells — sixteen taps at geometric spacing, reaching about
+168 pixels at the 1080p reference. It falls and only falls, because every reference frame
+agrees that is what light does under gravity, and a control for the direction would be a
+control for getting it wrong. It is a gather over the current frame rather than a buffer that
+accumulates across frames: a buffer would smear along whatever the camera did last, so an orbit
+would drag every streak sideways and a seek would arrive carrying the streak the scrub built
+rather than the one playback would have.
 
 ## Levelling a canted mount
 

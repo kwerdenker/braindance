@@ -200,6 +200,31 @@ const MUTATIONS = {
     to: '        if (false) {',
     fails: 'the raster-at-0.35 row against the pinned build, and nothing else',
   },
+  // The streak switched off at its own guard, which is the plainest thing that can go
+  // wrong with it: a term whose slider moves and whose uniform lands and whose pixels never
+  // change. The drop-one sweep is where that shows, because reverting a parameter nothing
+  // reads leaves the image where it was.
+  'streak-ignored': {
+    from: '      if (streak > 0.0) {',
+    to: '      if (false) {',
+    // Three rows and not the one this first claimed, taken off the run rather than
+    // predicted: the drop-one sweep, the count beneath it, and the direction section's own
+    // first row, which asks whether the streak adds any light before asking where it puts
+    // it. That last one reporting zero is the whole reason it is there - without it the
+    // direction row would be comparing two identical images and could pass by arithmetic.
+    fails: 'streak in the drop-one sweep, the proven-parameter count, and the added-light row',
+  },
+  // The gather turned around, so light climbs instead of falling. **This is the mutation
+  // the drop-one sweep cannot see**, and it is here because the sign was got wrong during
+  // development and no part of the suite noticed: every uniform still landed, every image
+  // still changed, and reverting the parameter still moves pixels whichever way the taps
+  // point. An effect whose direction is its entire claim needs a probe placed where the
+  // direction is the answer, and this is the control for that probe.
+  'streak-climbs': {
+    from: '          vec3 tap = texture2D(tDiffuse, vUv + vec2(0.0, d * texel.y)).rgb;',
+    to: '          vec3 tap = texture2D(tDiffuse, vUv - vec2(0.0, d * texel.y)).rgb;',
+    fails: 'the streak-falls row, and nothing else - the drop-one sweep stays green',
+  },
   // The raster's axis nailed back to the frame's y, which is what it was before the angle
   // existed. Everything else about the raster goes on working - the pitch still sets the
   // line frequency and the hardness still squares the wave - so the only row that can see
@@ -484,6 +509,7 @@ const LANDING = {
   scanPitch: 'k.grade.uniforms.scanPitch.value',
   scanHard: 'k.grade.uniforms.scanHard.value',
   grain: '[k.grade.uniforms.grain.value, k.grade.enabled]',
+  streak: '[k.grade.uniforms.streak.value, k.grade.enabled]',
   vignette: '[k.grade.uniforms.vignette.value, k.grade.enabled]',
   // The fifth term in that pass, and **the missing `k.grade.enabled` beside it is the
   // assertion**. The four above gate the pass and so each has to carry whether it is on;
@@ -593,11 +619,20 @@ const EXPECT = {
   duotoneSplit: (v) => v,
   bloom: (v) => [v, v > 0],
   trails: (v) => [v, v > 0],
-  // The four that share one pass, so each one's landing carries whether the pass is on
-  // and every one of them has to name the other three. `vignette` joined them when it
-  // stopped being a literal applied whenever the pass happened to run.
-  rgbSplit: (v, all) => [v, v > 0 || all.scanlines > 0 || all.grain > 0 || all.vignette > 0],
-  scanlines: (v, all) => [v, all.rgbSplit > 0 || v > 0 || all.grain > 0 || all.vignette > 0],
+  // The five that share one pass, so each one's landing carries whether the pass is on
+  // and every one of them has to name the other four. `vignette` joined them when it
+  // stopped being a literal applied whenever the pass happened to run, and `streak` joined
+  // by being written.
+  //
+  // **Every row here gained `streak` and not only the new one.** The scrambled set happens
+  // to raise all five at once, so leaving the older four alone would have passed today and
+  // gone on passing - right up until a set that raised the streak alone, where four rows
+  // would expect a shut pass against an open one and read as findings about terms that had
+  // not changed. The gate is one condition and each row states the whole of it.
+  rgbSplit: (v, all) => [v, v > 0 || all.scanlines > 0 || all.grain > 0 || all.vignette > 0
+    || all.streak > 0],
+  scanlines: (v, all) => [v, all.rgbSplit > 0 || v > 0 || all.grain > 0 || all.vignette > 0
+    || all.streak > 0],
   // Same double arithmetic three's `degToRad` does, so the equality is exact rather than
   // near - and written out here rather than read back off the page, because a tool that
   // asked the page what conversion it used could never see a wrong one.
@@ -613,8 +648,12 @@ const EXPECT = {
     .map((x) => Number(x.toFixed(9))),
   scanPitch: (v) => v,
   scanHard: (v) => v,
-  grain: (v, all) => [v, all.rgbSplit > 0 || all.scanlines > 0 || v > 0 || all.vignette > 0],
-  vignette: (v, all) => [v, all.rgbSplit > 0 || all.scanlines > 0 || all.grain > 0 || v > 0],
+  grain: (v, all) => [v, all.rgbSplit > 0 || all.scanlines > 0 || v > 0 || all.vignette > 0
+    || all.streak > 0],
+  streak: (v, all) => [v, all.rgbSplit > 0 || all.scanlines > 0 || all.grain > 0
+    || all.vignette > 0 || v > 0],
+  vignette: (v, all) => [v, all.rgbSplit > 0 || all.scanlines > 0 || all.grain > 0 || v > 0
+    || all.streak > 0],
   // Reads its own value and nothing else, because it shares the pass without gating it -
   // so unlike the four above it names none of the others and none of them name it.
   crush: (v) => v,
@@ -803,6 +842,11 @@ const SCRAMBLE = {
   // pixel - the trap `rgbSaturation` and `depthGamma` above are set off their defaults for.
   scanHard: 0.82,
   grain: 0.37,
+  // High enough that the gather wins over the pixel it started from across a good part of
+  // the frame. The taps decay with distance, so a small streak moves only what sits
+  // directly under a highlight and the drop-one sweep would be separating that from the
+  // grain two rows up.
+  streak: 0.62,
   vignette: 0.73,
   // Well above the 0.018 it defaults to, and the four terms above hold the pass open so
   // it is reachable at all - a toe inside a pass nothing switched on is the dead zone
@@ -1236,6 +1280,12 @@ const GOLDEN_ABSENT = new Set([
   // at parameter defaults, where the raster block does not run at all, and the drop-one
   // sweep is where the three are shown to reach pixels once the master is up.
   'scanAngle', 'scanPitch', 'scanHard',
+  // The streak, which had no control and no uniform at the pinned revision. It defaults to
+  // zero and the block is guarded on that, so a build carrying it draws exactly what a
+  // build without it drew - the same argument the three above are excused by, and held to
+  // the same standard: the pass-gate row below has it opening the grade on its own, and
+  // the drop-one sweep has it reaching pixels once it is up.
+  'streak',
   // The program-out size, on the same terms and for the same reason: not a registry
   // parameter, no such control at the earlier revision, and its own bounds live in the
   // handler that parses it rather than in the markup. What it is held to is
@@ -1946,6 +1996,11 @@ console.log('\n[registry] the side effects that are not a uniform write');
     // three: raised on its own it has to bring the pass up by itself, or the vignette
     // is back to being a thing you can only have by asking for something else.
     [{ vignette: 0.01 }, { bloom: false, trails: false, grade: true }],
+    // The streak, which gates for the plain reason rather than by exception: its default
+    // is zero, so a look that never asks for it pays nothing. This row is the one that
+    // separates it from `crush` below - both share the pass, and only the one whose off
+    // state is actually off is allowed to switch it on.
+    [{ streak: 0.02 }, { bloom: false, trails: false, grade: true }],
     // The fifth term in that pass, and the only one whose expectation is `false`. `crush`
     // shares the grade and deliberately does not gate it, so this row is the negative
     // asserted rather than left as an omission - an omission would pass on a build that
@@ -2460,6 +2515,108 @@ console.log('\n[registry] the crop switch, which the sweep above cannot see');
   check(eq(landing.off, landing.on) && eq(landing.on, [SCRAMBLE.near, SCRAMBLE.far]),
     'and it releases by not testing rather than by moving the planes, so the depth ramp is unchanged',
     `nearClip/farClip released ${JSON.stringify(landing.off)}, applied ${JSON.stringify(landing.on)}`);
+}
+
+// The streak's direction, which the drop-one sweep cannot see either, and for a sharper
+// reason than the crop switch's. That sweep asks whether reverting a parameter changes the
+// image; a streak pointed the wrong way changes it just as much as one pointed the right
+// way, so the sweep is green on a build where the light climbs. The direction is the entire
+// claim the term makes - every reference frame agrees it is gravity - and nothing above
+// this line tests it.
+//
+// **This is a probe placed where its answer is different rather than where it was
+// convenient.** It exists because the sign was written wrong from a derivation about which
+// way v grows in the grade pass, and that build had every uniform landing, every image
+// changing and a green suite. What caught it was looking at a picture, and this is the arm
+// that means the next one does not depend on somebody looking.
+//
+// The statistic is the luminance-weighted mean row of the light the streak *adds*, against
+// the mean row of the light already there.
+//
+// **The arm calibrates its own axis rather than asserting one, and that is the repair
+// rather than the design.** It was first written comparing row indices against a stated
+// convention - `readPixels` reads from the lower-left, so light that falls lands at lower
+// indices - and it went red on a build whose rendered frames plainly show the light
+// falling. Rather than flip the comparison until it agreed, which is changing the code
+// under test to satisfy the probe, the axis is now measured here: the crop's `top` and
+// `bottom` faces cut in world metres, the pinned camera looks along -z with world up on
+// screen, so cutting the top removes light that is high on screen by construction. The
+// difference between what each cut removes is which way the rows run, read off this
+// framebuffer on this build rather than remembered.
+//
+// What the convention actually is, now that it has been measured, is in the row's own
+// output. The comment does not repeat it, because a number restated beside the thing that
+// measures it is the second copy that drifts.
+console.log('\n[registry] the streak falls, which the sweep above cannot see');
+{
+  const fall = await page.evaluate(`(async () => {
+    ${PAGE_HELPERS}
+    const gl = k.renderer.getContext();
+    const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
+    const lum = (px, i) => px[i] * 0.2126 + px[i + 1] * 0.7152 + px[i + 2] * 0.0722;
+    // The mean row of the light in a that is not in b, so the same helper reads light
+    // gained by switching a term on and light lost by cropping it away.
+    const meanRow = (a, b) => {
+      let sum = 0, weight = 0;
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          const i = (y * W + x) * 4;
+          const v = b ? Math.max(0, lum(a, i) - lum(b, i)) : lum(a, i);
+          sum += v * y;
+          weight += v;
+        }
+      }
+      return { row: weight > 0 ? sum / weight : -1, weight };
+    };
+    // The same program position the runs above use, so this is measured on a frame the
+    // rest of the section has already shown to carry a picture rather than on one picked
+    // here for being convenient.
+    const at = ${JSON.stringify(positions[positions.length - 1])};
+    const shot = (over) => {
+      k.params.reset();
+      k.params.apply(${JSON.stringify(SCRAMBLE)});
+      k.params.apply(over);
+      k.drive.reset();
+      pinCamera(k.freeCamera);
+      k.drive.stepTo(at);
+      return k.drive.readPixels();
+    };
+    // The scrambled crop window runs -1.5 to 1 in y, so a face brought to -0.2 takes
+    // roughly half the room off one side of the picture and leaves the other half.
+    const base = shot({ streak: 0 });
+    const streaked = shot({ streak: 0.9 });
+    const topGone = shot({ streak: 0, top: -0.2 });
+    const bottomGone = shot({ streak: 0, bottom: -0.2 });
+    return {
+      source: meanRow(base, null),
+      added: meanRow(streaked, base),
+      upper: meanRow(base, topGone),
+      lower: meanRow(base, bottomGone),
+      height: H,
+    };
+  })()`);
+
+  check(fall.added.weight > 0,
+    'the streak adds light at all, so the row below is about something',
+    `added luminance ${fall.added.weight.toFixed(0)}`);
+
+  // The calibration has to have worked before its answer means anything: both cuts must
+  // remove light, and they must remove it from opposite ends. A pair that agreed would be
+  // a set of arms that cannot measure the quantity they were placed to measure.
+  const spread = fall.upper.row - fall.lower.row;
+  check(fall.upper.weight > 0 && fall.lower.weight > 0 && Math.abs(spread) > fall.height * 0.05,
+    'cropping the room\'s top and its bottom take light from opposite ends, so the axis is known',
+    `top cut removes light at row ${fall.upper.row.toFixed(1)}, bottom cut at `
+    + `${fall.lower.row.toFixed(1)} of ${fall.height}`);
+
+  // Screen-up is whichever direction the top cut's light sits in; the streak has to add
+  // its light in the other one.
+  const up = Math.sign(spread);
+  const moved = Math.sign(fall.added.row - fall.source.row);
+  check(moved !== 0 && moved === -up,
+    'and the streak adds its light on the far side from the room\'s top, so it falls',
+    `added mean row ${fall.added.row.toFixed(1)} against source ${fall.source.row.toFixed(1)}`
+    + `, with screen-up at ${up > 0 ? 'rising' : 'falling'} row indices`);
 }
 
 // ------------------------------------------------------------------- verdict
