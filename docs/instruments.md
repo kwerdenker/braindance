@@ -2162,3 +2162,37 @@ The shape they share is the one this file keeps arriving at from different direc
 what the broken build would have to do to still pass, and check the probe is somewhere the
 answer differs. Three of the four still measured the right quantity — they measured it where
 it had no range.
+
+## A comparison that only ever ran at the defaults
+
+`registry-check`'s cross-build section renders both revisions at parameter defaults and hashes
+the frames. Every default in the glitch block was chosen to be the literal the one-slider
+version baked, and three separate comments said so — one of them as a universal, "Every default
+is exactly the literal it replaced", sitting directly above an enumeration of *four* numbers
+where there are five parameters. `glitchTint` was the fifth, and it is 1.8 where the old line
+baked 3.0.
+
+Nothing caught it for the plainest possible reason: **`glitch` defaults to 0, so the block never
+executed on either arm.** The one shipped look that switches it on, `blackwall.json` at
+`glitch: 0.18`, was never rendered by the comparison that exists to protect it. The claim and
+the instrument were arranged so that the claim's only counterexample was outside what the
+instrument looked at.
+
+It came out by adding `glitch: 0.18` to both arms and getting 6 of 6 frames differing, then
+bisecting: at `glitchTint: 0` the colour, depth and contour readings come back byte for byte
+identical, which proves `pos.x += shove` — the block's geometry — really is bit-exact, and the
+four defended terms really do hold. The flare alone moved. Measured against the pinned build on
+`readBlackwall`, 1.8 lands 30 of 255 off at worst against 3.0's 5, so the compensating default
+is six times further from the look it was chosen to preserve than simply keeping the literal
+would have been.
+
+Two lessons, and the second is the one that generalises:
+
+- **A default justified as "exactly the literal it replaced" is a claim, and a claim needs an
+  arm.** Five parameters, four enumerated, and the missing one was the wrong one — which is
+  `CLAUDE.md` rule 5 arriving through arithmetic rather than through a deliberate exclusion.
+- **A cross-build comparison rendered at defaults tests the build nobody ships.** The values a
+  shipped preset names are exactly the ones a drift would reach first, and exactly the ones a
+  defaults-only arm cannot see. The raster arm above it already stands at the shipped
+  `scanlines: 0.35` for this reason; the glitch had no such arm because nobody had asked what
+  the shipped document turns on. **Ask what the shipped look names, and render there.**

@@ -871,7 +871,18 @@ void main() {
   // where the literals left it - this file has already measured that handing a value
   // through a variable licenses a contraction the inline expression does not get, and
   // doubling 0.45 is exact in float32 where a re-associated product need not be. At the
-  // defaults this block is bit-identical to the one-slider version it replaces.
+  // defaults the *geometry* of this block is bit-identical to the one-slider version it
+  // replaces, and that is measured rather than reasoned: with the flare taken to zero, the
+  // colour, depth and contour readings come back byte for byte identical to the pinned
+  // build at the shipped glitch of 0.18, over six frames, and the shove is live on both
+  // sides so the equality is not vacuous.
+  //
+  // **The flare is the exception and the claim used to be stated without it.** glitchTint
+  // defaults to 1.8 where the line it replaced baked 3.0, so the picture does move - see
+  // the registry entry for the measurement. The blanket version of this sentence stood for
+  // as long as it did because nothing ever rendered these two builds with the glitch
+  // switched on: the cross-build section renders at parameter defaults, where glitch is 0
+  // and none of this executes.
   vGlitch = 0.0;
   if (glitch > 0.0) {
     // The axis the bands are cut along, and the default path is the old expression itself
@@ -1277,10 +1288,17 @@ void main() {
   //
   // Moving it changes what the Blackwall preset draws, because inside the branch the
   // flare was multiplied by that reading's 0.55 + 0.75 * lum shading before the
-  // normalisation reached it. glitchTint absorbs the difference at a default measured
-  // against the old build rather than carried over from it - a term reconstructing the
-  // old inside-the-branch arithmetic would be a second implementation of this line,
-  // which is the thing this file refuses. Colour only, no alpha term: that is what the
+  // normalisation reached it. glitchTint was given a default of 1.8 to absorb that,
+  // rather than carrying 3.0 over, on the grounds that a term reconstructing the old
+  // inside-the-branch arithmetic would be a second implementation of this line.
+  //
+  // **That default is worse than the literal it replaced, measured on the reading the
+  // shipped preset actually uses.** Against the pinned build on readBlackwall at the
+  // shipped glitch of 0.18: 1.8 lands 30 of 255 off at worst with a frame mean of 0.0391,
+  // where 3.0 lands 5 off with a mean of 0.0062, and 0 and 5.0 are worse than either. No
+  // constant can match exactly, because the multiplier it is standing in for varied per
+  // fragment - but the ordering is not close, and the number was chosen without this
+  // comparison being run. Colour only, no alpha term: that is what the
   // old line did, and an additive splat shows a brighter colour without being asked to
   // cover more.
   //
@@ -2521,11 +2539,18 @@ const PARAMS = {
   // corruption out, and one that missed by a frame leaves a tear standing in a clean
   // plate. The master is the fade, and these say what a full one means.
   //
-  // Every default is exactly the literal it replaced. That is the rule the readings'
-  // seven constants are held to, and it is load-bearing the same way here: a preset
-  // written before this existed - `blackwall.json` names `glitch: 0.18` and nothing
-  // else - has to draw the picture it drew, and the only thing making that true is
-  // that 0.45, 0.45, 12 and 7 are the numbers the shader already had.
+  // **Four of the five defaults are exactly the literals they replaced, and the fifth is
+  // not.** That is the rule the readings' seven constants are held to and it is
+  // load-bearing the same way here, so the exception matters: 0.45, 0.45, 12 and 7 are the
+  // numbers the shader already had, and `glitchTint` is 1.8 where the old line baked 3.0.
+  //
+  // This sentence used to claim all five without naming an exception, with the
+  // enumeration above listing precisely the four that hold - which is the shape of error
+  // `CLAUDE.md` rule 5 describes, an object every observation skips behind a justification
+  // that stops anybody looking twice. So `blackwall.json`, which names `glitch: 0.18` and
+  // no tint, does *not* draw the picture it drew: its tear flares dimmer. The flare's move
+  // out of the Blackwall branch two hundred lines up is a deliberate change on top of
+  // that; this one was not deliberate.
   glitch: { def: 0, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
     group: 'glitch', label: 'amount',
     apply: (v) => { uniforms.glitch.value = v; } },
@@ -10438,12 +10463,12 @@ function applyStoredPreset(doc) {
  * A partial apply has no revision to print - there is no stamp, and printing the one
  * the clip is still carrying would attribute this gesture to a document that had
  * nothing to do with it - so what it reports is what it did: how much of the look came
- * out of the file, and that the clip's provenance was left alone.
+ * out of the file.
  */
 function presetAppliedNote(name, applied) {
   return applied.stamped
     ? `applied ${name} · ${appliedPreset.rev.slice(7, 15)}`
-    : `applied ${applied.written} of ${applied.look} values from ${name} · part of a look, so the clip keeps its provenance`;
+    : `applied ${applied.written} of ${applied.look} values from ${name}`;
 }
 
 /**
