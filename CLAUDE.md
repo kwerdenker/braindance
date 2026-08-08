@@ -196,6 +196,8 @@ node tools/library-check.mjs --mutate list-swallows-unreadable # ... and must FA
 node tools/library-check.mjs --mutate open-take-swallows-library # ... and must FAIL
 node tools/library-check.mjs --mutate one-refusal-for-older-versions # ... and must FAIL
 node tools/library-check.mjs --mutate open-ignores-format          # ... the capture's generation, at all four doors at once
+node tools/library-check.mjs --mutate shipped-look-drops-a-value   # ... a shipped look with a hole in it, which is the last look staying under the next one
+node tools/library-check.mjs --mutate complete-look-drops-a-group  # ... and the definition those documents are written against, which is code where they are data
 node tools/editor-check.mjs --url http://localhost:8080   # the editor's controls: that they exist, that pressing them changes something
 node tools/editor-check.mjs --mutate lanes-clear-siblings --no-render  # ... and must FAIL
 node tools/editor-check.mjs --mutate plant-unswept-control --no-render # ... and must FAIL

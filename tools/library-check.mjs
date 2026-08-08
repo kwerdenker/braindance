@@ -1439,6 +1439,47 @@ const MUTATIONS = {
     '      // restart branch returns before the rest of the handler runs.\n      if (child === proc) child = null;',
     '      // restart branch returns before the rest of the handler runs.',
   ]] },
+
+  // ---- a shipped look and the definition it is written against
+  //
+  // The two controls for section 8's completeness arm, and they are a pair because the
+  // arm compares two things that are genuinely separate: nine documents on disk, and one
+  // line of code saying what a document has to name. One mutation falsifies each side,
+  // and each has to redden its own row - a control that reddened both would be saying the
+  // arm noticed *something*, which is what a single equality already says.
+  //
+  // The shipped state this closes is worth naming, because it was a user report rather
+  // than a review finding. Applying a preset writes only the keys the document names, on
+  // purpose, so that a hand-saved subset layers over whatever is there - and the nine
+  // documents were each sparse in a *different* set of keys, so picking `voxel` and then
+  // picking something else left the voxel lattice standing under the new look. Measured
+  // before the fix: 33 of the 72 ordered pairs rendered a different frame in sequence
+  // than the same look rendered alone.
+
+  // **A hole in a shipped look**, which is the defect itself: `voxel` stops naming
+  // `bloom`, so picking it after a look that raised the bloom leaves the bloom where it
+  // was. One key and one document, because a mutation that emptied a file would redden
+  // the fork rows above it as well and a control that fails everything cannot say which
+  // row was carrying the claim. Delivered through `stageServer` like every other mutation
+  // here and then proven to have arrived by `requireDocumentDelivered`, since the copy
+  // the mac server reads is not the one the write lands in.
+  'shipped-look-drops-a-value': { file: 'presets-builtin/voxel.json', edits: [[
+    '    "bloom": 0.45,\n', '',
+  ]] },
+  // **And the other side of the comparison: the definition, narrowed by one group.**
+  // `completeLookNames` is the look tag less its framing, and this drops `post` as well -
+  // so the nine documents go on naming `bloom`, `grain`, `vignette` and the four beside
+  // them while the definition has stopped asking for any of them. The documents are then
+  // supersets rather than equals, which is the direction a "names at least" row could
+  // never see, and it is the direction a wrongly *grown* exclusion arrives from: framing
+  // creeping back into the filter reads identically from here.
+  //
+  // It leaves `wholeLookTag` easier to satisfy rather than harder, so the provenance rows
+  // above stay green and this reddens the extra-values row alone.
+  'complete-look-drops-a-group': { file: 'web/main.js', edits: [[
+    "const completeLookNames = () => params.names('look').filter((n) => PARAMS[n].group !== 'framing');",
+    "const completeLookNames = () => params.names('look').filter((n) => PARAMS[n].group !== 'framing' && PARAMS[n].group !== 'post');",
+  ]] },
 };
 
 function mutatedSource(name) {
@@ -1486,6 +1527,13 @@ const pageMutation = mutation && mutation.file.startsWith('web/') ? mutation : n
 const PAGE_URLS = { 'library.html': '/gallery', 'menu.html': '/' };
 const urlForPageFile = (file) => PAGE_URLS[file] ?? `/${file}`;
 const serverMutation = mutation && mutation.file.startsWith('server/') ? mutation : null;
+// A mutation of one of the nine documents the picker offers, which is the third kind of
+// file this tree stages and the only one that is data rather than code. It gets the same
+// treatment as a page for the same reason: `stageServer` writes it, and then the server
+// is asked whether the bytes it hands out are the ones this run staged, because a
+// shipped look mutated into a copy nothing was pointed at leaves the completeness arm
+// comparing the unmutated document against the registry and passing.
+const documentMutation = mutation && mutation.file.startsWith('presets-builtin/') ? mutation : null;
 
 /**
  * A file of the staged tree as this run actually ships it.
@@ -1944,20 +1992,14 @@ function stageServer() {
   // mutations run against a staged copy rather than an edit-and-restore. It is
   // 312K, so the isolation costs nothing worth counting.
   cpSync(join(REPO, 'web'), join(root, 'web'), { recursive: true });
-  // The looks that ship, copied where `--builtin-presets` points the mac server. Out
-  // of the staged tree on purpose: it makes the fork rows independent of whether the
-  // server happened to resolve its default correctly, which is a different claim, and
-  // it means those rows are driving the flag rather than the fallback.
-  cpSync(join(REPO, 'presets-builtin'), join(WORK, 'builtin-presets'), { recursive: true });
-  // **And a second copy inside the staged tree, where the default resolves to.** The
-  // copy above is deliberately outside it so the fork rows drive the flag rather than
-  // the fallback, and that is still true - but it left every server spawned *without*
-  // the flag resolving `presets-builtin` to a path in the staged root that nothing had
-  // put there. That was invisible while a missing shipped-looks directory answered an
-  // empty list, and it stopped being invisible the moment the store started reporting
-  // it: the replay server, which names no preset flags at all, began answering 500 on
-  // `/presets` and the viewer logged a page error. A staged tree is supposed to be an
-  // install, and an install has the looks that ship in it.
+  // The looks that ship, inside the staged tree where the default `presets-builtin`
+  // resolves to. Every server spawned *without* `--builtin-presets` used to resolve it
+  // to a path in the staged root that nothing had put there, which was invisible while
+  // a missing shipped-looks directory answered an empty list and stopped being
+  // invisible the moment the store started reporting it: the replay server, which names
+  // no preset flags at all, began answering 500 on `/presets` and the viewer logged a
+  // page error. A staged tree is supposed to be an install, and an install has the looks
+  // that ship in it.
   cpSync(join(REPO, 'presets-builtin'), join(root, 'presets-builtin'), { recursive: true });
   for (const name of ['node_modules', 'vendor']) {
     const from = join(REPO, name);
@@ -1991,9 +2033,31 @@ function stageServer() {
   // Both roots here are copies, so this writes into the scratch tree and never into the
   // subject - the reason a mutation is a file in a staged tree rather than an edit
   // restored afterwards, which would leave a mutated working tree behind any crash.
+  //
+  // **A mutation of a shipped look is data rather than code, and it is delivered here
+  // too.** `presets-builtin/*.json` is a third kind of file this tree stages - not the
+  // server and not a page, but the nine documents the picker offers - and the
+  // completeness arm in section 8 reads them back through `/presets/:name`, so
+  // `shipped-look-drops-a-value` has to reach the directory the server that answers
+  // that route was pointed at.
   if (mutation) {
     writeFileSync(join(root, mutation.file), mutation.body);
   }
+  // The second staging of the shipped looks, where `--builtin-presets` points the mac
+  // server. Outside the staged root on purpose: it makes the fork rows independent of
+  // whether the server happened to resolve its default correctly, which is a different
+  // claim, and it means those rows are driving the flag rather than the fallback.
+  //
+  // **Copied from the staged tree and no longer from the repo, and that is what keeps
+  // the line above the one place a mutation is delivered.** The obvious alternative was
+  // a second `writeFileSync` here for a `presets-builtin/` mutation, and that is exactly
+  // the two-mechanisms shape `docs/proof-tools.md` records this tool collapsing: two
+  // paths writing the same bytes, neither testable apart from the other, and the failure
+  // mode of the one that gets forgotten is silence - the mutated document sitting in a
+  // copy no server was pointed at, every row green, and the run recorded as this tool
+  // having missed a bug it was never shown. Made *from* the tree the mutation lands in,
+  // a copy staged later inherits the delivery by being a copy.
+  cpSync(join(root, 'presets-builtin'), join(WORK, 'builtin-presets'), { recursive: true });
   return root;
 }
 
@@ -2153,6 +2217,7 @@ process.on('exit', stopServers);
  * produced this paragraph.
  */
 async function requireMutationDelivered(base) {
+  if (documentMutation) { await requireDocumentDelivered(base); return; }
   if (!pageMutation) return;
   const file = pageMutation.file.slice('web/'.length);
   const url = `${base}${urlForPageFile(file)}`;
@@ -2182,6 +2247,56 @@ async function requireMutationDelivered(base) {
   console.error('[library] a page mutation that does not arrive leaves the unmutated page under test and every row '
     + 'passing, which reads as this tool having missed a bug it was never shown - so the run stops here rather than '
     + 'reporting one. Either the page moved to a URL PAGE_URLS does not name, or the server stopped serving it.');
+  process.exit(2);
+}
+
+/**
+ * The same refusal for a mutation of a shipped look, which arrives as a document rather
+ * than as a file the browser fetches.
+ *
+ * **The directory this has to prove is not the one `stageServer` writes into.** The nine
+ * looks are staged twice - once inside the root, where a server with no `--builtin-presets`
+ * resolves them, and once beside it, where the mac server is explicitly pointed - and the
+ * completeness arm reads them back off the second one. So "the mutation was written" and
+ * "the mutation is what the picker is served" are two different facts here in a way they
+ * are not for a page, and only the second one is worth anything: a document mutated into a
+ * copy nothing was pointed at leaves the arm comparing the unmutated look against the
+ * registry, green, and the run recorded as this tool having missed a bug it was never
+ * shown. The copy is made from the staged tree precisely so this cannot happen, and this
+ * is what says the copy is still made that way.
+ *
+ * Compared on `rev`, which `DocumentStore.read` computes as the sha256 of the bytes it
+ * read - so this is a byte comparison taken at the far end of the route rather than a
+ * field-by-field one that a re-serialisation would pass. Exit 2 and not a failed
+ * assertion, for the reason the page refusal above gives: a suite that fails one row on a
+ * mutation run reads as a catch.
+ */
+async function requireDocumentDelivered(base) {
+  const name = basename(documentMutation.file, '.json');
+  const url = `${base}/presets/${name}`;
+  const want = `sha256:${createHash('sha256').update(documentMutation.body).digest('hex')}`;
+  let served = null;
+  let status = null;
+  try {
+    const res = await fetch(url);
+    status = res.status;
+    served = await res.json();
+  } catch (err) {
+    served = null;
+    status = err.message;
+  }
+  if (served?.rev === want && served?.builtin === true) {
+    console.log(`[library] ${MUTATE} delivered: ${url} serves the mutated ${basename(documentMutation.file)} `
+      + `(${Buffer.byteLength(documentMutation.body)} bytes, ${want.slice(7, 19)})`);
+    return;
+  }
+  console.error(`[library] refusing to run: ${MUTATE} edits ${documentMutation.file} and ${url} did not answer with it.`);
+  console.error(`[library] the server answered ${status} with rev ${served?.rev?.slice(7, 19) ?? 'nothing'} `
+    + `and builtin=${served?.builtin}, where the staged document hashes to ${want.slice(7, 19)}.`);
+  console.error('[library] a document mutation that does not arrive leaves the shipped look unmutated under a '
+    + 'completeness arm that then passes, which reads as this tool having missed a bug it was never shown - so the '
+    + 'run stops here rather than reporting one. Either the shipped looks stopped being copied out of the staged '
+    + 'tree, or a fork of this name is shadowing the built-in root.');
   process.exit(2);
 }
 
@@ -2405,11 +2520,21 @@ const root = stageServer();
 const nodeUrl = await startServer(root, ['--captures', nodeCaps, '--name', 'pi-01',
   '--presets', join(WORK, 'node-presets'), '--projects', join(WORK, 'node-projects')], NODE_PORT);
 // `--builtin-presets` named explicitly rather than left to resolve beside the staged
-// server, and for two reasons. It points the shipped-look rows at the repo's own
-// `presets-builtin/`, so they sweep the looks the product offers rather than a copy
-// that could have been staged wrong - the "compare what the tool tests against what
-// the product ships" rule. And it is the only caller of the flag: a flag whose sole
+// server, and for two reasons. It puts the shipped-look rows on a directory the flag
+// chose rather than on the one a default happened to find, so those rows are driving the
+// flag rather than the fallback - and it is the only caller of it: a flag whose sole
 // mention is the comment introducing it is a flag nothing proves does anything.
+//
+// **What it points at is a copy staged out of `root`, and that is load-bearing rather
+// than incidental.** It reads like a place to name `presets-builtin/` in the repo, and
+// naming the repo there would put the looks the product ships under these rows at the
+// cost of the whole class of control over them: `stageServer` writes a mutation into the
+// staged tree and never into the subject, so a shipped look mutated for
+// `shipped-look-drops-a-value` would sit in a directory this server was not looking at,
+// the completeness arm would compare the unmutated document against the registry, and the
+// run would come back green over a control that had done nothing. Measured by putting the
+// repo back as that copy's source: the served document hashes 6aaada1b4d4a against the
+// a80e035827ce this run staged, and `requireDocumentDelivered` stops the run naming both.
 const macUrl = await startServer(root, ['--captures', macCaps, '--name', 'mac',
   '--node', nodeUrl, '--node-name', 'pi-01',
   '--presets', join(WORK, 'presets'), '--projects', join(WORK, 'projects'),
@@ -5285,6 +5410,69 @@ async function runChecks() {
     check(shippedNames.length > 0 && eq(listedBuiltin, shippedNames),
       'every look that ships is listed, and says it ships',
       `${listedBuiltin.join(' ')} against ${shippedNames.join(' ')}`);
+
+    // ------------------------------ and each of them describes a *whole* look
+    //
+    // **Applying a preset writes only the keys it names, and that is deliberate.** A
+    // hand-saved subset - just the grain and the bloom - has to layer over whatever the
+    // clip is already wearing, or the subset picker would be a way of resetting every
+    // value you did not ask about. What that costs is paid by the shipped looks: each of
+    // the nine was sparse in a *different* set of keys, so picking `voxel` and then
+    // picking something else left the voxel lattice standing under the new grade, and
+    // 33 of the 72 ordered pairs rendered a different frame in sequence than the same
+    // look rendered alone. A user reported it as "the voxel effect stays".
+    //
+    // So the rule is set equality against `completeLookNames()` - the look tag less its
+    // framing, which is the shot rather than the look - and the two directions are two
+    // rows because they fail for different reasons and each has a control of its own. A
+    // document short of a key is the layering bug above. A document carrying a key the
+    // definition does not ask for is the same drift arriving from the other end: it says
+    // the exclusion has widened underneath the documents, which is what would happen if
+    // framing crept back into that filter, and a "names at least" row cannot see it at
+    // all.
+    //
+    // **The two sides are independent probes rather than one quantity read twice.** The
+    // documents are bytes on disk, enumerated off the directory so a tenth look added
+    // next year is asked by existing; the required set is code, read off the live
+    // registry through the page so a tool spelling the framing exclusion out for itself
+    // would be a second statement of the line, drifting in the direction where this goes
+    // on passing. Fetched through `/presets/:name` - the route the picker uses - rather
+    // than off disk, so what is under test is what the program is served.
+    const required = await page.evaluate('globalThis.__kinect.completeLookNames()');
+    const shippedDocs = [];
+    for (const name of shippedNames) {
+      let values = null;
+      try {
+        const doc = await getJson(`${macUrl}/presets/${name}`);
+        if (doc?.body?.values && typeof doc.body.values === 'object') values = doc.body.values;
+      } catch { /* an answer that is not a document is a document that did not come back */ }
+      shippedDocs.push({ name, values });
+    }
+    const readable = shippedDocs.filter((d) => d.values !== null);
+    // The floor, and it fails where neither row below can: a look that 404s or answers
+    // something that is not a document simply drops out of both comparisons, so a run
+    // with nothing readable would report set equality over the empty set. The required
+    // count is printed rather than asserted - a registry that answered with nothing is
+    // the extras row's to catch, where every key in every document is one it did not ask
+    // for.
+    check(readable.length === shippedNames.length && readable.length > 0,
+      'and each of them comes back through the route the picker reads, so the two rows below compare something',
+      `${readable.length} of ${shippedNames.length} documents read, against ${required.length} values the registry says a whole look is`);
+
+    const say = (rows) => rows.map((r) => `${r.name}: ${r.keys.slice(0, 6).join(' ')}`
+      + `${r.keys.length > 6 ? ` (+${r.keys.length - 6} more)` : ''}`).join('; ');
+    const missing = readable
+      .map((d) => ({ name: d.name, keys: required.filter((n) => !Object.hasOwn(d.values, n)) }))
+      .filter((d) => d.keys.length > 0);
+    check(missing.length === 0,
+      'every look that ships names every value the registry says a whole look is',
+      missing.length ? say(missing) : `all ${readable.length} name all ${required.length}`);
+    const extra = readable
+      .map((d) => ({ name: d.name, keys: Object.keys(d.values).filter((k) => !required.includes(k)) }))
+      .filter((d) => d.keys.length > 0);
+    check(extra.length === 0,
+      'and none of them names a value that is not one of those',
+      extra.length ? say(extra) : `all ${readable.length} name nothing beyond the ${required.length}`);
 
     // The fork. Written through the same route a save uses, because the claim is about
     // that route rather than about a helper.

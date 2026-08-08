@@ -137,6 +137,21 @@ match-exactly-once refusal stops it, a stale anchor that predates this and is tr
 The control for the delivery refusal is to stop staging `web/` files and run a page mutation:
 it names the file, the URL and both byte counts, and exits 2 without printing an assertion.
 
+**There are three kinds of mutation now, not two, and the third arrived with the same hole the
+other two were collapsed to close.** A *document* mutation edits a file under
+`presets-builtin/`, and the mac server reads its shipped looks through `--builtin-presets`,
+which points at `WORK/builtin-presets` — a directory that was copied straight from the repo.
+So a mutation written into the staged root landed somewhere nothing served: the arm would have
+compared the *unmutated* document against the registry and the run would have come back green,
+which is the silent-delivery shape this page already carries two entries about. It is closed
+the same way rather than with a second write: `WORK/builtin-presets` is now a copy of the
+staged root taken *after* the mutation lands, so "one place a mutation is delivered" stays
+literally true. `requireDocumentDelivered` is the exit-2 sibling of `requireMutationDelivered`
+and holds the served `rev` — the sha256 `DocumentStore.read` computed over the bytes it read —
+against the hash of the staged file. Its control is to point that copy back at the repo and run
+`--mutate shipped-look-drops-a-value`: exit 2, zero assertions, `rev 6aaada1b4d4a … staged
+a80e035827ce`, where without the refusal the same state is a green run.
+
 ## What each tool needs
 
 **`determinism-check --clock`** refuses a rev whose `main.js` already contains the transport,
