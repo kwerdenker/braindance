@@ -5408,24 +5408,15 @@ let retiringBitmap = null;
 let streamDetached = false;
 
 function setStatus() {
-  const rate = document.createElement('b');
-  rate.textContent = fps.toFixed(0);
-  const nodes = [
-    document.createTextNode(sensorLabel),
-    document.createElement('br'),
-    rate,
-    document.createTextNode(' fps in'),
-  ];
   if (sensorState) {
     const note = document.createElement('span');
     note.textContent = sensorState;
     note.style.color = '#e8a33d';
-    nodes.push(document.createElement('br'), note);
-  }
-  statusEl.replaceChildren(...nodes);
-  if (appStatusEl) {
-    appStatusEl.textContent = `${sensorLabel}${sensorLabel ? ' · ' : ''}${rate.textContent} fps in`
-      + (sensorState ? ` · ${sensorState}` : '');
+    statusEl.replaceChildren(note);
+    if (appStatusEl) appStatusEl.textContent = sensorState;
+  } else {
+    statusEl.replaceChildren();
+    if (appStatusEl) appStatusEl.textContent = '';
   }
 }
 
@@ -10791,21 +10782,6 @@ function applyStoredPreset(doc) {
 }
 
 /**
- * What a surface says after an apply, in one place because there are two surfaces and
- * they were already saying it twice.
- *
- * A partial apply has no revision to print - there is no stamp, and printing the one
- * the clip is still carrying would attribute this gesture to a document that had
- * nothing to do with it - so what it reports is what it did: how much of the look came
- * out of the file.
- */
-function presetAppliedNote(name, applied) {
-  return applied.stamped
-    ? `applied ${name} · ${appliedPreset.rev.slice(7, 15)}`
-    : `applied ${applied.written} of ${applied.look} values from ${name}`;
-}
-
-/**
  * The documents of one kind, or the server's reason there are none.
  *
  * This used to reach straight through `res.json()` for `[kind]`, which reads a 500 as
@@ -10985,8 +10961,7 @@ function choosePicker(picker, name, { close = false } = {}) {
     if (name) {
       withPresetGesture(picker.note ?? ui.note, () => whileWriting(async () => {
         try {
-          const applied = applyStoredPreset(await (await fetch(`/presets/${encodeURIComponent(name)}`)).json());
-          say(presetAppliedNote(name, applied));
+          applyStoredPreset(await (await fetch(`/presets/${encodeURIComponent(name)}`)).json());
         } catch (err) {
           showTimelineError(err);
         }

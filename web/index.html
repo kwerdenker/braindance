@@ -731,6 +731,8 @@
   .tchip button[disabled] { color: var(--dim); cursor: default; }
   .tchip.warn, #tNote { border-color: var(--warn); color: var(--warn); }
   #tNote:empty, #tExportNote:empty { display: none; }
+  #tResume { border: none; background: none; padding: 0; }
+  #tResumeOpen { padding: 5px 10px; }
   /* `hidden` on a chip, which needs saying because `.tchip` already sets a display and
      an author rule beats the `[hidden] { display: none }` in the browser's own sheet.
      Without this a chip marked hidden stays on screen with nothing in it, which is the
