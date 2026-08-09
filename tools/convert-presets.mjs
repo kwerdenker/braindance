@@ -96,12 +96,30 @@ const READING_DETAIL = {
   blackwallSweep: 0.28,
 };
 
+/**
+ * The duotone's ramp width, which is here for `READING_DETAIL`'s reason and needs its
+ * own paragraph because the honest value is less obvious than the seven above.
+ *
+ * Version 3 had no such parameter and no way to name one: the ramp ran the whole clip
+ * range, and a preset carries no clip range, so what a version 3 document rendered
+ * depended on wherever the session's near and far happened to sit. There is no literal
+ * that reproduces all of those. 5.95 reproduces the one that can be assumed - the
+ * default range, 0.05 to 6 - which is the same assumption the seven constants above
+ * make when they freeze a literal rather than reading today's default.
+ *
+ * Omitting it would be worse than assuming, and for the reason this whole table exists:
+ * `applyStoredPreset` leaves an unnamed value where the session left it, so a converted
+ * preset applied after somebody had pulled the span to 1.2m would render at 1.2m and not
+ * be the look it was saved as.
+ */
+const DUOTONE_SPAN = { duotoneSpan: 5.95 };
+
 // Everything version 4 added, for a document that named the mode `mode`. Spread ahead
 // of the document's own values at both call sites, so anything the file itself carries
 // still wins - a hand-edited `ghostRim` is a value somebody chose, in range, and
 // visible in the file, which is the opposite of the reading names `refuseReserved`
 // stops because those have no honest precedence at all.
-const newInVersion4 = (mode, what) => ({ ...readingsFrom(mode, what), ...READING_DETAIL });
+const newInVersion4 = (mode, what) => ({ ...readingsFrom(mode, what), ...READING_DETAIL, ...DUOTONE_SPAN });
 
 /**
  * A version 3 document may not already name a reading, and this is a refusal rather

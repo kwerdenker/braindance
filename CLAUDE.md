@@ -108,6 +108,8 @@ node tools/registry-check.mjs --mutate mix-ignores-normalisation  # ... and must
 node tools/registry-check.mjs --mutate rgb-contributes-no-alpha   # ... and must FAIL mutated
 node tools/registry-check.mjs --mutate duotone-ignored            # ... the tonal transform the rest of the look sits on
 node tools/registry-check.mjs --mutate duotone-ignores-depth      # ... and that it is keyed on depth, which is the whole claim
+node tools/registry-check.mjs --mutate duotone-span-ignored       # ... the width of that key, promoted back to the literal it replaced
+node tools/registry-check.mjs --mutate duotone-span-against-a-frozen-range # ... and that the width is metres, which only two clip ranges at once can see
 node tools/registry-check.mjs --mutate duotone-hue-in-degrees     # ... a unit no picture comparison can see the shape of
 node tools/registry-check.mjs --mutate vspeed-ignored             # ... the motion half of the same transform, and the speed it keys on
 node tools/registry-check.mjs --mutate vspeed-unnormalised        # ... that the speed is a rate, which only two planted spans can see

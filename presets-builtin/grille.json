@@ -54,6 +54,7 @@
     "duotoneDepth": 0.6,
     "duotoneHue": 0,
     "duotoneSplit": 0.45,
+    "duotoneSpan": 5.95,
     "duotoneMotion": 0,
     "bloom": 0.55,
     "trails": 0.4,

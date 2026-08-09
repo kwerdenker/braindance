@@ -162,9 +162,38 @@ const MUTATIONS = {
   // cannot draw the silhouette this parameter exists for, which is exactly the shape of
   // failure that ships looking like a control that works.
   'duotone-ignores-depth': {
-    from: '    float k = smoothstep(duotoneSplit - 0.5, duotoneSplit + 0.5, t);',
+    from: '    float k = smoothstep(duotoneSplit - w * 0.5, duotoneSplit + w * 0.5, t);',
     to: '    float k = 0.5;',
-    fails: 'duotoneSplit in the drop-one sweep, alone - the amount and the hue still reach pixels',
+    fails: 'duotoneSplit and duotoneSpan in the drop-one sweep - the amount and the hue still '
+      + 'reach pixels, and the span goes with the split because the ramp it widens is gone - '
+      + 'plus the metre section\'s control row, since a ramp replaced by a constant cannot be '
+      + 'widened either',
+  },
+  // The ramp's width promoted back to the literal it replaced, so the span is a slider that
+  // lands in a uniform nothing reads. The plain shape, and the drop-one sweep is what sees
+  // it: a parameter whose picture never changes when you take it away.
+  'duotone-span-ignored': {
+    from: '    float w = duotoneSpan / max(0.001, farClip - nearClip);',
+    to: '    float w = 1.0;',
+    fails: 'duotoneSpan in the drop-one sweep - every other duotone term still reaches pixels, '
+      + 'since the ramp goes on running at the width it had before this parameter - and the whole '
+      + 'of the metre section, whose two invariance rows read a ramp that is once again a share '
+      + 'of the box and whose control row cannot widen it',
+  },
+  // **The one that matters, and it is built so the sweep above cannot see it.** The span is
+  // divided by a frozen 5.95 instead of by the clip range the picture is actually normalised
+  // against - so at the default range the two are the same number, every image in the sweep
+  // is bit-identical, and the parameter goes on proving it reaches pixels. What breaks is the
+  // only claim this change makes: that the ramp is a distance. Move `far` and the mutated
+  // build re-grades every point while the shipped one holds still, which is the coupling this
+  // parameter was added to remove, reinstated in a form nothing that renders one range can
+  // detect.
+  'duotone-span-against-a-frozen-range': {
+    from: '    float w = duotoneSpan / max(0.001, farClip - nearClip);',
+    to: '    float w = duotoneSpan / 5.95;',
+    fails: 'the duotone span\'s two invariance rows, which render the same take at two clip '
+      + 'ranges and hold the graded band still in metres - and nothing else, because at the '
+      + 'default range this mutation is the shipped arithmetic',
   },
   // The speed never computed, so the motion half of the duotone has nothing to key on.
   // This is the plain one: a parameter whose slider moves, whose uniform lands and whose
@@ -660,6 +689,7 @@ const LANDING = {
   // too far, which is a look nobody authored arriving through a slider that works.
   duotoneHue: 'k.uniforms.duotoneHue.value',
   duotoneSplit: 'k.uniforms.duotoneSplit.value',
+  duotoneSpan: 'k.uniforms.duotoneSpan.value',
   duotoneMotion: 'k.uniforms.duotoneMotion.value',
   bloom: '[k.bloom.strength, k.bloom.enabled]',
   trails: '[k.afterimage.uniforms.damp.value, k.afterimage.enabled]',
@@ -798,6 +828,11 @@ const EXPECT = {
   // implementation by construction and could never see a wrong one.
   duotoneHue: (v) => v * (Math.PI / 180),
   duotoneSplit: (v) => v,
+  // Metres straight through, which is the whole of what this landing has to say: the
+  // conversion into the ramp's own units happens in the shader against the clip range,
+  // so an apply that divided here would be doing it twice and against a range the
+  // document may not still have by the time the frame is drawn.
+  duotoneSpan: (v) => v,
   duotoneMotion: (v) => v,
   bloom: (v) => [v, v > 0],
   trails: (v) => [v, v > 0],
@@ -1025,6 +1060,15 @@ const SCRAMBLE = {
   // of 0.35/4.2, so a split at 0.36 puts the meeting plane inside the subject where the
   // default at 0.5 puts it behind them.
   duotoneSplit: 0.36,
+  // A ramp much steeper than the default one, because the default is what has to be
+  // observable against. `near`/`far` above make the range 3.85m, so the default span of
+  // 5.95m already runs wider than the box - the crossing is spread over the whole cloud
+  // and then some - and 1.15m puts it inside about a third of the range instead. Reverting
+  // this parameter therefore flattens a visible edge rather than nudging one, which is
+  // what the drop-one sweep needs and what a value near the default would not give.
+  //
+  // On the 0.05 grid and nobody's round number, for the reason `duotoneHue`'s 47 is.
+  duotoneSpan: 1.15,
   // Well up, because what it has to be observable against is the depth key beside it: at
   // the split above, the middle of this cloud sits at a k of about 0.56, so there is room
   // above it for a moving point to be pushed into and reverting this parameter takes that
@@ -1504,7 +1548,17 @@ const GOLDEN_ABSENT = new Set([
   // where the block is entered with the depth up and a pair carrying real motion, and the
   // frame at a motion of 0 has to come back bit-identical to the frame with no motion in
   // it at all.
-  'duotoneDepth', 'duotoneHue', 'duotoneSplit', 'duotoneMotion',
+  //
+  // **`duotoneSpan` is excused on the strongest version of these terms and is the only one
+  // of the five that can say so.** The rest are excused because the pinned revision has no
+  // such control; this one is excused because its default *is* the arithmetic that
+  // revision ran. The ramp used to span the clip range, and the default here is the clip
+  // range's own default width, so the division that converts it lands on exactly 1.0 and
+  // the expression is the one the pinned build compiled. That is a claim about two float
+  // literals rounding to the same value rather than about the derivation, so it is not
+  // taken on trust: the commit that added this parameter carries the five readings'
+  // hashes either side of the change, and section 1b is where a drift in it would show.
+  'duotoneDepth', 'duotoneHue', 'duotoneSplit', 'duotoneSpan', 'duotoneMotion',
   // `crush` is here on `vignette`'s terms turned the other way up, and the contrast is
   // the reason it gets its own sentence. It was a literal too, and unlike the vignette it
   // *keeps* the value it replaced - so the excuse is the strong one rather than the
@@ -3254,6 +3308,123 @@ console.log('\n[registry] and the span it is divided by is the gap between the b
   check(new Set(spans.map((s) => s.want)).size > 1,
     'and no two of those gaps are the same, so a constant cannot satisfy the row above',
     `${new Set(spans.map((s) => s.want)).size} distinct gaps in ${spans.length} pairs`);
+}
+
+// The duotone's ramp is a distance, and this is the only section that can say so.
+//
+// **Nothing above this line can.** Every arm in this file renders at one clip range, and
+// `duotoneSpan` reaches the pixels through `duotoneSpan / (farClip - nearClip)` - so a
+// build dividing by a frozen 5.95 instead produces the identical number at the default
+// range, lands the parameter in its uniform, moves the picture when it is reverted, and
+// satisfies the drop-one sweep completely. What it gets wrong is only visible from two
+// ranges at once, which is what this section is: the whole point of the parameter is that
+// the grade stopped following the framing, and a probe that never moves a crop face is a
+// probe placed where its answer cannot be different.
+//
+// **The crossing plane is held at 1.5m in both arms while the range changes underneath
+// it**, which is what makes the comparison about the width alone. `duotoneSplit` is a
+// fraction of the range by design, so the two arms name different splits to describe the
+// same plane - 0.5 through 0.5..2.5m and 0.25 through 0.5..4.5m. Every number here is
+// exact in float32, on the planted section's reasoning: a row asking for equality cannot
+// afford two quotients landing an ulp apart.
+//
+// The walls sit at 1.25m and 1.75m, a quarter of the way out from the plane on each side
+// of a 1m ramp. Not on the plane itself, which is where the two builds agree by
+// construction - k is 0.5 there whatever the width - and not outside the ramp either,
+// where the shipped build saturates and the difference would be a clamp rather than a
+// reading.
+console.log('\n[registry] the duotone span is metres, held across two clip ranges');
+{
+  const PLANE_M = 1.5;
+  const SPAN_M = 1;
+  const RANGES = [
+    { near: 0.5, far: 2.5 },
+    { near: 0.5, far: 4.5 },
+  ].map((r) => ({ ...r, split: (PLANE_M - r.near) / (r.far - r.near) }));
+  const WALLS_MM = [1250, 1750];
+
+  // One planted wall, read through a duotone at a stated range, span and split. The
+  // planting idiom is the section above's - `injectDepth` twice because `bindDepth` swaps
+  // and writes, and nothing may call `stepTo` afterwards or the transport binds real
+  // frames over the plant.
+  const wallAt = ({ mm, near, far, split, span }) => page.evaluate(`(async () => {
+    ${PAGE_HELPERS}
+    k.params.reset();
+    k.params.apply({ duotoneDepth: 1, fade: 0, wake: 0,
+      near: ${near}, far: ${far}, duotoneSplit: ${split}, duotoneSpan: ${span} });
+    k.drive.reset();
+    pinCamera(k.freeCamera);
+    const plane = new Uint16Array(512 * 424).fill(${mm});
+    k.drive.injectDepth(plane);
+    k.drive.injectDepth(plane);
+    k.uniforms.mixT.value = 1;
+    k.uniforms.sinceFrameSec.value = 0;
+    k.uniforms.spanSec.value = 0.25;
+    k.renderer.render(k.scene, k.freeCamera);
+    const px = k.drive.readPixels();
+    let red = 0, lit = 0;
+    for (let i = 0; i < px.length; i += 4) {
+      red += px[i];
+      if (px[i] + px[i + 1] + px[i + 2] > 12) lit++;
+    }
+    const n = px.length / 4;
+    return { hash: await sha256(px), red: red / n, lit: lit / n };
+  })()`);
+
+  const shots = [];
+  for (const range of RANGES) {
+    const row = [];
+    for (const mm of WALLS_MM) row.push(await wallAt({ mm, ...range, span: SPAN_M }));
+    shots.push(row);
+  }
+
+  // The guard the equalities stand on, and it is the planted section's lesson repeated
+  // because it has to be: two black frames are equal, and every row below this one is an
+  // equality. A wall that failed to plant, or a clip range that culled it, would satisfy
+  // all of them.
+  const dimmest = Math.min(...shots.flat().map((s) => s.lit));
+  check(dimmest > 0.2,
+    'both walls render at both ranges, so the rows below are comparing pictures rather than black',
+    `${shots.map((row, i) => row.map((s, j) => `${WALLS_MM[j]}mm at far ${RANGES[i].far}: `
+      + `${(100 * s.lit).toFixed(1)}% lit, red ${s.red.toFixed(2)}`).join('; ')).join(' | ')}`);
+
+  // The second guard, and the sharper one: the probe has to be able to see the span at
+  // all. A build whose ramp had collapsed to a step would render both walls saturated at
+  // opposite poles and match across the ranges for a reason that has nothing to do with
+  // metres - so the two walls are required to be genuinely mid-ramp and distinct.
+  const [nearWall, farWall] = shots[0];
+  check(farWall.red - nearWall.red > 2 && nearWall.red > 0 && farWall.red < 255,
+    'and the two walls land either side of the crossing without saturating, so the ramp is being read',
+    `1250mm mean red ${nearWall.red.toFixed(2)}, 1750mm ${farWall.red.toFixed(2)}`);
+
+  // The claim. A metre from the crossing plane is a metre at either range, so the wall
+  // renders the same colour in both - and it is asserted as a bit-identical frame rather
+  // than as two means within a tolerance, because the geometry, the pose and the plant are
+  // all identical between the arms and only three uniforms differ. A build dividing by a
+  // frozen range renders 1250mm fully cold at far 2.5 and part-way up the ramp at far 4.5,
+  // which is where this goes red.
+  for (const [j, mm] of WALLS_MM.entries()) {
+    const a = shots[0][j], b = shots[1][j];
+    check(a.hash === b.hash,
+      `a wall ${((mm / 1000 - PLANE_M) * 100).toFixed(0)}cm from the crossing renders the same `
+      + `through a ${(RANGES[0].far - RANGES[0].near).toFixed(1)}m range and a `
+      + `${(RANGES[1].far - RANGES[1].near).toFixed(1)}m one`,
+      a.hash === b.hash
+        ? `mean red ${a.red.toFixed(2)} at both, ${a.hash.slice(0, 12)}`
+        : `${a.hash.slice(0, 12)} at far ${RANGES[0].far} against ${b.hash.slice(0, 12)} at far `
+          + `${RANGES[1].far}; mean red ${a.red.toFixed(2)} against ${b.red.toFixed(2)}, so the `
+          + 'ramp is a share of the box rather than a distance');
+  }
+
+  // And the control for those two, which is the row that stops them passing on a build
+  // where the span reaches nothing: widen the ramp at one fixed range and the same wall
+  // has to move. Two frames that agree prove the width is invariant under the range; this
+  // is what proves the width exists.
+  const wide = await wallAt({ mm: WALLS_MM[1], ...RANGES[0], span: 3 });
+  check(wide.hash !== shots[0][1].hash,
+    'while widening the ramp at one range does move it, so the equalities above are not '
+    + 'a parameter that reaches nothing',
+    `${SPAN_M}m gives mean red ${shots[0][1].red.toFixed(2)}, 3m gives ${wide.red.toFixed(2)}`);
 }
 
 // ------------------------------------------------------------------- verdict

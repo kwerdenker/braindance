@@ -367,6 +367,19 @@ geometry.setAttribute('aSlot', new THREE.BufferAttribute(slotAttr, 1));
 geometry.setDrawRange(0, POINTS);
 geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, -3), 12);
 
+// The depth pair's defaults, named once because three separate things now have to
+// agree about them: the uniform below, the registry entry that overwrites it at boot,
+// and `DUOTONE_SPAN_DEFAULT` beneath, which is the span the duotone's ramp covers when
+// nothing has asked for another one.
+//
+// **Naming them is a repair rather than tidiness.** The uniforms carried 0.5 and 4.5
+// while the registry carried 0.05 and 6, and the registry won at boot - so the two
+// numbers in this file that looked like the clip range were a range no build has opened
+// at since the registry existed, sitting where anybody reading the shader's neighbours
+// would take them for the answer.
+const CLIP_NEAR_DEFAULT = 0.05;
+const CLIP_FAR_DEFAULT = 6;
+
 const uniforms = {
   depthPrev: { value: depthPrev },
   depthCurr: { value: depthCurr },
@@ -400,8 +413,8 @@ const uniforms = {
   pointSize: { value: 9 },
   opacity: { value: 1 },
   exposure: { value: 1.15 },
-  nearClip: { value: 0.5 },
-  farClip: { value: 4.5 },
+  nearClip: { value: CLIP_NEAR_DEFAULT },
+  farClip: { value: CLIP_FAR_DEFAULT },
   // The four lateral faces of the box `nearClip`/`farClip` already close in depth.
   // Metres in the sensor frame, and absolute plane positions rather than insets from
   // an edge, because the sensor's frame widens with depth and an inset would have to
@@ -548,6 +561,32 @@ const uniforms = {
   duotoneDepth: { value: 0 },
   duotoneHue: { value: 0 },
   duotoneSplit: { value: 0.5 },
+  // How many metres the ramp between the two poles takes, and it is in metres for the
+  // one reason worth having: without it the ramp's width *was* the clip range, so the
+  // grade was a function of how tightly the crop box happened to be shut.
+  //
+  // That coupling is easy to defend and was wrong in use. `t` is the point's position
+  // inside `nearClip`..`farClip`, and the ramp used to run the whole unit interval, so
+  // opening the box flattened the duotone and closing it steepened one. Measured on
+  // 2026-08-07-take1, whose cloud sits between 0.58m and 3.73m at p5 and p95: against
+  // the default range the visible cloud only reaches `t` 0.62, so the hot pole is
+  // unreachable and the grade sits in the cold third of its own travel. Getting the
+  // toning back meant shutting the far plane onto the subject and throwing the back of
+  // the room away - a framing decision the grade had no business forcing.
+  //
+  // **The split stays a fraction and only the width becomes a distance**, which is a
+  // split down the middle of one parameter rather than an inconsistency. Where the poles
+  // meet is a place in the room, and a place is what the crop box already describes, so
+  // it should move when the box does. How fast the picture crosses between them is a
+  // property of the look, and a look that had to be re-tuned every time a face moved is
+  // the thing being removed.
+  //
+  // The default is the clip range's own width, so a document that names nothing renders
+  // what it rendered before this existed. That identity is a property of these two
+  // literals rather than of the subtraction - `6.0f - 0.05f` and `5.95f` happen to round
+  // to the same float32 - so it is measured rather than argued: see the commit that
+  // introduced this, which carries the five readings' hashes either side of the change.
+  duotoneSpan: { value: CLIP_FAR_DEFAULT - CLIP_NEAR_DEFAULT },
   duotoneMotion: { value: 0 },
   stateTex: { value: statePrev.texture },
   fadeTime: { value: 0.12 },
@@ -1039,7 +1078,7 @@ precision highp float;
 uniform sampler2D colorPrev, colorCurr;
 uniform float opacity, exposure, nearClip, farClip, mixT, time;
 uniform float scanAmount, rimAmount, thermal, edges;
-uniform float duotoneDepth, duotoneHue, duotoneSplit, duotoneMotion;
+uniform float duotoneDepth, duotoneHue, duotoneSplit, duotoneSpan, duotoneMotion;
 uniform float readRgb, readDepth, readGhost, readContour, readBlackwall;
 uniform float rgbSaturation, depthGamma, ghostRim, ghostFill;
 uniform float contourBands, contourLo, contourHi, blackwallSweep;
@@ -1313,9 +1352,16 @@ void main() {
   //
   // Read off t, the point's position inside the near/far clip range, so the split is a
   // place in the room the way the crop faces are and not a fraction of a frame. The split
-  // is where the two poles meet, with the ramp spanning the clip range either side of it -
-  // at the default of 0.5 that is exactly a smoothstep from zero to one over t, and moving
-  // it decides which half of the room the subject falls in.
+  // is where the two poles meet and moving it decides which half of the room the subject
+  // falls in.
+  //
+  // **How wide the ramp is either side of that is a distance rather than a share of the
+  // box**, which is what duotoneSpan buys and why the division below exists. t is already
+  // normalised by the clip range, so a ramp stated in t is a ramp whose metres change
+  // every time a crop face moves - the grade would follow the framing, and shutting the
+  // far plane to steepen the toning would be the only way to steepen it. Dividing the span
+  // by the range converts metres back into t's units at the width the look asked for, and
+  // the long note beside the uniform carries what that was measured to cost.
   //
   // Guarded, and the shape was measured rather than chosen. Both shapes are arithmetically
   // clean here, which is not obvious and is worth writing down: a mix at zero is a plus
@@ -1331,7 +1377,8 @@ void main() {
   if (duotoneDepth > 0.0) {
     vec3 cold = hueSpin(vec3(0.020, 0.030, 0.075), duotoneHue);
     vec3 heat = hueSpin(vec3(1.000, 0.380, 0.120), duotoneHue);
-    float k = smoothstep(duotoneSplit - 0.5, duotoneSplit + 0.5, t);
+    float w = duotoneSpan / max(0.001, farClip - nearClip);
+    float k = smoothstep(duotoneSplit - w * 0.5, duotoneSplit + w * 0.5, t);
     // The motion half of the same transform, and it is the same two poles rather than a
     // second palette laid over them: depth decides where the room falls between cold and
     // hot, and this pushes whatever is moving through the room toward the hot end of it.
@@ -2860,10 +2907,10 @@ const PARAMS = {
   roll: { def: 0, min: -180, max: 180, step: 0.5, kind: 'scalar', tag: 'look',
     group: 'framing', label: 'roll',
     apply: (v) => { worldTiltAngles.roll = v; applyWorldTilt(); } },
-  near: { def: 0.05, min: 0.05, max: 9.5, step: 0.05, kind: 'scalar', tag: 'look',
+  near: { def: CLIP_NEAR_DEFAULT, min: 0.05, max: 9.5, step: 0.05, kind: 'scalar', tag: 'look',
     group: 'framing', label: 'near',
     apply: (v) => { uniforms.nearClip.value = v; } },
-  far: { def: 6, min: 0.05, max: 9.5, step: 0.05, kind: 'scalar', tag: 'look',
+  far: { def: CLIP_FAR_DEFAULT, min: 0.05, max: 9.5, step: 0.05, kind: 'scalar', tag: 'look',
     group: 'framing', label: 'far',
     apply: (v) => { uniforms.farClip.value = v; } },
 
@@ -3247,6 +3294,26 @@ const PARAMS = {
   duotoneSplit: { def: 0.5, min: 0, max: 1, step: 0.01, kind: 'scalar', tag: 'look',
     group: 'style', label: 'duotone split',
     apply: (v) => { uniforms.duotoneSplit.value = v; } },
+  // And how many metres the crossing between the poles takes, which is the one term here
+  // stated in the room's units rather than as a share of the clip range. The uniform
+  // carries why; what belongs beside the entry is the range.
+  //
+  // The floor is 0.2m rather than zero because zero is a hard edge and the ramp already
+  // has one at 0.2 for anything a sensor this noisy can resolve - the jitter is about 4mm
+  // per sample, so a crossing inside a couple of centimetres is a threshold with speckle
+  // on it rather than a gradient. The ceiling is the full 9.5m the depth sliders reach,
+  // so a ramp can always be opened wider than anything the box can hold, which is what
+  // "the grade does not follow the framing" has to mean at the top end.
+  //
+  // **The default is the default clip range, and it is derived rather than typed.** At
+  // that value `duotoneSpan / (farClip - nearClip)` is 1.0 on an untouched document and
+  // the expression is the one this replaced, term for term - so nine shipped looks and
+  // every saved project render what they rendered. Deriving it means the three defaults
+  // cannot drift apart silently; it does not make the identity exact on its own, which is
+  // why the commit carries hashes rather than this comment carrying an argument.
+  duotoneSpan: { def: CLIP_FAR_DEFAULT - CLIP_NEAR_DEFAULT, min: 0.2, max: 9.5, step: 0.05, kind: 'scalar', tag: 'look',
+    group: 'style', label: 'duotone span m',
+    apply: (v) => { uniforms.duotoneSpan.value = v; } },
   // The fourth of them, and the one that is not a fact about where a point is. It keys
   // the same two poles on how fast a point is moving along the sensor's axis, so a room
   // graded by distance gets whatever is moving through it in the hot pole - which is the
