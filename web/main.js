@@ -5400,6 +5400,13 @@ const history = {
 let framesSeen = 0;
 let lastFpsAt = performance.now();
 let fps = 0;
+
+// Viewport FPS: how fast renderProgramFrame is actually running, regardless of whether
+// the source is live or recorded. The sensor fps above tracks arrivals over the socket;
+// this tracks what the user sees.
+let viewportRenders = 0;
+let lastViewportFpsAt = performance.now();
+let viewportFps = 0;
 let sensorLabel = '';
 let sensorState = '';
 let decodeBusy = false;
@@ -6413,6 +6420,14 @@ let frameSink = null;
 // than running it repeatedly at earlier positions and throwing the results away.
 function renderProgramFrame(t) {
   counters.renders++;
+  // Viewport fps: count renders per second so the stats panel shows actual redraw rate.
+  viewportRenders++;
+  const now = performance.now();
+  if (now - lastViewportFpsAt >= 1000) {
+    viewportFps = (viewportRenders * 1000) / (now - lastViewportFpsAt);
+    viewportRenders = 0;
+    lastViewportFpsAt = now;
+  }
   chromeStale = true;
   evaluating = true;
   try {
@@ -12476,7 +12491,7 @@ function drawChrome() {
   // ── stats overlay, below the top-down view or in its place when hidden.
   if (statsVisible) {
     const statsY = topViewVisible ? rect.y + rect.h + INSET.margin : rect.y;
-    const statsH = 156;
+    const statsH = 167;
     const statsRect = { x: rect.x, y: statsY, w: rect.w, h: statsH };
 
     chromeCtx.fillStyle = 'rgba(13, 16, 20, 0.92)';
@@ -12495,11 +12510,18 @@ function drawChrome() {
     chromeCtx.fillStyle = '#6d7683';
     chromeCtx.fillText('PERF', col1, y);
     chromeCtx.fillStyle = '#e8ecf1';
-    chromeCtx.fillText(`${fps.toFixed(1)} fps`, col2, y); y += lineH;
+    chromeCtx.fillText(`${viewportFps.toFixed(1)} fps`, col2, y); y += lineH;
     chromeCtx.fillStyle = '#6d7683';
     chromeCtx.fillText('renders', col1, y);
     chromeCtx.fillStyle = '#e8ecf1';
     chromeCtx.fillText(`${counters.renders}`, col2, y); y += lineH;
+    if (timeline) {
+      const footageFps = timeline.source.count / timeline.source.duration;
+      chromeCtx.fillStyle = '#6d7683';
+      chromeCtx.fillText('footage', col1, y);
+      chromeCtx.fillStyle = '#e8ecf1';
+      chromeCtx.fillText(`${footageFps.toFixed(1)} fps`, col2, y); y += lineH;
+    }
     chromeCtx.fillStyle = '#6d7683';
     chromeCtx.fillText('frames in', col1, y);
     chromeCtx.fillStyle = '#e8ecf1';
