@@ -158,6 +158,24 @@ rather than an error. `minDepth` and `maxDepth` say how much of the world the fi
 allowed to contain, and the editor paints its preview range from them. `lowLight` says
 whether the colour camera was run long-exposure.
 
+**`startedAt` means one thing on the wire and a narrower thing in a file, and the difference
+is the whole reason the field works.** The grabber says hello once per process, so the value
+it sends is when *the grabber* came up. Written straight through, that put a byte-identical
+date on every take of a session and none of them was when its own take was shot — two takes
+nine minutes apart came back indistinguishable, on the one field the gallery sorts and prints.
+So `Recorder.open` replaces it: the hello it writes into a take carries when *that take*
+began, which is the clock it already has to stamp the take with anyway. On the wire the key
+is the session's; in a `.knct` it is the take's, and a take is the only thing a file is about.
+
+The key is reused rather than joined by a second one, and that is a deliberate trade. One
+reader consumes it — `describeTake`, for `capturedAt` — so there is no caller that could want
+the session start out of a file and get the take start instead. A new key would have been the
+tidier spelling and it would have had to be emitted by `native/grabber.cpp` to satisfy
+`syntax-check`'s hello-key comparison, which would mean the C++ emitting a field only the Node
+recorder can fill in. Takes shot before this carry the session stamp and nothing in the file
+distinguishes them from takes shot after, so their dates stay as they were: wrong in the same
+way, and not detectable without a marker that was deliberately not added.
+
 **Type 3 is live-only, so "byte-identical" means identical to the type 1 and 2 subsequence.**
 The colour message is dropped at the recorder, because a third message type in the file would
 move every take's content hash, which is the key the library joins two machines on.
