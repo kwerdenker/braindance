@@ -6504,9 +6504,70 @@ function advanceNavigation(t) {
   lastNavTime = t;
 }
 
+/**
+ * How often the live cloud is allowed to be drawn, in hertz.
+ *
+ * **This is a capture-rate control wearing a rendering control's clothes, and the
+ * measurement is the only reason to believe that.** On the capture node the depth solve
+ * and this cloud are the same GPU: libfreenect2 is built on OpenGL here because the
+ * Pi's V3D has no OpenCL, so `OpenGLDepthPacketProcessor` and `renderProgramFrame`
+ * queue behind each other. The sensor delivers on a 33.3ms interval and the processor
+ * drops the packet it is still busy for, which makes delivered frames a step function
+ * of solve time rather than a slope: under 33.3ms every frame lands, over it every
+ * other frame is lost and the take is written at half rate.
+ *
+ * Measured on the Pi, two interleaved rounds of 35s settle and a 40s window, eight
+ * samples an arm, `clients=1` in both so a viewer was genuinely attached:
+ *
+ *     drawing at the display's rate   44.6ms solve   15.13 fps delivered
+ *     not drawing at all              29.7ms solve   24.07 fps delivered
+ *
+ * So the drawing is the cost, and it is the *rate* of drawing rather than the amount
+ * of data drawn. That distinction is what the monitor's own `depth ÷` and `every Nth`
+ * cannot reach: they decimate what the server sends, and this loop redraws the last
+ * cloud it has at the display's rate whatever arrives. Sweeping both to their caps
+ * moved delivery 15.03 to 15.60 - four percent of a deficit of fourteen and a half -
+ * while the solve went 46.0ms to 39.3ms and never crossed 33.3. A term that cannot
+ * cross the threshold cannot change the answer, however far it is turned.
+ *
+ * Unconditional rather than raised only while a take is rolling, and that is a
+ * deliberate narrowing of what this is allowed to be. Gated on `recordState.recording`
+ * the machine would behave differently in two states and the picture would visibly
+ * change smoothness at the moment somebody pressed record, which is the worst moment
+ * to hand an operator a new variable - and the take that matters most is the one being
+ * lined up in the seconds before that press. One rate, always, is also the only version
+ * of this that can be measured without recording anything.
+ *
+ * Read through a binding rather than baked into the loop so `__kinect` can sweep it,
+ * which is what the handle block calls poking at the scene from the console. One
+ * variable, one reader, so a swept value and a shipped value are the same code path.
+ */
+let cloudDrawHz = 15;
+let lastCloudDrawAt = 0;
+
 function liveLoop() {
-  const t = liveTransport.positionAt(performance.now());
+  const now = performance.now();
+  const t = liveTransport.positionAt(now);
+  // Outside the gate on purpose. This is the damping and the auto-orbit, it touches no
+  // GPU, and it is what makes the camera arrive where a gesture asked - skipped with
+  // the drawing, a drag would step at the draw rate *and* land somewhere else, which
+  // is a second fault wearing the first one's symptom.
   advanceNavigation(t);
+  // A cap of zero or less is off, which is what a sweep sets to take its control arm.
+  //
+  // Only this surface is capped, and it is capped by which loop it runs rather than by
+  // a test of which surface it is: `liveLoop` is installed in the recorder branch alone.
+  // The editor drives `timeline.tick` and `pumpParkedDraft` from its own loop and never
+  // reaches here, and the program-out source has no animation loop at all - it renders
+  // once per arrival, which is the whole reason a frame it produces corresponds to a
+  // frame the sensor delivered. So neither can be slowed by this, and neither needed a
+  // condition written to say so.
+  if (cloudDrawHz > 0 && now - lastCloudDrawAt < 1000 / cloudDrawHz) {
+    if (chromeOn) drawChrome();
+    if (programOutMode === 'mirror') streamMirrorPose();
+    return;
+  }
+  lastCloudDrawAt = now;
   renderProgramFrame(t);
   // The top-down and stats overlays, redrawn after the frame that marked them stale.
   // Without this, chrome on the record surface freezes while the main picture moves.
@@ -14415,6 +14476,13 @@ globalThis.__kinect = {
   // is exactly what `level-check --mutate tilt-ignored` does.
   worldTilt: () => cloud.quaternion.toArray(),
   resetWorldRotation,
+
+  // The live cloud's draw-rate cap, in hertz, readable and settable so the rate can be
+  // swept on the node it was chosen for. A getter and a setter over the one binding the
+  // loop reads rather than a copy, because a sweep that moved a second variable would be
+  // measuring something the shipped build does not run.
+  get cloudDrawHz() { return cloudDrawHz; },
+  set cloudDrawHz(hz) { cloudDrawHz = Number(hz); },
 
   // The sensor's own view, and the numbers it derived. Returned rather than left to
   // be read off the camera because the containment rule is the claim worth checking
