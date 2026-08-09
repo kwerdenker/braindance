@@ -2738,6 +2738,71 @@ function croppedOut(x, y, depth) {
     || y < uniforms.cropB.value || y > uniforms.cropT.value;
 }
 
+// ------------------------------------------------- fitting the box to the footage
+
+/**
+ * How far outside the cloud the fitted faces sit, as a share of the extent they bound.
+ *
+ * The pad is what turns a percentile into a box that culls nothing you can see. The
+ * scan answers with p0.5 and p99.5, so a face laid exactly there would cut a half
+ * percent of the take off each side - real geometry at the frame edges rather than
+ * only speckle - and 15% of the extent puts the plane comfortably outside it: on the
+ * sample take that is 69cm across and 39cm up, against a sensor whose depth jitters
+ * about 4mm.
+ */
+const CROP_FIT_PAD = 0.15;
+
+/**
+ * Fits the four lateral faces to the take's own cloud.
+ *
+ * **Why this exists at all is a fact about the defaults rather than about this take.**
+ * The faces open at plus or minus `CROP_LIMIT`, which has to clear everything the
+ * sensor can see at the furthest depth a slider allows or a document that never asked
+ * to be cropped would load cropped - and what that produces is a box three to seven
+ * times the size of any real cloud, with all twelve edges off screen and a handle
+ * nobody can associate with anything. The bound is right and the box you are handed
+ * was the bound, which are two different questions answered by one number.
+ *
+ * **The depth pair is deliberately left where the document put it.** Measured over
+ * three takes, a percentile fit of `near`/`far` asks to open the far plane to about 9m
+ * against the 6m it defaults to, because the cloud's far tail is the back wall and the
+ * sensor sees the back wall. Fitting depth would make the box bigger and would crop
+ * a room to grade it - which is the coupling `duotoneSpan` exists to have already
+ * removed.
+ *
+ * The range is handed to the server rather than assumed there, because the answer is
+ * over the points that survive it: a box has no business bounding points the box
+ * already discards, and a server picking its own range would be a second declaration
+ * of the clip defaults.
+ *
+ * Returns what it wrote, or null when the take had nothing to fit to - a scan that
+ * found no samples inside the range is a clip range shut past its own footage, and the
+ * honest answer there is to leave the faces open rather than to close them onto
+ * nothing.
+ */
+async function fitCropToTake(id, near, far) {
+  const res = await fetch(`/capture/${encodeURIComponent(id)}/extent`
+    + `?near=${encodeURIComponent(near)}&far=${encodeURIComponent(far)}`);
+  if (!res.ok) throw new Error(`${res.status} ${(await res.text()).slice(0, 200)}`);
+  const extent = await res.json();
+  if (!extent.x || !extent.y) return null;
+  const padded = ([lo, hi]) => {
+    const m = (hi - lo) * CROP_FIT_PAD;
+    return [lo - m, hi + m];
+  };
+  const [left, right] = padded(extent.x);
+  const [bottom, top] = padded(extent.y);
+  // Through `params.set` and not by assigning the uniforms, so the fit is a document
+  // edit like any other: it lands in the panel's sliders, it serialises, and it is the
+  // same write a drag on a face makes. `set` clamps to the declared bounds, which is
+  // what keeps a wide room from asking for a face outside `CROP_LIMIT`.
+  const wrote = {};
+  for (const [name, value] of [['left', left], ['right', right], ['bottom', bottom], ['top', top]]) {
+    wrote[name] = params.set(name, value);
+  }
+  return { ...wrote, frames: extent.frames, samples: extent.samples };
+}
+
 // The panel's groups, in the order they appear down the panel, and nothing about
 // which parameters are in them - that is the `group` field on each registry entry
 // below, so a parameter joins a group by naming it rather than by being added to a
@@ -2809,6 +2874,16 @@ const PANEL_GROUPS = [
       // and a control you reach for while dragging a face should not be two clicks
       // into a menu that closes when you press it.
       panelButtonRow(['cropBox', 'show crop box']),
+      // Beside the box's own switch, because it is the other half of the same job: one
+      // shows you the box and one puts it where your footage is.
+      //
+      // **On the editor alone, and that is a fact about what it needs rather than a
+      // judgement about who wants it.** The fit scans a take, and the recorder has no
+      // take - it has a sensor pointed at a room, with the box being set up over live
+      // frames. A button here that always refused would be a control whose surface
+      // cannot answer it, which is the shape `dock-offers-the-take-on-the-editor`
+      // exists to keep out of the dock.
+      ...(EDITING ? [panelButtonRow(['cropFit', 'fit box to take'])] : []),
       panelButtonRow(['camLevelReset', 'reset rotation']),
     ],
     after: () => [
@@ -8227,6 +8302,9 @@ const ui = {
   camSensor: document.getElementById('camSensor'),
   camLevelReset: document.getElementById('camLevelReset'),
   cropBox: document.getElementById('cropBox'),
+  // Null on the recorder, which builds no such row - see the framing group's `before()`
+  // for why the surface rather than the state decides.
+  cropFit: document.getElementById('cropFit'),
   cropReset: document.getElementById('cropReset'),
   exportSize: buildExportMenu(document.getElementById('tExportSize')),
   exportRatios: document.getElementById('exportRatios'),
@@ -13433,6 +13511,50 @@ ui.cropReset.addEventListener('click', () => {
   history.commit();
 });
 
+// Put the box back around the footage, on demand.
+//
+// **A second button rather than a change to the one above, and the two are not
+// alternatives.** "Revert all to default" means fully open, and it is the way back from
+// a box shut past its own subject - the difference between a reversible experiment and
+// a take that looks like it failed to load. A fit culls the outer half percent of the
+// cloud by design, so folding it into that button would take the escape hatch away and
+// leave nothing that means "show me everything".
+//
+// Committed like a drag on a face, because that is what it is: the same four values
+// through the same write path, landing on the undo stack where the fit at open
+// deliberately does not.
+if (ui.cropFit) {
+  ui.cropFit.addEventListener('click', async () => {
+    // **There is a take open on every path that builds this button, except one.**
+    // `openTake` throws above the line that assigns `openTakeId` - a capture whose format
+    // this build does not read, and a hello whose focal lengths or principal point are
+    // unusable, are both refused before it - and the page stays up afterwards on
+    // `showTimelineError`, panel and all, because footage that will not open is exactly
+    // when somebody needs to see why. So this is the state where the editor is on screen
+    // with nothing to measure, and the button has to decline rather than fetch an extent
+    // for `undefined`. Named because the gate this feature's first draft carried looked
+    // like a guard and was a branch nothing could take.
+    if (!openTakeId) return;
+    ui.cropFit.disabled = true;
+    try {
+      const fitted = await fitCropToTake(openTakeId, params.get('near'), params.get('far'));
+      if (!fitted) {
+        say('nothing inside the near/far range to fit the box to');
+        return;
+      }
+      requestRepaint();
+      history.commit();
+      say(`box fitted to ${fitted.frames} frames: `
+        + `${fitted.left.toFixed(2)} to ${fitted.right.toFixed(2)} across, `
+        + `${fitted.bottom.toFixed(2)} to ${fitted.top.toFixed(2)} up`);
+    } catch (err) {
+      say(`the crop box could not be fitted to this take: ${err.message}`);
+    } finally {
+      ui.cropFit.disabled = false;
+    }
+  });
+}
+
 // Show the box, its handles, and what it is cutting.
 //
 // **Three effects and one control, because a third switch would buy one state that is a
@@ -14734,6 +14856,35 @@ async function openTake(id) {
   // A project name lands on top of this if one is loaded after; opening a take on its
   // own is still worth resuming, since it is the footage that took the effort to shoot.
   rememberOpened();
+  // The crop box, fitted to this take's own cloud.
+  //
+  // **Here rather than lower down, and the position is two decisions rather than one.**
+  // It has to be before `history.begin` below: the baseline is the clip serialised, so a
+  // fit written after it is the first thing on the undo stack - a box you never dragged,
+  // undoable, and different from the document the auto-save is about to compare against.
+  // And it is above the marks and the three library listings rather than beside them,
+  // because every await between the take appearing and this landing is a stretch of time
+  // where the editor is interactive with the wide box on screen: put after them, the box
+  // visibly jumps a second later, which reads as something correcting itself.
+  //
+  // Softly, like those listings and for their reason: a node whose extent route is
+  // unreachable is still a node you can cut footage on, and what you get is the wide box
+  // it always was. Silent is the other failure, so the refusal is said rather than
+  // swallowed.
+  //
+  // **Unconditional, and it was written with a gate that turned out to be unreachable.**
+  // The gate asked whether the document had authored its four faces, on the reasoning
+  // that a box somebody dragged must not be overwritten - which is the right rule and
+  // names a state this call site cannot be in. `openTake` runs once per page load, off
+  // `REQUESTED_TAKE`, against a registry at its defaults; opening a take from the gallery
+  // is a navigation rather than a second call; and a project named in the query is
+  // restored by the `.then` after this promise, not before it. So the condition was false
+  // on every path that reaches here, and a branch nothing can take is a branch that
+  // silently stops being tested. The rule it was protecting still holds and is enforced
+  // where it is actually decided: a restored document names all six faces and lands on
+  // top of this, so a document's own box outranks a measurement by arriving later.
+  await fitCropToTake(id, params.get('near'), params.get('far'))
+    .catch((err) => { say(`the crop box could not be fitted to this take: ${err.message}`); });
   // Awaited, so the first paint of the ruler already has the ticks on it. A take
   // whose marks arrived a frame later would show them appearing, which reads as
   // the page finding them rather than the take having them.
@@ -15066,6 +15217,18 @@ globalThis.__kinect = {
   cropHandles: (plan = false) => cropHandles(plan, insetRect())
     .map(({ param, at, sx, sy }) => ({ param, x: at.x, y: at.y, sx, sy })),
   cropBoxShown: () => showCropBox,
+  // How deep the undo stack is, exposed because "the box was fitted and it is not
+  // something you can undo" is two claims and only one of them is about the planes.
+  // Read off the stack the keyboard pops rather than off a counter kept beside it, for
+  // `worldTilt`'s reason: a number computed correctly and never applied is one edit away
+  // at all times.
+  undoDepth: () => history.depth,
+  // Whether `openTake` has finished. `history.begin()` is the last thing it does that a
+  // document can observe, so a baseline existing is "the open is over" - and a tool that
+  // waited on the fitted planes instead would hang rather than fail on a build that never
+  // fits, which is a thirty-second timeout carrying no failed assertion where a finding
+  // was wanted.
+  takeOpened: () => history.baseline !== null,
   cropOutside: () => uniforms.cropOutside.value,
 
   // The sizes the export menu offers, and the way to adopt one.

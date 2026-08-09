@@ -68,6 +68,10 @@ import { networkInterfaces } from 'node:os';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { MessageParser, TYPE_HELLO, TYPE_FRAME, encodeMessage } from '../server/protocol.js';
+// The depth grid, for the planted take below - a frame this file writes itself has to
+// declare the shape the server refuses anything else for, and reading it from the one
+// place that owns it is what stops this fixture from being the second declaration.
+import { DEPTH_H, DEPTH_W } from '../web/format.js';
 // The shipped argument shape per platform, read rather than restated - see the reveal
 // argv row for what a second copy of it cost.
 import { REVEAL } from '../server/library.js';
@@ -1466,6 +1470,27 @@ const MUTATIONS = {
   'shipped-look-drops-a-value': { file: 'presets-builtin/voxel.json', edits: [[
     '    "bloom": 0.45,\n', '',
   ]] },
+  // **A fit that reads the take's first frame and calls it the take.** The stride
+  // becomes the frame count, so the loop runs once - which is the shape a scan written
+  // for one frame and never extended has, and the shape a "just sample the head of it"
+  // optimisation produces. Everything about the reply stays well formed: a lateral
+  // extent comes back, it is derived from real depth, and on a static room it is the
+  // right answer. It is wrong exactly when the take goes somewhere, which is when the
+  // box it feeds crops footage.
+  'extent-reads-one-frame': { file: 'server/capture.js', edits: [[
+    'for (let n = 0; n < capture.frameCount; n += EXTENT_FRAME_STRIDE) {',
+    'for (let n = 0; n < capture.frameCount; n += Math.max(1, capture.frameCount)) {',
+  ]] },
+  // **And a cache that keys on the take and not on the range it was asked about.** The
+  // answer excludes points outside `near`..`far`, so this hands a box fitted for one
+  // range to a caller that asked about another - and the caller cannot tell, because
+  // what comes back is a plausible box with the range it asked for printed on it. The
+  // shut-range row is what catches it, which is why that row is asked after the wide one
+  // rather than before.
+  'extent-cache-ignores-the-range': { file: 'server/index.js', edits: [[
+    'const key = `${capture.index.hash}|${near}|${far}`;',
+    'const key = `${capture.index.hash}`;',
+  ]] },
   // **And the other side of the comparison: the definition, narrowed by one group.**
   // `completeLookNames` is the look tag less its framing, and this drops `post` as well -
   // so the nine documents go on naming `bloom`, `grain`, `vignette` and the four beside
@@ -1836,6 +1861,62 @@ function writeTake(dir, id, { frames = 8, withHello = true, truncate = false, st
 }
 
 /**
+ * A take whose cloud is narrow in its first frame and wide in every frame after it.
+ *
+ * **Written rather than found, because the takes on this machine cannot answer the
+ * question.** `/capture/:id/extent` claims to scan the whole take, and the reason it has
+ * to is a take that goes somewhere new halfway through - fit the box to frame zero and
+ * the rest of the footage is cropped. Measured on the captures here, that claim is
+ * untestable: `sample.knct` is a static room and its frame-zero fit is its whole-take
+ * fit to the centimetre, so a build reading one frame renders the identical answer and
+ * a row over this fixture would be green on it. `2026-08-07-take1` does separate them,
+ * by 22cm on its left face, and it is nobody else's file - `captures/` is gitignored.
+ *
+ * So the fixture is built to make the answer different, which is what `CLAUDE.md` rule 4
+ * asks for. Every frame is a wall at a constant depth, and what changes is how much of
+ * the sensor's width is filled: the first frame carries only the middle of the frame and
+ * the rest carry all of it. The x extent is therefore a fact about which frames were
+ * read, and nothing else about the take moves at all.
+ *
+ * The depth is 2000mm, comfortably inside any range these rows ask about, and the two
+ * column spans are chosen so the difference is metres rather than the centimetres a real
+ * take offers: at this depth and this rig's focal length the full width reaches about
+ * ±1.4m and the middle sixth reaches about ±0.23m.
+ *
+ * **What that costs is worth stating rather than leaving to be discovered.** Separating
+ * the two answers by 1.2m makes the row unmissable against a scan that reads one frame,
+ * and correspondingly blind to one that reads a few - a build sampling the first second
+ * of a take would clear this comfortably. The row is a coverage floor, not a coverage
+ * measurement, and the honest version of "it scans the whole take" is the frame count the
+ * route reports beside the fit.
+ */
+const PLANTED_WALL_MM = 2000;
+function writeWideningTake(dir, id, frames = 24) {
+  const grid = DEPTH_W * DEPTH_H;
+  const wall = (fromCol, toCol) => {
+    const depth = new Uint16Array(grid);
+    for (let row = 0; row < DEPTH_H; row++) {
+      for (let col = fromCol; col < toCol; col++) depth[row * DEPTH_W + col] = PLANTED_WALL_MM;
+    }
+    // A frame payload is the two lengths, the capture stamp and the depth block. The
+    // colour block is dropped - a fit reads depth, and a JPEG here would be bytes the
+    // question does not involve.
+    const payload = Buffer.alloc(16 + depth.byteLength);
+    payload.writeUInt32LE(depth.byteLength, 0);
+    payload.writeUInt32LE(0, 4);
+    Buffer.from(depth.buffer).copy(payload, 16);
+    return encodeMessage(TYPE_FRAME, payload);
+  };
+  const narrow = wall(Math.round(DEPTH_W * 5 / 12), Math.round(DEPTH_W * 7 / 12));
+  const wide = wall(0, DEPTH_W);
+  const parts = [encodeMessage(TYPE_HELLO, SRC.hello), narrow];
+  for (let i = 1; i < frames; i++) parts.push(wide);
+  const path = join(dir, `${id}.knct`);
+  writeFileSync(path, Buffer.concat(parts));
+  return path;
+}
+
+/**
  * A take whose second frame declares more colour bytes than it carries.
  *
  * The reachable version is a writer that died between the header and the payload,
@@ -1910,6 +1991,12 @@ function buildFixture() {
 
   // Local only, and the take everything that needs a real clip uses.
   writeTake(macCaps, 'local-clip', { frames: 60, startedAt: Date.UTC(2026, 6, 15, 18, 5) });
+
+  // The take whose cloud widens after its first frame - see `writeWideningTake` for why
+  // it is written rather than found. 24 frames so the scan's stride of 8 reads four of
+  // them and three are wide, which is enough that no rounding of the percentile can put
+  // the answer back on the narrow one by accident.
+  writeWideningTake(macCaps, 'widening-take', 24);
 
   // The shapes the gallery has to survive rather than the shapes it likes.
   writeTake(macCaps, 'truncated-take', { frames: 6, truncate: true, startedAt: false });
@@ -3390,6 +3477,80 @@ async function runChecks() {
       const res = await fetch(`${macUrl}/capture/local-clip/frame/4?decimate=${bad}`);
       check(res.status === 400, `a divisor of ${bad} is refused rather than clamped`, `status ${res.status}`);
     }
+  }
+
+  // ------------------------------------------- 3b. how far a take's cloud reaches
+  //
+  // The editor fits the crop box to this, so what it gets wrong is a box that crops
+  // footage - and the two ways it can get it wrong are a scan that does not cover the
+  // take, and an answer computed for one depth range handed to a caller that asked
+  // about another. Neither is visible in a single well-formed reply, which is why this
+  // section asks the same route several times rather than reading one.
+  console.log('\n[library] where a take\'s cloud reaches, over the whole take');
+  {
+    const extentOf = async (id, near, far) => {
+      const res = await fetch(`${macUrl}/capture/${id}/extent?near=${near}&far=${far}`);
+      return { status: res.status, body: res.status === 200 ? await res.json() : null };
+    };
+
+    // The planted take, whose first frame is a sixth of the sensor's width and whose
+    // other twenty-three are all of it. A fit that read frame zero alone answers with
+    // the narrow wall; one that read the take answers with the wide one.
+    const wide = await extentOf('widening-take', 0.05, 6);
+    check(wide.status === 200 && wide.body?.x !== null,
+      'the planted take answers with a lateral extent, so the rows below are reading one',
+      `status ${wide.status}, ${wide.body?.samples ?? 0} samples over ${wide.body?.frames ?? 0} frames`);
+
+    // What the two walls are worth in metres, computed here from the take's own
+    // intrinsics rather than taken from the answer - a row that derived its expectation
+    // from the thing under test would agree with any implementation by construction.
+    const hello = JSON.parse(SRC.hello.toString('utf8'));
+    const atCol = (col) => (-(col + 0.5 - hello.cx) / hello.fx) * (PLANTED_WALL_MM / 1000);
+    const narrowEdge = Math.abs(atCol(Math.round(DEPTH_W * 5 / 12)));
+    const wideEdge = Math.abs(atCol(0));
+    check(wide.body?.x && Math.abs(wide.body.x[1]) > narrowEdge * 2,
+      'and it reaches past the first frame\'s wall, so the scan covered more than frame zero',
+      `x [${wide.body?.x?.map((v) => v.toFixed(2)).join(', ')}] against a first frame that `
+      + `stops at +/-${narrowEdge.toFixed(2)}m and later frames that reach +/-${wideEdge.toFixed(2)}m`);
+
+    // The vertical is the control for the row above, and it is the half that says the
+    // row is about *which frames were read*. Every frame in this take fills the full
+    // height, so a scan of one frame and a scan of all of them have to agree here - a
+    // build that differed on y would be differing about something other than coverage.
+    check(wide.body?.y && Math.abs(wide.body.y[0]) > 0.5 && Math.abs(wide.body.y[1]) > 0.5,
+      'while the vertical extent is the same in every frame, so the row above is about coverage',
+      `y [${wide.body?.y?.map((v) => v.toFixed(2)).join(', ')}]`);
+
+    // **The range is an input and the cache has to key on it.** The wall is at 2.0m, so
+    // a range that excludes it has nothing to fit to and must say so rather than
+    // handing back the answer computed for the range before it. Asked in this order on
+    // purpose: the wide range is already cached by the rows above, so a cache keyed on
+    // the take alone answers this one with it.
+    const shut = await extentOf('widening-take', 0.05, 1.5);
+    check(shut.status === 200 && shut.body?.x === null && shut.body?.samples === 0,
+      'a range with no points inside it answers with nothing rather than the last range\'s box',
+      `status ${shut.status}, ${shut.body?.samples} samples, x ${JSON.stringify(shut.body?.x)}`);
+
+    // And the same range asked again, to prove the cache is a cache: a second call must
+    // give the identical answer rather than a fresh scan that happens to agree.
+    const again = await extentOf('widening-take', 0.05, 6);
+    check(eq(again.body, wide.body),
+      'and the range it was computed for comes back unchanged when it is asked for again',
+      `${JSON.stringify(again.body?.x)} against ${JSON.stringify(wide.body?.x)}`);
+
+    for (const [query, why] of [
+      ['', 'names no range at all'],
+      ['?near=0.05', 'names only a near plane'],
+      ['?near=3&far=1', 'puts its far plane in front of its near one'],
+      ['?near=lots&far=6', 'names a range that is not a number'],
+    ]) {
+      const res = await fetch(`${macUrl}/capture/widening-take/extent${query}`);
+      check(res.status === 400, `a request that ${why} is refused rather than given a default`,
+        `status ${res.status}`);
+    }
+    const missing = await fetch(`${macUrl}/capture/no-such-take/extent?near=0.05&far=6`);
+    check(missing.status === 404, 'and a take that is not here is a 404 like every other capture route',
+      `status ${missing.status}`);
   }
 
   // -------------------------------------------------- 4. descriptors stay bounded

@@ -775,6 +775,55 @@ const MUTATIONS = {
     ]],
   },
 
+  // **The fit moved to the other side of `history.begin`**, which is an ordering failure
+  // rather than a logic one: the box is identical, and it is now the first entry on the
+  // undo stack. One ctrl-Z at the start of a session throws the box back to its bounds,
+  // and the auto-save's baseline is a document that differs from the one on screen before
+  // anything has been edited.
+  //
+  // The gate this mutation's neighbour used to attack is gone from the build rather than
+  // from this table. It asked whether the document had authored its faces, which is the
+  // right rule and a state `openTake` cannot be in - one call per page load, off a
+  // registry at its defaults, with any named project restored by the `.then` after it. A
+  // mutation removing a condition that is false on every reachable path changes no
+  // behaviour, and this file reported it NOT CAUGHT with 456 green rows, which is how the
+  // dead branch was found.
+  // **The fit run once more after everything has settled**, which is the tempting shape:
+  // the take is open, the project is on, so fit the box now that there is something to
+  // fit it to. What it destroys is the only rule left protecting a document's own box -
+  // a clip cropped tight around a subject reopens with the box pushed back out to the
+  // whole room, silently, because the fit had the last word. The ordering is all that
+  // enforces it now that the gate is gone, and this is the mutation that attacks it.
+  'fit-outlives-a-restored-project': {
+    file: 'web/main.js',
+    edits: [[
+      '    .then(() => (REQUESTED_PROJECT ? loadProjectNamed(REQUESTED_PROJECT) : null))',
+      '    .then(() => (REQUESTED_PROJECT ? loadProjectNamed(REQUESTED_PROJECT) : null))\n'
+      + '    .then(() => fitCropToTake(REQUESTED_TAKE, params.get(\'near\'), params.get(\'far\')).catch(() => {}))',
+    ]],
+  },
+  'fit-lands-after-history-begins': {
+    file: 'web/main.js',
+    edits: [
+      // Lifted out of its place above the marks...
+      ['  await fitCropToTake(id, params.get(\'near\'), params.get(\'far\'))\n'
+        + '    .catch((err) => { say(`the crop box could not be fitted to this take: ${err.message}`); });\n'
+        + '  // Awaited, so the first paint of the ruler already has the ticks on it. A take',
+      '  // Awaited, so the first paint of the ruler already has the ticks on it. A take'],
+      // ...and put back on the far side of the baseline, committing like any other edit,
+      // which is exactly what it must not be. The comment above `begin` is part of the
+      // anchor because `history.begin()` alone appears twice in this file.
+      ['  // The stack starts from whatever the clip already is, so the first undo has\n'
+        + '  // somewhere honest to land rather than an empty document.\n'
+        + '  history.begin();',
+      '  // The stack starts from whatever the clip already is, so the first undo has\n'
+        + '  // somewhere honest to land rather than an empty document.\n'
+        + '  history.begin();\n'
+        + '  await fitCropToTake(id, params.get(\'near\'), params.get(\'far\'))\n'
+        + '    .catch((err) => { say(`the crop box could not be fitted to this take: ${err.message}`); });\n'
+        + '  history.commit();'],
+    ],
+  },
   'plant-unswept-control': {
     file: 'web/index.html',
     edits: [[
@@ -2206,6 +2255,8 @@ const DRIVER_IDS = {
   tExport: 'section 6 asserts it is reachable, section 7 renders with it',
   tExportSave: 'section 7 - the saved copy, against a stubbed picker',
   cropReset: 'section 8 - opens the crop box again and the planes are read back',
+  cropFit: 'section 8b - presses it on a document opened out to +/-6 and reads back both the '
+    + 'planes it restores and the undo entry it makes',
   cropBox: 'section 20 - presses it, reads the handles it puts on screen, drags one of them '
     + 'and counts what the gesture cost the animation loop',
   camLevelReset: 'level-check section 5 - clicks this element and reads both axes and both sliders at neutral',
@@ -2328,6 +2379,13 @@ async function openEditor() {
   };
   await waitFor('!!globalThis.__kinect', 'the module never finished booting');
   await waitFor('!!globalThis.__kinect.timeline.transport()', 'the take never opened');
+  // **And then for the open to be over, which is not the same moment.** The transport
+  // exists partway through `openTake`; the marks, the three library listings and the crop
+  // box's fit all land after it. Waiting on the weaker signal meant every section raced
+  // whatever was still arriving - which showed up as section 8b reading a box that had
+  // not been fitted yet and reporting the planes at their bounds, a finding about the
+  // check rather than about the build.
+  await waitFor('globalThis.__kinect.takeOpened()', 'the take opened but never finished opening');
   if (mutatedJs && !servedModule) throw new Error("the mutated module was never served - this page ran the tree's own build");
   if (mutatedHtml && !servedHtml) throw new Error("the mutated markup was never served - this page ran the tree's own panel");
   return { page, errors, close: () => browser.close() };
@@ -4841,6 +4899,148 @@ try {
     '"open the box" puts all four planes back and the whole cloud with them',
     `planes ${planes.join(', ')}; lit ${litClosed.all} -> ${litReopened.all} against `
     + `${litDefault.all} open, ${(backWithin * 100).toFixed(3)}% apart`);
+
+  // ---------------------------------------------- 8b. the box a take opens with
+  //
+  // The four faces open at the bound because the bound is what an unauthored document
+  // has to mean, and what that hands you is a box three to seven times the size of any
+  // cloud with all twelve edges off screen. So opening a take fits them - and the two
+  // things that can go wrong with that are not both about the planes.
+  //
+  // **What this section cannot see is whether the scan covered the take**, which is the
+  // failure that would crop footage. That claim is `library-check`'s, where a server can
+  // be staged with a planted take whose cloud widens after its first frame; the take
+  // this file opens is a static room whose frame-zero fit is its whole-take fit to the
+  // centimetre, so a row here would be green on a build that read one frame. Saying so
+  // is better than writing a row that cannot fail.
+  console.log('\n[8b] a take opens with the box around its own cloud');
+  {
+    // A page of its own, because the section above ends with the planes put back at
+    // their bounds by `#cropReset` - so what "the box a take opens with" is cannot be
+    // read off this page at all. A second load is the only honest place to ask.
+    const fresh = await openEditor();
+    const atOpen = await fresh.page.evaluate(`(() => {
+      const k = globalThis.__kinect;
+      return {
+        planes: ['left', 'right', 'bottom', 'top'].map((n) => k.params.get(n)),
+        bounds: ['left', 'right', 'bottom', 'top'].map((n) => k.params.spec(n).default),
+        undo: k.undoDepth(),
+      };
+    })()`);
+
+    const atBound = atOpen.planes.every((v, i) => v === atOpen.bounds[i]);
+    check(!atBound,
+      'the four lateral faces come in off their bounds, so the box is the take\'s and not the registry\'s',
+      `${atOpen.planes.map((v) => v.toFixed(2)).join(', ')} against bounds `
+      + `${atOpen.bounds.join(', ')}`);
+    // Inside the bound on every face and not collapsed onto the subject either - a fit
+    // that returned a point would satisfy the row above and be a box that crops
+    // everything. The floor is deliberately generous: what is being asserted is that
+    // this is a room-sized box rather than that it is any particular room.
+    const inside = atOpen.planes.every((v, i) => Math.abs(v) < Math.abs(atOpen.bounds[i]));
+    const wide = (atOpen.planes[1] - atOpen.planes[0]) > 0.5 && (atOpen.planes[3] - atOpen.planes[2]) > 0.5;
+    check(inside && wide,
+      'and they land inside the bounds without collapsing, so it is a room rather than a point',
+      `${(atOpen.planes[1] - atOpen.planes[0]).toFixed(2)}m across, `
+      + `${(atOpen.planes[3] - atOpen.planes[2]).toFixed(2)}m up`);
+
+    // **And it is not an edit.** The fit runs before `history.begin`, so the box a take
+    // opens with is part of the baseline rather than the first thing on the stack -
+    // which is what stops the first undo of a session from being a box nobody dragged,
+    // and what keeps the autosave comparing against the document on screen. Read off the
+    // stack the keyboard pops, not off the source order.
+    check(atOpen.undo === 0,
+      'and the fit is not on the undo stack, so the first undo is not a box nobody dragged',
+      `undo depth ${atOpen.undo} on a freshly opened take`);
+    // ....  what this section deliberately does not test, because there is nothing there
+    //
+    // The fit was written behind a gate asking whether the document had authored its four
+    // faces - the right rule, protecting a box somebody dragged from being replaced on
+    // open. It is gone, and this note is where the reasoning went: `openTake` runs once
+    // per page load against a registry at its defaults, opening a take from the gallery
+    // is a navigation rather than a second call, and a project named in the query is
+    // restored by the `.then` after the open. The condition was false on every path that
+    // could reach it. This file is how that was found - `--mutate fit-overwrites-an-
+    // authored-box` removed the gate and came back NOT CAUGHT with every row green, which
+    // is a branch nothing can take rather than a control nothing covers.
+    //
+    // What still has to hold is that a document's own box beats the measurement, and that
+    // is decided by ordering rather than by a condition: `openTake` fits, and the project
+    // named in the query is restored by the `.then` after it. So it is driven here rather
+    // than argued - a project is planted carrying faces at plus and minus six and a half,
+    // a number no fit of this take produces and no default is, and the page is opened on
+    // both at once. A build that fitted after the restore would answer with the fit.
+    const PLANTED = '__editor-check-crop__';
+    const planted = await fresh.page.evaluate(`(() => {
+      const k = globalThis.__kinect;
+      const doc = k.keyframes.project();
+      for (const n of ['left', 'right', 'bottom', 'top']) {
+        doc.look.params[n] = n === 'left' || n === 'bottom' ? -6.5 : 6.5;
+      }
+      return doc;
+    })()`);
+    await fetch(`${URL_BASE}/projects/${encodeURIComponent(PLANTED)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(planted),
+    });
+    const both = await openEditor();
+    await both.page.goto(`${URL_BASE}${EDITOR_PATH}?take=${encodeURIComponent(TAKE)}`
+      + `&project=${encodeURIComponent(PLANTED)}`, { waitUntil: 'load' });
+    await both.page.waitForFunction('globalThis.__kinect?.takeOpened?.()', null, { timeout: 60000 });
+    // The restore is a second promise after the open, so the planes it writes can land a
+    // beat later than `takeOpened`. Waited for rather than slept on, and a build that
+    // never restores falls out of the wait into the row below with the fit's own numbers
+    // rather than into a timeout.
+    await both.page.waitForFunction(
+      `globalThis.__kinect.params.get('left') !== ${atOpen.planes[0]}`, null, { timeout: 15000 },
+    ).catch(() => {});
+    const withProject = await both.page.evaluate(
+      `['left','right','bottom','top'].map((n) => globalThis.__kinect.params.get(n))`);
+    check(withProject.join() === [-6.5, 6.5, -6.5, 6.5].join(),
+      'a project named beside the take keeps its own box, because the restore lands after the fit',
+      `${withProject.join(', ')} against the project's -6.5, 6.5, -6.5, 6.5 and the fit's `
+      + `${atOpen.planes.map((v) => v.toFixed(2)).join(', ')}`);
+    await both.close();
+    await fetch(`${URL_BASE}/projects/${encodeURIComponent(PLANTED)}`, { method: 'DELETE' }).catch(() => {});
+
+    // The button, which is the other half: an explicit press refits whatever the faces
+    // are, and unlike the open it *does* commit - it is a drag on four faces at once.
+    //
+    // **The box is opened out through `#cropReset` rather than by writing the values**,
+    // and that is the row working rather than a detour. A write through `params.set`
+    // leaves the undo baseline where it was, so the press below would restore the
+    // document to exactly its baseline and `commit` would correctly decline to record a
+    // change that is not one - which reads as the press failing to commit. Pressing the
+    // real control first makes the wide box the baseline, so the refit is a genuine edit
+    // from it and the row is asking what it says it is asking.
+    await fresh.page.locator('#panelTabFraming').click();
+    await fresh.page.locator('#cropReset').click();
+    const undoBefore = await fresh.page.evaluate('globalThis.__kinect.undoDepth()');
+    const openedOut = await fresh.page.evaluate(
+      `['left','right','bottom','top'].map((n) => globalThis.__kinect.params.get(n)).join()`);
+    check(openedOut === atOpen.bounds.join() && undoBefore > 0,
+      'and opening the box back out is itself an edit, so the press below has a baseline to differ from',
+      `planes ${openedOut}, undo depth ${undoBefore}`);
+    await fresh.page.locator('#cropFit').click();
+    await fresh.page.waitForFunction(
+      `['left','right','bottom','top'].map((n) => globalThis.__kinect.params.get(n)).join() !== `
+      + `${JSON.stringify(atOpen.bounds.join())}`,
+      null, { timeout: 30000 },
+    ).catch(() => {});
+    const refitted = await fresh.page.evaluate(`(() => {
+      const k = globalThis.__kinect;
+      return { planes: ['left', 'right', 'bottom', 'top'].map((n) => k.params.get(n)), undo: k.undoDepth() };
+    })()`);
+    check(refitted.planes.join() === atOpen.planes.join(),
+      'pressing "fit box to take" puts the same box back over a document that had been opened out',
+      `${refitted.planes.map((v) => v.toFixed(2)).join(', ')} against the fit at open `
+      + `${atOpen.planes.map((v) => v.toFixed(2)).join(', ')}`);
+    check(refitted.undo > undoBefore,
+      'and that press is on the undo stack, because a press is an edit where an open is not',
+      `undo depth ${undoBefore} before the press, ${refitted.undo} after`);
+    await fresh.close();
+  }
 
   // ================ 9. orbiting the parked viewport costs frames, not settles
 

@@ -491,6 +491,113 @@ export class Capture {
   }
 }
 
+// ------------------------------------------------------ how far the cloud reaches
+
+/**
+ * Where a take's points actually are, laterally, in the sensor's own metres.
+ *
+ * **The crop box opens at plus or minus seven metres and the cloud is nowhere near
+ * it.** Seven is the right *bound* - it clears everything a Kinect can see at the
+ * furthest depth a slider allows, which is what keeps a document that never asked to
+ * be cropped from loading cropped - but as the box you are handed it is three to seven
+ * times the thing it bounds, and the twelve edges are all off screen: measured against
+ * the sample take at the defaults, not one of them is inside the frame and the only
+ * furniture on the stage is a single handle nobody can associate with a box. So the
+ * editor asks this and fits the four lateral faces to the answer.
+ *
+ * **Percentiles rather than extremes, and the difference is the whole design.** The
+ * widest samples a take carries are single texels at the frame corners, at the range
+ * limit where this sensor's depth is mostly speckle - on 2026-08-07-take1 the extreme
+ * x runs to 5.98m while the 99.5th percentile is 1.91m. Fitting to the extreme would
+ * hand back the bound it was trying to replace. A percentile also answers the question
+ * a take that goes outdoors halfway through raises: a sustained stretch of further
+ * geometry is a real share of the samples and moves p99.5 out, where a doorway at the
+ * sensor's limit does not.
+ *
+ * **The whole take, not a frame.** A fit to frame zero is a box that crops whatever the
+ * take does later, which is the one failure this must not have. Cost, measured warm on
+ * this machine: a full scan of take1's 738 frames took 0.18s and a stride-8 scan 0.07s,
+ * with take2's 1953 frames at 0.26s - and stride 64, twelve frames, already lands within
+ * 5cm of the full scan on every face. Stride 8 is therefore comfortable rather than
+ * tuned, and the histograms mean the scan never holds its samples: a full pass at every
+ * fourth texel is twenty million of them.
+ *
+ * **The depth pair is not fitted and this returns nothing for it.** Fitting depth to the
+ * cloud fits to the back wall, and the sensor sees the back wall: a p1/p98 fit asks for
+ * a far plane of 9.06m on take2 and 9.08m on take3 against the 6m they open at, which is
+ * wider rather than narrower. What the depth range does here is decide which points the
+ * lateral fit is over - a box has no business bounding points the box already discards -
+ * which is why it is an argument rather than a constant, and why the cache below keys on
+ * it.
+ */
+const EXTENT_FRAME_STRIDE = 8;
+const EXTENT_TEXEL_STRIDE = 4;
+const EXTENT_PERCENTILE = 0.5;
+// Ten millimetre bins across twenty metres, which is finer than the fit's own step of
+// 50mm by a factor of five and wider than anything the sensor can return.
+const EXTENT_BINS = 2000;
+const EXTENT_SPAN = 20;
+
+const percentile = (bins, total, p) => {
+  const want = total * p / 100;
+  let acc = 0;
+  for (let i = 0; i < bins.length; i++) {
+    acc += bins[i];
+    if (acc >= want) return -EXTENT_SPAN / 2 + ((i + 0.5) / bins.length) * EXTENT_SPAN;
+  }
+  return EXTENT_SPAN / 2;
+};
+
+/**
+ * Fitted lateral bounds for one capture and one depth range.
+ *
+ * `hello` is the take's own, so the unprojection uses the intrinsics the footage was
+ * shot with rather than whatever the sensor now reports - the same rule the editor
+ * follows when it opens a take, and the reason this takes the hello as an argument
+ * instead of reading a default.
+ */
+export async function cloudExtent(capture, hello, near, far) {
+  const { fx, fy, cx, cy } = hello;
+  const x = new Float64Array(EXTENT_BINS);
+  const y = new Float64Array(EXTENT_BINS);
+  let total = 0;
+  let scanned = 0;
+  const bin = (v) => Math.min(EXTENT_BINS - 1, Math.max(0,
+    Math.floor(((v + EXTENT_SPAN / 2) / EXTENT_SPAN) * EXTENT_BINS)));
+  for (let n = 0; n < capture.frameCount; n += EXTENT_FRAME_STRIDE) {
+    const payload = await capture.readFrame(n);
+    // A frame whose grid is not this build's is skipped rather than sampled past, on
+    // `decimatePayload`'s reasoning: the alternative reads whatever is beside it.
+    if (payload.readUInt32LE(0) !== DEPTH_W * DEPTH_H * 2) continue;
+    scanned++;
+    for (let row = 0; row < DEPTH_H; row += EXTENT_TEXEL_STRIDE) {
+      const base = 16 + row * DEPTH_W * 2;
+      for (let col = 0; col < DEPTH_W; col += EXTENT_TEXEL_STRIDE) {
+        const mm = payload.readUInt16LE(base + col * 2);
+        if (mm === 0) continue;
+        const z = mm * 0.001;
+        if (z < near || z > far) continue;
+        // libfreenect2's pinhole model, and the negation on x is the same mirror
+        // correction `drawPlanCloud` and the vertex shader carry: the sensor's frames
+        // arrive horizontally flipped, so a fit computed without it would hand back a
+        // box reflected about the optical axis - which on this rig's off-centre
+        // principal point is a box that is wrong by centimetres on both faces and
+        // looks entirely plausible.
+        x[bin((-(col + 0.5 - cx) / fx) * z)]++;
+        y[bin(-((row + 0.5 - cy) / fy) * z)]++;
+        total++;
+      }
+    }
+  }
+  if (!total) return { frames: scanned, samples: 0, x: null, y: null };
+  return {
+    frames: scanned,
+    samples: total,
+    x: [percentile(x, total, EXTENT_PERCENTILE), percentile(x, total, 100 - EXTENT_PERCENTILE)],
+    y: [percentile(y, total, EXTENT_PERCENTILE), percentile(y, total, 100 - EXTENT_PERCENTILE)],
+  };
+}
+
 const openCaptures = new Map();
 
 /**
