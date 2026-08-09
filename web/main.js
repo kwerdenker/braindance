@@ -13531,7 +13531,7 @@ const shell = shellElements({
   export: 'menuExport',
   obs: 'menuObs',
   cameraReset: 'menuCameraReset',
-  panelToggle: 'panelToggle',
+  showSidebar: 'menuShowSidebar',
   dockRec: 'dockRec',
   dockMark: 'dockMark',
   dockCentre: 'dockCentre',
@@ -13664,12 +13664,11 @@ shell.cameraReset.addEventListener('click', () => {
  * touched the panel. It also stranded a touchscreen - `display: none` with the only way
  * back on a keyboard is a panel that, on the Pi's own 7" screen, does not come back.
  *
- * `aria-pressed` on the toggle rather than a label that changes, so the control keeps
- * one name and the state is in the state.
  */
 function setPanelCollapsed(collapsed) {
   document.body.classList.toggle('panelcollapsed', collapsed);
-  shell.panelToggle.setAttribute('aria-pressed', String(collapsed));
+  // "Show inspector" checked means visible, so the boolean inverts.
+  shell.showSidebar.setAttribute('aria-checked', String(!collapsed));
   // The cloud's viewport is the window minus the panel, and collapsing changes that by
   // 302px. Without this the canvas keeps the width it had and the picture is stretched
   // until something else happens to resize it. `resize()` ends by asking for a repaint,
@@ -13677,7 +13676,7 @@ function setPanelCollapsed(collapsed) {
   resize();
 }
 
-shell.panelToggle.addEventListener('click', () => {
+shell.showSidebar.addEventListener('click', () => {
   closeApplicationMenus();
   setPanelCollapsed(!document.body.classList.contains('panelcollapsed'));
 });

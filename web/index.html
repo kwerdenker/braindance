@@ -1073,6 +1073,7 @@
         <div class="appmenu-popover" id="viewMenu" role="menu" hidden>
           <button class="menu-command" id="menuCameraReset" type="button" role="menuitem"><span>Default camera position</span><kbd></kbd></button>
           <button class="menu-command" id="menuTopView" type="button" role="menuitemcheckbox" aria-checked="true"><span>Show top view</span><kbd></kbd></button>
+          <button class="menu-command" id="menuShowSidebar" type="button" role="menuitemcheckbox" aria-checked="true"><span>Show sidebar</span><kbd></kbd></button>
           <div class="menu-separator"></div>
           <button class="menu-command" id="menuLookImport" type="button" role="menuitem"><span>Import Look</span><kbd></kbd></button>
           <button class="menu-command" id="menuLookExport" type="button" role="menuitem"><span>Export Look</span><kbd></kbd></button>
@@ -1080,13 +1081,6 @@
           <button class="menu-command" id="menuState" type="button" role="menuitemcheckbox" aria-checked="false"><span>Stats for nerds</span><kbd></kbd></button>
         </div>
       </div>
-      <!-- The way back out of the collapsed panel, and the way into it. In the app bar
-           rather than on the dock because the dock is three buttons by design and a
-           fourth would make it four; and because a collapse control that lives only
-           inside the thing it collapses is one a touchscreen cannot undo. `H` toggles
-           this same class, so the key and the button are one mechanism rather than two
-           that can disagree about whether the panel is shut. -->
-      <button class="appmenu-trigger" id="panelToggle" type="button" aria-pressed="false">Panel</button>
     </nav>
     <!-- The right-hand slot the shared bar already reserves - `nav.css` gives it the
          `margin-left: auto` that puts it at the far end, and the gallery fills the same
