@@ -2164,7 +2164,20 @@ function resize() {
   // can draw what was never rendered.
   const availW = innerWidth;
   const appBarHeight = document.getElementById('appBar')?.offsetHeight ?? 0;
-  const availH = Math.max(1, innerHeight - timelineEl.offsetHeight - appBarHeight);
+  // The collapsed panel is a bar along the bottom, and it is the same kind of thing the
+  // application bar and the timeline strip are: something drawn over the stage rather
+  // than beside it. Left out of this sum it does not shrink the picture, it *covers*
+  // the bottom of it - the frame is still rendered full height and the last 72px of
+  // every one of them is behind the dock, which is the one part of the image an
+  // operator framing a shot is most likely to be looking at.
+  //
+  // Expanded, the panel contributes nothing here on purpose: it is a column down the
+  // side, and the stage is already letterboxed to the target aspect, so it overlays
+  // margin rather than picture.
+  const dockHeight = document.body.classList.contains('panelcollapsed')
+    ? document.getElementById('panelDock')?.offsetHeight ?? 0
+    : 0;
+  const availH = Math.max(1, innerHeight - timelineEl.offsetHeight - appBarHeight - dockHeight);
   const fitH = Math.max(1, Math.min(availH, Math.round(availW / targetAspect())));
   const fitW = Math.max(1, Math.round(fitH * targetAspect()));
   const width = outputSize ? outputSize.w : fitW;
@@ -8936,14 +8949,7 @@ addEventListener('keydown', (e) => {
   if (e.defaultPrevented) return;
 
   if (e.key === 'h' || e.key === 'H') {
-    const p = document.getElementById('panel');
-    // Back to the empty string rather than to `block`, because the panel is a flex
-    // column now - a head that does not scroll over a body that does - and putting
-    // `block` back would leave the body unable to shrink, so pressing H twice would
-    // return a panel taller than the window with its foot cut off by the radius.
-    // The empty string restores whatever the stylesheet says, which is the only
-    // answer that stays right when the stylesheet changes.
-    p.style.display = p.style.display === 'none' ? '' : 'none';
+    setPanelCollapsed(!document.body.classList.contains('panelcollapsed'));
     return;
   }
   if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) {
@@ -9530,9 +9536,29 @@ onNav('end', () => {
  * deferred accurate seek and leave a draft standing where the true image belongs; the
  * loop's settle branch still runs on the next frame, and it now seeks to a pose that
  * has finished moving instead of one that is still travelling.
+ *
+ * **Nothing is asked of those flags on the way in, and that is a repair rather than a
+ * tidy-up.** This opened `if (!orbiting && !orbitSettling) return`, and `orbitSettling`
+ * is only ever raised by `onNav('end')` *after* that handler's own `!timeline` early
+ * return - so on the recorder surface, where `timeline` is null and stays null until a
+ * take is opened in the editor, the flag is never set at all. Both flags read false the
+ * instant a finger lifts, so this function returned having flushed nothing, and every
+ * caller was a no-op on the one surface the touchscreen runs. `sensor view` has drained
+ * here since it shipped and drained nothing; pressing it during a glide was
+ * indistinguishable from pressing a button that is not wired up, which is exactly the
+ * report that came back from the panel.
+ *
+ * Measured with the editor as the control, because the two surfaces run this same code
+ * and differ only in whether a `timeline` exists: same flick, same press, the camera's
+ * distance from the home pose sampled at the press and 600ms later. On `/edit` the reset
+ * lands at 0.00000 and holds 0.00000. On `/record` it lands 0.055 off and slides a
+ * further 0.725 out over the next 600ms - the damping the press was supposed to have
+ * settled, arriving afterwards and dragging the camera off the pose the operator asked
+ * for. With damping off a delta of zero applies whatever movement remains, and when
+ * nothing remains that is nothing, so the guard was saving a no-op at the price of the
+ * surface that needed the flush most.
  */
 function finishOrbitDrift() {
-  if (!orbiting && !orbitSettling) return;
   const damped = controls.enableDamping;
   controls.enableDamping = false;
   // Zero rather than no argument, and the difference is not cosmetic. `update()`
@@ -13447,6 +13473,11 @@ const shell = shellElements({
   export: 'menuExport',
   obs: 'menuObs',
   cameraReset: 'menuCameraReset',
+  panelToggle: 'panelToggle',
+  dockRec: 'dockRec',
+  dockMark: 'dockMark',
+  dockCentre: 'dockCentre',
+  dockSensor: 'dockSensor',
   topView: 'menuTopView',
   lookImport: 'menuLookImport',
   lookExport: 'menuLookExport',
@@ -13555,9 +13586,74 @@ shell.lookExport.addEventListener('click', () => {
 
 shell.cameraReset.addEventListener('click', () => {
   closeApplicationMenus();
+  // The same drain `sensorView` does before it writes a pose, and for the same reason
+  // its comment gives: a release that is still settling owes the camera movement it
+  // will deliver over the next frames, so a pose written underneath it lands and then
+  // slides back out. `sensor view` has done this since it shipped and this button
+  // never did, which is why the two behaved differently after a flick.
+  finishOrbitDrift();
   controls.reset();
   requestRepaint();
 });
+
+/**
+ * Collapse the settings to the dock, or bring them back.
+ *
+ * One writer for one class, called by the `H` key and by the app bar's toggle, because
+ * the version of this that shipped set `#panel`'s inline `display` from the key handler
+ * and nothing else could see it: a second control would have had to read an inline style
+ * to know which way to go, and the two would disagree the first time anything else
+ * touched the panel. It also stranded a touchscreen - `display: none` with the only way
+ * back on a keyboard is a panel that, on the Pi's own 7" screen, does not come back.
+ *
+ * `aria-pressed` on the toggle rather than a label that changes, so the control keeps
+ * one name and the state is in the state.
+ */
+function setPanelCollapsed(collapsed) {
+  document.body.classList.toggle('panelcollapsed', collapsed);
+  shell.panelToggle.setAttribute('aria-pressed', String(collapsed));
+  // The cloud's viewport is the window minus the panel, and collapsing changes that by
+  // 302px. Without this the canvas keeps the width it had and the picture is stretched
+  // until something else happens to resize it. `resize()` ends by asking for a repaint,
+  // so there is no separate request here.
+  resize();
+}
+
+shell.panelToggle.addEventListener('click', () => {
+  closeApplicationMenus();
+  setPanelCollapsed(!document.body.classList.contains('panelcollapsed'));
+});
+
+// The Pi's kiosk comes up with the settings already shut, and the thing that says so is
+// the unit file's URL - `/record?panel=collapsed` - beside the two other decisions that
+// screen needs made for it, the basic password store and the `127.0.0.1` the origin rule
+// requires.
+//
+// **A viewport-width rule was the other candidate and it cannot be made safe here**,
+// which is worth writing down because it is the obvious answer. The panel is 302px, so
+// catching the Pi's 800px screen needs a threshold above 800 - and five of this repo's
+// proof tools open a page 640 wide, which is *below* it, so every threshold that shuts
+// the panel on the Pi shuts it under `registry-check`, `determinism-check`,
+// `timeline-check`, `keyframe-check` and `export-check` too. Measured: the canvas there
+// goes 360 to 290, seventy pixels off a rendered buffer that `determinism-check` exists
+// to compare images of. Only a hand-picked 800-to-900 band separates them, and a number
+// chosen so the fixtures keep passing is a number that has stopped describing anything.
+// A parameter changes nothing unless something asks for it, which is the property the
+// heuristic had no way to have.
+if (new URLSearchParams(location.search).get('panel') === 'collapsed') setPanelCollapsed(true);
+
+// The dock presses the real controls rather than repeating what they do. `recGo` owns
+// whether a take can start at all - it carries the server's `cannotRecord` refusal as a
+// disabled state and a title - and `recMark` owns whether there is a recording to mark,
+// so routing through them means the dock inherits both refusals instead of being a
+// second place they have to be remembered.
+shell.dockRec.addEventListener('click', () => ui.recGo.click());
+shell.dockMark.addEventListener('click', () => ui.recMark.click());
+shell.dockCentre.addEventListener('click', () => shell.cameraReset.click());
+// Framing's `sensor view` puts the eye at the sensor's own optical centre with its own
+// field of view, which is the pose you frame a shot from - and it is two taps and a tab
+// away with the panel open, which is exactly the panel you have shut while framing.
+shell.dockSensor.addEventListener('click', () => ui.camSensor.click());
 
 shell.topView.addEventListener('click', () => {
   topViewVisible = !topViewVisible;
@@ -13894,6 +13990,21 @@ function paintRecord(storage) {
   ui.recGo.textContent = rec ? 'stop' : 'record';
   ui.recGo.setAttribute('aria-pressed', String(rec));
   ui.recMark.disabled = !rec;
+  // The dock is the same two controls under a collapsed panel, so it is painted here
+  // rather than from its own read of `recordState` - a second derivation is a second
+  // thing that can be wrong, and the failure it produces is a dock offering `record`
+  // over a take that is already running.
+  //
+  // Unguarded, because there is no state in which these are absent: `shellElements`
+  // collects every missing id and throws before the page finishes starting, so a build
+  // without a dock never reaches this line. An `if` here would describe a case that
+  // cannot happen and quietly stop painting the dock in the one that can - a renamed id
+  // would take the throw away with it and leave a dock painted by nothing.
+  shell.dockRec.disabled = ui.recGo.disabled;
+  shell.dockRec.title = ui.recGo.title;
+  shell.dockRec.textContent = ui.recGo.textContent;
+  shell.dockRec.setAttribute('aria-pressed', String(rec));
+  shell.dockMark.disabled = ui.recMark.disabled;
   // Said before the button is pressed rather than only in the 409 it would answer.
   // The refusal exists so a full-rate monitor cannot quietly cost the take frames,
   // and an operator who only learns that from an error in the second they were

@@ -93,6 +93,49 @@
      which would push the panel past the window rather than scrolling inside it. */
   #panelBody { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 14px 14px;
     scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.2) transparent; }
+  /* Collapsed, the panel stops being a column beside the cloud and becomes a bar under
+     it: full width, its own height, hard against the bottom edge. That is the shape a
+     thumb wants and it is also the shape that gives the cloud the whole 800px of an
+     official 7" panel, where a 302px column is 38% of the screen.
+
+     One element in two forms rather than a panel plus a dock, so there is no state in
+     which both are on screen and no second thing to keep in step.
+
+     What the collapsed state *is* is stated once, further down the sheet under
+     "the collapsed panel", and deliberately not here beside the box it draws. Collapsing
+     is a mode laid over whichever surface is on screen, so its rules have to be able to
+     beat the per-surface rules - and both of the ones it has to beat, the editor's panel
+     height and the editor's inspector tabs, are written below this point. Stated here it
+     lost to both on nothing but source order, twice. */
+  #panelDock { flex: none; display: none; gap: 6px; padding: 8px; }
+  #panelDock button {
+    flex: 1; min-height: 56px; padding: 6px 5px;
+    border: 1px solid var(--line); border-radius: 0;
+    background: transparent; color: var(--ink); font: inherit; font-size: 15px;
+    cursor: pointer;
+    /* Without this a tap waits ~300ms for a second one that would have been a
+       double-tap zoom, and a record button that answers a third of a second late reads
+       as a button that did not take the press. */
+    touch-action: manipulation;
+  }
+  #panelDock button:disabled { opacity: 0.4; cursor: default; }
+  #panelDock button[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: #04231f; }
+
+  /* Two groups, not four peers. `centre` and `sensor` move the eye and cost nothing if
+     mis-tapped; `mark` and `record` act on the take, and the hazard this layout is
+     defending against is a thumb reaching for a view button and stopping a running
+     shoot. The gap is the separation and the order puts the two destructive ones at the
+     edge, which is also where a thumb lands without looking.
+
+     `mark` sits beside `record` because it only means anything while one is running -
+     the adjacency and its disabled state say that together, where a `mark` parked among
+     the view buttons would just look broken four times out of five. */
+  .dockgap { flex: 0 0 18px; }
+  /* Wider rather than a different colour: the accent fill already arrives when a take is
+     rolling, and a control that is red before it has done anything is a warning about
+     nothing. Width is what makes it findable without looking. */
+  #dockRec { flex: 1.7; }
+
   .panelbar { display: flex; align-items: center; gap: 8px; }
   .panelbar h1 { flex: 1; min-width: 0; }
   #panel h1 { margin: 0 0 2px; font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; }
@@ -518,6 +561,72 @@
   #timeline[hidden] { display: none; }
   body.editing #hint { display: none; }
   body.editing #panel { height: calc(100vh - var(--timeline-h) - var(--tlanes-h) - 38px); }
+
+  /* ── the collapsed panel ───────────────────────────────────────────────────
+     The mode the dock is the visible half of, and it is written *here*, below the
+     surface rules, rather than beside the dock's own box up in the panel section.
+
+     Collapsing is a mode laid over whichever surface is on screen, so every rule in it
+     has to outrank the per-surface rule it contradicts - and two of those sit in the
+     lines just above. Written up beside the dock, this block matched at the same weight
+     as `body.editing #panel` and `body.editing #panelTabs:not([hidden])` and lost to
+     both on source order alone, which is the whole of what went wrong: a collapsed
+     editor kept the height meant for the expanded column and came out 692px tall,
+     reaching from y=208 to the foot of the window, translucent over two thirds of the
+     picture with the dock's buttons floating at y=239 in the middle of the stage; and
+     it kept the inspector's tab rail, 30px of it, in a strip above the dock over the
+     bottom of the frame. Both measured at 1512x900, and the recorder surface was
+     correct at the same moment in the same build - a 73px bar at y=827 against a canvas
+     ending at 828 - which is what made it look like a working feature.
+
+     Below the surface rules, a mode rule of equal weight wins by position - so the next
+     `body.editing` rule written at one class is overridden by this block existing rather
+     than by somebody remembering to come back and raise a weight. Position is only half
+     of it though, and the tab rail is why: specificity is read before order, so the two
+     rules that carry an extra selector have to be answered in kind rather than by
+     sitting lower. Both are spelled out below in the shape of the rule they beat. */
+  body.panelcollapsed #panelDock { display: flex; }
+  body.panelcollapsed #panelHead,
+  body.panelcollapsed #panelBody { display: none; }
+  /* In the shape of `body.editing #panelTabs:not([hidden])` above, because that is what
+     it has to beat and a plain `body.panelcollapsed #panelTabs` does not: the `:not()`
+     carries its argument's weight, so the editor's rule outranks a one-class mode rule
+     wherever either sits. Matched, this wins on position - which is what moving the
+     block down here bought. Left unmatched it kept the inspector's 30px tab rail in a
+     strip above the dock, over the bottom of the frame, which is the part of the picture
+     the timeline's own comment says must never be occluded. */
+  body.panelcollapsed #panelTabs:not([hidden]) { display: none; }
+  body.panelcollapsed #panel {
+    top: auto; bottom: 0; width: 100vw; height: auto;
+    border-right: 0; border-top: 1px solid var(--line);
+  }
+  /* The editor keeps its timeline strip along the foot of the window, so the collapsed
+     panel stops above it rather than over it. `resize()` already subtracts the timeline
+     and the dock both, so the arithmetic was never the part that was wrong - only the
+     box the buttons were drawn in. */
+  body.editing.panelcollapsed #panel {
+    height: auto;
+    bottom: calc(var(--timeline-h) + var(--tlanes-h));
+  }
+  /* The hint names a mouse - drag, scroll, right-drag - and sits at `left: 318px`,
+     which is inside the cloud once the panel is not 302px wide any more. */
+  body.panelcollapsed #hint { display: none; }
+  /* The two that act on the take are the recorder's, and the editor does not have them.
+     `body.editing #panelTabRecord` above takes the whole Record tab off that surface, so
+     the panel there offers no `record` and no `mark` at all - and the dock is the panel's
+     collapsed form rather than a second set of controls, so what it offers is what the
+     panel offers.
+
+     It shipped offering both on the editor, and offering them dead. `askRecordState` is
+     assigned only on the live surface - the comment above it in `main.js` says an editor
+     has no recorder to ask about - so `paintRecord` never runs there and `recordState`
+     stays the initial object it was declared as. The button read `record` for the whole
+     session whatever the node was doing, its disabled state and the server's refusal
+     never reached it, and the click still posted `/record/start`. A control with no state
+     behind it, on the surface where nobody is watching the sensor, which is the failure
+     class this repo names rather than a cosmetic one. */
+  body.editing #dockRec,
+  body.editing #dockMark { display: none; }
 
   /* The program-out source. Everything an operator needs and an encoder does not
      comes off, because a browser source captures the page rather than the canvas -
@@ -965,6 +1074,13 @@
           <button class="menu-command" id="menuState" type="button" role="menuitemcheckbox" aria-checked="false"><span>Stats for nerds</span><kbd></kbd></button>
         </div>
       </div>
+      <!-- The way back out of the collapsed panel, and the way into it. In the app bar
+           rather than on the dock because the dock is three buttons by design and a
+           fourth would make it four; and because a collapse control that lives only
+           inside the thing it collapses is one a touchscreen cannot undo. `H` toggles
+           this same class, so the key and the button are one mechanism rather than two
+           that can disagree about whether the panel is shut. -->
+      <button class="appmenu-trigger" id="panelToggle" type="button" aria-pressed="false">Panel</button>
     </nav>
     <!-- The right-hand slot the shared bar already reserves - `nav.css` gives it the
          `margin-left: auto` that puts it at the far end, and the gallery fills the same
@@ -1103,6 +1219,31 @@
          colour they take, what persists between frames, and what the optics do. -->
     <div id="gradeAnchor" hidden></div>
   </div><!-- #panelBody -->
+
+  <!-- What the panel becomes when it is collapsed: the three things you press with the
+       settings shut. Inside `#panel` rather than a bar of its own somewhere else,
+       because `editor-check`'s section 1 enumerates `.appbar`, `.tbar`, `#panel`,
+       `.tlanes` and `dialog` - a dock outside all five would be three pressable
+       controls the sweep cannot see, which is the sweep claiming a coverage it never
+       had rather than a control that went untested by accident.
+
+       Its buttons delegate to `#recGo`, `#recMark` and the View menu's
+       `#menuCameraReset` rather than repeating what those do. A second implementation
+       of "start a take" that drifts from the first is the failure this design keeps
+       refusing, and the dock is a second *place to press*, not a second action.
+
+       Not `hidden`, and the attribute's absence is deliberate. It shipped carrying one,
+       which the stylesheet above then overrode with `display: flex` the moment the body
+       took the class - so the element was on screen and pressable while still declaring
+       itself irrelevant, which is two statements of one state where the CSS is the only
+       one anything reads. `#panelDock { display: none }` is that state, said once. -->
+  <div id="panelDock">
+    <button id="dockCentre" type="button">centre</button>
+    <button id="dockSensor" type="button">sensor</button>
+    <div class="dockgap" aria-hidden="true"></div>
+    <button id="dockMark" type="button" disabled>mark</button>
+    <button id="dockRec" type="button">record</button>
+  </div>
   </div><!-- #panel -->
 
   <div id="hint">drag to orbit · scroll to zoom · right-drag to pan · <b>R</b> record · <b>M</b> mark · <b>H</b> hides panel</div>

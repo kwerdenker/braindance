@@ -2229,3 +2229,43 @@ nobody re-runs at the width the claim actually needs.
 - **Ask what a surface is for, and check that, not only what its documents are.** Every
   existing preset arm asked about one document in isolation. The property a user has is a
   sequence of presses.
+
+## A mirroring assertion on a surface where the painter never runs
+
+The panel's collapsed dock repeats two of the recorder's controls, and it repeats them by
+pressing them rather than by re-deriving what they do — `paintRecord` writes `#recGo` and
+then writes `#dockRec` from it, in one place, so the two cannot drift. The obvious way to
+enforce that is to read them against each other: same `disabled`, same `title`, same text,
+same `aria-pressed`. Three rows of `editor-check` section 21 did exactly that and all three
+passed on the first run.
+
+They were comparing nothing. `paintRecord` is called by the recorder's poll, and
+`askRecordState` is assigned only on the live branch of the boot block — the comment above it
+says an editor has no recorder to ask about. So on the editor surface the mirroring code
+**never executes once**, both buttons sit at whatever their markup gave them, and the
+comparison is `record` against `record`, `""` against `""`, `null` against `null`. Deleting
+the paint entirely would not have moved a single one of those rows.
+
+What gave it away was a detail printed beside a passing row rather than a failing one:
+`pressed null/null`. `paintRecord` sets `aria-pressed` on both, so neither being *absent* is
+only possible if the function has not run. A row that passes while reporting a value the
+build under test should make impossible is worth more than a row that fails.
+
+Two lessons:
+
+- **A mirroring assertion is a claim about a writer, so ask whether the writer ran.** Two
+  fields agreeing is evidence of one paint only if a paint happened; otherwise it is evidence
+  that two defaults were authored to match, which they were. The falsification question —
+  what would a broken build have to do to still pass this — answers itself here: nothing.
+  It would have to do nothing at all.
+- **The surface is a term in the assertion.** This program draws two surfaces from one
+  document, and half of what `main.js` sets up is behind `EDITING`. A row moved from one
+  surface to the other keeps its wording and loses its meaning, and the wording is what gets
+  read later. The repair was not a better comparison: it was noticing that the two controls
+  should not have been on that surface at all, which is what the section asserts now.
+
+The bug underneath was the same shape. The editor hides the entire Record tab, so its panel
+offers neither `record` nor `mark` — and the dock, which is that panel collapsed, offered
+both, over a `recordState` frozen at the object it was declared as, with the click still
+reaching `POST /record/start`. A control with no state behind it, on the surface where nobody
+is watching the sensor. `--mutate dock-offers-the-take-on-the-editor` is that bug put back.

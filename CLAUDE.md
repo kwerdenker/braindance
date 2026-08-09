@@ -275,6 +275,12 @@ node tools/editor-check.mjs --mutate reset-strands-focus --no-render    # ... th
 node tools/editor-check.mjs --mutate reset-writes-around-the-registry --no-render # ... and a press that is a registry write rather than an assignment
 node tools/editor-check.mjs --mutate format-segments-paint-the-press --no-render # ... the export format shown, read off the deliverable rather than off the last click
 node tools/editor-check.mjs --mutate box-drag-pumps-renders --no-render # ... a crop face dragged out of the animation loop rather than out of its own handler
+node tools/editor-check.mjs --mutate resize-ignores-the-dock --no-render # ... the picture drawn full height under a bar drawn over its last 72px
+node tools/editor-check.mjs --mutate collapse-by-display --no-render   # ... and the panel a touchscreen could shut and never reopen
+node tools/editor-check.mjs --mutate collapsed-keeps-the-editor-height --no-render # ... the collapsed panel's box, which two rules of equal weight decided by source order
+node tools/editor-check.mjs --mutate collapsed-keeps-the-tab-rail --no-render # ... and the half of that a lower rule cannot fix, because `:not()` carries its argument's weight
+node tools/editor-check.mjs --mutate dock-sensor-takes-the-centre --no-render # ... a dock button forwarding faithfully to the neighbouring control
+node tools/editor-check.mjs --mutate dock-offers-the-take-on-the-editor --no-render # ... and `record` offered on the surface that never polls a recorder to paint it
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated
