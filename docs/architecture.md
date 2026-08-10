@@ -158,6 +158,24 @@ rather than an error. `minDepth` and `maxDepth` say how much of the world the fi
 allowed to contain, and the editor paints its preview range from them. `lowLight` says
 whether the colour camera was run long-exposure.
 
+**`startedAt` means one thing on the wire and a narrower thing in a file, and the difference
+is the whole reason the field works.** The grabber says hello once per process, so the value
+it sends is when *the grabber* came up. Written straight through, that put a byte-identical
+date on every take of a session and none of them was when its own take was shot — two takes
+nine minutes apart came back indistinguishable, on the one field the gallery sorts and prints.
+So `Recorder.open` replaces it: the hello it writes into a take carries when *that take*
+began, which is the clock it already has to stamp the take with anyway. On the wire the key
+is the session's; in a `.knct` it is the take's, and a take is the only thing a file is about.
+
+The key is reused rather than joined by a second one, and that is a deliberate trade. One
+reader consumes it — `describeTake`, for `capturedAt` — so there is no caller that could want
+the session start out of a file and get the take start instead. A new key would have been the
+tidier spelling and it would have had to be emitted by `native/grabber.cpp` to satisfy
+`syntax-check`'s hello-key comparison, which would mean the C++ emitting a field only the Node
+recorder can fill in. Takes shot before this carry the session stamp and nothing in the file
+distinguishes them from takes shot after, so their dates stay as they were: wrong in the same
+way, and not detectable without a marker that was deliberately not added.
+
 **Type 3 is live-only, so "byte-identical" means identical to the type 1 and 2 subsequence.**
 The colour message is dropped at the recorder, because a third message type in the file would
 move every take's content hash, which is the key the library joins two machines on.
@@ -171,3 +189,22 @@ The grabber writes frames to stdout and every log line to stderr, because one st
 on stdout would desync the stream permanently. The browser needs `fx/fy/cx/cy` from the hello
 to unproject, and hardcoded intrinsics skew the cloud in a way that is hard to spot and hard
 to attribute.
+
+**Every frame in this format is horizontally mirrored, and the readers undo it rather than the
+writer.** libfreenect2 delivers depth, IR and colour flipped left-for-right on purpose, to
+match the Microsoft SDK's selfie-view convention, and the grabber `memcpy`s the buffer through
+untouched, so the sensor's frame reaches the file exactly as the driver produced it. The
+correction is one sign in the unprojection — `X = -(col + 0.5 - cx) / fx * z`, with `cx` used
+exactly as the hello reports it, because the grid width cancels out of the algebra. That is one
+sign away from `Registration::getPointXYZ`, which pairs the same mirrored image with an x that
+grows right and therefore describes a reflection of the room; `server/protocol.js` carries the
+derivation and the warning not to copy upstream back in.
+
+**Undoing it in the readers rather than in the grabber is what keeps the archive
+single-valued.** Flipping columns before the wire would leave every take shot before the change
+mirrored and every take after it not, with nothing in the file to tell them apart — the split
+that `format` exists to prevent, arriving through a different door. Correcting on the way out
+means one geometry for the whole archive, old takes included. The cost is that the sign is
+stated by five readers (the vertex shader, the top-down, the gallery poster, and the oracles in
+`export-check` and `monitor-check`) plus this specification, and `level-check` section 8 is what
+holds them to one answer.

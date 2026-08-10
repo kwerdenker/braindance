@@ -130,6 +130,26 @@ and confirm the phrase appears at all** — a phrase in the tool's own help text
 the running build emits it. This one was caught by reading journald after installing a systemd
 unit, entirely by accident, which is not a method.
 
+## A speed read off two adjacent frames has a noise floor that moves with the frame rate
+
+The sensor's depth jitter is a **displacement** and not a rate, so dividing it by the gap
+between two frames turns a fixed quantity into one that grows as the link gets faster.
+Measured on `captures/sample.knct` at two spacings, taking the median of every paired sample
+inside the snap threshold: about 4mm either way, which reads as **31 mm/s across the 128ms
+pairs `registry-check` pins and about 140 mm/s across the capture's own 32ms ones.** Real
+movement is a fixed speed and reads the same at both, so the signal-to-noise of anything
+estimated this way is *worse* on a healthy link than on a degraded one, which is the opposite
+of the direction every other number in this repo moves.
+
+Two things follow, and the second is the one that costs somebody an afternoon. A threshold
+meant to reject jitter cannot be stated in mm/s, because it would need re-tuning per link -
+and it cannot be stated in millimetres either, because then a slow surface registers over a
+slow link and vanishes over a fast one. `duotoneMotion` carries no such threshold for exactly
+that reason, and the comment beside it in `web/main.js` has the numbers. And **the median
+displacement being the same at both spacings is itself the discriminator between jitter and
+motion**: measure at two intervals, and whatever holds its millimetres rather than its
+millimetres per second is the sensor talking to itself.
+
 ## The Mac's USB topology reads worse than it measures
 
 `ioreg -p IOUSB -w0` shows the sensor as controller -> `USB3.0 Hub` -> `NuiSensor Adaptor` ->

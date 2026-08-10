@@ -106,6 +106,31 @@ node tools/index-check.mjs --url http://localhost:8123   # step 2: index, hash, 
 node tools/registry-check.mjs --url http://localhost:8080 # step 3: one registry, sliders as views
 node tools/registry-check.mjs --mutate mix-ignores-normalisation  # ... and must FAIL mutated
 node tools/registry-check.mjs --mutate rgb-contributes-no-alpha   # ... and must FAIL mutated
+node tools/registry-check.mjs --mutate duotone-ignored            # ... the tonal transform the rest of the look sits on
+node tools/registry-check.mjs --mutate duotone-ignores-depth      # ... and that it is keyed on depth, which is the whole claim
+node tools/registry-check.mjs --mutate duotone-span-ignored       # ... the width of that key, promoted back to the literal it replaced
+node tools/registry-check.mjs --mutate duotone-span-against-a-frozen-range # ... and that the width is metres, which only two clip ranges at once can see
+node tools/registry-check.mjs --mutate duotone-hue-in-degrees     # ... a unit no picture comparison can see the shape of
+node tools/registry-check.mjs --mutate vspeed-ignored             # ... the motion half of the same transform, and the speed it keys on
+node tools/registry-check.mjs --mutate vspeed-unnormalised        # ... that the speed is a rate, which only two planted spans can see
+node tools/registry-check.mjs --mutate vspeed-ignores-the-gate    # ... and that a jump past the snap threshold is a surface, not motion
+node tools/registry-check.mjs --mutate vspeed-reads-one-texel     # ... and that it is a value per point, which a uniformly moving plant cannot see
+node tools/registry-check.mjs --mutate motion-leaks-at-zero       # ... the default, which is the one place this term has to be exactly absent
+node tools/registry-check.mjs --mutate spansec-nominal            # ... the gap it is divided by, taken off the transport rather than assumed
+node tools/registry-check.mjs --mutate crush-ignored              # ... the toe, promoted to the literal it defaults to
+node tools/registry-check.mjs --mutate crush-gates-the-grade      # ... and the one term in that pass that must not gate it
+node tools/registry-check.mjs --mutate raster-recomputes-the-default # ... the raster's default path reached rather than recomputed, at the value the shipped look names
+node tools/registry-check.mjs --mutate raster-ignores-angle       # ... the axis a raster runs along
+node tools/registry-check.mjs --mutate raster-pitch-fixed         # ... its line frequency, promoted from the literal it defaults to
+node tools/registry-check.mjs --mutate raster-hard-ignored        # ... and the duty cycle, without which an angle only buys rotated softness
+node tools/registry-check.mjs --mutate glitch-axis-ignored        # ... the axis a tear's bands are cut along
+node tools/registry-check.mjs --mutate lattice-ignored            # ... the grid the volume is rebuilt on
+node tools/registry-check.mjs --mutate ripple-ignored             # ... the region's fourth reading
+node tools/registry-check.mjs --mutate ripple-outside-the-gate    # ... and the gate that decides whether it is inert, which the sweep cannot see
+node tools/registry-check.mjs --mutate ripple-clock-continuous    # ... its clock, which steps rather than breathes
+node tools/registry-check.mjs --mutate streak-ignored             # ... the bleed, and whether it reaches a pixel at all
+node tools/registry-check.mjs --mutate streak-ignores-angle       # ... and which way it runs, which the drop-one sweep cannot see
+node tools/registry-check.mjs --mutate streak-angle-in-degrees    # ... in the unit no picture comparison can see the shape of
 node tools/timeline-check.mjs --url http://localhost:8080 # step 4: seek equals playback
 node tools/timeline-check.mjs --mutate preroll-constant   # ... and must FAIL mutated
 node tools/timeline-check.mjs --mutate draft-always-resets # ... and must FAIL mutated
@@ -114,6 +139,8 @@ node tools/keyframe-check.mjs --url http://localhost:8080 # step 5: tracks, reti
 node tools/keyframe-check.mjs --mutate pose-linear        # ... and must FAIL mutated
 node tools/export-check.mjs --url http://localhost:8080   # step 6: resolution, export, the file
 node tools/export-check.mjs --mutate pointsize-absolute   # ... and must FAIL mutated
+node tools/export-check.mjs --mutate cropoutside-reaches-the-export # ... the crop box's faint pass, one edit from being in a deliverable
+node tools/export-check.mjs --mutate faint-survives-at-zero # ... and a cut point kept at alpha zero, invisible and still occluding
 node tools/library-check.mjs                              # step 7: library, recorder, routes
 node tools/library-check.mjs --mutate plant-open-take     # ... and must FAIL
 node tools/library-check.mjs --mutate open-decides-its-own-reason  # ... one take, one refusal, whichever surface asks
@@ -166,11 +193,15 @@ node tools/library-check.mjs --mutate listing-ignores-client-abort # ... a calle
 node tools/library-check.mjs --mutate cancel-watches-the-consumed-request # ... including on a route that read its body before asking
 node tools/library-check.mjs --mutate listing-takes-a-refusal-as-a-library # ... and a refusal that parses is not a library
 node tools/library-check.mjs --mutate faint-fixed-in-one-page       # ... one token, and the page that drifts is named
+node tools/library-check.mjs --mutate extent-reads-one-frame        # ... the cloud's reach measured over the take rather than its first frame
+node tools/library-check.mjs --mutate extent-cache-ignores-the-range # ... and cached against the depth range it was computed for
 node tools/library-check.mjs --mutate write-overwrites-builtin # ... and must FAIL
 node tools/library-check.mjs --mutate list-swallows-unreadable # ... and must FAIL
 node tools/library-check.mjs --mutate open-take-swallows-library # ... and must FAIL
 node tools/library-check.mjs --mutate one-refusal-for-older-versions # ... and must FAIL
 node tools/library-check.mjs --mutate open-ignores-format          # ... the capture's generation, at all four doors at once
+node tools/library-check.mjs --mutate shipped-look-drops-a-value   # ... a shipped look with a hole in it, which is the last look staying under the next one
+node tools/library-check.mjs --mutate complete-look-drops-a-group  # ... and the definition those documents are written against, which is code where they are data
 node tools/editor-check.mjs --url http://localhost:8080   # the editor's controls: that they exist, that pressing them changes something
 node tools/editor-check.mjs --mutate lanes-clear-siblings --no-render  # ... and must FAIL
 node tools/editor-check.mjs --mutate plant-unswept-control --no-render # ... and must FAIL
@@ -180,10 +211,12 @@ node tools/editor-check.mjs --mutate picker-ignores-the-boxes --no-render # ... 
 node tools/editor-check.mjs --mutate readings-tick-alone --no-render   # ... and the five weights that move as one
 node tools/editor-check.mjs --mutate group-never-reveals --no-render      # ... a panel group is open because the clip says so
 node tools/editor-check.mjs --mutate reveal-ignores-tracks --no-render    # ... and a keyframe counts where the value does not
-node tools/editor-check.mjs --mutate detail-ignores-the-reading --no-render # ... the group that answers for another group's values
 node tools/editor-check.mjs --mutate override-prunes-only-on-toggle --no-render # ... and the override the document, not the toggle, has caught up with
 node tools/editor-check.mjs --mutate panel-row-skips-parameter --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate nav-at-the-foot --no-render       # ... and must FAIL
+node tools/editor-check.mjs --mutate panel-tabs-show-everything --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate dialog-close-strands-focus --no-render # ... and must FAIL
+node tools/editor-check.mjs --mutate obs-forgets-custom-resolution --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate orbit-pumps-on-change --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate camera-motion-keeps-history --no-render # ... and must FAIL
 node tools/editor-check.mjs --mutate orbit-uses-scrub-draft --no-render # ... and must FAIL
@@ -238,6 +271,22 @@ node tools/editor-check.mjs --mutate restore-accepts-view-track --no-render # ..
 node tools/editor-check.mjs --mutate prune-ignores-movement --no-render # ... a stored collapse, against the boot it has to survive
 node tools/editor-check.mjs --mutate panel-rederives-per-write --no-render # ... and what the panel costs the render path
 node tools/editor-check.mjs --mutate envelope-unchecked --no-render     # ... the half of a preset document nothing used to read
+node tools/editor-check.mjs --mutate reset-missing-on-a-row --no-render # ... a reset per look scalar, enumerated off the registry
+node tools/editor-check.mjs --mutate reset-skips-a-tab --no-render      # ... and a whole inspector that lost them
+node tools/editor-check.mjs --mutate reset-remembers-its-own-state --no-render # ... what a row offers, re-read rather than remembered
+node tools/editor-check.mjs --mutate reset-collapses-the-slot --no-render # ... and the slot kept for it, so the row does not move
+node tools/editor-check.mjs --mutate reset-strands-focus --no-render    # ... the caret after the press that removed its own control
+node tools/editor-check.mjs --mutate reset-writes-around-the-registry --no-render # ... and a press that is a registry write rather than an assignment
+node tools/editor-check.mjs --mutate format-segments-paint-the-press --no-render # ... the export format shown, read off the deliverable rather than off the last click
+node tools/editor-check.mjs --mutate box-drag-pumps-renders --no-render # ... a crop face dragged out of the animation loop rather than out of its own handler
+node tools/editor-check.mjs --mutate resize-ignores-the-dock --no-render # ... the picture drawn full height under a bar drawn over its last 72px
+node tools/editor-check.mjs --mutate collapse-by-display --no-render   # ... and the panel a touchscreen could shut and never reopen
+node tools/editor-check.mjs --mutate collapsed-keeps-the-editor-height --no-render # ... the collapsed panel's box, which two rules of equal weight decided by source order
+node tools/editor-check.mjs --mutate collapsed-keeps-the-tab-rail --no-render # ... and the half of that a lower rule cannot fix, because `:not()` carries its argument's weight
+node tools/editor-check.mjs --mutate dock-sensor-takes-the-centre --no-render # ... a dock button forwarding faithfully to the neighbouring control
+node tools/editor-check.mjs --mutate dock-offers-the-take-on-the-editor --no-render # ... and `record` offered on the surface that never polls a recorder to paint it
+node tools/editor-check.mjs --mutate fit-lands-after-history-begins --no-render # ... the box a take opens with, which is the clip rather than the first thing you can undo
+node tools/editor-check.mjs --mutate fit-outlives-a-restored-project --no-render # ... and a document's own box, which only the ordering still protects
 node tools/monitor-check.mjs                              # step 9: the monitor's decimation, the take it must not touch, and the picture it shows
 node tools/monitor-check.mjs --mutate decimate-reaches-recorder  # ... and must FAIL mutated
 node tools/monitor-check.mjs --mutate bind-ignores-grid          # ... and must FAIL mutated
@@ -253,11 +302,12 @@ node tools/level-check.mjs --mutate plan-ignores-tilt     # ... and must FAIL mu
 node tools/level-check.mjs --mutate plan-skips-vertical-crop # ... and must FAIL mutated
 node tools/level-check.mjs --mutate region-follows-tilt   # ... and must FAIL mutated
 node tools/level-check.mjs --mutate sensor-view-ignores-tilt # ... and must FAIL mutated
-node tools/level-check.mjs --mutate level-writes-zero     # ... and must FAIL mutated
-node tools/level-check.mjs --mutate level-order-swapped   # ... and must FAIL mutated
-node tools/level-check.mjs --mutate level-selection-ignores-point # ... and must FAIL mutated
-node tools/level-check.mjs --mutate pointer-levels-the-centre # ... the press's own position, one link earlier
+node tools/level-check.mjs --mutate level-order-swapped   # ... the pair's composition order, seen by the one surface that leans both ways
 node tools/level-check.mjs --mutate reset-keeps-roll      # ... and must FAIL mutated
+node tools/level-check.mjs --mutate plan-box-ignores-tilt # ... the crop box drawn in the room the shader deliberately does not test in
+node tools/level-check.mjs --mutate crop-switch-reaches-only-the-shader # ... and the switch over it, asked of the reader that is not the shader
+node tools/level-check.mjs --mutate x-not-mirrored        # the sensor's frames arrive mirrored, and the one fixture in the suite that is not symmetric about the optical axis
+node tools/level-check.mjs --mutate plan-x-not-mirrored   # ... asked of the top-down too, because a sign fixed in the shader alone leaves the plan reflected
 node tools/vcam-check.mjs                                 # the output to OBS: the colour camera, the take it must not touch, and the source's picture
 node tools/vcam-check.mjs --mutate hd-upscales-registered # ... and must FAIL mutated
 node tools/vcam-check.mjs --mutate hd-reencodes-in-flight # ... the bytes, where the picture is right
@@ -311,6 +361,8 @@ rather than by reading a config key:
 node tools/syntax-check.mjs                          # every JS file this repo ships parses, and the two
                                                      #   constants the two languages cannot share agree
 node tools/syntax-check.mjs --mutate spec-drifts     # ... and the .knct decoder specification must FAIL when a constant moves under it
+node tools/syntax-check.mjs --mutate shell-id-renamed # ... and a surface whose shell drives an id the markup stopped declaring
+node tools/syntax-check.mjs --mutate shell-key-undeclared # ... and the other direction, which is the one a merge produces
 node tools/release-gate-check.mjs                    # the .npmrc supply-chain gate is actually armed
 node tools/release-gate-check.mjs --mutate wrong-unit # ... and must FAIL (also: no-gate, absent)
 ```

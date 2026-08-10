@@ -103,6 +103,39 @@ export const MAX_TAKE_BUFFER = 64 * 1024 * 1024;
  * at most one element per element ever queued and leaves the array itself bounded
  * by the frames not yet durable instead of growing with the take.
  */
+/**
+ * The grabber's hello with `startedAt` replaced by when *this* take began.
+ *
+ * **It fails soft, and that is the whole of why it is a function rather than three
+ * lines at the call site.** The hello is the one message a take cannot do without -
+ * `describeTake` refuses to open a take that has none, and the intrinsics that
+ * unproject the cloud are in it - so a payload this cannot parse has to be written
+ * through exactly as it arrived rather than dropped or replaced. The date is worth
+ * having and it is not worth a take for. A parse failure here means the sensor is
+ * emitting something this build does not understand, which is a condition the format
+ * generation exists to catch at the point of opening rather than one to lose footage
+ * over at the point of writing.
+ *
+ * Re-encoded to UTF-8 from the parsed object rather than patched as text, because a
+ * regular expression over JSON is a decoder written by somebody who did not want to
+ * write a decoder, and this string carries the numbers the picture is built from.
+ */
+function stampHello(helloPayload, startedAt) {
+  const raw = Buffer.from(helloPayload);
+  try {
+    const hello = JSON.parse(raw.toString('utf8'));
+    // An array or a string parses perfectly well and is not a hello. Assigning a key
+    // onto one would produce a payload that still parses downstream and describes
+    // nothing, which is worse than passing the original through untouched.
+    if (hello === null || typeof hello !== 'object' || Array.isArray(hello)) return raw;
+    return Buffer.from(JSON.stringify({ ...hello, startedAt }), 'utf8');
+  } catch {
+    console.warn('[recorder] the hello is not JSON this build can read, so the take carries it '
+      + 'through unchanged - its date will be the sensor\'s rather than this take\'s');
+    return raw;
+  }
+}
+
 function settle(take) {
   const written = take.stream.bytesWritten;
   while (take.inFlightHead < take.inFlight.length && take.inFlight[take.inFlightHead] <= written) {
@@ -336,13 +369,39 @@ export class Recorder {
         this.onChange(this.state);
       }
     });
-    const helloMessage = encodeMessage(TYPE_HELLO, Buffer.from(helloPayload));
+    // **The take's own wall clock, written into the take's own hello.**
+    //
+    // The sensor says hello once per grabber process and its `startedAt` is when that
+    // process came up, so every take shot in one session carried a byte-identical
+    // stamp - and none of them carried when its own take was shot. Two takes nine
+    // minutes apart came back from `describeTake` with the same `capturedAt`, which is
+    // the field the gallery sorts on and prints. The comment above that field says it
+    // exists because `steady_clock` stamps are useless for sorting a library; it was
+    // right about the need and the value it reached for could not meet it.
+    //
+    // Stamped here because here is the only place that knows. `open` runs once per
+    // take, off the hello that opens it, and the clock two lines below is already this
+    // take's own - so the fix is to write that number rather than to invent one. In the
+    // file rather than in the `.idx`, because a `.idx` is a cache of a scan and the next
+    // reader rebuilds it, which would take the stamp with it; and rather than in a
+    // sidecar, because a take downloaded across the link without its neighbours would
+    // arrive with its date gone. The hello is the one part of a take that already
+    // travels inside the take.
+    //
+    // The key is the grabber's rather than a new one beside it, and that is the part
+    // worth knowing on the way past: `startedAt` now means when the grabber came up on
+    // the wire and when this take began in a file. One reader in the tree consumes it -
+    // `describeTake`, for exactly this field - so nothing else can read the difference,
+    // and `docs/architecture.md` carries the distinction.
+    const startedAt = Date.now();
+    const stamped = stampHello(helloPayload, startedAt);
+    const helloMessage = encodeMessage(TYPE_HELLO, stamped);
     stream.write(helloMessage);
     this.take = {
       id: take.id,
       path: take.path,
       stream,
-      startedAt: Date.now(),
+      startedAt,
       frames: 0,
       bytes: 0,
       dropped: 0,

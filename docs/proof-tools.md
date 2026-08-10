@@ -24,9 +24,11 @@ Counted rather than recalled:
   reading `registration-check` reserves 2 for. `level-check` and `vcam-check` separate the same
   three and land in the first group instead, so the three-way split and the sign of a catch are
   independent choices rather than one decision — which is the whole reason this section exists.
-  That is not hypothetical — two of its four mutations reddened their intended row and *then* died on
-  Playwright's `Target page, context or browser has been closed`, and without the crash handler
-  each would have exited non-zero having asserted the right thing for the wrong reason.
+  That is not hypothetical — two of the four mutations it carried at the time reddened their
+  intended row and *then* died on Playwright's `Target page, context or browser has been
+  closed`, and without the crash handler each would have exited non-zero having asserted the
+  right thing for the wrong reason. (It carries twenty-seven now, and the count is written
+  as a moment rather than as a fact because the sentence is about one afternoon's runs.)
   `release-gate-check` is here because its header says it follows `vendor-check` and its code
   does: it prints the assertion count and exits 0 on a catch, and 1 with `NOT CAUGHT` on a miss.
   It is the one tool in this census that carries mutations without appearing in the fourteen
@@ -135,6 +137,21 @@ match-exactly-once refusal stops it, a stale anchor that predates this and is tr
 The control for the delivery refusal is to stop staging `web/` files and run a page mutation:
 it names the file, the URL and both byte counts, and exits 2 without printing an assertion.
 
+**There are three kinds of mutation now, not two, and the third arrived with the same hole the
+other two were collapsed to close.** A *document* mutation edits a file under
+`presets-builtin/`, and the mac server reads its shipped looks through `--builtin-presets`,
+which points at `WORK/builtin-presets` — a directory that was copied straight from the repo.
+So a mutation written into the staged root landed somewhere nothing served: the arm would have
+compared the *unmutated* document against the registry and the run would have come back green,
+which is the silent-delivery shape this page already carries two entries about. It is closed
+the same way rather than with a second write: `WORK/builtin-presets` is now a copy of the
+staged root taken *after* the mutation lands, so "one place a mutation is delivered" stays
+literally true. `requireDocumentDelivered` is the exit-2 sibling of `requireMutationDelivered`
+and holds the served `rev` — the sha256 `DocumentStore.read` computed over the bytes it read —
+against the hash of the staged file. Its control is to point that copy back at the repo and run
+`--mutate shipped-look-drops-a-value`: exit 2, zero assertions, `rev 6aaada1b4d4a … staged
+a80e035827ce`, where without the refusal the same state is a green run.
+
 ## What each tool needs
 
 **`determinism-check --clock`** refuses a rev whose `main.js` already contains the transport,
@@ -142,6 +159,53 @@ so it needs `--before` pointing at a commit before step 1.
 
 **`export-check`** needs ffmpeg and ffprobe (`--ffmpeg`, `--ffprobe`; 8.1.1 at
 `/opt/homebrew/bin`) and writes into `exports/`, which is gitignored.
+
+**It was red on ten rows, and the question this page used to leave open — when they went
+red — is answered: `40ab241`, all ten in one commit.** Bisected over the 47 commits that
+touch `web/main.js` on this branch, using each tree's own copy of the tool. That is sound
+because the arms and their bands were defined at `b56d101`, which is in `main`, so the
+instrument is constant across the range and only the page moves. `e1996bb`, the parent, is
+47/47 clean; `40ab241` is ten red. The branch point `6e1be6f` reads noise 0.304, regionpush
+0.423, regionmask 0.317, all green.
+
+What moved is a residual floor, from about 0.3–0.5 of 255 to about 0.8–2.5, which put five
+bands underneath it. **The terms are still correct and that was established before any
+number was touched**: `region-in-metres` still separates cleanly, taking regionpush from
+1.251 to 2.445 and reddening regionmask on its ratio at a 0.0216 departure, and
+`pointsize-absolute` clears every band by eight to twelve times. The five within-build rows
+are re-baselined against those measured pairs, with the table and the reasoning in the
+comment above `RES_TOLERANCE`.
+
+**Three candidate causes inside `40ab241` were reverted individually at HEAD and none of
+them restores the floor** — the cyan flare that commit moved into the common path, the
+vignette going from a baked `0.55` to a parameter defaulting to 0, and the glitch block's
+five constants going from literals to uniforms. What remains is the driver arranging the
+arithmetic around those lines differently, an effect `web/main.js` already records costing
+three false regressions in `registry-check` when the flare was guarded, and one that
+reverting at HEAD cannot undo because the surrounding code has moved 40 commits since.
+
+**The five cross-build rows against `f14b4be…^` are still red and deliberately were not
+re-baselined.** They are the same difference seen against a build that predates it rather
+than against a second output size, which is why they read so much larger — the worst of
+forty tile means is 24.297/255, which is visible rather than sub-LSB. Moving a 0.02 ratio
+band past 1.03 would delete the claim rather than re-baseline it. What they need is either
+the cause found or the comparison moved off parameter defaults onto what the shipped look
+names, which is the lesson `docs/instruments.md` already draws from the `glitchTint` case.
+Nothing in the mirror work touched them: with the historical arm normalised for the sign,
+the two Blackwall arms read 1.21 and 1.12 of 255 on the worst of forty tile means, against
+1.02 and 0.95 for the same rows at HEAD — run-to-run noise — where an un-normalised arm
+reports 22.19 and 22.14. The normalisation is what makes that comparison possible at all,
+and it is why the sign appears in this tool as well as in `registry-check`.
+
+**`registry-check` is red on one row, `readGhost`, and it predates this branch.** The claim is
+that `readGhost` at 1.0 is bit-identical to the old `mode 2` at `f49c8339…^`. Measured at the
+branch point `6e1be6f` it fails on one frame of six; at HEAD it fails on two, frames 2 and 3.
+So it is not something this branch introduced, and it did get worse here — both halves of that
+sentence matter, and neither was written down anywhere until now, which is how a known-red row
+becomes a row nobody re-derives. A comment in `web/main.js` calls it "the pre-existing readGhost
+failure" and that comment arrived in `40ab241`, which is testimony rather than a measurement;
+the two runs above are the measurement. Nothing has dated the one-frame-to-two change, and the
+same bisect harness that dated the `export-check` rows would do it.
 
 **`keyframe-check`** runs its cheapest claim first, on a 60-second budget, and stops the run if
 it fails. That is not ordering by cost: an evaluator that announces its writes schedules a seek
@@ -497,6 +561,45 @@ block used to plant a trim at a flat `in: 20, out: 40`, which the clip clamp hol
 asserting the clamp instead. They are now read off the measured duration, and the one deliberate
 exception is `editor-check-past`, planted at 1.5x the duration precisely so that it misses.
 
+**Section 13's resume rows are flaky on a loaded machine, and they are written down here for
+the same reason `library-check`'s three are.** The family is the autosave-and-recovery block —
+`and the recovery is written after the auto-saves already in flight`, `a take opened with no
+working document beside it offers nothing, which is what makes the rows below about the
+document`, and `and neither is one that matches the clip on screen`. Measured across twelve
+runs on two builds during one session: **6 red, 6 green, with the precondition row
+(`toggled additive, 1 auto-save in flight, chip shown`) green every time**, so the fixture
+builds and the ordering simply comes out differently. The block waits on a fixed 3000ms hold
+and a fixed 6000ms settle.
+
+What identifies it as the rows rather than the change under test is the same evidence
+`library-check`'s entry rests on, in a sharper form: **which member of the family fires
+rotates between windows.** Four different subsets were observed across two builds — the
+recovery-ordering row, the matching-clip row, the no-working-document row, and none at all —
+with the precondition green every time and both final baselines passing all of them. Three
+subsets would already be suggestive; four is the statement, because **an ordering bug picks
+the same row.** A run that reddens only these is a re-run, not a finding.
+
+Two things make it worse than ordinary noise here. A polluted `projects/` store is the first
+suspect and the cheapest to rule out, because anything that has been driving the editor by
+hand against the same server leaves real autosaves and deliverables behind it; take the
+re-run against a clean store rather than the one that just failed. And the same block can
+**crash rather than fail**: observed once as `DID NOT RUN - page.selectOption: Timeout
+30000ms exceeded` at 313 of 396, on `page.selectOption('#tProject', OTHER)` with Playwright
+reporting `did not find some options` — section 13's own fixture stubs `/presets` to 500,
+reopens twice, then expects the project picker to carry the name it planted. It was transient,
+with four later runs through the same block on the same build going through. Per the rule at
+the top of this file that is a crash to investigate and never a catch, and it is exactly the
+shape that reads as a catch to anything counting exit codes.
+
+**Two `editor-check` sweeps must never run at once, and neither may `web/` be edited under
+one.** This cost two whole measurements in one session. A sweep straddling a `web/main.js`
+edit produced five runs at 389 assertions and a sixth at 396, because the build changed
+underneath it; separately, two concurrent runs against one server produced the rotating
+resume failures above. Hash the files the run depends on before the baseline and again after
+the last mutation, report the hashes with the numbers, and check
+`pgrep -f "tools/.*-check.mjs"` before starting — on this machine another agent's run is the
+normal state.
+
 **Section 15 grades a feature whose whole design is that it stores almost nothing**, and its
 five controls exist because most of the ways it can be wrong are invisible from the panel.
 Whether a parameter group is open is derived — a group is open when any parameter in it carries
@@ -623,13 +726,12 @@ holding only `sample.knct` reports `1 takes`.
 
 **`level-check` needs no sensor and no capture, and that is a claim about what it can grade
 rather than a convenience.** It writes analytic planes — `z = c / (u . n)` along each pixel's
-own ray — straight into the depth texture, so it knows the normal of every surface it plants
-and can mark the plane fit against the answer. A fixture take would have given it a surface
-nobody knows the normal of, and the fit would then only ever have been asserted against itself.
-Section 5 also plants different planes on the left and right of one frame, selects each side,
-and checks the two resulting rotations. A full frame of one plane cannot distinguish a selected
-point from a hard-coded centre. The same section drives the reset button and reads both axes and
-both sliders back at neutral.
+own ray — straight into the depth texture, so it knows the normal of every surface it plants.
+That is what lets its `levelPair` oracle state the cant a planted surface is level at instead
+of asking the page, and the distinction is the point: a check that read the expected angles off
+the build under test would agree with any build by construction, including one composing the
+pair the other way round. A fixture take would have given it a surface nobody knows the normal
+of. Section 5 drives the reset button and reads both axes and both sliders back at neutral.
 
 **Its staged tree deliberately has no `native/`, and that is the reason it works.** A live
 socket wipes a planted frame in well under a second — an arriving frame swaps the two depth
@@ -651,14 +753,18 @@ tested on the undisplaced sensor-space position. It carries its own anti-vacuity
 the camera behind *must* change the picture — because otherwise a build that ignored the
 parameters entirely satisfies the identity by drawing the same thing twice. **And surface A is
 deliberately blind to `level-order-swapped`**: it leans along one axis, its roll comes out zero,
-and `Rx * Rz` and `Rz * Rx` are then the same rotation. B and C catch it. The blind arm stays,
-because a sweep where every arm reddens cannot say which property is load-bearing.
+and `Rx * Rz` and `Rz * Rx` are then the same rotation. Which is why section 3 — that mutation's
+catcher — plants surface B, whose roll is 27 degrees, rather than the simplest of the three. A
+surface that only tipped away from the sensor would be levelled by either order and the section
+would stay green under the swap.
 
-Its `LEVEL_TOLERANCE` is a bound and not a fitted number: snapping two angles to the sliders'
-half-degree step leaves about 0.0062 radians in the worst case, the gate is 0.012, the clean
-run's worst arm sits at 0.0035 and `level-order-swapped` misses by 0.19. An earlier 0.02 let
-surface C through by 0.0005 — green or red depending on the machine — which is the shape
-`docs/instruments.md` warns about under gates that pass for a neighbouring reason.
+**Section 7's switch rows have exactly one catcher and it is the top-down.** `crop` has two
+readers: the vertex shader, and `croppedOut`, which the plan inset asks. The rows close the
+crop in sensor y until the plan loses points, release the switch, and demand the same count
+back — so a `crop` wired to the shader alone reddens there and nowhere else. It had a third
+reader until the select-floor gesture was removed on 2026-08-08, and that gesture was the one
+those rows used to ask, so anything that narrows the plan's use of `croppedOut` now takes the
+mutation's only catcher with it.
 
 **`registration-check` builds both sides every run** - a pristine upstream prefix and ours -
 because a stale oracle `.dylib` turns the whole thing into a build compared against itself and

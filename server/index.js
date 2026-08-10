@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { basename, dirname, join, normalize, extname, sep, resolve } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { MessageParser, encodeMessage, TYPE_HELLO, TYPE_FRAME, TYPE_COLOR } from './protocol.js';
-import { openCapture, withCapture, captureIdFor, openCaptureCount, decimatePayload } from './capture.js';
+import { openCapture, withCapture, captureIdFor, openCaptureCount, decimatePayload, cloudExtent } from './capture.js';
 import { handleExportSocket, MAX_FRAME_BYTES } from './export.js';
 import {
   VALID_ID, DocumentStore, NodeLink, PROJECT_VERSION, appendMarks, downloadTake,
@@ -122,6 +122,13 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
   '.mp4': 'video/mp4',
   '.mkv': 'video/x-matroska',
+  // The other two things an export can be. A `.mov` served as
+  // `application/octet-stream` is a file the `<video>` element declines to play, and
+  // a frame of a PNG sequence served the same way is a picture nothing will preview -
+  // which would make "watch it back where it was made" a property of the format that
+  // shipped first rather than of the exports directory.
+  '.mov': 'video/quicktime',
+  '.png': 'image/png',
 };
 
 const WEB_DIR = join(ROOT, 'web');
@@ -336,6 +343,54 @@ const serveFrame = (req, res, [id, index], query) => withOpenCapture(res, id, as
     'X-Depth-Divisor': String(divisor),
   });
   res.end(payload);
+});
+
+/**
+ * Where a take's cloud reaches laterally, so the editor can hand you a crop box the
+ * size of your footage instead of the bound the sliders open to.
+ *
+ * Answered here rather than in the page, and the reasons are not interchangeable. The
+ * frames are already on this side; a take that lives on a capture node is scanned by
+ * the node that holds it rather than dragged across the link a frame at a time; and a
+ * page computing this would have to walk the playhead over the whole take to see the
+ * frames, which is a scrub nobody asked for through the surface being set up.
+ *
+ * **The cache keys on the range as well as the take.** The answer excludes points
+ * outside `near`..`far`, so a cache keyed on the capture alone hands a fit computed for
+ * one range back to a caller that asked about another - the shape of bug this repo
+ * writes mutations about, arriving as a box that is right for a document nobody has
+ * open. In practice it is one entry per take, since the fit is asked once at open with
+ * whatever range the document carries.
+ */
+const extentCache = new Map();
+// A take's worth of fitted planes is four numbers, so the bound is about not holding a
+// map that grows with every range anybody ever scrubbed through rather than about size.
+const MAX_EXTENTS = 32;
+
+const serveExtent = (req, res, [id], query) => withOpenCapture(res, id, async (capture) => {
+  const near = Number(query.get('near'));
+  const far = Number(query.get('far'));
+  // Both required and both checked, because the alternative to refusing is picking a
+  // range here - and a range picked on the server is a second declaration of the clip
+  // defaults, five thousand lines from the registry that owns them.
+  if (!Number.isFinite(near) || !Number.isFinite(far) || near < 0 || far <= near) {
+    res.writeHead(400).end('near and far are required, finite, and near must be below far');
+    return;
+  }
+  const payload = await capture.readHello();
+  if (!payload) {
+    res.writeHead(404).end('this capture carries no hello');
+    return;
+  }
+  const hello = JSON.parse(payload.toString('utf8'));
+  // The index hash rather than the id, so a take renamed onto an existing name cannot
+  // be answered with the other one's fit.
+  const key = `${capture.index.hash}|${near}|${far}`;
+  if (!extentCache.has(key)) {
+    if (extentCache.size >= MAX_EXTENTS) extentCache.delete(extentCache.keys().next().value);
+    extentCache.set(key, await cloudExtent(capture, hello, near, far));
+  }
+  sendJson(res, { id, near, far, ...extentCache.get(key) });
 });
 
 const serveFrameRun = (req, res, [id, from, to]) => withOpenCapture(res, id, async (capture) => {
@@ -1435,6 +1490,7 @@ const ROUTES = [
   // ---- a capture, read
   { path: '/capture/:id/hello', pattern: /^\/capture\/([^/]+)\/hello$/, read: serveHello },
   { path: '/capture/:id/index', pattern: /^\/capture\/([^/]+)\/index$/, read: serveIndex },
+  { path: '/capture/:id/extent', pattern: /^\/capture\/([^/]+)\/extent$/, read: serveExtent },
   { path: '/capture/:id/file', pattern: /^\/capture\/([^/]+)\/file$/, read: serveTakeFile },
   { path: '/capture/:id/frame/:n', pattern: /^\/capture\/([^/]+)\/frame\/(\d+)$/, read: serveFrame },
   { path: '/capture/:id/frames/:a-:b', pattern: /^\/capture\/([^/]+)\/frames\/(\d+)-(\d+)$/, read: serveFrameRun },
