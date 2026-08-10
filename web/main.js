@@ -13013,10 +13013,16 @@ function drawChrome() {
   // ── stats overlay, below the top-down view or in its place when hidden.
   if (statsVisible) {
     const statsY = topViewVisible ? rect.y + rect.h + INSET.margin : rect.y;
-    // Twelve rows at `lineH` plus the top inset. Grown a line when the gpu row arrived
-    // beside `fps in` and another when the viewport rate joined them, because a box
-    // sized for eleven rows draws the twelfth over its own bottom edge - which is the
-    // whole reason this constant carries a comment rather than being a number.
+    // Fourteen rows at `lineH` from a first baseline 12px down, so the last one sits at
+    // 166 - and this is 178 rather than that, which is a line of margin rather than a
+    // fit. The two are worth separating: the box grew a line when the gpu row arrived
+    // beside `fps in` and another when the viewport rate joined them, and at 167 the
+    // fourteenth row cleared its own bottom edge by a single pixel. A box that exactly
+    // fits its rows is one row away from drawing over itself, and the row after that is
+    // added by somebody who is not looking at this constant.
+    //
+    // Counted off a rendered frame rather than off this list, because the list is what
+    // goes stale: the comment this replaced said eleven rows and the panel had thirteen.
     const statsH = 178;
     const statsRect = { x: rect.x, y: statsY, w: rect.w, h: statsH };
 
